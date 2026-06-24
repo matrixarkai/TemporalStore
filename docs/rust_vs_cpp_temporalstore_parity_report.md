@@ -50,6 +50,10 @@ contract:
   `WRITE_EXTRACTED_EVENT` debug tests: Rust writes the event and fans out default internal
   `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` indexes, while disabled
   indexes do not return query refs.
+- `context_resource_skill_parser_openviking_parity` covers the OpenViking/C++ resource parser
+  gap: Rust parses markdown/text resources and `SKILL.md` front matter into stable source-ref
+  chunks with embedding refs, persists chunk embeddings, then feeds those chunks through Rust
+  context ingestion/extraction/retrieval.
 - Packed LOCOMO full-source replay no longer fails Rust ingestion on oversized packed source
   titles. The harness compacts node metadata to C++/Rust Context validation limits while preserving
   full segment text and source refs for retrieval scoring.

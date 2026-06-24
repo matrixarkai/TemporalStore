@@ -10,6 +10,8 @@ struct OpsScaleReadinessReport {
     autoscale_controller_ready: bool,
     metaserver_rebalance_loop_ready: bool,
     dashboards_ready: bool,
+    grafana_metrics_parity_ready: bool,
+    grafana_metric_families: Vec<String>,
     tracing_ready: bool,
     non_raft_auth_tls_ready: bool,
     production_runbook_ready: bool,
@@ -75,8 +77,8 @@ fn main() {
         "crates/temporalstore-rust/src/bin/metaserver.rs",
         &["cooldown", "safe_mode", "membership"],
     );
-    let dashboards_ready = root.join("docs/ops/temporalstore-dashboard.json").is_file()
-        && root.join("docs/ops/temporalstore-alerts.yml").is_file();
+    let grafana_metrics_parity_ready = grafana_metrics_parity_ready(&root);
+    let dashboards_ready = grafana_metrics_parity_ready;
     let tracing_ready = file_contains(
         &root,
         "docs/ops/temporalstore-api-security-and-tracing.md",
@@ -190,7 +192,7 @@ fn main() {
                 .to_string(),
             covers: vec![
                 "autoscale/rebalance evidence".to_string(),
-                "ops dashboards/runbooks/tracing/auth coverage".to_string(),
+                "ops dashboards/Grafana metrics parity/runbooks/tracing/auth coverage".to_string(),
                 "corpus family coverage".to_string(),
             ],
         },
@@ -226,6 +228,7 @@ fn main() {
     let docs = vec![
         "docs/ops/temporalstore-dashboard.json".to_string(),
         "docs/ops/temporalstore-alerts.yml".to_string(),
+        "docs/ops/temporalstore-grafana-metrics-parity.md".to_string(),
         "docs/ops/temporalstore-api-security-and-tracing.md".to_string(),
         "docs/ops/temporalstore-fault-runbook.md".to_string(),
         "docs/scale_test_harness.md".to_string(),
@@ -244,7 +247,7 @@ fn main() {
     push_missing(
         &mut missing,
         dashboards_ready,
-        "dashboard and alert evidence",
+        "Grafana dashboard, alert, and Rust metric parity evidence",
     );
     push_missing(&mut missing, tracing_ready, "tracing evidence");
     push_missing(
@@ -282,6 +285,8 @@ fn main() {
         autoscale_controller_ready,
         metaserver_rebalance_loop_ready,
         dashboards_ready,
+        grafana_metrics_parity_ready,
+        grafana_metric_families: grafana_metric_families(),
         tracing_ready,
         non_raft_auth_tls_ready,
         production_runbook_ready,
@@ -357,8 +362,131 @@ fn file_contains(root: &Path, relative: &str, snippets: &[&str]) -> bool {
     snippets.iter().all(|snippet| text.contains(snippet))
 }
 
+fn grafana_metric_families() -> Vec<String> {
+    [
+        "readiness",
+        "raft",
+        "metaserver_scheduler",
+        "proxy_client",
+        "storage_cache",
+        "data_node",
+        "ingestion",
+        "secondary_replication",
+        "scale_slo",
+    ]
+    .iter()
+    .map(|family| family.to_string())
+    .collect()
+}
+
+fn grafana_metrics_parity_ready(root: &Path) -> bool {
+    let dashboard_metrics = [
+        "temporalstore_production_readiness_ready",
+        "temporalstore_production_readiness_service_blockers",
+        "temporalstore_raft_cluster_commit_index",
+        "temporalstore_raft_node_lag",
+        "temporalstore_meta_scheduler_queue_depth",
+        "temporalstore_meta_scheduler_executions_total",
+        "temporalstore_proxy_backend_events_total",
+        "temporalstore_proxy_serving_mode",
+        "temporalstore_object_manager_objects",
+        "temporalstore_storage_slot_page_refs",
+        "temporalstore_cache_operations_total",
+        "temporalstore_page_store_operations_total",
+        "temporalstore_data_node_lifecycle_snapshot_events_total",
+        "temporalstore_ingestion_kafka_lag",
+        "temporalstore_ingestion_dead_letters",
+        "temporalstore_replica_replay_loop_consecutive_failures",
+        "temporalstore_scale_write_p99_us",
+        "temporalstore_scale_error_budget_remaining",
+    ];
+    let alert_rules = [
+        "TemporalStoreProductionReadinessBlocked",
+        "TemporalStoreRaftMajorityLost",
+        "TemporalStoreSchedulerBacklogHigh",
+        "TemporalStoreSchedulerRetriesHigh",
+        "TemporalStoreProxyRouteQuarantineHigh",
+        "TemporalStoreProxyNotServing",
+        "TemporalStoreDataNodeRuntimeQueueHigh",
+        "TemporalStoreLifecycleSnapshotFailures",
+        "TemporalStorePageStoreReadErrors",
+        "TemporalStoreCacheMissPressure",
+        "TemporalStoreReplicaReplayFailures",
+        "TemporalStoreIngestionDeadLetters",
+        "TemporalStoreScaleSloRegression",
+    ];
+    let rust_metric_tokens = [
+        "temporalstore_production_readiness_ready",
+        "temporalstore_raft_cluster_commit_index",
+        "temporalstore_meta_scheduler_queue_depth",
+        "temporalstore_proxy_backend_events_total",
+        "temporalstore_object_manager_objects",
+        "temporalstore_storage_slot_page_refs",
+        "temporalstore_cache_operations_total",
+        "temporalstore_page_store_operations_total",
+        "temporalstore_data_node_lifecycle_snapshot_events_total",
+        "temporalstore_ingestion_kafka_lag",
+        "temporalstore_ingestion_dead_letters",
+        "temporalstore_replica_replay_loop_consecutive_failures",
+    ];
+    let doc_families = [
+        "readiness",
+        "raft",
+        "metaserver_scheduler",
+        "proxy_client",
+        "storage_cache",
+        "data_node",
+        "ingestion",
+        "secondary_replication",
+        "scale_slo",
+    ];
+
+    file_contains(
+        root,
+        "docs/ops/temporalstore-dashboard.json",
+        &dashboard_metrics,
+    ) && file_contains(root, "docs/ops/temporalstore-alerts.yml", &alert_rules)
+        && file_contains(
+            root,
+            "docs/ops/temporalstore-grafana-metrics-parity.md",
+            &doc_families,
+        )
+        && rust_sources_contain(root, &rust_metric_tokens)
+}
+
+fn rust_sources_contain(root: &Path, snippets: &[&str]) -> bool {
+    let relative_paths = [
+        "crates/temporalstore-rust/src/engine.rs",
+        "crates/temporalstore-rust/src/raft.rs",
+        "crates/temporalstore-rust/src/proxy.rs",
+        "crates/temporalstore-rust/src/ingestion.rs",
+        "crates/temporalstore-rust/src/bin/server.rs",
+        "crates/temporalstore-rust/src/bin/metaserver.rs",
+    ];
+    let mut text = String::new();
+    for relative in relative_paths {
+        let Ok(part) = fs::read_to_string(root.join(relative)) else {
+            return false;
+        };
+        text.push_str(&part);
+        text.push('\n');
+    }
+    snippets.iter().all(|snippet| text.contains(snippet))
+}
+
 fn push_missing(missing: &mut Vec<String>, ready: bool, capability: &str) {
     if !ready {
         missing.push(capability.to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters() {
+        let root = repo_root();
+        assert!(grafana_metrics_parity_ready(&root));
     }
 }

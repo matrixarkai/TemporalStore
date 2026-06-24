@@ -175,8 +175,10 @@ cargo run --release -p temporalstore-rust --bin scale_harness -- \
 evidence gate for ops and scale. It validates:
 
 - autoscale controller and metaserver-driven shard rebalance loop evidence
-- dashboards, alerts, tracing, non-Raft auth/TLS, and runbook evidence for all
-  service APIs
+- Grafana dashboard, Prometheus alert, and Rust emitter parity for readiness,
+  Raft, metaserver scheduler, proxy/client, storage/cache, data-node,
+  ingestion, secondary replication, and scale SLO evidence
+- tracing, non-Raft auth/TLS, and runbook evidence for all service APIs
 - Docker/local scale run entry points for real metaserver, proxy, client, and
   data-node process roles
 - distributed Raft load coverage for lag, catch-up, election, membership, and
@@ -192,6 +194,7 @@ Fast evidence check:
 
 ```bash
 tools/run_ops_scale_readiness.sh
+python3 tools/validate_grafana_metrics_parity.py
 ```
 
 Run local scale and distributed Raft harnesses:

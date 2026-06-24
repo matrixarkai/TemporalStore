@@ -1,68 +1,210 @@
 {
   "title": "TemporalStore Production Readiness",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "panels": [
     {
       "title": "Production Readiness",
       "type": "stat",
       "targets": [
-        { "expr": "temporalstore_production_readiness_ready" }
+        {
+          "expr": "temporalstore_production_readiness_ready"
+        }
       ]
     },
     {
       "title": "Readiness Blockers By Area",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_production_readiness_blockers" }
+        {
+          "expr": "temporalstore_production_readiness_blockers"
+        },
+        {
+          "expr": "temporalstore_production_readiness_service_blockers"
+        }
       ]
     },
     {
-      "title": "Raft Commit And Apply Lag",
+      "title": "Raft Commit Apply And Lease",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_raft_node_lag" },
-        { "expr": "temporalstore_raft_node_apply_lag" }
+        {
+          "expr": "temporalstore_raft_cluster_commit_index"
+        },
+        {
+          "expr": "temporalstore_raft_cluster_has_majority"
+        },
+        {
+          "expr": "temporalstore_raft_node_lag"
+        },
+        {
+          "expr": "temporalstore_raft_node_apply_lag"
+        },
+        {
+          "expr": "temporalstore_raft_leader_lease_valid"
+        }
       ]
     },
     {
-      "title": "Scheduler Backlog And Retries",
+      "title": "Metaserver Scheduler And Topology",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_metaserver_scheduler_backlog" },
-        { "expr": "temporalstore_metaserver_scheduler_retries" }
+        {
+          "expr": "temporalstore_meta_scheduler_queue_depth"
+        },
+        {
+          "expr": "sum by (result) (temporalstore_meta_scheduler_executions_total)"
+        },
+        {
+          "expr": "temporalstore_meta_topology_version"
+        },
+        {
+          "expr": "temporalstore_meta_inventory"
+        }
       ]
     },
     {
-      "title": "Proxy Route Quarantine",
+      "title": "Proxy Route Cache Admission And Quarantine",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_proxy_backend_errors" },
-        { "expr": "temporalstore_proxy_continuous_backend_failures" }
+        {
+          "expr": "temporalstore_proxy_route_cache_entries"
+        },
+        {
+          "expr": "sum by (kind) (temporalstore_proxy_route_cache_events_total)"
+        },
+        {
+          "expr": "sum by (kind) (temporalstore_proxy_backend_events_total)"
+        },
+        {
+          "expr": "temporalstore_proxy_serving_mode"
+        },
+        {
+          "expr": "temporalstore_proxy_drop_percent"
+        }
       ]
     },
     {
-      "title": "Storage And Cache Recovery",
+      "title": "Storage Object Page Slot Lifecycle",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_storage_recovery_errors" },
-        { "expr": "temporalstore_cache_evictions_total" }
+        {
+          "expr": "temporalstore_object_manager_objects"
+        },
+        {
+          "expr": "temporalstore_object_manager_page_refs"
+        },
+        {
+          "expr": "temporalstore_object_manager_dirty_slots"
+        },
+        {
+          "expr": "temporalstore_storage_slot_page_refs"
+        },
+        {
+          "expr": "temporalstore_storage_slot_bytes"
+        },
+        {
+          "expr": "temporalstore_partition_routing_slots"
+        }
       ]
     },
     {
-      "title": "Ingestion Lag And Dead Letters",
+      "title": "Page Store And Cache Pressure",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_ingestion_lag" },
-        { "expr": "temporalstore_ingestion_dead_letters_total" }
+        {
+          "expr": "sum by (kind) (temporalstore_cache_operations_total)"
+        },
+        {
+          "expr": "temporalstore_cache_bytes"
+        },
+        {
+          "expr": "sum by (kind) (temporalstore_page_store_operations_total)"
+        },
+        {
+          "expr": "temporalstore_page_store_zone_bytes"
+        },
+        {
+          "expr": "temporalstore_page_store_zone_oldest_age_ms"
+        }
+      ]
+    },
+    {
+      "title": "Data Node Lifecycle And Runtime",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "temporalstore_data_node_runtime_queue_depth"
+        },
+        {
+          "expr": "temporalstore_data_node_runtime_background_queue_depth"
+        },
+        {
+          "expr": "temporalstore_data_node_dirty_objects"
+        },
+        {
+          "expr": "sum by (kind) (temporalstore_data_node_lifecycle_snapshot_events_total)"
+        }
+      ]
+    },
+    {
+      "title": "Ingestion Lag Dead Letters And Checkpoints",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "temporalstore_ingestion_kafka_lag"
+        },
+        {
+          "expr": "temporalstore_ingestion_kafka_max_lag"
+        },
+        {
+          "expr": "sum by (outcome) (temporalstore_ingestion_records_total)"
+        },
+        {
+          "expr": "temporalstore_ingestion_dead_letters"
+        },
+        {
+          "expr": "temporalstore_ingestion_flink_checkpoint_state"
+        },
+        {
+          "expr": "temporalstore_ingestion_flink_checkpoints"
+        }
+      ]
+    },
+    {
+      "title": "Secondary Replication Replay",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "temporalstore_replica_replay_loop_enabled"
+        },
+        {
+          "expr": "sum by (kind) (temporalstore_replica_replay_loop_events_total)"
+        },
+        {
+          "expr": "temporalstore_replica_replay_loop_consecutive_failures"
+        },
+        {
+          "expr": "temporalstore_replica_replay_loop_next_delay_ms"
+        }
       ]
     },
     {
       "title": "Scale SLO",
       "type": "timeseries",
       "targets": [
-        { "expr": "temporalstore_scale_write_p99_us" },
-        { "expr": "temporalstore_scale_read_p99_us" }
+        {
+          "expr": "temporalstore_scale_write_p99_us"
+        },
+        {
+          "expr": "temporalstore_scale_read_p99_us"
+        },
+        {
+          "expr": "temporalstore_scale_throughput_ops"
+        },
+        {
+          "expr": "temporalstore_scale_error_budget_remaining"
+        }
       ]
     }
   ]

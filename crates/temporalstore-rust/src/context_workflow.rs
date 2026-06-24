@@ -117,6 +117,51 @@ pub struct ContextExtractReport {
     pub l2_ref: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceParseRequest {
+    pub raw_uri: String,
+    #[serde(default)]
+    pub resource_type: Option<String>,
+    pub text: String,
+    #[serde(default = "default_resource_max_chunk_chars")]
+    pub max_chunk_chars: usize,
+    #[serde(default = "default_resource_overlap_chars")]
+    pub overlap_chars: usize,
+    #[serde(default)]
+    pub chunk_hash_base: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextParsedResourceChunk {
+    pub chunk_hash: u64,
+    pub embedding_ref_hash: u64,
+    pub source_ref: String,
+    pub text: String,
+    pub token_estimate: u32,
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextResourceParseReport {
+    pub status: Status,
+    pub raw_uri: String,
+    pub resource_type: String,
+    pub resource_hash: u64,
+    pub embedding_model: String,
+    pub chunks: Vec<ContextParsedResourceChunk>,
+    pub total_tokens: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSkillParseReport {
+    pub status: Status,
+    pub skill_name: String,
+    pub description: String,
+    pub source_ref: String,
+    pub capability_refs: Vec<String>,
+    pub resource: ContextResourceParseReport,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextIngestExtractRequest {
     pub shard_id: ShardId,
@@ -1345,6 +1390,128 @@ pub fn ingest_extract_context(
     }
 }
 
+pub fn parse_context_resource(request: ContextResourceParseRequest) -> ContextResourceParseReport {
+    let resource_type =
+        infer_context_resource_type(&request.raw_uri, request.resource_type.as_deref());
+    let max_chunk_chars = request.max_chunk_chars.max(1);
+    let overlap_chars = request.overlap_chars.min(max_chunk_chars.saturating_sub(1));
+    let units = context_resource_units(&request.text, &resource_type, &request.raw_uri);
+    let mut chunks = Vec::new();
+
+    for (unit_index, mut unit) in units.into_iter().enumerate() {
+        let text = unit.remove("text").unwrap_or_default();
+        for (split_index, piece) in
+            split_context_resource_text(&text, max_chunk_chars, overlap_chars)
+                .into_iter()
+                .enumerate()
+        {
+            if piece.trim().is_empty() {
+                continue;
+            }
+            let chunk_index = chunks.len();
+            unit.insert("resource_type".to_string(), resource_type.clone());
+            unit.insert("chunk_index".to_string(), chunk_index.to_string());
+            unit.insert("unit_index".to_string(), unit_index.to_string());
+            unit.insert("split_index".to_string(), split_index.to_string());
+            let source_ref = context_resource_source_ref(&request.raw_uri, &unit);
+            let chunk_hash = request
+                .chunk_hash_base
+                .map(|base| base.saturating_add(chunk_index as u64))
+                .unwrap_or_else(|| stable_hash64(&format!("resource_chunk:{source_ref}:{piece}")));
+            let embedding_ref_hash = stable_hash64(&format!(
+                "resource_chunk_embedding:{}:{chunk_hash}:{}",
+                request.raw_uri, "mock-embedding-v1"
+            ));
+            chunks.push(ContextParsedResourceChunk {
+                chunk_hash,
+                embedding_ref_hash,
+                source_ref,
+                token_estimate: estimate_tokens(&piece),
+                text: piece,
+                metadata: unit.clone(),
+            });
+        }
+    }
+
+    let total_tokens = chunks.iter().fold(0_u32, |total, chunk| {
+        total.saturating_add(chunk.token_estimate)
+    });
+    ContextResourceParseReport {
+        status: Status::ok(),
+        raw_uri: request.raw_uri.clone(),
+        resource_type,
+        resource_hash: stable_hash64(&format!("resource:{}", request.raw_uri)),
+        embedding_model: "mock-embedding-v1".to_string(),
+        chunks,
+        total_tokens,
+    }
+}
+
+pub fn context_resource_chunk_embedding(
+    chunk: &ContextParsedResourceChunk,
+    model: impl AsRef<str>,
+    updated_at_ms: u64,
+) -> ContextEmbedding {
+    let model = model.as_ref();
+    ContextEmbedding {
+        ref_hash: chunk.embedding_ref_hash,
+        level: 2,
+        vector: deterministic_context_embedding(model, &chunk.text),
+        updated_at_ms,
+    }
+}
+
+pub fn parse_context_skill_markdown(
+    raw_uri: impl Into<String>,
+    text: impl Into<String>,
+) -> ContextSkillParseReport {
+    let raw_uri = raw_uri.into();
+    let text = text.into();
+    let front_matter = parse_skill_front_matter(&text);
+    let skill_name = front_matter
+        .get("name")
+        .cloned()
+        .unwrap_or_else(|| infer_skill_name_from_uri(&raw_uri));
+    let description = front_matter
+        .get("description")
+        .cloned()
+        .unwrap_or_else(|| first_markdown_paragraph(&text));
+    let resource = parse_context_resource(ContextResourceParseRequest {
+        raw_uri: raw_uri.clone(),
+        resource_type: Some("skill".to_string()),
+        text,
+        max_chunk_chars: default_resource_max_chunk_chars(),
+        overlap_chars: default_resource_overlap_chars(),
+        chunk_hash_base: None,
+    });
+    let capability_refs = resource
+        .chunks
+        .iter()
+        .filter_map(|chunk| chunk.metadata.get("heading_slug"))
+        .filter(|slug| {
+            matches!(
+                slug.as_str(),
+                "when-to-use"
+                    | "tools"
+                    | "instructions"
+                    | "resources"
+                    | "references"
+                    | "examples"
+                    | "capabilities"
+            )
+        })
+        .cloned()
+        .collect();
+    ContextSkillParseReport {
+        status: Status::ok(),
+        skill_name,
+        description,
+        source_ref: raw_uri,
+        capability_refs,
+        resource,
+    }
+}
+
 pub fn run_context_pipeline_benchmark(
     engine: &TemporalEngine,
     request: ContextPipelineBenchmarkRequest,
@@ -2428,6 +2595,302 @@ fn context_event_uri(tenant_hash: u64, node_hash: u64, event_time_ms: u64) -> St
 
 fn estimate_tokens(text: &str) -> u32 {
     text.split_whitespace().count().max(1) as u32
+}
+
+fn default_resource_max_chunk_chars() -> usize {
+    1_400
+}
+
+fn default_resource_overlap_chars() -> usize {
+    120
+}
+
+fn infer_context_resource_type(raw_uri: &str, resource_type: Option<&str>) -> String {
+    if let Some(kind) = resource_type {
+        let kind = kind.trim().trim_start_matches('.').to_ascii_lowercase();
+        if !kind.is_empty() {
+            return kind;
+        }
+    }
+    raw_uri
+        .rsplit_once('.')
+        .map(|(_, suffix)| suffix.trim().to_ascii_lowercase())
+        .filter(|suffix| !suffix.is_empty() && suffix.chars().all(|ch| ch.is_ascii_alphanumeric()))
+        .unwrap_or_else(|| "txt".to_string())
+}
+
+fn context_resource_units(
+    text: &str,
+    resource_type: &str,
+    raw_uri: &str,
+) -> Vec<BTreeMap<String, String>> {
+    if matches!(resource_type, "md" | "markdown" | "skill") {
+        markdown_resource_units(text)
+    } else {
+        paragraph_resource_units(text, raw_uri)
+    }
+}
+
+fn markdown_resource_units(text: &str) -> Vec<BTreeMap<String, String>> {
+    let mut units = Vec::new();
+    let mut current_heading = "document".to_string();
+    let mut current_level = 0_usize;
+    let mut buffer = Vec::new();
+
+    fn flush(
+        units: &mut Vec<BTreeMap<String, String>>,
+        buffer: &mut Vec<String>,
+        heading: &str,
+        level: usize,
+    ) {
+        let content = buffer.join("\n").trim().to_string();
+        if content.is_empty() {
+            buffer.clear();
+            return;
+        }
+        let mut unit = BTreeMap::new();
+        unit.insert("text".to_string(), content);
+        unit.insert("heading".to_string(), heading.to_string());
+        unit.insert(
+            "heading_slug".to_string(),
+            slugify_context_resource(heading),
+        );
+        unit.insert("heading_level".to_string(), level.to_string());
+        units.push(unit);
+        buffer.clear();
+    }
+
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let hash_count = trimmed.chars().take_while(|ch| *ch == '#').count();
+        let is_heading = (1..=6).contains(&hash_count)
+            && trimmed.as_bytes().get(hash_count) == Some(&b' ')
+            && trimmed.len() > hash_count + 1;
+        if is_heading {
+            flush(&mut units, &mut buffer, &current_heading, current_level);
+            current_level = hash_count;
+            current_heading = trimmed[hash_count..].trim().to_string();
+            buffer.push(trimmed.to_string());
+        } else {
+            buffer.push(line.trim_end().to_string());
+        }
+    }
+    flush(&mut units, &mut buffer, &current_heading, current_level);
+    if units.is_empty() && !text.trim().is_empty() {
+        let mut unit = BTreeMap::new();
+        unit.insert("text".to_string(), text.trim().to_string());
+        unit.insert("heading".to_string(), "document".to_string());
+        unit.insert("heading_slug".to_string(), "document".to_string());
+        unit.insert("heading_level".to_string(), "0".to_string());
+        units.push(unit);
+    }
+    units
+}
+
+fn paragraph_resource_units(text: &str, raw_uri: &str) -> Vec<BTreeMap<String, String>> {
+    let mut units = Vec::new();
+    for (index, paragraph) in split_paragraphs(text).into_iter().enumerate() {
+        let mut unit = BTreeMap::new();
+        unit.insert("text".to_string(), paragraph);
+        unit.insert("paragraph_index".to_string(), index.to_string());
+        unit.insert(
+            "section".to_string(),
+            raw_uri.rsplit('/').next().unwrap_or("document").to_string(),
+        );
+        units.push(unit);
+    }
+    if units.is_empty() && !text.trim().is_empty() {
+        let mut unit = BTreeMap::new();
+        unit.insert("text".to_string(), text.trim().to_string());
+        unit.insert("paragraph_index".to_string(), "0".to_string());
+        unit.insert(
+            "section".to_string(),
+            raw_uri.rsplit('/').next().unwrap_or("document").to_string(),
+        );
+        units.push(unit);
+    }
+    units
+}
+
+fn split_paragraphs(text: &str) -> Vec<String> {
+    let mut paragraphs = Vec::new();
+    let mut current = Vec::new();
+    for line in text.lines() {
+        if line.trim().is_empty() {
+            if !current.is_empty() {
+                paragraphs.push(current.join("\n").trim().to_string());
+                current.clear();
+            }
+        } else {
+            current.push(line.trim_end().to_string());
+        }
+    }
+    if !current.is_empty() {
+        paragraphs.push(current.join("\n").trim().to_string());
+    }
+    paragraphs
+}
+
+fn split_context_resource_text(
+    text: &str,
+    max_chunk_chars: usize,
+    overlap_chars: usize,
+) -> Vec<String> {
+    let mut normalized = text.trim().to_string();
+    while normalized.contains("\n\n\n") {
+        normalized = normalized.replace("\n\n\n", "\n\n");
+    }
+    if normalized.len() <= max_chunk_chars {
+        return vec![normalized];
+    }
+    let mut pieces = Vec::new();
+    let mut start = 0;
+    while start < normalized.len() {
+        let mut end =
+            floor_char_boundary(&normalized, (start + max_chunk_chars).min(normalized.len()));
+        if end < normalized.len() {
+            let window = &normalized[start..end];
+            let paragraph_boundary = window.rfind("\n\n").map(|index| start + index);
+            let sentence_boundary = window.rfind(". ").map(|index| start + index + 1);
+            let boundary = paragraph_boundary
+                .into_iter()
+                .chain(sentence_boundary)
+                .max();
+            if let Some(boundary) = boundary {
+                if boundary > start + (max_chunk_chars / 2) {
+                    end = boundary;
+                }
+            }
+        }
+        let piece = normalized[start..end].trim().to_string();
+        if !piece.is_empty() {
+            pieces.push(piece);
+        }
+        if end >= normalized.len() {
+            break;
+        }
+        start = ceil_char_boundary(&normalized, end.saturating_sub(overlap_chars).max(start + 1));
+    }
+    pieces
+}
+
+fn floor_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index > 0 && !value.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
+    index = index.min(value.len());
+    while index < value.len() && !value.is_char_boundary(index) {
+        index += 1;
+    }
+    index
+}
+
+fn context_resource_source_ref(raw_uri: &str, metadata: &BTreeMap<String, String>) -> String {
+    let mut suffix = if let Some(page) = metadata.get("page") {
+        format!("page={page}")
+    } else if let Some(heading_slug) = metadata.get("heading_slug") {
+        format!("heading={heading_slug}")
+    } else if let Some(paragraph_index) = metadata.get("paragraph_index") {
+        format!("paragraph={paragraph_index}")
+    } else {
+        format!(
+            "chunk={}",
+            metadata
+                .get("chunk_index")
+                .map(String::as_str)
+                .unwrap_or("0")
+        )
+    };
+    if metadata
+        .get("split_index")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+        > 0
+    {
+        suffix.push_str("&part=");
+        suffix.push_str(
+            metadata
+                .get("split_index")
+                .map(String::as_str)
+                .unwrap_or("0"),
+        );
+    }
+    format!("{raw_uri}#{suffix}")
+}
+
+fn slugify_context_resource(value: &str) -> String {
+    let mut out = String::new();
+    let mut last_dash = false;
+    for ch in value.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            last_dash = false;
+        } else if !last_dash {
+            out.push('-');
+            last_dash = true;
+        }
+    }
+    out.trim_matches('-').to_string().if_empty("section")
+}
+
+fn parse_skill_front_matter(text: &str) -> BTreeMap<String, String> {
+    let mut metadata = BTreeMap::new();
+    let mut lines = text.lines();
+    if lines.next().map(str::trim) != Some("---") {
+        return metadata;
+    }
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some((key, value)) = trimmed.split_once(':') {
+            let value = value.trim().trim_matches('"').trim_matches('\'');
+            metadata.insert(key.trim().to_ascii_lowercase(), value.to_string());
+        }
+    }
+    metadata
+}
+
+fn infer_skill_name_from_uri(raw_uri: &str) -> String {
+    raw_uri
+        .rsplit('/')
+        .find(|part| !part.is_empty() && *part != "SKILL.md")
+        .unwrap_or("skill")
+        .trim_end_matches(".md")
+        .to_string()
+}
+
+fn first_markdown_paragraph(text: &str) -> String {
+    split_paragraphs(
+        &text
+            .lines()
+            .filter(|line| !line.trim().starts_with("---"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+    .into_iter()
+    .find(|paragraph| !paragraph.trim_start().starts_with('#'))
+    .unwrap_or_default()
+}
+
+trait IfEmpty {
+    fn if_empty(self, fallback: &str) -> String;
+}
+
+impl IfEmpty for String {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.is_empty() {
+            fallback.to_string()
+        } else {
+            self
+        }
+    }
 }
 
 fn tier_rank(tier: ContextTier) -> u8 {
@@ -4782,5 +5245,143 @@ mod tests {
             .provider_name
             .starts_with("offline-live-provider+fallback:"));
         assert_eq!(report.l0, "doc: body");
+    }
+
+    // shared-corpus: context_resource_skill_parser_openviking_parity
+    #[test]
+    fn context_resource_parser_matches_openviking_stable_refs() {
+        let report = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "runbook.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text: "# Rollback\n\nUse canary rollback.\n\n## Checks\n\nConfirm p95 latency."
+                .to_string(),
+            max_chunk_chars: 1_400,
+            overlap_chars: 120,
+            chunk_hash_base: Some(900),
+        });
+        assert!(report.status.ok);
+        assert_eq!(report.resource_type, "md");
+        assert_eq!(report.chunks.len(), 2);
+        assert_eq!(report.chunks[0].chunk_hash, 900);
+        assert_eq!(report.chunks[0].source_ref, "runbook.md#heading=rollback");
+        assert_eq!(report.chunks[1].chunk_hash, 901);
+        assert_eq!(report.chunks[1].source_ref, "runbook.md#heading=checks");
+        assert_eq!(
+            report.chunks[1]
+                .metadata
+                .get("heading_level")
+                .map(String::as_str),
+            Some("2")
+        );
+    }
+
+    // shared-corpus: context_resource_skill_parser_openviking_parity
+    #[test]
+    fn context_skill_parser_extracts_frontmatter_and_capability_sections() {
+        let skill = parse_context_skill_markdown(
+            "skills/context-debug/SKILL.md",
+            "---\nname: context-debug\ndescription: Trace context ingestion and retrieval.\n---\n\n# Context Debug\n\n## When To Use\n\nUse for context trace debugging.\n\n## Tools\n\n- context_workflow_harness\n",
+        );
+        assert!(skill.status.ok);
+        assert_eq!(skill.skill_name, "context-debug");
+        assert_eq!(skill.description, "Trace context ingestion and retrieval.");
+        assert!(skill.capability_refs.contains(&"when-to-use".to_string()));
+        assert!(skill.capability_refs.contains(&"tools".to_string()));
+        assert!(skill.resource.chunks.iter().all(|chunk| chunk
+            .metadata
+            .get("resource_type")
+            .map(String::as_str)
+            == Some("skill")));
+    }
+
+    // shared-corpus: context_resource_skill_parser_openviking_parity
+    #[test]
+    fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
+        let engine = test_engine();
+        let resource = parse_context_resource(ContextResourceParseRequest {
+            raw_uri: "viking://resources/runbook.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text: "# Incident\n\nCheckout latency increased because the payment dependency timed out.\n\n## Fix\n\nRollback the payment gateway canary and verify p95 latency."
+                .to_string(),
+            max_chunk_chars: 220,
+            overlap_chars: 40,
+            chunk_hash_base: None,
+        });
+        let skill = parse_context_skill_markdown(
+            "skills/payment-incident/SKILL.md",
+            "---\nname: payment-incident\ndescription: Debug payment incident context.\n---\n\n# Payment Incident\n\n## When To Use\n\nUse when checkout latency or payment risk spikes.\n",
+        );
+        let mut sources = Vec::new();
+        for chunk in resource.chunks.iter().chain(skill.resource.chunks.iter()) {
+            sources.push(ContextExtractRequest {
+                shard_id: 1,
+                tenant_hash: 42,
+                source_kind: ContextSourceKind::Document,
+                source_id: chunk.source_ref.clone(),
+                title: chunk
+                    .metadata
+                    .get("heading")
+                    .cloned()
+                    .unwrap_or_else(|| chunk.source_ref.clone()),
+                body: chunk.text.clone(),
+                timestamp_ms: 1_000 + sources.len() as u64,
+                provider: ContextModelProviderConfig::default(),
+            });
+        }
+        let mut embedding_refs = Vec::new();
+        for (index, chunk) in resource
+            .chunks
+            .iter()
+            .chain(skill.resource.chunks.iter())
+            .enumerate()
+        {
+            let embedding =
+                context_resource_chunk_embedding(chunk, &resource.embedding_model, 2_000 + index as u64);
+            embedding_refs.push(embedding.ref_hash);
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextUpsertEmbedding {
+                    tenant_hash: 42,
+                    embedding,
+                },
+            });
+            assert!(response.status.ok);
+        }
+        let ingest = ingest_extract_context(
+            &engine,
+            ContextIngestExtractRequest {
+                shard_id: 1,
+                tenant_hash: 42,
+                sources,
+                query: "payment dependency rollback p95 latency".to_string(),
+                start_time_ms: 0,
+                end_time_ms: 10_000,
+                max_events: 8,
+                provider: ContextModelProviderConfig::default(),
+            },
+        );
+        assert!(ingest.status.ok, "{}", ingest.status.message);
+        assert_eq!(ingest.failed, 0);
+        let retrieve = retrieve_context(&engine, ingest.retrieve_request);
+        assert!(retrieve.status.ok);
+        assert!(retrieve
+            .blocks
+            .iter()
+            .any(|block| block.text.contains("payment dependency timed out")
+                || block.text.contains("payment gateway canary")));
+        let embeddings = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEmbeddings {
+                tenant_hash: 42,
+                ref_hashes: embedding_refs,
+                limit: Some(16),
+            },
+        });
+        assert!(matches!(
+            embeddings.response,
+            CommandResponse::ContextEmbeddings { ref embeddings }
+                if embeddings.len() >= resource.chunks.len() + skill.resource.chunks.len()
+                    && embeddings.iter().all(|embedding| embedding.vector.len() == 16)
+        ));
     }
 }

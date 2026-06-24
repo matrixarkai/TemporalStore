@@ -116,7 +116,9 @@
       "benchmark_locomo_rust_full_replay_contract",
       "benchmark_longmemeval_rust_full_replay_contract",
       "benchmark_cpp_rust_vikingmem_report_comparator",
-      "ops_scale_readiness_slo_gate"
+      "ops_scale_readiness_slo_gate",
+      "ops_grafana_metrics_cpp_parity",
+      "context_resource_skill_parser_openviking_parity"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -5528,6 +5530,53 @@
             ],
             "rust_runner": "cargo test -p temporalstore-rust readiness_gate_can_filter_one_service -- --test-threads=1",
             "rust_validator": "python3 tools/validate_readiness_workflow.py"
+          }
+        }
+      ]
+    },
+    {
+      "name": "ops_grafana_metrics_cpp_parity",
+      "shard_id": 90,
+      "steps": [
+        {
+          "name": "grafana_prometheus_metric_family_parity",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ops_scale_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust ops case for Grafana dashboard, alert, and Prometheus metric-family parity across readiness, Raft, metaserver scheduler, proxy/client, storage/cache, data-node, ingestion, secondary replication, and scale SLO evidence.",
+            "required_paths": [
+              "docs/ops/temporalstore-dashboard.json",
+              "docs/ops/temporalstore-alerts.yml",
+              "docs/ops/temporalstore-grafana-metrics-parity.md",
+              "crates/temporalstore-rust/src/bin/ops_scale_readiness_harness.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust --bin ops_scale_readiness_harness grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_grafana_metrics_parity.py",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-metrics-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
+      "name": "context_resource_skill_parser_openviking_parity",
+      "shard_id": 60,
+      "steps": [
+        {
+          "name": "resource_and_skill_parser_shared",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_context_pipeline_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust Context parser case for OpenViking-style resource chunking, stable source refs, SKILL.md front matter, capability sections, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks.",
+            "required_paths": [
+              "tools/matrixark_resource_parser.py",
+              "tools/test_matrixark_resource_parser.py",
+              "docs/rust_context_resource_skill_parser_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_resource --lib -- --test-threads=1 && cargo test -p temporalstore-rust context_skill --lib -- --test-threads=1 && cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-parser-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
           }
         }
       ]

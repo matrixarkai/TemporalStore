@@ -182,6 +182,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_events_segments_entities_child_refs` | Rust-executable/C++-static gate for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior. |
 | `context_embeddings_summaries_l0_l1_pipeline` | Rust-executable/C++-static gate for embeddings, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction. |
 | `context_compression_secondary_index_query_debug_flow` | Rust-executable/C++-static gate for temporal compression, secondary-index filter groups, C++-style query debug flow, retrieved evidence ordering, and audit refs. |
+| `context_resource_skill_parser_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style resource chunking, stable source refs, `SKILL.md` front matter, capability sections, chunk embeddings, and Rust TemporalStore ingestion/retrieval of parsed chunks. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
 | `control_multi_proxy_convergence_and_quarantine` | Rust-executable/C++-static gate for multi-proxy convergence, backend quarantine, recovery probing, and stale-cache comparison. |
@@ -192,6 +193,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |
 | `ingestion_dead_letter_lag_report_contract` | Rust-executable/C++-static gate for dead-letter export, lag metrics, committed offsets, and valid-record continuation. |
 | `ops_scale_readiness_slo_gate` | Rust-executable/C++-static gate for readiness filtering, external chaos plan, rolling restart, Docker/AWS SLO evidence, and scale workload replay. |
+| `ops_grafana_metrics_cpp_parity` | Rust-executable/C++-static gate for Grafana dashboard, alert, and Prometheus metric-family parity across readiness, Raft, metaserver scheduler, proxy/client, storage/cache, data-node, ingestion, secondary replication, and scale SLO evidence. |
 | `benchmark_locomo_rust_full_replay_contract` | Shared benchmark contract for LOCOMO full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_longmemeval_rust_full_replay_contract` | Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_cpp_rust_vikingmem_report_comparator` | Shared benchmark contract for comparing C++ and Rust `matrixark_vikingmem_context_benchmark_report_v1` archives case-by-case. |

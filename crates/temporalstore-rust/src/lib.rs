@@ -30,19 +30,22 @@ pub use client::{
 };
 pub use context_workflow::{
     context_pipeline_manage_report, context_pipeline_parity_evidence,
-    context_workflow_state_report, default_context_model_providers, extract_context,
-    ingest_extract_context, inject_context, openviking_open_source_model_profiles,
-    retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
-    ContextBlock, ContextExtractReport, ContextExtractRequest, ContextIngestExtractReport,
+    context_resource_chunk_embedding, context_workflow_state_report,
+    default_context_model_providers, extract_context, ingest_extract_context, inject_context,
+    openviking_open_source_model_profiles, parse_context_resource, parse_context_skill_markdown,
+    retrieve_context,
+    run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep, ContextBlock,
+    ContextExtractReport, ContextExtractRequest, ContextIngestExtractReport,
     ContextIngestExtractRequest, ContextIngestExtractSummary, ContextIngestSourceFailure,
     ContextInjectReport, ContextInjectRequest, ContextModelProviderConfig,
-    ContextOpenVikingModelProfile, ContextPipelineBenchmarkQueryReport,
+    ContextOpenVikingModelProfile, ContextParsedResourceChunk, ContextPipelineBenchmarkQueryReport,
     ContextPipelineBenchmarkReport, ContextPipelineBenchmarkRequest,
     ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepReport,
     ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
     ContextPipelineManageReport, ContextPipelineParityEvidence, ContextPipelineStageReport,
     ContextPrefilterCandidateDebug, ContextProviderKind, ContextQueryUnderstandingDebug,
-    ContextRetrieveReport, ContextRetrieveRequest, ContextSourceKind, ContextTier,
+    ContextResourceParseReport, ContextResourceParseRequest, ContextRetrieveReport,
+    ContextRetrieveRequest, ContextSkillParseReport, ContextSourceKind, ContextTier,
     ContextTreeTraversalDebug, ContextWorkflowStateReport,
 };
 pub use control::{
