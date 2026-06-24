@@ -41,6 +41,10 @@ python3 tools/run_unified_parity_tests.py --result-dir /tmp/temporalstore-unifie
 
 The Rust repository should run its native adapter against the same external corpus. The C++ wrapper can still run the legacy Rust SDK stage with `--run-rust`, but it is not the canonical Rust parity path.
 
+## MatrixArk Context Runner Ownership
+
+The lightweight C++ MatrixArk context contract runner now lives in `TemporalStoreTestCorpus/runners/cpp/`. This repo keeps only `tools/run_cpp_unified_context_contract.sh`, a consumer wrapper that resolves the external corpus and delegates to the shared runner.
+
 ## Contract
 
 New cross-language product behavior should be added to `TemporalStoreTestCorpus` first. Local C++ or Rust tests should remain only for implementation internals, transport-specific code, or temporary migration gaps.
