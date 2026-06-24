@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_resource_parser import ParsedResourceChunk, parse_resource, slugify, stable_hash, token_estimate
+    from tools.matrixark_resource_parser import ParsedResourceChunk, compact_ws, parse_resource, slugify, stable_hash, token_estimate
 except ModuleNotFoundError:
-    from matrixark_resource_parser import ParsedResourceChunk, parse_resource, slugify, stable_hash, token_estimate
+    from matrixark_resource_parser import ParsedResourceChunk, compact_ws, parse_resource, slugify, stable_hash, token_estimate
 
 
 Json = dict[str, Any]
@@ -86,8 +86,16 @@ def parse_skill(
     front_matter, body = _split_front_matter(text)
     front_matter = {**bundle_manifest, **front_matter}
     skill_text = body.strip() or text.strip()
+    nested_metadata = front_matter.get("metadata") if isinstance(front_matter.get("metadata"), dict) else {}
     name = str(front_matter.get("name") or front_matter.get("id") or _first_heading(skill_text) or Path(raw_uri_text).stem or "skill")
-    description = str(front_matter.get("description") or front_matter.get("summary") or _first_paragraph(skill_text) or name)
+    description = str(
+        front_matter.get("description")
+        or front_matter.get("summary")
+        or nested_metadata.get("short-description")
+        or nested_metadata.get("description")
+        or _first_paragraph(skill_text)
+        or name
+    )
     triggers = _list_field(front_matter.get("triggers") or front_matter.get("activation") or front_matter.get("when")) or _extract_section_list(skill_text, "triggers") or _extract_section_list(skill_text, "when to use")
     allowed_tools = _list_field(front_matter.get("allowed_tools") or front_matter.get("tools") or front_matter.get("allowed-tools")) or _extract_section_list(skill_text, "allowed tools") or _extract_section_list(skill_text, "tools")
     owner_scope = _validated_choice(str(front_matter.get("owner_scope") or front_matter.get("scope") or front_matter.get("visibility") or "user"), VALID_OWNER_SCOPE, "user")
@@ -129,6 +137,15 @@ def parse_skill(
         "bundle_manifest": bundle_manifest,
         "section_count": len(chunks),
     }
+    metadata["embedding_text"] = skill_embedding_text(
+        name=name,
+        description=description,
+        triggers=metadata["triggers"],
+        allowed_tools=metadata["allowed_tools"],
+        category=category,
+        permissions=metadata["permissions"],
+        skill_text=skill_text,
+    )
     return ParsedSkill(
         skill_hash=skill_hash,
         name=name,
@@ -216,6 +233,31 @@ def _normalize_tools(values: list[str]) -> list[str]:
     return out
 
 
+def skill_embedding_text(
+    *,
+    name: str,
+    description: str,
+    triggers: list[str],
+    allowed_tools: list[str],
+    category: str,
+    permissions: list[str],
+    skill_text: str,
+) -> str:
+    return compact_ws(
+        "\n".join(
+            [
+                f"skill: {name}",
+                f"description: {description}",
+                "triggers: " + ", ".join(triggers[:12]),
+                "allowed_tools: " + ", ".join(allowed_tools[:12]),
+                "permissions: " + ", ".join(permissions[:12]),
+                f"category: {category}",
+                "instructions: " + skill_text[:1800],
+            ]
+        )
+    )
+
+
 def _list_field(value: Any) -> list[str]:
     if value is None:
         return []
@@ -251,6 +293,13 @@ def _split_front_matter(text: str) -> tuple[Json, str]:
     fields: Json = {}
     current_key = ""
     for raw_line in match.group(1).splitlines():
+        if raw_line.startswith((" ", "\t")) and ":" in raw_line and current_key:
+            nested_key, nested_value = raw_line.strip().split(":", 1)
+            if isinstance(fields.get(current_key), list) and not fields[current_key]:
+                fields[current_key] = {}
+            if isinstance(fields.get(current_key), dict):
+                fields[current_key][nested_key.strip()] = nested_value.strip().strip('"').strip("'")
+                continue
         if raw_line.startswith((" ", "\t")) and raw_line.strip().startswith("-") and current_key:
             fields.setdefault(current_key, [])
             if isinstance(fields[current_key], list):

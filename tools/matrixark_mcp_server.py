@@ -25,10 +25,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_resource_parser import ResourceParserError, parse_resource
+    from tools.matrixark_resource_parser import ResourceParserError, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
     from tools.matrixark_skill_parser import parse_skill
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_resource_parser import ResourceParserError, parse_resource
+    from matrixark_resource_parser import ResourceParserError, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
     from matrixark_skill_parser import parse_skill
 
 
@@ -3090,7 +3090,7 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    skill_vector = embedding_for_text(parsed_skill.name + " " + parsed_skill.description)
+                    skill_vector = embedding_for_text(str(parsed_skill.metadata.get("embedding_text") or (parsed_skill.name + " " + parsed_skill.description)))
                     self.append(
                         {
                             "record_type": "context_embedding",
@@ -3119,10 +3119,10 @@ class MatrixArkLocalAdapter:
                 parsed_chunks = []
             if not parsed_chunks:
                 raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
-            chunk_vectors = embeddings_for_texts([chunk.text for chunk in parsed_chunks])
+            chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
             resource_kind = "skill" if skill_hash is not None else "resource"
             resource_l0_text = summarize_text(
-                " ".join(chunk.text for chunk in parsed_chunks[:8]),
+                summarize_resource_chunks(parsed_chunks, raw_uri=raw_uri, resource_kind=resource_kind),
                 limit=700,
             )
             resource_summary_hash = stable_hash(f"{resource_kind}_l0:{raw_uri}:{node_hash}")

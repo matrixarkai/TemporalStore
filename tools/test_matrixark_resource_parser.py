@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.matrixark_resource_parser import ResourceParserError, parse_resource
+from tools.matrixark_resource_parser import ResourceParserError, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
 from tools.matrixark_skill_parser import parse_skill
 
 
@@ -24,6 +24,13 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(chunks[1].metadata["heading_path"], ["Rollback", "Checks"])
         self.assertIn("content_hash", chunks[1].metadata)
         self.assertIn("keywords", chunks[1].metadata)
+        embedding_text = embedding_text_for_chunk(chunks[1])
+        self.assertIn("path: Rollback / Checks", embedding_text)
+        self.assertIn("source: runbook.md#heading=rollback/checks", embedding_text)
+        self.assertIn("content: ## Checks", embedding_text)
+        l0_source = summarize_resource_chunks(chunks, raw_uri="runbook.md")
+        self.assertIn("resource: runbook.md", l0_source)
+        self.assertIn("section: Rollback / Checks", l0_source)
 
     def test_text_paragraphs_are_chunked_with_refs(self):
         chunks = parse_resource(
@@ -92,6 +99,8 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(skill.metadata["allowed_tools"], ["matrixark_replay", "matrixark_audit"])
         self.assertEqual(skill.metadata["version"], "2")
         self.assertEqual(skill.metadata["skill_slug"], "context-debugger")
+        self.assertIn("skill: context-debugger", skill.metadata["embedding_text"])
+        self.assertIn("allowed_tools: matrixark_replay, matrixark_audit", skill.metadata["embedding_text"])
         self.assertEqual(skill.metadata["section_count"], len(skill.chunks))
         self.assertEqual(skill.chunks[0].chunk_hash, 1200)
         self.assertEqual(skill.chunks[0].metadata["resource_type"], "skill")
@@ -270,6 +279,23 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(skill.metadata["precedence"], "normal")
         self.assertEqual(skill.metadata["owner_scope"], "user")
 
+    def test_skill_codex_nested_metadata_short_description(self):
+        skill = parse_skill(
+            "skills/codex/SKILL.md",
+            text=(
+                "---\n"
+                "name: codex-context\n"
+                "metadata:\n"
+                "  short-description: Use Codex context safely.\n"
+                "---\n"
+                "# Codex Context\n\n"
+                "Longer body for the skill.\n"
+            ),
+            chunk_hash_base=2500,
+        )
+        self.assertEqual(skill.description, "Use Codex context safely.")
+        self.assertEqual(skill.metadata["front_matter"]["metadata"]["short-description"], "Use Codex context safely.")
+        self.assertIn("description: Use Codex context safely.", skill.metadata["embedding_text"])
+
 if __name__ == "__main__":
     unittest.main()
-

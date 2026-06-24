@@ -10,6 +10,7 @@ from tools.matrixark_mcp_server import (
     MatrixArkLocalAdapter,
     MatrixArkMcpServer,
     apply_statistical_operator,
+    embedding_for_text,
     latest_record,
     score_recall_candidate,
 )
@@ -216,6 +217,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(len(chunks), 2)
         self.assertEqual(chunks[0]["source_ref"], "runbook.md#heading=rollback")
         self.assertEqual(chunks[1]["metadata"]["heading_slug"], "budget")
+        self.assertIn("embedding_text", chunks[1]["metadata"])
+        self.assertIn("path: Rollback / Budget", chunks[1]["metadata"]["embedding_text"])
         summaries = [
             record
             for record in replay["events"]
@@ -232,6 +235,8 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         ]
         self.assertIn(("resource_l0", summaries[0]["summary_hash"]), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
         self.assertIn(("resource_chunk", 8100), [(record["embedding_type"], record["ref_hash"]) for record in embeddings])
+        chunk_embedding = next(record for record in embeddings if record["embedding_type"] == "resource_chunk" and record["ref_hash"] == 8101)
+        self.assertEqual(chunk_embedding["vector"], embedding_for_text(chunks[1]["metadata"]["embedding_text"]))
         indexes = [
             record["index_name"]
             for record in replay["events"]
@@ -282,6 +287,7 @@ class MatrixArkMcpServerTest(unittest.TestCase):
         self.assertEqual(skill["name"], "context-debugger")
         self.assertEqual(skill["description"], "Debug MatrixArk context packs.")
         self.assertEqual(skill["metadata"]["resource_type"], "skill")
+        self.assertIn("skill: context-debugger", skill["metadata"]["embedding_text"])
         summaries = [
             record
             for record in replay["events"]
