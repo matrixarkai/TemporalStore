@@ -6984,6 +6984,74 @@
           }
         }
       ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft API case for status reads and admin leader election. Rust executes the HTTP route test; C++ anchors the equivalent server, service, and data-Raft surfaces until a native shared runner is wired.",
+      "family": "Raft",
+      "name": "server_raft_status_admin_routes",
+      "shard_id": 71,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft status/admin election route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/server/test/server_test.cc",
+              "src/protocol/server.proto"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_status_and_admin_routes -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_status_admin_routes_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft API case for apply-health reporting and lag bounds. Rust executes the route test; C++ anchors server metrics, partition manager, and data-Raft replication surfaces.",
+      "family": "Raft",
+      "name": "server_raft_apply_health_route",
+      "shard_id": 72,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft apply-health route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/server/metrics.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_apply_health_route -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_apply_health_route_shared"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust data-node Raft API case for metaserver-driven membership apply. Rust executes the route test; C++ anchors server membership, partition manager, and scheduler membership update surfaces.",
+      "family": "Raft",
+      "name": "server_raft_membership_apply_route",
+      "shard_id": 73,
+      "steps": [
+        {
+          "command": {
+            "description": "Data-node Raft membership apply route parity.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/server/partition_manager.h",
+              "src/metaserver_v2/scheduler/update_membership_task.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust server_exposes_raft_membership_apply_route -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <server-raft-api.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_raft_membership_apply_route_shared"
+        }
+      ]
     }
   ],
   "coverage": {
@@ -7223,7 +7291,10 @@
       "common_module_delete_ttl_expire_setex_lifecycle",
       "set_module_add_members_card_membership_remove",
       "common_storage_pool_uri_guardrail",
-      "stream_object_store_backend_detection"
+      "stream_object_store_backend_detection",
+      "server_raft_status_admin_routes",
+      "server_raft_apply_health_route",
+      "server_raft_membership_apply_route"
     ],
     "required_command_kinds": [
       "string_set",

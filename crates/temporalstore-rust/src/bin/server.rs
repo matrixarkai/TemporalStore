@@ -4097,6 +4097,7 @@ mod tests {
         }
     }
 
+    // shared-corpus: server_raft_status_admin_routes
     #[test]
     fn server_exposes_raft_status_and_admin_routes() {
         let dir = tempdir().unwrap();
@@ -4208,6 +4209,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: server_raft_apply_health_route
     #[test]
     fn server_exposes_raft_apply_health_route() {
         let dir = tempdir().unwrap();
@@ -4236,6 +4238,7 @@ mod tests {
         assert_eq!(health.max_apply_lag, 0);
     }
 
+    // shared-corpus: server_raft_membership_apply_route
     #[test]
     fn server_exposes_raft_membership_apply_route() {
         let dir = tempdir().unwrap();

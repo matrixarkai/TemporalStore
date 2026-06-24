@@ -76,13 +76,13 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 128
-total steps: 227
-executable shared behavior cases: 128
-executable shared behavior steps: 227
-C++ existing-test parity surface cases: 0
-C++ existing-test parity surface steps: 0
-C++ required source/test/harness paths: 170 unique paths
+total cases: 143
+total steps: 305
+executable shared behavior cases: 143
+executable shared behavior steps: 305
+C++ existing-test parity surface cases: 93
+C++ existing-test parity surface steps: 100
+C++ required source/test/harness paths: 181 unique paths
 required command kinds: 66
 required response kinds: 19
 ```
@@ -108,6 +108,11 @@ Current grandfathered Rust test dispositions:
 
 The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
 storage/cache recovery cases and Context pipeline model cases.
+
+Recent shared-case additions moved three Rust data-node Raft API tests into the common contract:
+`server_raft_status_admin_routes`, `server_raft_apply_health_route`, and
+`server_raft_membership_apply_route`. C++ currently contributes static server/Raft source and test
+surfaces for those cases until a native C++ shared runner executes the same case IDs.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
