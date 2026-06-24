@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Validate the shared TemporalStore C++/Rust corpus against the C++ checkout.
+"""Run the shared TemporalStore C++/Rust behavioral corpus.
 
-This is the C++ side hook called by the Rust repo's unified runner. The corpus
-JSON remains owned by the Rust repo unless --corpus points at a local copy.
+The JSON corpus is the test contract. Rust executes it through an integration
+test. C++ should expose a runner command that accepts the same corpus path via
+TS_CPP_UNIFIED_TEST_CMD, using "{corpus}" as an optional path placeholder.
+When TS_CPP_REPO or --cpp-repo is provided, the command also gets "{cpp_repo}"
+rendered and otherwise runs from that repository root.
 """
 
 from __future__ import annotations
@@ -10,1105 +13,610 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CORPUS = ROOT / "sdk" / "unified" / "temporalstore_unified_corpus.json"
 
 
-def require_string(command: dict, name: str, case_name: str) -> None:
-    if not isinstance(command.get(name), str) or not command[name]:
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a non-empty string")
+def default_corpus_path() -> Path:
+    override = os.environ.get("TEMPORALSTORE_TEST_CORPUS")
+    if override:
+        return Path(override)
+    candidates = [
+        ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+        ROOT.parent / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+        ROOT.parent / "TemporalStore" / "compat" / "unified_temporalstore_cases.json",
+        ROOT.parent / "TemporalStore" / "sdk" / "unified" / "temporalstore_unified_corpus.json",
+        ROOT / "sdk" / "unified" / "temporalstore_unified_corpus.json",
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[-1]
 
 
-def require_string_value(command: dict, name: str, case_name: str) -> None:
-    if not isinstance(command.get(name), str):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a string")
+DEFAULT_CORPUS = default_corpus_path()
+DEFAULT_CPP_RUNNER_RELATIVE = Path("tools") / "run_temporalstore_unified_tests.sh"
+CPP_RAFT_PARITY_SUITE = "cpp_data_raft_parity"
+COMBINED_RAFT_GATE_CASES = {
+    "raft_data_node_scale_failover_snapshot",
+    "raft_data_node_mixed_rw_and_membership",
+    "raft_production_gate",
+}
+COMBINED_RAFT_GATE = "tools/run_raft_distributed_parity.sh"
+COMBINED_RAFT_VALIDATOR = (
+    "python3 tools/validate_aws_validation_log.py --job "
+    "temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"
+)
+BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS = {
+    "raft_byteraft_packet_loss_fault_harness": [
+        ["majority", "continues"],
+        ["minority", "rejects", "stale", "reads"],
+        ["healed", "catches up"],
+    ],
+    "raft_byteraft_slow_wal_fsync_fault_harness": [
+        ["backpressure", "activates"],
+        ["no committed write", "lost"],
+        ["lag", "latency", "pressure"],
+    ],
+    "raft_byteraft_snapshot_during_membership_fault_harness": [
+        ["snapshot floor", "consistent"],
+        ["membership generation", "consistent"],
+        ["restart", "snapshot floor", "membership generation"],
+    ],
+    "raft_byteraft_leader_transfer_high_write_fault_harness": [
+        ["commit exactly once", "fail safely"],
+        ["committed write", "lost", "duplicated"],
+        ["final leader", "all committed entries"],
+    ],
+    "raft_byteraft_follower_rejoin_compacted_logs_fault_harness": [
+        ["installs snapshot"],
+        ["replays retained", "tail"],
+        ["read-eligible", "catch-up"],
+    ],
+    "raft_byteraft_rolling_restart_joint_consensus_fault_harness": [
+        ["joint consensus", "survives"],
+        ["completes safely", "rolls back safely"],
+        ["membership state", "not lost"],
+    ],
+}
+BENCHMARK_REQUIRED_REPORT_FIELDS = {
+    "benchmark_family",
+    "benchmark_hit_at_k",
+    "benchmark_recall_at_k",
+    "benchmark_mean_reciprocal_rank",
+    "benchmark_token_reduction_percent",
+    "benchmark_retrieval_p50_ms",
+    "benchmark_retrieval_p95_ms",
+    "benchmark_reader_p50_ms",
+    "benchmark_reader_p95_ms",
+    "benchmark_quality_ready",
+    "benchmark_threshold_passed",
+    "benchmark_threshold_violation_count",
+    "benchmark_threshold_violations",
+    "benchmark_thresholds",
+    "benchmark_per_query_count",
+    "category_breakdown",
+    "weak_category_count",
+    "weak_categories",
+    "weak_category_policy",
+    "case_count",
+    "hit_rate",
+    "reader_hit_rate",
+    "reader_mode_requested",
+    "reader_mode_effective",
+    "reader_provider_name",
+    "reader_model",
+}
+BENCHMARK_THRESHOLD_PROFILES = {
+    "fixture",
+    "locomo_full",
+    "longmemeval_full",
+    "oss_reader_full",
+}
+CPP_ADAPTER_STATUSES = {
+    "mixed_native_and_static_surface_gate",
+    "native_adapter_contract",
+    "native_runner_mapped",
+    "temporary_static_surface_gate",
+}
+STATIC_CPP_MODES = {
+    "static",
+    "rust_executable_cxx_static",
+}
+COMPARISON_OUTPUT_FIELDS = {
+    "rust_only_misses",
+    "cpp_only_misses",
+    "shared_hard_failures",
+    "output_diffs",
+    "latency_deltas",
+}
 
+CPP_RUNNER_TEMPLATE = r"""#!/usr/bin/env bash
+set -euo pipefail
 
-def require_int(command: dict, name: str, case_name: str) -> None:
-    if not isinstance(command.get(name), int):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be an integer")
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CORPUS=""
 
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --corpus)
+      CORPUS="${2:-}"
+      shift 2
+      ;;
+    --corpus=*)
+      CORPUS="${1#--corpus=}"
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
 
-def require_optional_int(command: dict, name: str, case_name: str) -> None:
-    if name in command and command[name] is not None and not isinstance(command[name], int):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be an integer or null")
+if [[ -z "${CORPUS}" ]]; then
+  CORPUS="${ROOT}/sdk/unified/temporalstore_unified_corpus.json"
+fi
+if [[ ! -f "${CORPUS}" ]]; then
+  echo "unified TemporalStore corpus not found: ${CORPUS}" >&2
+  exit 2
+fi
+if [[ -z "${TS_CPP_UNIFIED_NATIVE_CMD:-}" ]]; then
+  cat >&2 <<'MSG'
+TS_CPP_UNIFIED_NATIVE_CMD is not set.
 
+Set it to the C++ TemporalStore corpus executor. The command may use a
+{corpus} placeholder. Example:
 
-def require_bool(command: dict, name: str, case_name: str) -> None:
-    if not isinstance(command.get(name), bool):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a boolean")
+  TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
+    tools/run_temporalstore_unified_tests.sh --corpus /path/to/compat/unified_temporalstore_cases.json
+MSG
+  exit 2
+fi
 
+if [[ "${TS_CPP_UNIFIED_NATIVE_CMD}" == *"{corpus}"* ]]; then
+  CMD="${TS_CPP_UNIFIED_NATIVE_CMD//\{corpus\}/${CORPUS}}"
+else
+  CMD="${TS_CPP_UNIFIED_NATIVE_CMD} ${CORPUS}"
+fi
 
-def require_optional_bool(command: dict, name: str, case_name: str) -> None:
-    if name in command and not isinstance(command[name], bool):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a boolean")
-
-
-def require_int_list(command: dict, name: str, case_name: str) -> None:
-    values = command.get(name)
-    if not isinstance(values, list) or not all(isinstance(value, int) for value in values):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be an integer list")
-
-
-def require_bytes(command: dict, name: str, case_name: str) -> None:
-    values = command.get(name)
-    if not isinstance(values, list) or not all(isinstance(value, int) and 0 <= value <= 255 for value in values):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a byte list")
-
-
-def require_number_list(command: dict, name: str, case_name: str) -> None:
-    values = command.get(name)
-    if not isinstance(values, list) or not values or not all(isinstance(value, (int, float)) for value in values):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a non-empty number list")
-
-
-def require_string_list(command: dict, name: str, case_name: str) -> None:
-    values = command.get(name)
-    if not isinstance(values, list) or not values or not all(isinstance(value, str) and value for value in values):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a non-empty string list")
-
-
-def require_string_list_value(command: dict, name: str, case_name: str) -> None:
-    values = command.get(name)
-    if not isinstance(values, list) or not all(isinstance(value, str) for value in values):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a string list")
-
-
-def require_feature_points(command: dict, name: str, case_name: str) -> None:
-    points = command.get(name)
-    if not isinstance(points, list) or not points:
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a non-empty point list")
-    for point in points:
-        if not isinstance(point, dict):
-            raise SystemExit(f"{case_name}: {command.get('kind')}: point must be an object")
-        require_int(point, "timestamp_ms", case_name)
-        require_bytes(point, "value", case_name)
-
-
-def require_hash_entries(command: dict, name: str, case_name: str) -> None:
-    entries = command.get(name)
-    if not isinstance(entries, list) or not entries:
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be a non-empty entry list")
-    for entry in entries:
-        if (
-            not isinstance(entry, list)
-            or len(entry) != 2
-            or not isinstance(entry[0], str)
-            or not isinstance(entry[1], list)
-            or not all(isinstance(value, int) and 0 <= value <= 255 for value in entry[1])
-        ):
-            raise SystemExit(f"{case_name}: {command.get('kind')}: {name} entries must be [string, bytes]")
-
-
-def validate_existing_test(command: dict, case_name: str) -> None:
-    require_string(command, "suite", case_name)
-    require_string(command, "mode", case_name)
-    require_string_list(command, "required_paths", case_name)
-    mode = command["mode"]
-    if mode not in {"static", "runtime", "stress"}:
-        raise SystemExit(f"{case_name}: existing_test mode must be static, runtime, or stress")
-    if "runner" in command:
-        require_string(command, "runner", case_name)
-    if "timeout_s" in command:
-        require_int(command, "timeout_s", case_name)
-    env = command.get("env", {})
-    if not isinstance(env, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in env.items()):
-        raise SystemExit(f"{case_name}: existing_test env must be a string map")
-
-
-def validate_filters(command: dict, case_name: str) -> None:
-    filters = command.get("filters", [])
-    if not isinstance(filters, list):
-        raise SystemExit(f"{case_name}: filters must be a list")
-    allowed_ops = {"equal", "not_equal", "greater_than", "greater_or_equal", "less_than", "less_or_equal"}
-    for item in filters:
-        if not isinstance(item, dict):
-            raise SystemExit(f"{case_name}: filter must be an object")
-        require_string(item, "field", case_name)
-        if item.get("op") not in allowed_ops:
-            raise SystemExit(f"{case_name}: filter op must be one of {sorted(allowed_ops)}")
-        if not isinstance(item.get("value"), int):
-            raise SystemExit(f"{case_name}: filter value must be an integer")
-
-
-def validate_sequence_query_spec(query: dict, case_name: str) -> None:
-    if not isinstance(query, dict):
-        raise SystemExit(f"{case_name}: sequence query spec must be an object")
-    require_string(query, "key", case_name)
-    require_int(query, "start_ms", case_name)
-    require_int(query, "end_ms", case_name)
-    require_int(query, "count", case_name)
-    validate_filters(query, case_name)
-
-
-def validate_rows(command: dict, case_name: str) -> None:
-    rows = command.get("rows")
-    if not isinstance(rows, list) or not rows:
-        raise SystemExit(f"{case_name}: add_sequence rows must be a non-empty list")
-    required = ["timestamp", "gid", "action_type", "duration", "author_id"]
-    for row in rows:
-        if not isinstance(row, dict):
-            raise SystemExit(f"{case_name}: add_sequence row must be an object")
-        for field in required:
-            if not isinstance(row.get(field), int):
-                raise SystemExit(f"{case_name}: add_sequence row {field} must be an integer")
-
-
-def validate_context_object(command: dict, name: str, case_name: str) -> None:
-    if not isinstance(command.get(name), dict):
-        raise SystemExit(f"{case_name}: {command.get('kind')}: {name} must be an object")
-
-
-def validate_agent_part(part: dict, case_name: str, command_kind: str) -> None:
-    if not isinstance(part, dict):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope parts must be objects")
-    part_type = part.get("type")
-    if part_type == "text":
-        if not isinstance(part.get("text"), str) or not part["text"]:
-            raise SystemExit(f"{case_name}: {command_kind}: text part needs non-empty text")
-    elif part_type == "context_ref":
-        require_string(part, "uri", case_name)
-        if "ref_hash" in part:
-            require_int(part, "ref_hash", case_name)
-        if "abstract" in part and not isinstance(part["abstract"], str):
-            raise SystemExit(f"{case_name}: {command_kind}: context_ref abstract must be a string")
-    elif part_type == "tool":
-        require_string(part, "name", case_name)
-        require_bool(part, "success", case_name)
-        if "input" in part and not isinstance(part["input"], dict):
-            raise SystemExit(f"{case_name}: {command_kind}: tool input must be an object")
-        if "output" in part and not isinstance(part["output"], dict):
-            raise SystemExit(f"{case_name}: {command_kind}: tool output must be an object")
-    elif part_type == "image":
-        require_string(part, "uri", case_name)
-    else:
-        raise SystemExit(
-            f"{case_name}: {command_kind}: agent_envelope part type must be "
-            "text, context_ref, tool, or image"
-        )
-
-
-def validate_agent_message(message: dict, case_name: str, command_kind: str) -> None:
-    if not isinstance(message, dict):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope messages must be objects")
-    require_string(message, "role", case_name)
-    if message["role"] not in {"user", "assistant", "tool", "system"}:
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope message role is invalid")
-    require_string(message, "content", case_name)
-    if "name" in message and not isinstance(message["name"], str):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope message name must be a string")
-    if "created_at_ms" in message:
-        require_int(message, "created_at_ms", case_name)
-    if "metadata" in message and not isinstance(message["metadata"], dict):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope message metadata must be an object")
-
-
-def has_confirmation_context(envelope: dict) -> bool:
-    if envelope.get("context_pack_id"):
-        return True
-    metadata = envelope.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("reply_to_context_pack_id"):
-        return True
-    if envelope.get("accepted_refs") or envelope.get("rejected_refs"):
-        return True
-    for part in envelope.get("parts", []):
-        if isinstance(part, dict) and part.get("type") == "context_ref":
-            return True
-    return False
-
-
-def validate_agent_hook(command: dict, case_name: str) -> None:
-    hook = command.get("agent_hook")
-    if hook is None:
-        return
-    command_kind = command.get("kind")
-    if not isinstance(hook, dict):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_hook must be an object")
-    require_string(hook, "source", case_name)
-    require_string(hook, "hook_type", case_name)
-    if hook["hook_type"] not in {
-        "before_llm",
-        "after_llm",
-        "tool_result",
-        "resource_added",
-        "feedback",
-        "session_commit",
-    }:
-        raise SystemExit(f"{case_name}: {command_kind}: agent_hook hook_type is invalid")
-    require_string(hook, "hook_id", case_name)
-    require_int(hook, "observed_at_ms", case_name)
-    require_bool(hook, "auto_captured", case_name)
-    if "idempotency_key" in hook:
-        require_string(hook, "idempotency_key", case_name)
-    if "trigger" in hook and not isinstance(hook["trigger"], str):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_hook trigger must be a string")
-    if command.get("agent_envelope") is None:
-        raise SystemExit(f"{case_name}: {command_kind}: agent_hook requires agent_envelope")
-
-
-def validate_agent_envelope(command: dict, case_name: str) -> None:
-    envelope = command.get("agent_envelope")
-    if envelope is None:
-        return
-    command_kind = command.get("kind")
-    if not isinstance(envelope, dict):
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope must be an object")
-    if envelope.get("kind") not in {"message", "feedback", "resource"}:
-        raise SystemExit(f"{case_name}: {command_kind}: agent_envelope kind is invalid")
-    messages = envelope.get("messages")
-    if messages is not None:
-        if not isinstance(messages, list) or not messages:
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope messages must be non-empty")
-        for message in messages:
-            validate_agent_message(message, case_name, command_kind)
-        if "scope" in envelope and not isinstance(envelope["scope"], dict):
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope scope must be an object")
-        if "metadata" in envelope and not isinstance(envelope["metadata"], dict):
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope metadata must be an object")
-    else:
-        require_int(envelope, "tenant_hash", case_name)
-        require_string(envelope, "session_id", case_name)
-        require_string(envelope, "message_id", case_name)
-        require_string(envelope, "role", case_name)
-        if envelope["role"] not in {"user", "assistant", "tool", "system"}:
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope role is invalid")
-        require_int(envelope, "created_at_ms", case_name)
-        parts = envelope.get("parts")
-        if not isinstance(parts, list) or not parts:
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope parts must be non-empty")
-        for part in parts:
-            validate_agent_part(part, case_name, command_kind)
-        if "hints" in envelope and not isinstance(envelope["hints"], dict):
-            raise SystemExit(f"{case_name}: {command_kind}: agent_envelope hints must be an object")
-    if envelope["kind"] == "feedback":
-        if "query_id_hash" in envelope:
-            require_int(envelope, "query_id_hash", case_name)
-        if "context_pack_id" in envelope:
-            require_string(envelope, "context_pack_id", case_name)
-        if "accepted_refs" in envelope and not isinstance(envelope["accepted_refs"], list):
-            raise SystemExit(f"{case_name}: {command_kind}: accepted_refs must be a list")
-        if "rejected_refs" in envelope and not isinstance(envelope["rejected_refs"], list):
-            raise SystemExit(f"{case_name}: {command_kind}: rejected_refs must be a list")
-        if not has_confirmation_context(envelope):
-            raise SystemExit(
-                f"{case_name}: {command_kind}: feedback needs context_pack_id, "
-                "reply_to_context_pack_id, or accepted/rejected refs"
-            )
-    if envelope["kind"] == "resource":
-        require_string(envelope, "raw_uri", case_name)
-        require_string(envelope, "resource_type", case_name)
-
-
-def validate_context_command(command: dict, case_name: str) -> bool:
-    kind = command.get("kind")
-    if kind in {
-        "context_upsert_node",
-        "context_upsert_child_ref",
-        "context_write_event",
-        "context_write_index_ref",
-        "context_mark_summary_dirty",
-        "context_upsert_summary",
-        "context_write_compression",
-        "context_write_pack_audit",
-        "context_upsert_entity",
-    }:
-        validate_context_object(command, "record", case_name)
-        return True
-    if kind == "context_upsert_embedding":
-        validate_context_object(command, "record", case_name)
-        record = command["record"]
-        require_number_list(record, "vector", case_name)
-        return True
-    if kind == "context_query_embeddings":
-        require_int(command, "tenant_hash", case_name)
-        require_int_list(command, "ref_hashes", case_name)
-        require_int_list(command, "expect_ref_hashes", case_name)
-        return True
-    if kind == "context_assert_summary_embeddings":
-        require_int(command, "tenant_hash", case_name)
-        require_int_list(command, "node_hashes", case_name)
-        require_int_list(command, "expect_ref_hashes", case_name)
-        return True
-    if kind == "context_get_node":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        validate_context_object(command, "expect_node", case_name)
-        return True
-    if kind == "context_query_children":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "parent_hash", case_name)
-        require_int_list(command, "expect_child_hashes", case_name)
-        return True
-    if kind == "context_query_events":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_int(command, "limit", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        if "filters" in command and not isinstance(command["filters"], dict):
-            raise SystemExit(f"{case_name}: context_query_events filters must be an object")
-        return True
-    if kind == "context_query_index":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "index_name", case_name)
-        if "index_value_hash" in command:
-            require_int(command, "index_value_hash", case_name)
-        else:
-            require_string(command, "index_value", case_name)
-        if "scope_hash" in command:
-            require_int(command, "scope_hash", case_name)
-        if "start_time_ms" in command:
-            require_int(command, "start_time_ms", case_name)
-        if "end_time_ms" in command:
-            require_int(command, "end_time_ms", case_name)
-        if "limit" in command:
-            require_int(command, "limit", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        return True
-    if kind == "context_query_index_and":
-        require_int(command, "tenant_hash", case_name)
-        filters = command.get("filters")
-        if not isinstance(filters, list) or not filters:
-            raise SystemExit(f"{case_name}: context_query_index_and filters must be a non-empty list")
-        for item in filters:
-            if not isinstance(item, dict):
-                raise SystemExit(f"{case_name}: context_query_index_and filter must be an object")
-            require_string(item, "index_name", case_name)
-            if "index_value_hash" in item:
-                require_int(item, "index_value_hash", case_name)
-            else:
-                require_string(item, "index_value", case_name)
-            if "scope_hash" in item:
-                require_int(item, "scope_hash", case_name)
-        if "scope_hash" in command:
-            require_int(command, "scope_hash", case_name)
-        if "start_time_ms" in command:
-            require_int(command, "start_time_ms", case_name)
-        if "end_time_ms" in command:
-            require_int(command, "end_time_ms", case_name)
-        if "limit" in command:
-            require_int(command, "limit", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        return True
-    if kind in {"context_query_dirty", "context_query_summaries", "context_query_compression", "context_query_pack_audit"}:
-        require_int(command, "tenant_hash", case_name)
-        if "node_hash" in command:
-            require_int(command, "node_hash", case_name)
-        if "query_id_hash" in command:
-            require_int(command, "query_id_hash", case_name)
-        require_int(command, "expect_count", case_name)
-        if "expect_compression_ids" in command:
-            require_int_list(command, "expect_compression_ids", case_name)
-        return True
-    if kind == "context_traverse_tree":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "root_node_hash", case_name)
-        require_number_list(command, "query_vector", case_name)
-        require_int(command, "max_depth", case_name)
-        require_int(command, "top_k_per_depth", case_name)
-        require_int(command, "max_candidate_nodes", case_name)
-        require_int_list(command, "expect_node_hashes", case_name)
-        return True
-    if kind == "context_query_entities":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        require_int_list(command, "entity_hashes", case_name)
-        require_int_list(command, "expect_entity_hashes", case_name)
-        return True
-    if kind == "context_build_pack":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "query_id_hash", case_name)
-        require_string(command, "query_text", case_name)
-        require_int(command, "max_prompt_tokens", case_name)
-        require_int_list(command, "candidate_node_hashes", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        if "expect_selected_tokens_lte" in command:
-            require_int(command, "expect_selected_tokens_lte", case_name)
-        return True
-    if kind == "context_ingest_raw_event":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_text", case_name)
-        validate_context_object(command, "hints", case_name)
-        require_int(command, "expect_event_id_hash", case_name)
-        require_int(command, "expect_leaf_node_hash", case_name)
-        validate_context_object(command, "expect_extracted", case_name)
-        return True
-    if kind == "context_api_ingest_raw_event":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "endpoint", case_name)
-        require_string(command, "idempotency_key", case_name)
-        require_string(command, "raw_text", case_name)
-        validate_context_object(command, "hints", case_name)
-        require_int(command, "expect_event_id_hash", case_name)
-        require_int(command, "expect_leaf_node_hash", case_name)
-        require_optional_bool(command, "expect_created", case_name)
-        return True
-    if kind == "context_batch_ingest_raw_events":
-        require_int(command, "tenant_hash", case_name)
-        events = command.get("events")
-        if not isinstance(events, list) or not events:
-            raise SystemExit(f"{case_name}: context_batch_ingest_raw_events events must be a non-empty list")
-        for event in events:
-            if not isinstance(event, dict):
-                raise SystemExit(f"{case_name}: context_batch_ingest_raw_events event must be an object")
-            require_string(event, "raw_text", case_name)
-            validate_context_object(event, "hints", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        require_int_list(command, "expect_leaf_node_hashes", case_name)
-        return True
-    if kind == "context_stream_ingest_raw_events":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "stream_name", case_name)
-        events = command.get("events")
-        if not isinstance(events, list) or not events:
-            raise SystemExit(f"{case_name}: context_stream_ingest_raw_events events must be a non-empty list")
-        for event in events:
-            if not isinstance(event, dict):
-                raise SystemExit(f"{case_name}: context_stream_ingest_raw_events event must be an object")
-            require_int(event, "partition", case_name)
-            require_int(event, "offset", case_name)
-            require_string(event, "raw_text", case_name)
-            validate_context_object(event, "hints", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        require_int_list(command, "expect_committed_offsets", case_name)
-        return True
-    if kind == "context_extract_query":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_query", case_name)
-        if "hints" in command:
-            validate_context_object(command, "hints", case_name)
-        if "query_plan" in command:
-            validate_context_object(command, "query_plan", case_name)
-        validate_context_object(command, "expect_intent", case_name)
-        if "expect_query_plan" in command:
-            validate_context_object(command, "expect_query_plan", case_name)
-        return True
-    if kind == "context_retrieve":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_query", case_name)
-        if "hints" in command:
-            validate_context_object(command, "hints", case_name)
-        require_number_list(command, "query_vector", case_name)
-        require_int(command, "root_node_hash", case_name)
-        require_int(command, "max_prompt_tokens", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        if "expect_entity_hashes" in command:
-            require_int_list(command, "expect_entity_hashes", case_name)
-        if "expect_summary_refs" in command:
-            require_int_list(command, "expect_summary_refs", case_name)
-        if "include_summaries" in command:
-            require_optional_bool(command, "include_summaries", case_name)
-        if "summary_token_estimate" in command:
-            require_int(command, "summary_token_estimate", case_name)
-        if "expect_selected_tokens_eq" in command:
-            require_int(command, "expect_selected_tokens_eq", case_name)
-        if "expect_intent" in command:
-            validate_context_object(command, "expect_intent", case_name)
-        if "query_plan" in command:
-            validate_context_object(command, "query_plan", case_name)
-        if "expect_query_plan" in command:
-            validate_context_object(command, "expect_query_plan", case_name)
-        if "expect_query_understanding_source" in command:
-            require_string(command, "expect_query_understanding_source", case_name)
-        if "expect_staleness_policy" in command:
-            require_string(command, "expect_staleness_policy", case_name)
-        if "expect_context_pack_sections" in command:
-            values = command["expect_context_pack_sections"]
-            if not isinstance(values, list) or not values or not all(isinstance(item, str) for item in values):
-                raise SystemExit(f"{case_name}: expect_context_pack_sections must be a non-empty string list")
-        if "expect_blocked_ref_count" in command:
-            require_int(command, "expect_blocked_ref_count", case_name)
-        if "expect_dropped_ref_count" in command:
-            require_int(command, "expect_dropped_ref_count", case_name)
-        return True
-    if kind == "context_ingest_resource":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_uri", case_name)
-        require_string(command, "resource_type", case_name)
-        validate_context_object(command, "hints", case_name)
-        values = command.get("chunks")
-        if not isinstance(values, list) or not values:
-            raise SystemExit(f"{case_name}: context_ingest_resource chunks must be a non-empty list")
-        for chunk in values:
-            if not isinstance(chunk, dict):
-                raise SystemExit(f"{case_name}: context_ingest_resource chunk must be an object")
-            require_int(chunk, "chunk_hash", case_name)
-            require_string(chunk, "text", case_name)
-            require_number_list(chunk, "vector", case_name)
-        require_int_list(command, "expect_chunk_hashes", case_name)
-        return True
-    if kind == "context_query_resource_chunks":
-        require_int(command, "tenant_hash", case_name)
-        require_number_list(command, "query_vector", case_name)
-        require_int(command, "top_k", case_name)
-        require_int_list(command, "expect_chunk_hashes", case_name)
-        if "filters" in command and not isinstance(command["filters"], dict):
-            raise SystemExit(f"{case_name}: context_query_resource_chunks filters must be an object")
-        return True
-    if kind == "context_extract_resource_events":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_uri", case_name)
-        validate_context_object(command, "hints", case_name)
-        require_int_list(command, "source_chunk_hashes", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        return True
-    if kind == "context_ingest_feedback":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "query_id_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        require_string(command, "feedback_text", case_name)
-        validate_context_object(command, "hints", case_name)
-        require_int(command, "expect_event_id_hash", case_name)
-        validate_context_object(command, "expect_extracted", case_name)
-        return True
-    if kind == "context_retrieve_with_resources":
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "raw_query", case_name)
-        if "hints" in command:
-            validate_context_object(command, "hints", case_name)
-        require_number_list(command, "query_vector", case_name)
-        require_int(command, "root_node_hash", case_name)
-        require_int(command, "max_prompt_tokens", case_name)
-        require_int_list(command, "expect_event_ids", case_name)
-        require_int_list(command, "expect_chunk_hashes", case_name)
-        if "expect_entity_hashes" in command:
-            require_int_list(command, "expect_entity_hashes", case_name)
-        if "expect_summary_refs" in command:
-            require_int_list(command, "expect_summary_refs", case_name)
-        if "include_summaries" in command:
-            require_optional_bool(command, "include_summaries", case_name)
-        if "summary_token_estimate" in command:
-            require_int(command, "summary_token_estimate", case_name)
-        if "expect_selected_tokens_eq" in command:
-            require_int(command, "expect_selected_tokens_eq", case_name)
-        if "expect_intent" in command:
-            validate_context_object(command, "expect_intent", case_name)
-        if "query_plan" in command:
-            validate_context_object(command, "query_plan", case_name)
-        if "expect_query_plan" in command:
-            validate_context_object(command, "expect_query_plan", case_name)
-        if "expect_query_understanding_source" in command:
-            require_string(command, "expect_query_understanding_source", case_name)
-        if "expect_staleness_policy" in command:
-            require_string(command, "expect_staleness_policy", case_name)
-        if "expect_context_pack_sections" in command:
-            values = command["expect_context_pack_sections"]
-            if not isinstance(values, list) or not values or not all(isinstance(item, str) for item in values):
-                raise SystemExit(f"{case_name}: expect_context_pack_sections must be a non-empty string list")
-        if "expect_blocked_ref_count" in command:
-            require_int(command, "expect_blocked_ref_count", case_name)
-        if "expect_dropped_ref_count" in command:
-            require_int(command, "expect_dropped_ref_count", case_name)
-        return True
-    if kind == "context_assert_parity_gates":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "expect_passed_gates", case_name)
-        require_int(command, "root_node_hash", case_name)
-        require_int(command, "approval_node_hash", case_name)
-        require_number_list(command, "query_vector", case_name)
-        require_int(command, "max_prompt_tokens", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_int_list(command, "expect_api_event_ids", case_name)
-        require_int_list(command, "expect_stream_event_ids", case_name)
-        require_int_list(command, "expect_batch_event_ids", case_name)
-        require_int_list(command, "expect_absent_event_ids", case_name)
-        require_int_list(command, "expect_retrieve_event_ids", case_name)
-        require_int_list(command, "expect_compression_ids", case_name)
-        if "expect_compression_source_event_ids" in command:
-            require_int_list(command, "expect_compression_source_event_ids", case_name)
-        require_int_list(command, "expect_resource_chunk_any", case_name)
-        require_int(command, "expect_selected_tokens_eq", case_name)
-        require_int(command, "expect_child_count_gte", case_name)
-        return True
-    return False
-
-
-def validate_current_unified_command(command: dict, case_name: str) -> bool:
-    kind = command.get("kind")
-    if kind in {
-        "string_get",
-        "common_delete",
-        "common_ttl",
-        "common_exists",
-        "hash_get_all",
-        "hash_len",
-        "set_members",
-    }:
-        require_string(command, "key", case_name)
-        return True
-    if kind == "string_set":
-        require_string(command, "key", case_name)
-        require_bytes(command, "value", case_name)
-        return True
-    if kind == "common_expire":
-        require_string(command, "key", case_name)
-        require_int(command, "ttl_ms", case_name)
-        return True
-    if kind in {"hash_set", "hash_get", "hash_delete"}:
-        require_string(command, "key", case_name)
-        require_string(command, "field", case_name)
-        if kind == "hash_set":
-            require_bytes(command, "value", case_name)
-        return True
-    if kind == "hash_incr_by":
-        require_string(command, "key", case_name)
-        require_string(command, "field", case_name)
-        require_int(command, "increment", case_name)
-        return True
-    if kind == "hash_multi_set":
-        require_string(command, "key", case_name)
-        require_hash_entries(command, "entries", case_name)
-        return True
-    if kind == "hash_multi_get":
-        require_string(command, "key", case_name)
-        require_string_list(command, "fields", case_name)
-        return True
-    if kind == "set_add":
-        require_string(command, "key", case_name)
-        require_bytes(command, "member", case_name)
-        return True
-    if kind == "feature_append":
-        require_string(command, "key", case_name)
-        require_feature_points(command, "points", case_name)
-        return True
-    if kind == "feature_append_with_policy":
-        require_string(command, "key", case_name)
-        require_feature_points(command, "points", case_name)
-        if command.get("policy") not in {"upsert", "insert_if_absent", "replace_existing"}:
-            raise SystemExit(f"{case_name}: feature_append_with_policy policy is invalid")
-        return True
-    if kind in {"feature_query", "feature_query_filtered"}:
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_optional_int(command, "count", case_name)
-        if kind == "feature_query_filtered":
-            validate_filters(command, case_name)
-        return True
-    if kind == "feature_replace":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_feature_points(command, "points", case_name)
-        return True
-    if kind == "feature_delete":
-        require_string(command, "key", case_name)
-        return True
-    if kind == "feature_agg_query":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_string(command, "aggregator", case_name)
-        require_optional_int(command, "count", case_name)
-        return True
-    if kind == "sequence_add":
-        require_string(command, "key", case_name)
-        rows = command.get("rows")
-        if not isinstance(rows, list) or not rows:
-            raise SystemExit(f"{case_name}: sequence_add rows must be a non-empty list")
-        for row in rows:
-            for field in ["timestamp_ms", "gid", "action_type", "duration", "author_id"]:
-                require_int(row, field, case_name)
-        return True
-    if kind == "sequence_query":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_int(command, "count", case_name)
-        validate_filters(command, case_name)
-        return True
-    if kind == "sequence_batch_query":
-        queries = command.get("queries")
-        if not isinstance(queries, list) or not queries:
-            raise SystemExit(f"{case_name}: sequence_batch_query queries must be a non-empty list")
-        for query in queries:
-            validate_sequence_query_spec(query, case_name)
-        return True
-    if kind == "ips_load":
-        require_string(command, "key", case_name)
-        require_feature_points(command, "points", case_name)
-        return True
-    if kind in {"ips_add", "ips_add_with_options"}:
-        require_string(command, "key", case_name)
-        require_int(command, "timestamp_ms", case_name)
-        require_bytes(command, "instance", case_name)
-        if kind == "ips_add_with_options":
-            require_optional_int(command, "action_type", case_name)
-            require_optional_int(command, "table_id", case_name)
-            if command.get("request_id") is not None:
-                require_string(command, "request_id", case_name)
-        return True
-    if kind in {"ips_query_range", "ips_snapshot", "ips_stat", "ips_snapshot_report"}:
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        if kind in {"ips_query_range", "ips_snapshot", "ips_snapshot_report"}:
-            require_optional_int(command, "count", case_name)
-        return True
-    if kind == "ips_filter":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_optional_int(command, "count", case_name)
-        require_optional_int(command, "action_type", case_name)
-        require_optional_int(command, "table_id", case_name)
-        return True
-    if kind == "ips_batch_query_last":
-        require_string_list(command, "keys", case_name)
-        require_int(command, "count", case_name)
-        return True
-    if kind in {"risk_increment", "risk_count"}:
-        require_string(command, "key", case_name)
-        if kind == "risk_increment":
-            require_int(command, "timestamp_ms", case_name)
-            require_int(command, "amount", case_name)
-        else:
-            require_int(command, "start_ms", case_name)
-            require_int(command, "end_ms", case_name)
-        return True
-    if kind == "risk_set":
-        if command.get("family") not in {"h", "cpc", "fol"}:
-            raise SystemExit(f"{case_name}: risk_set family must be h, cpc, or fol")
-        require_string(command, "key", case_name)
-        require_int(command, "timestamp_ms", case_name)
-        require_int(command, "amount", case_name)
-        return True
-    if kind == "risk_family_query":
-        if command.get("family") not in {"h", "cpc", "fol"}:
-            raise SystemExit(f"{case_name}: risk_family_query family must be h, cpc, or fol")
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_string(command, "aggregator", case_name)
-        return True
-    if kind == "risk_set_and_get":
-        if command.get("family") not in {"h", "cpc", "fol"}:
-            raise SystemExit(f"{case_name}: risk_set_and_get family must be h, cpc, or fol")
-        require_string(command, "key", case_name)
-        require_int(command, "timestamp_ms", case_name)
-        require_int(command, "amount", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        require_string(command, "aggregator", case_name)
-        return True
-    if kind == "risk_fol_set":
-        require_string(command, "key", case_name)
-        require_bytes(command, "value", case_name)
-        require_int(command, "occur_time_ms", case_name)
-        require_int(command, "ttl_ms", case_name)
-        if command.get("fol_type") not in {"first", "last"}:
-            raise SystemExit(f"{case_name}: risk_fol_set fol_type must be first or last")
-        return True
-    if kind in {"risk_fol_query", "risk_manager"}:
-        require_string(command, "key", case_name)
-        return True
-    if kind == "risk_debug":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ms", case_name)
-        require_int(command, "end_ms", case_name)
-        return True
-    if kind in {
-        "storage_dump_load_recovery",
-        "storage_fault_matrix",
-        "storage_follower_safe_gc",
-        "storage_cache_refill",
-    }:
-        require_string(command, "migration_case", case_name)
-        return True
-    if kind == "storage_shared_store_replay":
-        require_string(command, "migration_case", case_name)
-        mode = command.get("mode")
-        if mode not in {"Sync", "Async"}:
-            raise SystemExit(f"{case_name}: storage_shared_store_replay mode must be Sync or Async")
-        return True
-    if kind == "context_upsert_node":
-        if "record" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        validate_context_object(command, "node", case_name)
-        return True
-    if kind == "context_get_node":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        return True
-    if kind == "context_write_event":
-        if "record" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        validate_context_object(command, "event", case_name)
-        require_optional_bool(command, "first_write_only", case_name)
-        return True
-    if kind == "context_query_events":
-        if "expect_event_ids" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_optional_int(command, "limit", case_name)
-        require_optional_bool(command, "current_valid_only", case_name)
-        require_optional_int(command, "as_of_ms", case_name)
-        if "types" in command:
-            require_int_list(command, "types", case_name)
-        return True
-    if kind == "context_write_index_ref":
-        if "record" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "index_name", case_name)
-        require_int(command, "index_value_hash", case_name)
-        require_optional_int(command, "scope_hash", case_name)
-        require_int(command, "event_time_ms", case_name)
-        validate_context_object(command, "index_ref", case_name)
-        return True
-    if kind == "context_query_index":
-        if "expect_event_ids" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        require_string(command, "index_name", case_name)
-        require_int(command, "index_value_hash", case_name)
-        require_optional_int(command, "scope_hash", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_optional_int(command, "limit", case_name)
-        return True
-    if kind == "context_write_pack_audit":
-        if "record" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        validate_context_object(command, "audit", case_name)
-        return True
-    if kind == "context_query_pack_audit":
-        if "query_id_hash" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "session_hash", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_optional_int(command, "limit", case_name)
-        return True
-    if kind == "context_mark_summary_dirty":
-        if "record" in command:
-            return False
-        require_int(command, "tenant_hash", case_name)
-        validate_context_object(command, "marker", case_name)
-        return True
-    if kind == "context_query_summary_dirty":
-        require_int(command, "tenant_hash", case_name)
-        require_int(command, "node_hash", case_name)
-        require_int(command, "start_time_ms", case_name)
-        require_int(command, "end_time_ms", case_name)
-        require_optional_int(command, "limit", case_name)
-        return True
-    return False
-
-
-def validate_command(command: dict, case_name: str) -> None:
-    validate_agent_hook(command, case_name)
-    validate_agent_envelope(command, case_name)
-    kind = command.get("kind")
-    if validate_current_unified_command(command, case_name):
-        return
-    if validate_context_command(command, case_name):
-        return
-    if kind == "put_string":
-        require_string(command, "key", case_name)
-        require_string_value(command, "value", case_name)
-    elif kind == "expect_string":
-        require_string(command, "key", case_name)
-        require_string_value(command, "value", case_name)
-    elif kind == "delete_object":
-        require_string(command, "key", case_name)
-    elif kind == "expire":
-        require_string(command, "key", case_name)
-        require_int(command, "ttl_ms", case_name)
-    elif kind == "expect_ttl_positive":
-        require_string(command, "key", case_name)
-    elif kind == "hset":
-        require_string(command, "key", case_name)
-        require_string(command, "field", case_name)
-        require_string_value(command, "value", case_name)
-    elif kind == "expect_hget":
-        require_string(command, "key", case_name)
-        require_string(command, "field", case_name)
-        require_string_value(command, "value", case_name)
-    elif kind == "hdel":
-        require_string(command, "key", case_name)
-        require_string(command, "field", case_name)
-    elif kind == "sadd":
-        require_string(command, "key", case_name)
-        require_string(command, "member", case_name)
-    elif kind == "expect_smembers":
-        require_string(command, "key", case_name)
-        require_string_list_value(command, "members", case_name)
-    elif kind == "add_sequence":
-        require_string(command, "key", case_name)
-        validate_rows(command, case_name)
-    elif kind == "query_sequence":
-        require_string(command, "key", case_name)
-        require_int(command, "start_ts", case_name)
-        require_int(command, "end_ts", case_name)
-        require_int(command, "count", case_name)
-        validate_filters(command, case_name)
-        if not isinstance(command.get("expect_gids"), list) or not all(
-            isinstance(value, int) for value in command["expect_gids"]
-        ):
-            raise SystemExit(f"{case_name}: query_sequence expect_gids must be a list of integers")
-    elif kind == "existing_test":
-        validate_existing_test(command, case_name)
-    else:
-        raise SystemExit(f"{case_name}: unsupported command kind={kind!r}")
+cd "${ROOT}"
+echo "+ ${CMD}"
+exec bash -lc "${CMD}"
+"""
 
 
 def validate_corpus(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         corpus = json.load(handle)
+
     if corpus.get("schema_version") != 1:
         raise SystemExit(f"{path}: unsupported schema_version={corpus.get('schema_version')!r}")
     cases = corpus.get("cases")
     if not isinstance(cases, list) or not cases:
         raise SystemExit(f"{path}: cases must be a non-empty list")
     coverage = corpus.get("coverage")
-    if coverage is not None:
-        for name in [
-            "required_case_names",
-            "required_raft_case_names",
-            "required_command_kinds",
-            "required_response_kinds",
-        ]:
-            values = coverage.get(name)
-            if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
-                raise SystemExit(f"{path}: coverage.{name} must be a string list")
+    if not isinstance(coverage, dict):
+        raise SystemExit(f"{path}: coverage must declare required shared C++/Rust test families")
+    required_case_names = coverage.get("required_case_names")
+    required_raft_case_names = coverage.get("required_raft_case_names", [])
+    required_command_kinds = coverage.get("required_command_kinds")
+    required_response_kinds = coverage.get("required_response_kinds")
+    for field_name, values in [
+        ("required_case_names", required_case_names),
+        ("required_raft_case_names", required_raft_case_names),
+        ("required_command_kinds", required_command_kinds),
+        ("required_response_kinds", required_response_kinds),
+    ]:
+        if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
+            raise SystemExit(f"{path}: coverage.{field_name} must be a string list")
+        if field_name not in {"required_raft_case_names", "required_response_kinds"} and not values:
+            raise SystemExit(f"{path}: coverage.{field_name} must be a non-empty string list")
+
     seen_case_names = set()
     seen_command_kinds = set()
     seen_response_kinds = set()
+    seen_cpp_suites = set()
+    seen_static_cpp_suites = set()
     for case in cases:
-        steps = case.get("steps")
-        if not case.get("name") or not isinstance(case.get("shard_id"), int):
-            raise SystemExit(f"{path}: every case needs name and integer shard_id")
+        if not case.get("name"):
+            raise SystemExit(f"{path}: every case must have a name")
         if case["name"] in seen_case_names:
             raise SystemExit(f"{path}: duplicate case name {case['name']}")
         seen_case_names.add(case["name"])
+        if not isinstance(case.get("shard_id"), int):
+            raise SystemExit(f"{path}: case {case.get('name')!r} must have an integer shard_id")
+        steps = case.get("steps")
         if not isinstance(steps, list) or not steps:
             raise SystemExit(f"{path}: case {case['name']} must have non-empty steps")
-        seen_step_names = set()
+        case_step_names = set()
+        case_command_signatures = set()
         for step in steps:
-            command = step.get("command")
-            if not step.get("name") or not isinstance(command, dict) or "kind" not in command:
-                raise SystemExit(f"{path}: invalid step in case {case['name']}")
-            if step["name"] in seen_step_names:
+            if not step.get("name"):
+                raise SystemExit(f"{path}: case {case['name']} has an unnamed step")
+            if step["name"] in case_step_names:
                 raise SystemExit(f"{path}: duplicate step name {case['name']}/{step['name']}")
-            seen_step_names.add(step["name"])
-            validate_command(command, case["name"])
-            seen_command_kinds.add(command["kind"])
-            expect = step.get("expect")
-            if expect is not None:
-                if not isinstance(expect, dict) or "kind" not in expect:
-                    raise SystemExit(f"{path}: invalid expect in case {case['name']}/{step['name']}")
-                seen_response_kinds.add(expect["kind"])
-    if coverage is not None:
-        missing_cases = sorted(set(coverage["required_case_names"]) - seen_case_names)
-        missing_raft_cases = sorted(set(coverage.get("required_raft_case_names", [])) - seen_case_names)
-        missing_commands = sorted(set(coverage["required_command_kinds"]) - seen_command_kinds)
-        missing_responses = sorted(set(coverage["required_response_kinds"]) - seen_response_kinds)
-        if missing_cases:
-            raise SystemExit(f"{path}: missing required cases: {', '.join(missing_cases)}")
-        if missing_raft_cases:
-            raise SystemExit(f"{path}: missing required Raft cases: {', '.join(missing_raft_cases)}")
-        if missing_commands:
-            raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
-        if missing_responses:
-            raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
+            case_step_names.add(step["name"])
+            if not isinstance(step.get("command"), dict):
+                raise SystemExit(f"{path}: step {case['name']}/{step.get('name')} needs command")
+            if "kind" not in step["command"]:
+                raise SystemExit(f"{path}: step {case['name']}/{step['name']} command needs kind")
+            command_signature = json.dumps(step["command"], sort_keys=True, separators=(",", ":"))
+            if command_signature in case_command_signatures:
+                raise SystemExit(
+                    f"{path}: duplicate command payload in case {case['name']} "
+                    f"at step {step['name']}"
+                )
+            case_command_signatures.add(command_signature)
+            seen_command_kinds.add(step["command"]["kind"])
+            if "expect" in step:
+                if not isinstance(step["expect"], dict) or "kind" not in step["expect"]:
+                    raise SystemExit(
+                        f"{path}: step {case['name']}/{step['name']} expect needs kind"
+                )
+                seen_response_kinds.add(step["expect"]["kind"])
+            if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
+                validate_cpp_raft_step(path, case, step)
+                validate_byteraft_fault_acceptance(path, case, step)
+            if step["command"].get("suite") == "cpp_context_benchmark_parity":
+                validate_context_benchmark_step(path, case, step)
+            if step["command"].get("kind") == "existing_test":
+                suite = step["command"].get("suite")
+                mode = step["command"].get("mode")
+                if isinstance(suite, str) and suite:
+                    seen_cpp_suites.add(suite)
+                    if mode in STATIC_CPP_MODES:
+                        seen_static_cpp_suites.add(suite)
+        if case["name"] in COMBINED_RAFT_GATE_CASES:
+            validate_combined_raft_case(path, case)
+    missing_cases = sorted(set(required_case_names) - seen_case_names)
+    missing_raft_cases = sorted(set(required_raft_case_names) - seen_case_names)
+    missing_commands = sorted(set(required_command_kinds) - seen_command_kinds)
+    missing_responses = sorted(set(required_response_kinds) - seen_response_kinds)
+    if missing_cases:
+        raise SystemExit(f"{path}: missing required cases: {', '.join(missing_cases)}")
+    if missing_raft_cases:
+        raise SystemExit(f"{path}: missing required Raft cases: {', '.join(missing_raft_cases)}")
+    if missing_commands:
+        raise SystemExit(f"{path}: missing required command kinds: {', '.join(missing_commands)}")
+    if missing_responses:
+        raise SystemExit(f"{path}: missing required response kinds: {', '.join(missing_responses)}")
+    validate_cpp_adapter_coverage(path, coverage, seen_cpp_suites, seen_static_cpp_suites)
     return corpus
 
 
-def iter_existing_tests(corpus_data: dict):
-    for case in corpus_data["cases"]:
-        for step in case["steps"]:
-            command = step["command"]
-            if command.get("kind") == "existing_test":
-                yield case, step, command
-
-
-def validate_existing_test_paths(corpus_data: dict) -> None:
-    missing = []
-    for case, _step, command in iter_existing_tests(corpus_data):
-        for relative in command["required_paths"]:
-            if not (ROOT / relative).exists():
-                missing.append(f"{case['name']}: {relative}")
-    if missing:
-        raise SystemExit("missing unified existing-test surfaces:\n- " + "\n- ".join(missing))
-
-
-def run_existing_tests(corpus_data: dict) -> None:
-    for case, step, command in iter_existing_tests(corpus_data):
-        runner = command.get("runner")
-        if not runner:
-            continue
-        env = os.environ.copy()
-        env.update(command.get("env", {}))
-        timeout_s = command.get("timeout_s")
-        label = f"{case['name']}.{step['name']}"
-        print(f"+ [{label}] {runner}", flush=True)
-        subprocess.run(runner, cwd=ROOT, shell=True, check=True, env=env, timeout=timeout_s)
-
-
-def run_native_gate(corpus: Path, corpus_data: dict, validate_only: bool, run_existing: bool) -> None:
-    if validate_only:
+def validate_cpp_adapter_coverage(
+    path: Path,
+    coverage: dict,
+    seen_cpp_suites: set[str],
+    seen_static_cpp_suites: set[str],
+) -> None:
+    adapter_coverage = coverage.get("cpp_adapter_coverage")
+    if adapter_coverage is None and not seen_cpp_suites and not seen_static_cpp_suites:
         return
-    validate_existing_test_paths(corpus_data)
-    if run_existing:
-        run_existing_tests(corpus_data)
-        return
-    command = os.environ.get("TS_CPP_UNIFIED_NATIVE_CMD")
-    if command:
-        rendered = command.format(corpus=str(corpus), cpp_repo=str(ROOT))
-        print(f"+ {rendered}", flush=True)
-        subprocess.run(rendered, cwd=ROOT, shell=True, check=True)
-        return
+    if not isinstance(adapter_coverage, list) or not adapter_coverage:
+        raise SystemExit(f"{path}: coverage.cpp_adapter_coverage must be a non-empty list")
+    mapped_suites: set[str] = set()
+    static_gate_suites: set[str] = set()
+    for index, entry in enumerate(adapter_coverage):
+        location = f"{path}: coverage.cpp_adapter_coverage[{index}]"
+        family = entry.get("family")
+        if not isinstance(family, str) or not family:
+            raise SystemExit(f"{location}: family must be a non-empty string")
+        suites = entry.get("suites")
+        if not isinstance(suites, list) or not suites or not all(
+            isinstance(suite, str) and suite for suite in suites
+        ):
+            raise SystemExit(f"{location}: suites must be a non-empty string list")
+        status = entry.get("status")
+        if status not in CPP_ADAPTER_STATUSES:
+            raise SystemExit(
+                f"{location}: status must be one of {', '.join(sorted(CPP_ADAPTER_STATUSES))}"
+            )
+        if status in {"temporary_static_surface_gate", "mixed_native_and_static_surface_gate"}:
+            blocker = entry.get("blocker")
+            expected_runner = entry.get("expected_runner_command")
+            if not isinstance(blocker, str) or len(blocker.strip()) < 24:
+                raise SystemExit(f"{location}: static gates must declare a blocker")
+            if not isinstance(expected_runner, str) or "{corpus}" not in expected_runner:
+                raise SystemExit(
+                    f"{location}: static gates must declare expected_runner_command "
+                    "with a {corpus} placeholder"
+                )
+            static_gate_suites.update(suites)
+        if status in {"native_adapter_contract", "native_runner_mapped", "mixed_native_and_static_surface_gate"}:
+            runner = entry.get("runner_command")
+            if not isinstance(runner, str) or not runner:
+                raise SystemExit(f"{location}: native C++ adapter entries must declare runner_command")
+        comparison = entry.get("comparison_command")
+        if comparison is not None and not isinstance(comparison, str):
+            raise SystemExit(f"{location}: comparison_command must be a string when present")
+        mapped_suites.update(suites)
 
-    context_contract = ROOT / "tools" / "run_cpp_unified_context_contract.sh"
-    if context_contract.exists():
-        subprocess.run(["bash", str(context_contract), str(corpus)], cwd=ROOT, check=True)
-        return
+    unmapped = sorted(seen_cpp_suites - mapped_suites)
+    if unmapped:
+        raise SystemExit(
+            f"{path}: C++ suites missing coverage.cpp_adapter_coverage entries: "
+            + ", ".join(unmapped)
+        )
+    missing_static_blockers = sorted(seen_static_cpp_suites - static_gate_suites)
+    if missing_static_blockers:
+        raise SystemExit(
+            f"{path}: static C++ suites must have temporary_static_surface_gate blockers: "
+            + ", ".join(missing_static_blockers)
+        )
 
-    required_surfaces = [
-        "src/client/temporalstore_client.cc",
-        "src/server/redis_command_handler.cc",
-        "src/model/ips_model.cc",
-        "src/model/risk_hash_model.cc",
-        "src/model/model_context.cc",
-        "test/smoketest/basic_smoketest.cc",
-        "test/smoketest/consistency_bench.cc",
-        "src/partition/storage/test/data_raft_replication_test.cc",
-        "src/blockcache/test/blockcache_smoke.cc",
-        "src/blockcache/test/blockcache_test.cc",
-        "tools/run_production_readiness_local_ubuntu22.sh",
-    ]
-    missing = [relative for relative in required_surfaces if not (ROOT / relative).exists()]
-    if missing:
-        raise SystemExit("missing C++ parity surfaces:\n- " + "\n- ".join(missing))
-    print(
-        "C++ corpus contract surfaces present; set TS_CPP_UNIFIED_NATIVE_CMD "
-        "to run a full C++ corpus executor or production gate.",
-        file=sys.stderr,
+    comparison_outputs = coverage.get("comparison_outputs")
+    if not isinstance(comparison_outputs, dict):
+        raise SystemExit(f"{path}: coverage.comparison_outputs must be an object")
+    comparator = comparison_outputs.get("case_report_comparator")
+    if not isinstance(comparator, str) or not comparator:
+        raise SystemExit(f"{path}: coverage.comparison_outputs.case_report_comparator is required")
+    comparator_path = ROOT / comparator
+    if not comparator_path.exists():
+        raise SystemExit(f"{path}: comparison output tool does not exist: {comparator}")
+    fields = comparison_outputs.get("required_fields")
+    if not isinstance(fields, list) or not all(isinstance(field, str) for field in fields):
+        raise SystemExit(f"{path}: coverage.comparison_outputs.required_fields must be strings")
+    missing_fields = sorted(COMPARISON_OUTPUT_FIELDS - set(fields))
+    if missing_fields:
+        raise SystemExit(
+            f"{path}: comparison_outputs.required_fields missing {', '.join(missing_fields)}"
+        )
+
+
+def validate_context_benchmark_step(path: Path, case: dict, step: dict) -> None:
+    location = f"{path}: case {case['name']} step {step['name']}"
+    command = step["command"]
+    contract = command.get("report_contract")
+    if not isinstance(contract, dict):
+        raise SystemExit(f"{location}: context benchmark step must declare report_contract")
+    fields = contract.get("required_fields")
+    if not isinstance(fields, list) or not fields:
+        raise SystemExit(f"{location}: report_contract.required_fields must be a non-empty list")
+    missing_fields = sorted(BENCHMARK_REQUIRED_REPORT_FIELDS - set(fields))
+    if missing_fields:
+        raise SystemExit(
+            f"{location}: report_contract.required_fields missing {', '.join(missing_fields)}"
+        )
+    threshold_profiles = command.get("threshold_profiles")
+    if not isinstance(threshold_profiles, list) or not threshold_profiles:
+        raise SystemExit(f"{location}: threshold_profiles must be a non-empty list")
+    unknown_profiles = sorted(set(threshold_profiles) - BENCHMARK_THRESHOLD_PROFILES)
+    if unknown_profiles:
+        raise SystemExit(f"{location}: unknown threshold profiles {', '.join(unknown_profiles)}")
+    for field_name in ("rust_runner", "cpp_runner_contract", "archive_contract"):
+        if not isinstance(command.get(field_name), str) or not command[field_name]:
+            raise SystemExit(f"{location}: benchmark contract must declare {field_name}")
+    required_paths = command.get("required_paths")
+    if case["name"] == "context_benchmark_full_dataset_gates":
+        if not isinstance(required_paths, list) or "tools/compare_context_benchmark_archives.py" not in required_paths:
+            raise SystemExit(
+                f"{location}: full benchmark contract must require "
+                "tools/compare_context_benchmark_archives.py"
+            )
+        if "tools/fetch_longmemeval_s.py" not in required_paths:
+            raise SystemExit(
+                f"{location}: full benchmark contract must require tools/fetch_longmemeval_s.py"
+            )
+    datasets = command.get("datasets")
+    if not isinstance(datasets, list) or not datasets:
+        raise SystemExit(f"{location}: benchmark contract must declare datasets")
+    for dataset in datasets:
+        if not isinstance(dataset, dict):
+            raise SystemExit(f"{location}: each dataset entry must be an object")
+        for field_name in ("name", "artifact_kind", "threshold_profile"):
+            if not isinstance(dataset.get(field_name), str) or not dataset[field_name]:
+                raise SystemExit(f"{location}: dataset entry must declare {field_name}")
+        if dataset["threshold_profile"] not in BENCHMARK_THRESHOLD_PROFILES:
+            raise SystemExit(
+                f"{location}: dataset {dataset['name']} uses unknown threshold profile "
+                f"{dataset['threshold_profile']}"
+            )
+
+
+def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:
+    location = f"{path}: case {case['name']} step {step['name']}"
+    if step["command"].get("mode") == "static":
+        return
+    rust_runner = step["command"].get("rust_runner")
+    if not isinstance(rust_runner, str) or not rust_runner:
+        raise SystemExit(f"{location}: cpp_data_raft_parity step must declare rust_runner")
+    if "metaserver" in step["name"] or "metaserver" in case["name"]:
+        expected_validator = "temporalstore-metaserver-raft-validation"
+    elif "production_gate" in step["name"] or case["name"] == "raft_production_gate":
+        expected_validator = "temporalstore-raft-distributed-parity-validation"
+    else:
+        expected_validator = "temporalstore-raft"
+    rust_validator = step["command"].get("rust_validator", "")
+    if expected_validator not in rust_validator and case["name"] != "raft_production_gate":
+        raise SystemExit(
+            f"{location}: rust_validator must include {expected_validator!r}"
+        )
+
+
+def validate_byteraft_fault_acceptance(path: Path, case: dict, step: dict) -> None:
+    expected = BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS.get(case["name"])
+    if expected is None:
+        return
+    location = f"{path}: case {case['name']} step {step['name']}"
+    criteria = step["command"].get("acceptance_criteria")
+    if not isinstance(criteria, list) or len(criteria) < len(expected):
+        raise SystemExit(f"{location}: ByteRaft fault case must declare acceptance_criteria")
+    normalized = [" ".join(str(item).lower().split()) for item in criteria]
+    for keyword_group in expected:
+        if not any(all(keyword in criterion for keyword in keyword_group) for criterion in normalized):
+            raise SystemExit(
+                f"{location}: acceptance_criteria missing keywords "
+                + ", ".join(keyword_group)
+            )
+
+
+def validate_combined_raft_case(path: Path, case: dict) -> None:
+    gate = case.get("rust_parity_gate")
+    validator = case.get("rust_parity_validator")
+    if case["name"] == "raft_production_gate":
+        step_runners = " ".join(
+            step.get("command", {}).get("rust_runner", "") for step in case.get("steps", [])
+        )
+        if COMBINED_RAFT_GATE not in step_runners:
+            raise SystemExit(
+                f"{path}: case {case['name']} rust_runner must include {COMBINED_RAFT_GATE}"
+            )
+        step_validators = " ".join(
+            step.get("command", {}).get("rust_validator", "") for step in case.get("steps", [])
+        )
+        if "temporalstore-raft-distributed-parity-validation" not in step_validators:
+            raise SystemExit(
+                f"{path}: case {case['name']} rust_validator must include combined Raft validation"
+            )
+        return
+    if gate != COMBINED_RAFT_GATE:
+        raise SystemExit(
+            f"{path}: case {case['name']} rust_parity_gate must be {COMBINED_RAFT_GATE!r}"
+        )
+    if validator != COMBINED_RAFT_VALIDATOR:
+        raise SystemExit(
+            f"{path}: case {case['name']} rust_parity_validator must be {COMBINED_RAFT_VALIDATOR!r}"
+        )
+
+
+def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
+    print("+ " + " ".join(shlex.quote(part) for part in cmd), flush=True)
+    subprocess.run(cmd, cwd=ROOT, env=env, check=True)
+
+
+def run_rust(corpus: Path) -> None:
+    env = os.environ.copy()
+    env["TS_UNIFIED_TEMPORALSTORE_CORPUS"] = str(corpus)
+    run(
+        [
+            "cargo",
+            "test",
+            "-p",
+            "temporalstore-rust",
+            "--test",
+            "unified_temporalstore_corpus",
+            "--",
+            "--test-threads=1",
+        ],
+        env=env,
     )
+
+
+def render_cpp_command(command: str, corpus: Path, cpp_repo: Path | None) -> str:
+    values = {"corpus": str(corpus)}
+    if cpp_repo is not None:
+        values["cpp_repo"] = str(cpp_repo)
+    if "{corpus}" in command or "{cpp_repo}" in command:
+        return command.format(**values)
+    return f"{command} {shlex.quote(str(corpus))}"
+
+
+def discover_cpp_command(cpp_repo: Path | None) -> str | None:
+    command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+    if command:
+        return command
+    if cpp_repo is None:
+        return None
+    candidate = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+    if candidate.exists():
+        return f"{shlex.quote(str(candidate))} --corpus {{corpus}}"
+    return None
+
+
+def install_cpp_runner(cpp_repo: Path, overwrite: bool) -> Path:
+    target = cpp_repo / DEFAULT_CPP_RUNNER_RELATIVE
+    if target.exists() and not overwrite:
+        raise SystemExit(
+            f"C++ unified runner already exists: {target}; pass --overwrite-cpp-runner to replace it"
+        )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(CPP_RUNNER_TEMPLATE, encoding="utf-8")
+    target.chmod(0o755)
+    return target
+
+
+def run_cpp(corpus: Path, required: bool, native_required: bool, cpp_repo: Path | None) -> None:
+    direct_command = os.environ.get("TS_CPP_UNIFIED_TEST_CMD")
+    native_command = os.environ.get("TS_CPP_UNIFIED_NATIVE_CMD")
+    if native_required and not direct_command and not native_command:
+        raise SystemExit(
+            "--require-cpp-native needs TS_CPP_UNIFIED_TEST_CMD or "
+            "TS_CPP_UNIFIED_NATIVE_CMD so the C++ side executes the corpus, "
+            "not only the discovery/surface hook"
+        )
+    command = discover_cpp_command(cpp_repo)
+    if not command:
+        message = (
+            "no C++ unified corpus runner configured; set TS_CPP_UNIFIED_TEST_CMD "
+            "to the C++ corpus runner command, optionally using {corpus} and "
+            "{cpp_repo} placeholders, or set TS_CPP_REPO/--cpp-repo to a checkout "
+            "containing tools/run_temporalstore_unified_tests.sh"
+        )
+        if required:
+            raise SystemExit(message)
+        print(f"warning: {message}", file=sys.stderr)
+        return
+
+    rendered = render_cpp_command(command, corpus, cpp_repo)
+    cwd = cpp_repo if cpp_repo is not None else ROOT
+    print(f"+ {rendered}", flush=True)
+    subprocess.run(rendered, cwd=cwd, shell=True, check=True)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--corpus", default=DEFAULT_CORPUS, type=Path)
-    parser.add_argument("--validate-only", action="store_true")
-    parser.add_argument("--run-existing-tests", action="store_true")
+    parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
+    parser.add_argument("--rust", action="store_true", help="run the Rust corpus executor")
+    parser.add_argument("--cpp", action="store_true", help="run the C++ corpus executor")
+    parser.add_argument(
+        "--both",
+        action="store_true",
+        help="run both Rust and C++ corpus executors",
+    )
+    parser.add_argument(
+        "--cpp-repo",
+        type=Path,
+        default=Path(os.environ["TS_CPP_REPO"]) if os.environ.get("TS_CPP_REPO") else None,
+        help="C++ TemporalStore checkout root; also used as cwd for the C++ runner",
+    )
+    parser.add_argument(
+        "--require-cpp",
+        action="store_true",
+        help="fail if --cpp is requested but TS_CPP_UNIFIED_TEST_CMD is unset",
+    )
+    parser.add_argument(
+        "--require-cpp-native",
+        action="store_true",
+        help="fail unless a native C++ corpus executor is configured with TS_CPP_UNIFIED_TEST_CMD or TS_CPP_UNIFIED_NATIVE_CMD",
+    )
+    parser.add_argument("--validate-only", action="store_true", help="only validate corpus JSON")
+    parser.add_argument(
+        "--install-cpp-runner",
+        action="store_true",
+        help="write tools/run_temporalstore_unified_tests.sh into --cpp-repo using the shared wrapper contract",
+    )
+    parser.add_argument(
+        "--overwrite-cpp-runner",
+        action="store_true",
+        help="allow --install-cpp-runner to replace an existing C++ wrapper",
+    )
+    parser.add_argument(
+        "--print-cpp-runner-template",
+        action="store_true",
+        help="print the installable C++ wrapper template and exit",
+    )
     args = parser.parse_args()
+
+    if args.print_cpp_runner_template:
+        print(CPP_RUNNER_TEMPLATE, end="")
+        return 0
 
     corpus = args.corpus.resolve()
     data = validate_corpus(corpus)
@@ -1116,9 +624,29 @@ def main() -> int:
         f"validated {data['name']} schema={data['schema_version']} "
         f"cases={len(data['cases'])} path={corpus}"
     )
-    run_existing = args.run_existing_tests or os.environ.get("TS_CPP_UNIFIED_RUN_EXISTING") == "1"
-    run_native_gate(corpus, data, args.validate_only, run_existing)
-    print("TemporalStore C++ unified corpus hook passed.")
+
+    if args.validate_only:
+        return 0
+    install_only = args.install_cpp_runner and not args.rust and not args.cpp and not args.both
+    if args.both:
+        args.rust = True
+        args.cpp = True
+    if not args.rust and not args.cpp and not install_only:
+        args.rust = True
+    cpp_repo = args.cpp_repo.resolve() if args.cpp_repo is not None else None
+    if cpp_repo is not None and not cpp_repo.exists():
+        raise SystemExit(f"C++ repo does not exist: {cpp_repo}")
+    if args.install_cpp_runner:
+        if cpp_repo is None:
+            raise SystemExit("--install-cpp-runner requires --cpp-repo or TS_CPP_REPO")
+        target = install_cpp_runner(cpp_repo, args.overwrite_cpp_runner)
+        print(f"installed C++ unified runner: {target}")
+        if install_only:
+            return 0
+    if args.rust:
+        run_rust(corpus)
+    if args.cpp:
+        run_cpp(corpus, args.require_cpp or args.require_cpp_native, args.require_cpp_native, cpp_repo)
     return 0
 
 
