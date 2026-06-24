@@ -26,6 +26,11 @@ import tempfile
 import time
 from pathlib import Path
 
+try:
+    from tools.matrixark_resource_parser import parse_resource
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_resource_parser import parse_resource
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -299,7 +304,14 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
     session_id = "agent-session-scale-1"
     approval_summary = "GPU approvals approved budget purchase request"
     incident_summary = "incident rollback confirmed health check stable"
-    resource_text = "Incident rollback confirmed stable after health checks passed."
+    resource_text = "# Rollback\n\nIncident rollback confirmed stable after health checks passed."
+    resource_chunks = parse_resource(
+        "scale_runbook.md",
+        resource_type="md",
+        text=resource_text,
+        chunk_hash_base=53_000,
+    )
+    resource_chunk = resource_chunks[0]
     approval_vector = provider.encode_text(approval_summary)
     incident_vector = provider.encode_text(incident_summary)
     approval_query_vector = provider.encode_text("Which GPU approvals are approved?")
@@ -314,11 +326,10 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
         "Was the incident rollback confirmed?",
         incident_query_hints,
     )
-    resource_vector = provider.encode_text(provider.summarize_resource_chunk(
-        "scale_runbook.md",
-        "md",
-        resource_text,
-    ))
+    resource_vector = provider.encode_text(
+        "Was the incident rollback confirmed? "
+        + provider.summarize_resource_chunk("scale_runbook.md", "md", resource_chunk.text)
+    )
     root_vector = provider.encode_text("company context root")
     common_hints = model_hints(provider)
     incident_pack_summary_refs = [incident_collection, resource_leaf, incident_leaf]
@@ -1094,19 +1105,20 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                     },
                     "chunks": [
                         {
-                            "chunk_hash": 53_000,
-                            "source_ref": "scale_runbook.md#heading=rollback",
-                            "text": resource_text,
-                            "token_estimate": 5,
+                            "chunk_hash": resource_chunk.chunk_hash,
+                            "source_ref": resource_chunk.source_ref,
+                            "text": resource_chunk.text,
+                            "token_estimate": resource_chunk.token_estimate,
+                            "metadata": resource_chunk.metadata,
                             "summary": provider.summarize_resource_chunk(
                                 "scale_runbook.md",
                                 "md",
-                                resource_text,
+                                resource_chunk.text,
                             ),
                             "vector": resource_vector,
                         }
                     ],
-                    "expect_chunk_hashes": [53_000],
+                    "expect_chunk_hashes": [resource_chunk.chunk_hash],
                 },
             ),
             step(
@@ -1115,7 +1127,7 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                     "kind": "context_extract_resource_events",
                     "tenant_hash": tenant,
                     "raw_uri": "scale_runbook.md",
-                    "source_chunk_hashes": [53_000],
+                    "source_chunk_hashes": [resource_chunk.chunk_hash],
                     "hints": {
                         "node_hash": incident_leaf,
                         "event_id_base_hash": 53_100,
@@ -1147,7 +1159,7 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                 "refresh_resource_summary_after_extraction",
                 resource_leaf,
                 1,
-                provider.summarize_resource_chunk("scale_runbook.md", "md", resource_text),
+                provider.summarize_resource_chunk("scale_runbook.md", "md", resource_chunk.text),
                 start_ms + 4_051,
             ),
             query_summary(
@@ -1185,7 +1197,7 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                     "summary_token_estimate": 1,
                     "start_time_ms": start_ms,
                     "end_time_ms": start_ms + 4_000,
-                    "max_prompt_tokens": events_per_lane + 12,
+                    "max_prompt_tokens": events_per_lane + 1 + incident_pack_summary_token_count + resource_chunk.token_estimate,
                     "min_confidence": 90,
                     "min_importance": 80,
                     "resource_top_k": 1,
@@ -1193,8 +1205,8 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                     "expect_event_ids": stream_ids,
                     "expect_entity_hashes": [incident_entity],
                     "expect_summary_refs": incident_pack_summary_refs,
-                    "expect_chunk_hashes": [53_000],
-                    "expect_selected_tokens_eq": events_per_lane + 6 + incident_pack_summary_token_count,
+                    "expect_chunk_hashes": [resource_chunk.chunk_hash],
+                    "expect_selected_tokens_eq": events_per_lane + 1 + incident_pack_summary_token_count + resource_chunk.token_estimate,
                     "expect_query_plan": {
                         "source": "model",
                         "intent": "current_state_decision",
@@ -1251,7 +1263,7 @@ def build_corpus(events_per_lane: int, provider: LocalModelProvider) -> tuple[di
                     context_pack_id="pack-incident-54000",
                     accepted_refs=[
                         {"ref_type": "event", "ref_hash": 52_000},
-                        {"ref_type": "resource_chunk", "ref_hash": 53_000},
+                        {"ref_type": "resource_chunk", "ref_hash": resource_chunk.chunk_hash},
                     ],
                     rejected_refs=[],
                 ),

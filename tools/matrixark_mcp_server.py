@@ -24,6 +24,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+try:
+    from tools.matrixark_resource_parser import ResourceParserError, parse_resource
+    from tools.matrixark_skill_parser import parse_skill
+except ModuleNotFoundError:  # Direct script execution from tools/.
+    from matrixark_resource_parser import ResourceParserError, parse_resource
+    from matrixark_skill_parser import parse_skill
+
 
 Json = dict[str, Any]
 
@@ -1465,7 +1472,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     scope = optional_object(args, "scope")
     metadata = optional_object(args, "metadata")
     kind = args.get("kind", default_kind)
-    if kind not in {"message", "feedback", "resource", "business_data"}:
+    if kind not in {"message", "feedback", "resource", "skill", "business_data"}:
         raise MatrixArkError("kind is invalid")
     envelope: Json = {
         "kind": kind,
@@ -2874,6 +2881,142 @@ class MatrixArkLocalAdapter:
             scope=envelope["scope"],
             updated_at_ms=envelope["ingestion_time_ms"],
         )
+        resource_chunk_hashes: list[int] = []
+        resource_parse_error = ""
+        skill_hash = None
+        if envelope["kind"] in {"resource", "skill"}:
+            raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
+            resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
+            resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
+            parse_text = resource_text
+            if raw_uri != "inline-resource" and Path(raw_uri).exists():
+                parse_text = None
+            try:
+                if envelope["kind"] == "skill" or (resource_type or "").lower() == "skill":
+                    parsed_skill = parse_skill(
+                        raw_uri,
+                        text=parse_text,
+                        chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
+                    )
+                    skill_hash = parsed_skill.skill_hash
+                    self.append(
+                        {
+                            "record_type": "skill_manifest",
+                            "skill_hash": parsed_skill.skill_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "raw_uri": raw_uri,
+                            "name": parsed_skill.name,
+                            "description": parsed_skill.description,
+                            "owner_scope": parsed_skill.metadata.get("owner_scope", "user"),
+                            "version": parsed_skill.metadata.get("version", "1"),
+                            "status": parsed_skill.metadata.get("status", "active"),
+                            "precedence": parsed_skill.metadata.get("precedence", "normal"),
+                            "triggers": parsed_skill.metadata.get("triggers", []),
+                            "allowed_tools": parsed_skill.metadata.get("allowed_tools", []),
+                            "text": parsed_skill.text,
+                            "token_estimate": parsed_skill.token_estimate,
+                            "metadata": parsed_skill.metadata,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    skill_vector = embedding_for_text(parsed_skill.name + " " + parsed_skill.description)
+                    self.append(
+                        {
+                            "record_type": "context_embedding",
+                            "embedding_type": "skill_summary",
+                            "ref_type": "skill",
+                            "ref_hash": parsed_skill.skill_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "dim": len(skill_vector),
+                            "model": embedding_model_name(),
+                            "vector": skill_vector,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    parsed_chunks = parsed_skill.chunks
+                else:
+                    parsed_chunks = parse_resource(
+                        raw_uri,
+                        resource_type=resource_type or None,
+                        text=parse_text,
+                        chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
+                    )
+            except ResourceParserError as exc:
+                resource_parse_error = str(exc)
+                parsed_chunks = []
+            if not parsed_chunks:
+                raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
+            chunk_vectors = embeddings_for_texts([chunk.text for chunk in parsed_chunks])
+            if envelope["kind"] == "resource":
+                manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
+                self.append(
+                    {
+                        "record_type": "resource_manifest",
+                        "resource_hash": manifest_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "raw_uri": raw_uri,
+                        "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                        "chunk_count": len(parsed_chunks),
+                        "token_estimate": sum(chunk.token_estimate for chunk in parsed_chunks),
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+            for chunk, vector in zip(parsed_chunks, chunk_vectors):
+                resource_chunk_hashes.append(chunk.chunk_hash)
+                if skill_hash is not None:
+                    self.append(
+                        {
+                            "record_type": "skill_section",
+                            "skill_hash": skill_hash,
+                            "section_hash": chunk.chunk_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "source_ref": chunk.source_ref,
+                            "heading": chunk.metadata.get("heading", ""),
+                            "text": chunk.text,
+                            "token_estimate": chunk.token_estimate,
+                            "metadata": chunk.metadata,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                self.append(
+                    {
+                        "record_type": "resource_chunk",
+                        "chunk_hash": chunk.chunk_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "raw_uri": raw_uri,
+                        "resource_type": chunk.metadata.get("resource_type") or resource_type,
+                        "source_ref": chunk.source_ref,
+                        "text": chunk.text,
+                        "token_estimate": chunk.token_estimate,
+                        "metadata": chunk.metadata,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                self.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "resource_chunk",
+                        "ref_type": "resource_chunk",
+                        "ref_hash": chunk.chunk_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(vector),
+                        "model": embedding_model_name(),
+                        "vector": vector,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
@@ -2993,6 +3136,9 @@ class MatrixArkLocalAdapter:
             "quality_warning": extraction.get("quality_warning", ""),
             "summary_refresh": summary_refresh,
             "node_materialization": node_materialization,
+            "resource_chunks": resource_chunk_hashes,
+            "resource_chunk_count": len(resource_chunk_hashes),
+            "skill_hash": skill_hash,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
                 "pending_event_count": pending_event_count,
@@ -3558,6 +3704,8 @@ class MatrixArkLocalAdapter:
         entity_embedding_vectors: dict[int, list[float]] = {}
         segment_embedding_vectors: dict[int, list[float]] = {}
         compression_embedding_vectors: dict[int, list[float]] = {}
+        resource_embedding_vectors: dict[int, list[float]] = {}
+        skill_embedding_vectors: dict[int, list[float]] = {}
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
@@ -3608,6 +3756,10 @@ class MatrixArkLocalAdapter:
                 segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
                 compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+            elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
+                resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+            elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
+                skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -3852,6 +4004,69 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_segment_scan",
             )
+        for record in reversed(records):
+            if record.get("record_type") not in {"resource_chunk", "skill_manifest", "skill_section"}:
+                continue
+            if not scope_matches(record.get("scope", {}), scope):
+                continue
+            if not selected_by_tree(record):
+                continue
+            if record.get("record_type") == "resource_chunk" and record.get("resource_type") == "skill":
+                continue
+            if record.get("record_type") == "skill_manifest":
+                ref_type = "skill"
+                ref_hash = int(record.get("skill_hash") or 0)
+                text = " ".join(
+                    [
+                        f"skill {record.get('name', '')}: {record.get('description', '')}",
+                        "triggers " + " ".join(str(item) for item in record.get("triggers", [])[:8]),
+                        "tools " + " ".join(str(item) for item in record.get("allowed_tools", [])[:8]),
+                    ]
+                )
+                embedding_score = cosine(query_embedding, skill_embedding_vectors.get(ref_hash, embedding_for_text(text)))
+                business_type = "skill"
+            elif record.get("record_type") == "skill_section":
+                ref_type = "skill_section"
+                ref_hash = int(record.get("section_hash") or 0)
+                text = f"skill section {record.get('heading', '')}: {record.get('text', '')}"
+                embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
+                business_type = "skill"
+            else:
+                ref_type = "resource_chunk"
+                ref_hash = int(record.get("chunk_hash") or 0)
+                text = f"resource {record.get('raw_uri', '')} {record.get('source_ref', '')}: {record.get('text', '')}"
+                embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
+                business_type = str(record.get("resource_type") or "resource")
+            sparse_score = sparse_lexical_score(query_terms, text)
+            keyword_score = len(query_terms.intersection(tokens(text)))
+            node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
+            origin_score = min(1.0, 0.08 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+            if origin_score <= 0:
+                continue
+            primary_matches.append(
+                score_recall_candidate(
+                    {
+                        "ref_type": ref_type,
+                        "ref_hash": ref_hash,
+                        "node_hash": record.get("node_hash"),
+                        "node_path": record.get("node_path", []),
+                        "origin_score": origin_score,
+                        "keyword_score": keyword_score,
+                        "sparse_score": sparse_score,
+                        "embedding_score": embedding_score,
+                        "node_score": node_score,
+                        "event_type": business_type,
+                        "metadata": record.get("metadata", {}),
+                        "scope": record.get("scope", {}),
+                        "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                        "text": clip_context_text(text),
+                        "recall_path": "primary_resource_skill",
+                    },
+                    ranking,
+                    reference_time_ms=reference_time_ms,
+                )
+            )
+
         for record in reversed(records):
             if record.get("record_type") != "context_compression_event":
                 continue
@@ -5964,4 +6179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
