@@ -1112,69 +1112,6 @@ mod tests {
         ));
     }
 
-    // shared-corpus: storage_shared_store_async_replay
-    #[tokio::test]
-    async fn shared_store_defaults_to_async_storage_and_allows_explicit_sync() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let replicator = SharedStoreReplicator::new("cluster-a", store);
-
-        assert_eq!(
-            SharedStoreStorageMode::default(),
-            SharedStoreStorageMode::Async
-        );
-        assert_eq!(
-            SharedStoreStorageMode::from_sync_flag(false),
-            SharedStoreStorageMode::Async
-        );
-        assert_eq!(
-            SharedStoreStorageMode::from_sync_flag(true),
-            SharedStoreStorageMode::Sync
-        );
-
-        let async_writer = replicator.default_storage_writer(1);
-        let async_report = async_writer
-            .write(
-                1,
-                Command::StringSet {
-                    key: "async-default".to_string(),
-                    value: b"queued".to_vec(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            async_report,
-            SharedStoreWriteReport {
-                oplog_index: 1,
-                published: false,
-                queued: true,
-            }
-        );
-        assert_eq!(async_writer.queued_len(), 1);
-
-        let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 2);
-        let sync_report = sync_writer
-            .write(
-                1,
-                Command::StringSet {
-                    key: "sync-explicit".to_string(),
-                    value: b"published".to_vec(),
-                },
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            sync_report,
-            SharedStoreWriteReport {
-                oplog_index: 2,
-                published: true,
-                queued: false,
-            }
-        );
-        assert_eq!(sync_writer.queued_len(), 0);
-    }
-
     #[tokio::test]
     async fn shared_store_sync_storage_publishes_and_cursor_replay_resumes() {
         let dir = tempfile::tempdir().unwrap();

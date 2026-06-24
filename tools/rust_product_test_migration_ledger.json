@@ -9,43 +9,43 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 540,
+    "grandfathered_tests": 527,
     "by_classification": {
-      "move_to_shared": 533,
+      "move_to_shared": 520,
       "rust_internal": 7
     },
     "by_family": {
-      "Feature": 18,
-      "IPS": 6,
+      "Feature": 14,
+      "IPS": 5,
       "Raft": 140,
-      "Redis/admin": 45,
-      "Risk": 10,
-      "Sequence": 8,
+      "Redis/admin": 43,
+      "Risk": 9,
+      "Sequence": 5,
       "context": 7,
       "control plane": 91,
       "ingestion": 10,
       "ops/scale": 22,
       "rust internals": 7,
-      "storage/cache": 176
+      "storage/cache": 174
     },
     "by_family_and_classification": {
       "Feature": {
-        "move_to_shared": 18
+        "move_to_shared": 14
       },
       "IPS": {
-        "move_to_shared": 6
+        "move_to_shared": 5
       },
       "Raft": {
         "move_to_shared": 140
       },
       "Redis/admin": {
-        "move_to_shared": 45
+        "move_to_shared": 43
       },
       "Risk": {
-        "move_to_shared": 10
+        "move_to_shared": 9
       },
       "Sequence": {
-        "move_to_shared": 8
+        "move_to_shared": 5
       },
       "context": {
         "move_to_shared": 7
@@ -63,7 +63,7 @@
         "rust_internal": 7
       },
       "storage/cache": {
-        "move_to_shared": 176
+        "move_to_shared": 174
       }
     },
     "next_migration_target": "Raft ByteRaft-derived process/fault/readiness cases, then storage/cache recovery and context pipeline model cases."
@@ -1573,15 +1573,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::feature_query_respects_count_limit",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "feature_query_respects_count_limit",
-      "family": "Feature",
-      "classification": "move_to_shared",
-      "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/engine.rs::feature_append_packs_many_timestamp_values_into_one_page",
       "file": "crates/temporalstore-rust/src/engine.rs",
       "test_name": "feature_append_packs_many_timestamp_values_into_one_page",
@@ -1606,15 +1597,6 @@
       "family": "Feature",
       "classification": "move_to_shared",
       "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::sequence_add_packs_many_timestamp_values_into_one_page",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "sequence_add_packs_many_timestamp_values_into_one_page",
-      "family": "Sequence",
-      "classification": "move_to_shared",
-      "next_migration_target": "Sequence shared cases for ordering, bounds, and batch/filter semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1906,15 +1888,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::ips_load_snapshot_stat_and_filter_match_cpp_style_module_shape",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "ips_load_snapshot_stat_and_filter_match_cpp_style_module_shape",
-      "family": "IPS",
-      "classification": "move_to_shared",
-      "next_migration_target": "IPS shared cases for snapshot/stat/filter and metadata semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/engine.rs::ips_pages_store_timestamp_keys_with_values",
       "file": "crates/temporalstore-rust/src/engine.rs",
       "test_name": "ips_pages_store_timestamp_keys_with_values",
@@ -1963,15 +1936,6 @@
       "test_id": "crates/temporalstore-rust/src/engine.rs::risk_query_supports_first_last_and_detail_list",
       "file": "crates/temporalstore-rust/src/engine.rs",
       "test_name": "risk_query_supports_first_last_and_detail_list",
-      "family": "Risk",
-      "classification": "move_to_shared",
-      "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine.rs::risk_cpp_family_set_query_setandget_and_manager_work",
-      "file": "crates/temporalstore-rust/src/engine.rs",
-      "test_name": "risk_cpp_family_set_query_setandget_and_manager_work",
       "family": "Risk",
       "classification": "move_to_shared",
       "next_migration_target": "Risk shared cases for CPC/list/manager/debug/window semantics",
@@ -4795,84 +4759,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_basic_smoketest_string_reload_ttl_expire_and_delete",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_basic_smoketest_string_reload_ttl_expire_and_delete",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_basic_smoketest_hash_reload_delete_getall_and_len",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_basic_smoketest_hash_reload_delete_getall_and_len",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::onebox_proxy_hash_multi_command_parity_over_redis_resp",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "onebox_proxy_hash_multi_command_parity_over_redis_resp",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::consistency_bench_style_hash_writes_are_linearizable_through_raft",
       "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
       "test_name": "consistency_bench_style_hash_writes_are_linearizable_through_raft",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::feature_module_smoke_matches_temporal_feature_flow",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "feature_module_smoke_matches_temporal_feature_flow",
-      "family": "Feature",
-      "classification": "move_to_shared",
-      "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_feature_module_simple_missing_truncate_policy_replace_and_delete",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_feature_module_simple_missing_truncate_policy_replace_and_delete",
-      "family": "Feature",
-      "classification": "move_to_shared",
-      "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_feature_filter_count_is_scan_bound_before_filtering",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_feature_filter_count_is_scan_bound_before_filtering",
-      "family": "Feature",
-      "classification": "move_to_shared",
-      "next_migration_target": "Feature shared cases for packed timestamped pages and nested point/proto semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_sequence_feature_sdk_filters_batch_and_count_scan_bound",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_sequence_feature_sdk_filters_batch_and_count_scan_bound",
-      "family": "Sequence",
-      "classification": "move_to_shared",
-      "next_migration_target": "Sequence shared cases for ordering, bounds, and batch/filter semantics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_long_sequence_feature_5k_ordered_windows_and_random_filters",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_long_sequence_feature_5k_ordered_windows_and_random_filters",
-      "family": "Sequence",
-      "classification": "move_to_shared",
-      "next_migration_target": "Sequence shared cases for ordering, bounds, and batch/filter semantics",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4900,15 +4792,6 @@
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/tests/temporalstore_compat.rs::cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary_pull_model",
-      "file": "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-      "test_name": "cxx_shared_store_replication_bootstrap_and_oplog_replay_matches_primary_pull_model",
-      "family": "storage/cache",
-      "classification": "move_to_shared",
-      "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
