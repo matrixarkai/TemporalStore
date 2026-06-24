@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -95,6 +96,8 @@ def write_reports(report: dict[str, Any], result_dir: Path) -> None:
         f"- cases: `{report['input']['case_count']}`",
         f"- command kinds: `{report['input']['command_kind_count']}`",
         f"- context steps: `{report['input']['context_step_count']}`",
+        f"- C++ contract cases: `{report['input'].get('cpp_contract_case_count', 0)}`",
+        f"- C++ contract steps: `{report['input'].get('cpp_contract_step_count', 0)}`",
         "",
         "## Stages",
         "",
@@ -167,6 +170,15 @@ def main() -> int:
 
     failed = [stage for stage in stages if stage["status"] == "failed"]
     status = "failed" if failed else "passed"
+    cpp_contract_case_count = 0
+    cpp_contract_step_count = 0
+    for stage in stages:
+        if stage["name"] != "cpp_context_contract":
+            continue
+        match = re.search(r"cases=(\d+)\s+contract_steps=(\d+)", stage.get("stdout_tail", ""))
+        if match:
+            cpp_contract_case_count = int(match.group(1))
+            cpp_contract_step_count = int(match.group(2))
     report: dict[str, Any] = {
         "status": status,
         "input": {
@@ -176,6 +188,8 @@ def main() -> int:
             "case_count": len(corpus_data.get("cases", [])),
             "command_kind_count": len(kinds),
             "context_step_count": context_step_count,
+            "cpp_contract_case_count": cpp_contract_case_count,
+            "cpp_contract_step_count": cpp_contract_step_count,
             "command_kinds": kinds,
         },
         "stages": stages,
