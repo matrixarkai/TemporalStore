@@ -42,14 +42,14 @@ python3 tools/validate_temporalstore_test_corpus_dependency.py --require-externa
 Current inventory:
 
 ```text
-total cases: 120
-total steps: 216
-executable shared behavior cases: 39
-executable shared behavior steps: 125
-C++ existing-test parity surface cases: 81
-C++ existing-test parity surface steps: 91
+total cases: 127
+total steps: 226
+executable shared behavior cases: 127
+executable shared behavior steps: 226
+C++ existing-test parity surface cases: 0
+C++ existing-test parity surface steps: 0
 C++ required source/test/harness paths: 168 unique paths
-required command kinds: 59
+required command kinds: 66
 required response kinds: 19
 ```
 
@@ -336,11 +336,11 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 555
-shared-corpus marked Rust tests: 35
-shared corpus cases: 116
-shared corpus steps: 204
-C++ existing-test surfaces: 160
+Rust attributed tests: 536
+shared-corpus marked Rust tests: 24
+shared corpus cases: 127
+shared corpus steps: 226
+C++ existing-test surfaces: 168
 ```
 
 The detailed reduction split and new-test guard live in

@@ -141,13 +141,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 72
-steps: 159
-executable behavior cases: 26
-executable behavior steps: 106
-C++ existing-test parity surface cases: 46
-C++ existing-test parity surface steps: 53
-C++ existing-test required paths: 117 unique paths plus 60 Raft path references
+cases: 127
+steps: 226
+executable behavior cases: 127
+executable behavior steps: 226
+C++ existing-test parity surface cases: 0
+C++ existing-test parity surface steps: 0
+C++ existing-test required paths: 168 unique paths
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -198,9 +198,9 @@ remain local.
 | Readiness/ops/fault behavior | 20 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
-The duplicate-test validator currently reports `rust_attributed_tests=540`,
-`rust_test_guard_shared_corpus_marked_tests=11`, `shared_corpus_cases=72`,
-`shared_corpus_steps=159`, and `cpp_existing_test_surfaces=117`.
+The duplicate-test validator currently reports `rust_attributed_tests=536`,
+`rust_test_guard_shared_corpus_marked_tests=24`, `shared_corpus_cases=127`,
+`shared_corpus_steps=226`, and `cpp_existing_test_surfaces=168`.
 It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
 `shared-corpus: <case>` or `rust-internal: <reason>`.
 
@@ -263,8 +263,8 @@ every executable corpus command and compares every expected response.
 
 Until that exists, the honest status is:
 
-- Rust executes all 106 executable shared behavior steps.
-- C++ validates the 72-case corpus shape, current context subset, exact C++ Raft case names,
+- Rust executes all 226 executable shared behavior steps.
+- C++ validates the 127-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, and C++
   client/proxy/metaserver/data-node control-plane required surfaces.

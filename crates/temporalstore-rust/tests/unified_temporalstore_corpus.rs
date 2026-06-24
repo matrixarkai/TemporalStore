@@ -7,13 +7,14 @@ use std::{fs, path::Path};
 use serde::Deserialize;
 use serde_json::Value;
 use temporalstore_rust::http::{json_response, parse_json, serve};
+use temporalstore_rust::redis::{execute_redis_command_with_state, RedisCommandState};
 use temporalstore_rust::types::SequenceFeatureRow;
 use temporalstore_rust::{
-    execute_redis_command, production_readiness_report, ClientOptions, Command,
-    CommandResponse, EndToEndWorkflow, ExecuteRequest, RespValue, ScanStreamRequest,
-    SharedStoreReplicator, SharedStoreStorageMode, SlotDumpFollowerReplayCursor, Status,
-    StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse, TableOptions,
-    TemporalEngine, TemporalStoreClient,
+    execute_redis_command, production_readiness_report, ClientOptions, Command, CommandResponse,
+    EndToEndWorkflow, ExecuteRequest, RespValue, ScanStreamRequest, SharedStoreReplicator,
+    SharedStoreStorageMode, SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest,
+    StreamKind, StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine,
+    TemporalStoreClient,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -395,6 +396,42 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_redis_feature_module_flow();
             true
         }
+        "redis_operational_admin_flow" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid shared harness command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("operational_admin_commands"),
+                "case={} step={} unsupported Redis/admin scenario",
+                case.name,
+                step.name
+            );
+            verify_redis_operational_admin_commands();
+            true
+        }
+        "redis_slot_hash_cpp_crc64" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid shared harness command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("slot_hash_crc64"),
+                "case={} step={} unsupported Redis slot/hash scenario",
+                case.name,
+                step.name
+            );
+            verify_redis_slot_hash_cpp_crc64();
+            true
+        }
         "raft_linearizable_hash_failover" => {
             verify_raft_linearizable_hash_failover();
             true
@@ -457,7 +494,9 @@ fn verify_ops_readiness_service_summary() {
         .contains(&"data_node_distributed_raft".to_string()));
     assert!(data_node.blocker_classes.is_empty());
     assert!(data_node.next_action.contains("ready"));
-    assert!(report.failed_capabilities_for_service("data_node").is_empty());
+    assert!(report
+        .failed_capabilities_for_service("data_node")
+        .is_empty());
     assert!(report.service_ready("data_node"));
     let gate = report
         .service_gate_report("data_node")
@@ -574,6 +613,129 @@ fn verify_redis_feature_module_flow() {
     assert_eq!(
         run(vec![s("FQUERY"), s("rf"), s("0"), s("400"), s("10")]),
         RespValue::Array(Vec::new())
+    );
+}
+
+fn verify_redis_operational_admin_commands() {
+    let mut state = RedisCommandState::default();
+    let run = |state: &mut RedisCommandState, args: Vec<&str>| {
+        execute_redis_command_with_state(
+            args.into_iter()
+                .map(|arg| arg.as_bytes().to_vec())
+                .collect(),
+            7,
+            state,
+            |_| Err("unexpected data command".to_string()),
+        )
+    };
+
+    assert_eq!(
+        run(&mut state, vec!["CONFIG", "GET", "requirepass"]),
+        RespValue::Array(vec![
+            RespValue::Bulk(Some(b"requirepass".to_vec())),
+            RespValue::Bulk(Some(Vec::new())),
+        ])
+    );
+    assert_eq!(
+        run(&mut state, vec!["CONFIG", "SET", "requirepass", "secret"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(&mut state, vec!["AUTH", "bad"]),
+        RespValue::Error("ERR invalid password".to_string())
+    );
+    assert_eq!(
+        run(&mut state, vec!["AUTH", "secret"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert!(state.authenticated);
+    assert_eq!(
+        run(&mut state, vec!["ECHO", "hello"]),
+        RespValue::Bulk(Some(b"hello".to_vec()))
+    );
+    assert_eq!(
+        run(&mut state, vec!["SELECT", "0"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    assert_eq!(
+        run(&mut state, vec!["SELECT", "1"]),
+        RespValue::Error("ERR DB index is out of range".to_string())
+    );
+    assert_eq!(
+        run(&mut state, vec!["SLAVEOF", "127.0.0.1", "18001"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    let info = run(&mut state, vec!["INFO", "replication"]);
+    match info {
+        RespValue::Bulk(Some(bytes)) => {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("role:slave"));
+            assert!(text.contains("master_host:127.0.0.1"));
+            assert!(text.contains("master_port:18001"));
+        }
+        other => panic!("unexpected info response: {other:?}"),
+    }
+    assert_eq!(
+        run(&mut state, vec!["SLAVEOF", "NO", "ONE"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+    let info = run(&mut state, vec!["INFO", "replication"]);
+    match info {
+        RespValue::Bulk(Some(bytes)) => {
+            assert!(String::from_utf8(bytes).unwrap().contains("role:master"));
+        }
+        other => panic!("unexpected info response: {other:?}"),
+    }
+    assert_eq!(
+        run(
+            &mut state,
+            vec!["PARTITION", "LOAD", "7", "1", "file:///tmp/partition"]
+        ),
+        RespValue::SimpleString("OK".to_string())
+    );
+    let partition = run(&mut state, vec!["PARTITION", "INFO"]);
+    match partition {
+        RespValue::Bulk(Some(bytes)) => {
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(text.contains("partition_id:7"));
+            assert!(text.contains("partition_loading_stats:loaded"));
+        }
+        other => panic!("unexpected partition info response: {other:?}"),
+    }
+    assert_eq!(
+        run(&mut state, vec!["BGSAVE"]),
+        RespValue::SimpleString("Background saving started".to_string())
+    );
+    assert_eq!(
+        run(&mut state, vec!["CONFIG", "REWRITE"]),
+        RespValue::SimpleString("OK".to_string())
+    );
+}
+
+fn verify_redis_slot_hash_cpp_crc64() {
+    let mut state = RedisCommandState::default();
+    let mut run = |args: Vec<&str>| {
+        execute_redis_command_with_state(
+            args.into_iter()
+                .map(|arg| arg.as_bytes().to_vec())
+                .collect(),
+            1,
+            &mut state,
+            |_| Err("unexpected data command".to_string()),
+        )
+    };
+
+    assert_eq!(
+        run(vec!["PSLOTHASHKEY", "123456789"]),
+        RespValue::Integer(0x3a71_b645)
+    );
+    assert_eq!(
+        run(vec!["PCLUSTERKEYSLOT", "123456789"]),
+        RespValue::Integer(0x3a71_b645)
+    );
+    assert_eq!(
+        run(vec!["PCLUSTERHASH", "123456789"]),
+        RespValue::Integer(0xe9c6_d914_c4b8_d9cau64 as i64)
     );
 }
 

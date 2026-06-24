@@ -125,7 +125,9 @@
       "ops_scale_readiness_slo_gate",
       "ops_production_readiness_service_summary",
       "ops_grafana_metrics_cpp_parity",
-      "context_resource_skill_parser_openviking_parity"
+      "context_resource_skill_parser_openviking_parity",
+      "redis_operational_admin_commands",
+      "redis_slot_hash_cpp_crc64"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -4614,7 +4616,7 @@
               "docs/rust_context_pipeline_debug_trace.md",
               "docs/rust_vs_cpp_temporalstore_parity_report.md"
             ],
-            "cpp_reference": "<cpp-temporalstore-checkout>/src/extension/context/test.cc",
+            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
             "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh"
           }
@@ -4897,7 +4899,7 @@
             "rust_runner": "cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1",
             "rust_validator": "python3 tools/validate_codex_mcp_parity.py",
             "cxx_reference_paths": [
-              "<cpp-temporalstore-checkout>/tools/matrixark_mcp_server.py"
+              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
             ],
             "backends": [
               "temporalstore-direct",
@@ -5999,6 +6001,40 @@
             "rust_runner": "cargo test -p temporalstore-rust context_resource --lib -- --test-threads=1 && cargo test -p temporalstore-rust context_skill --lib -- --test-threads=1 && cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-parser-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
+      "name": "redis_operational_admin_commands",
+      "shard_id": 7,
+      "family": "Redis/admin",
+      "description": "Shared C++/Rust Redis operational/admin command flow covering CONFIG, AUTH, ECHO, SELECT, SLAVEOF, INFO replication, PARTITION, BGSAVE, and CONFIG REWRITE server-shape behavior.",
+      "steps": [
+        {
+          "name": "redis_operational_admin_commands",
+          "skip_client": true,
+          "command": {
+            "kind": "redis_operational_admin_flow",
+            "scenario": "operational_admin_commands",
+            "description": "Runs Redis-compatible operational/admin commands through the product Redis command parser and state machine."
+          }
+        }
+      ]
+    },
+    {
+      "name": "redis_slot_hash_cpp_crc64",
+      "shard_id": 1,
+      "family": "Redis/admin",
+      "description": "Shared C++/Rust Redis slot/hash command flow covering PSLOTHASHKEY, PCLUSTERKEYSLOT, and PCLUSTERHASH against the C++ CRC64 formula.",
+      "steps": [
+        {
+          "name": "redis_slot_hash_cpp_crc64",
+          "skip_client": true,
+          "command": {
+            "kind": "redis_slot_hash_cpp_crc64",
+            "scenario": "slot_hash_crc64",
+            "description": "Runs Redis-compatible slot/hash commands through the product Redis command parser."
           }
         }
       ]

@@ -2518,6 +2518,7 @@ mod tests {
     }
 
     #[test]
+    // shared-corpus: redis_operational_admin_commands;
     fn redis_operational_commands_match_cpp_server_shape() {
         let mut state = RedisCommandState::default();
         let run = |state: &mut RedisCommandState, args: Vec<&str>| {
@@ -2617,6 +2618,7 @@ mod tests {
     }
 
     #[test]
+    // shared-corpus: redis_slot_hash_cpp_crc64;
     fn redis_slot_hash_commands_use_cpp_crc64_formula() {
         let mut state = RedisCommandState::default();
         let mut run = |args: Vec<&str>| {
