@@ -3,11 +3,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
-use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
-    RespValue, SharedStoreReplicator, SharedStoreStorageMode, StorageLifecycleRequest,
-    TemporalEngine,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, SlotDumpFollowerReplayCursor,
+    StorageLifecycleRequest, TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
 

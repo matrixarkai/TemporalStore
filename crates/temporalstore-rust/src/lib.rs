@@ -5,6 +5,8 @@ pub mod control;
 pub mod data_node;
 pub mod e2e;
 pub mod engine;
+pub mod engine_golden;
+pub mod engine_reports;
 pub mod http;
 pub mod index_log;
 pub mod ingestion;
@@ -67,19 +69,25 @@ pub use e2e::{
     ReplicaReadPolicy, ReplicationMode, RoutingClient, TemporalStoreClientOptions, WorkflowError,
     WorkflowProxy,
 };
-pub use engine::{
-    cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report, CppGoldenCaseReport,
-    CppGoldenCorpusReport, RustStorageObservation, ShardCompactionUtilityReport,
-    SlotDumpFaultMatrixReport, SlotDumpFaultScenarioReport, SlotDumpInstallPreflightReport,
-    SlotDumpManifest, SlotStorageSummary, StorageCacheInspectionReport,
-    StorageCacheInvalidateSlotRequest, StorageCacheSlotSummary, StorageCacheWarmupReport,
-    StorageFeaturePageError, StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch,
-    StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
-    StorageLogCompatibilityReport, StoragePageFormatCompatibilityReport,
+pub use engine::TemporalEngine;
+pub use engine_golden::{cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report};
+pub use engine_reports::{
+    CppGoldenCaseReport, CppGoldenCorpusReport, RustStorageObservation, ShardCompactionReport,
+    ShardCompactionUtilityReport, ShardExpirySweepReport, SlotDumpFaultMatrixReport,
+    SlotDumpFaultScenarioReport, SlotDumpFollowerReplayCursor, SlotDumpFollowerRetentionBlock,
+    SlotDumpInstallMarker, SlotDumpInstallPreflightReport, SlotDumpInstallRollForwardReport,
+    SlotDumpManifest, SlotDumpManifestChainIssue, SlotDumpManifestPrunePlan,
+    SlotDumpManifestPruneReport, SlotDumpRaftSnapshotRef, SlotDumpRaftSnapshotRetentionBlock,
+    SlotStorageSummary, StorageCacheInspectionReport, StorageCacheInvalidateSlotRequest,
+    StorageCacheSlotSummary, StorageCacheWarmupReport, StorageFeaturePageError,
+    StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch, StorageLifecyclePlan,
+    StorageLifecycleReport, StorageLifecycleRequest, StorageLogCompatibilityReport,
+    StorageObjectLifecycleReport, StoragePageFormatCompatibilityReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
     StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
-    StorageRecoveryPageError, StorageRecoveryReport, StorageRecoverySegmentLiveReport,
-    StorageSegmentIntegrityReport, TemporalEngine,
+    StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch, StorageRecoveryReport,
+    StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
+    StorageTimestampedPageFamilyReport,
 };
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{

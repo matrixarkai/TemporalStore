@@ -4,11 +4,10 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use temporalstore_rust::engine::SlotDumpFollowerReplayCursor;
 use temporalstore_rust::{
     execute_redis_command, Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig,
-    RespValue, SharedStoreReplicator, SharedStoreStorageMode, StorageLifecycleReport,
-    StorageLifecycleRequest, StorageRecoveryReport, TemporalEngine,
+    RespValue, SharedStoreReplicator, SharedStoreStorageMode, SlotDumpFollowerReplayCursor,
+    StorageLifecycleReport, StorageLifecycleRequest, StorageRecoveryReport, TemporalEngine,
 };
 use temporalstore_snapshot::FileObjectStore;
 
