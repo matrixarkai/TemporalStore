@@ -41,7 +41,7 @@ Expected optional fields in `health.json`:
 - `replication`: replay mode, source, secondary lag, visibility
 - `scale_tests`: workload, QPS, p50, p99, secondary lag
 - `module_tests`: module coverage for direct/proxy paths and latency
-- `context_ops`: status, KPIs, pipeline stages, test cards, request builder entries,
+- `context_ops`: status, KPIs, backend parity, pipeline stages, test cards, request builder entries,
   query workbench, config groups, tree nodes, context-pack events/chunks/filters,
   open-source model registry, operator rows, safeguards, alerts, audit rows, and runbook steps
 
@@ -63,9 +63,20 @@ Recommended first-run commands once packaged:
 ```bash
 matrixark-server init --home ~/.matrixark
 matrixark-server doctor
+matrixark-server doctor --backend cpp
+matrixark-server doctor --backend rust
 matrixark-server start --backend cpp --local
+matrixark-server start --backend rust --local
 matrixark-server apply-key --agent codex
 ```
+
+Backend parity expectations:
+
+- The same monitoring UI must work for `backend=cpp` and `backend=rust`.
+- Health payloads should expose `temporalstore.backend`, `mode`, `storage`, `raft`, and `gateway`.
+- C++ and Rust runs should render the same ContextNode topology, summaries, embeddings, events, entities, resource chunks, skills, ContextPacks, and audit rows.
+- Rust CLI-per-operation is acceptable for debug parity only; production Rust should use a long-lived gateway or binding.
+- C++ and Rust benchmark runs should emit the same artifact set so LOCOMO, LongMemEval, resource, skill, and scale reports can be compared side by side.
 
 Today, the same pieces are available through the MCP server, Docker OSS scale
 script, this monitoring UI folder, and the Prometheus compose files.
