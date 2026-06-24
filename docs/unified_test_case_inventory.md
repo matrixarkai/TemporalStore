@@ -193,6 +193,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_readonly_write_disabled_tables` | Rust-executable/C++-static gate for readonly/write-disabled/not-serving table policy behavior. |
 | `control_route_quarantine_recovery` | Rust-executable/C++-static gate for backend quarantine, recovery probing, and degraded preflight behavior. |
 | `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |
+| `control_cpp_server_service_alias_surface` | Rust-executable/C++-static gate for data-node C++ `ServerService` alias routes over the Rust-native migration surface. |
 | `control_metaserver_scheduler_lifecycle_workflow` | Rust-executable/C++-static gate for metaserver scheduler-issued load/reload/unload token behavior. |
 | `ingestion_kafka_offset_ledger` | Rust-executable/C++-static gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
 | `ingestion_kafka_rebalance_backpressure` | Rust-executable/C++-static gate for Kafka consumer-group rebalance and backpressure behavior. |

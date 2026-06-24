@@ -4002,6 +4002,26 @@
       ]
     },
     {
+      "name": "control_cpp_server_service_alias_surface",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust data-node ServerService alias case for lifecycle-token, load, reload, unload, snapshot, and status route compatibility over the Rust-native migration surface.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/server/service.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust --bin server cpp_server_service_aliases_cover_partition_manager_surface -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "suite": "cpp_data_node_lifecycle_parity"
+          },
+          "name": "cpp_server_service_alias_surface_shared"
+        }
+      ]
+    },
+    {
       "name": "control_metaserver_scheduler_lifecycle_workflow",
       "shard_id": 1,
       "steps": [
@@ -7117,6 +7137,7 @@
       "control_readonly_write_disabled_tables",
       "control_route_quarantine_recovery",
       "control_data_node_load_reload_unload_lifecycle",
+      "control_cpp_server_service_alias_surface",
       "control_metaserver_scheduler_lifecycle_workflow",
       "ingestion_kafka_offset_ledger",
       "ingestion_kafka_rebalance_backpressure",

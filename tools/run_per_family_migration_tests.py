@@ -123,9 +123,11 @@ FAMILIES: dict[str, FamilyConfig] = {
             "control_metaserver_scheduler_lifecycle_workflow",
             "control_scheduler_token_stale_rejection",
             "control_data_node_load_reload_unload_lifecycle",
+            "control_cpp_server_service_alias_surface",
         ),
         (
             "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_scheduler_execute_next_installs_token_then_loads_node",
+            "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_aliases_cover_partition_manager_surface",
         ),
         "cargo test -p temporalstore-rust metaserver_scheduler_execute_next_installs_token_then_loads_node -- --test-threads=1",
         (

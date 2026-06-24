@@ -3093,6 +3093,7 @@ mod tests {
         assert!(handle_ping_route(&unknown).is_none());
     }
 
+    // shared-corpus: control_cpp_server_service_alias_surface
     #[test]
     fn cpp_server_service_aliases_cover_partition_manager_surface() {
         let dir = tempdir().unwrap();
