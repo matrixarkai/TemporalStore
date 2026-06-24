@@ -308,6 +308,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            provider: ContextModelProviderConfig::default(),
         },
     );
     assert!(retrieve.status.ok);
@@ -319,6 +320,39 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
         .blocks
         .iter()
         .any(|block| block.tier == ContextTier::L2));
+    assert!(
+        retrieve
+            .query_understanding_debug
+            .tree_traversal_summary
+            .enabled
+    );
+    assert_eq!(
+        retrieve
+            .query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_candidate_count,
+        1
+    );
+    assert_eq!(
+        retrieve
+            .query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_selected_count,
+        1
+    );
+    assert_eq!(
+        retrieve
+            .query_understanding_debug
+            .tree_traversal_summary
+            .query_embedding_dimension,
+        16
+    );
+    assert!(retrieve
+        .query_understanding_debug
+        .tree_traversal_summary
+        .summary_embeddings
+        .iter()
+        .any(|entry| entry.starts_with("node:") && entry.contains(":score:")));
     assert!(retrieve.parity.pipeline_ready);
     assert!(retrieve.parity.cpp_context_models_ready);
     assert!(retrieve.parity.openviking_tiers_ready);
@@ -339,6 +373,7 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
                 min_confidence: 0.0,
                 min_importance: 0.0,
                 tiers: default_tiers(),
+                provider: ContextModelProviderConfig::default(),
             },
             prompt: "Explain current risk.".to_string(),
             session_hash: 7,
@@ -412,6 +447,7 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -975,6 +1011,7 @@ fn context_injection_prompt_pack_preserves_retrieved_evidence_ordering() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L2],
+        provider: ContextModelProviderConfig::default(),
     };
     let retrieved = retrieve_context(&engine, retrieve.clone());
     assert!(retrieved.status.ok, "{:?}", retrieved.status);
@@ -1086,6 +1123,7 @@ fn context_workflow_policy_rejects_disallowed_runtime_controls() {
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            provider: ContextModelProviderConfig::default(),
         },
         prompt: "one two three four five".to_string(),
         session_hash: 7,
@@ -1114,43 +1152,73 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        let mut buffer = Vec::new();
-        let mut chunk = [0u8; 4096];
-        loop {
-            let read = stream.read(&mut chunk).unwrap();
-            if read == 0 {
-                break;
-            }
-            buffer.extend_from_slice(&chunk[..read]);
-            if buffer.windows(4).any(|window| window == b"\r\n\r\n")
-                && buffer
-                    .windows(b"\"model\":\"context-live-test\"".len())
-                    .any(|window| window == b"\"model\":\"context-live-test\"")
-            {
-                let request = String::from_utf8_lossy(&buffer);
-                assert!(request.starts_with("POST /v1/chat/completions HTTP/1.1"));
-                assert!(request.contains("Authorization: Bearer test-context-key"));
-                assert!(request.contains("\"model\":\"context-live-test\""));
-                break;
-            }
-        }
-        let body = serde_json::json!({
-                "choices": [{
-                    "message": {
-                        "content": "{\"l0\":\"live checkout incident\",\"l1\":\"kind=Incident; live facts=payment risk; customer impact\"}"
+        for expected_path in ["/v1/chat/completions", "/v1/embeddings"] {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut buffer = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let read = stream.read(&mut chunk).unwrap();
+                if read == 0 {
+                    break;
+                }
+                buffer.extend_from_slice(&chunk[..read]);
+                if let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+                {
+                    let request = String::from_utf8_lossy(&buffer[..header_end + 4]);
+                    if request.contains(format!("POST {expected_path} HTTP/1.1").as_str()) {
+                        assert!(request.contains("Authorization: Bearer test-context-key"));
+                        let content_length = request
+                            .lines()
+                            .find_map(|line| {
+                                line.strip_prefix("content-length:")
+                                    .or_else(|| line.strip_prefix("Content-Length:"))
+                                    .and_then(|value| value.trim().parse::<usize>().ok())
+                            })
+                            .unwrap_or_default();
+                        if buffer.len() >= header_end + 4 + content_length {
+                            break;
+                        }
                     }
-                }]
-            })
-            .to_string();
-        write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                body.len(),
-                body
-            )
-            .unwrap();
-        stream.flush().unwrap();
+                }
+            }
+            let body_start = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+                .unwrap_or(buffer.len());
+            let request_body: serde_json::Value =
+                serde_json::from_slice(&buffer[body_start..]).unwrap();
+            let body = if expected_path.ends_with("chat/completions") {
+                assert_eq!(request_body["model"], "context-live-test");
+                serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "{\"l0\":\"live checkout incident\",\"l1\":\"kind=Incident; live facts=payment risk; customer impact\"}"
+                        }
+                    }]
+                })
+                .to_string()
+            } else {
+                assert_eq!(request_body["model"], "context-embedding-live-test");
+                assert_eq!(request_body["input"].as_array().unwrap().len(), 3);
+                serde_json::json!({
+                    "data": [
+                        {"embedding": [1.0, 0.0, 0.0, 0.0]},
+                        {"embedding": [0.0, 1.0, 0.0, 0.0]},
+                        {"embedding": [0.0, 0.0, 1.0, 0.0]}
+                    ]
+                })
+                .to_string()
+            };
+            write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            stream.flush().unwrap();
+        }
     });
     std::env::set_var("TS_CONTEXT_TEST_KEY", "test-context-key");
     let engine = test_engine();
@@ -1170,6 +1238,7 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
                 base_url: format!("http://{addr}/v1"),
                 api_key_env: "TS_CONTEXT_TEST_KEY".to_string(),
                 model: "context-live-test".to_string(),
+                embedding_model: "context-embedding-live-test".to_string(),
                 mock_mode: false,
                 ..ContextModelProviderConfig::default()
             },
@@ -1179,6 +1248,18 @@ fn context_workflow_extracts_with_openai_compatible_provider() {
     assert_eq!(report.l0, "live checkout incident");
     assert!(report.l1.contains("payment risk"));
     assert_eq!(report.provider.provider_name, "live-test");
+    assert_eq!(report.embedding_generation.provider_name, "live-test");
+    assert_eq!(
+        report.embedding_generation.embedding_model,
+        "context-embedding-live-test"
+    );
+    assert_eq!(report.embedding_generation.vector_dimension, 4);
+    assert_eq!(report.embedding_generation.requested_vector_count, 3);
+    assert_eq!(report.embedding_generation.generated_vector_count, 3);
+    assert_eq!(report.embedding_generation.batch_count, 1);
+    assert_eq!(report.embedding_generation.live_call_count, 1);
+    assert!(!report.embedding_generation.mock_mode);
+    assert!(report.embedding_generation.production_evidence_ready);
     handle.join().unwrap();
     std::env::remove_var("TS_CONTEXT_TEST_KEY");
 }

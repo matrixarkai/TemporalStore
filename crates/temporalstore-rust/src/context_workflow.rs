@@ -103,10 +103,47 @@ pub struct ContextExtractRequest {
     pub provider: ContextModelProviderConfig,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextEmbeddingGenerationReport {
+    pub status: Status,
+    pub provider_name: String,
+    pub provider_kind: ContextProviderKind,
+    pub embedding_model: String,
+    pub vector_dimension: usize,
+    pub requested_vector_count: usize,
+    pub generated_vector_count: usize,
+    pub batch_count: usize,
+    pub live_call_count: usize,
+    pub fallback_used: bool,
+    pub mock_mode: bool,
+    pub production_evidence_ready: bool,
+}
+
+impl Default for ContextEmbeddingGenerationReport {
+    fn default() -> Self {
+        Self {
+            status: Status::ok(),
+            provider_name: default_provider_name(),
+            provider_kind: ContextProviderKind::Mock,
+            embedding_model: default_embedding_model(),
+            vector_dimension: 0,
+            requested_vector_count: 0,
+            generated_vector_count: 0,
+            batch_count: 0,
+            live_call_count: 0,
+            fallback_used: false,
+            mock_mode: true,
+            production_evidence_ready: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ContextExtractReport {
     pub status: Status,
     pub provider: ContextModelProviderConfig,
+    #[serde(default)]
+    pub embedding_generation: ContextEmbeddingGenerationReport,
     pub node: ContextNode,
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
@@ -501,6 +538,8 @@ pub struct ContextRetrieveRequest {
     pub min_importance: f32,
     #[serde(default = "default_tiers")]
     pub tiers: Vec<ContextTier>,
+    #[serde(default)]
+    pub provider: ContextModelProviderConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -535,6 +574,14 @@ pub struct ContextTreeTraversalDebug {
     pub selected_node_count: usize,
     pub selected_path_count: usize,
     pub summary_embeddings: Vec<String>,
+    #[serde(default)]
+    pub summary_embedding_candidate_count: usize,
+    #[serde(default)]
+    pub summary_embedding_selected_count: usize,
+    #[serde(default)]
+    pub query_embedding_dimension: usize,
+    #[serde(default)]
+    pub query_embedding_provider: String,
     pub top_k_per_layer: usize,
 }
 
@@ -1232,6 +1279,7 @@ pub fn extract_context(
         return ContextExtractReport {
             status: summaries.status,
             provider,
+            embedding_generation: ContextEmbeddingGenerationReport::default(),
             node: empty_node(),
             event: empty_event(),
             index_ref: ContextIndexRef {
@@ -1313,22 +1361,61 @@ pub fn extract_context(
         text: l1.clone(),
         valid_from_ms: timestamp_ms,
     };
+    let embedding_inputs = [
+        ("node_l0", node_hash, 1, l0.as_str()),
+        ("node_l1", node_hash, 2, l1.as_str()),
+        ("event_text", event_id_hash, 3, request.body.as_str()),
+    ];
+    let (embedding_vectors, embedding_generation) =
+        match context_embeddings_for_extract(&provider, &embedding_inputs) {
+            Ok(value) => value,
+            Err(status) => {
+                if let Some(fallback) = provider.fallback_provider.as_deref() {
+                    let fallback = normalize_provider(fallback.clone());
+                    match context_embeddings_for_extract(&fallback, &embedding_inputs) {
+                        Ok((vectors, mut report)) => {
+                            report.fallback_used = true;
+                            report.provider_name = format!(
+                                "{}+fallback:{}",
+                                provider.provider_name, report.provider_name
+                            );
+                            (vectors, report)
+                        }
+                        Err(fallback_status) => {
+                            return empty_extract_report(
+                                fallback_status,
+                                provider,
+                                request.tenant_hash,
+                                request.timestamp_ms,
+                            );
+                        }
+                    }
+                } else {
+                    return empty_extract_report(
+                        status,
+                        provider,
+                        request.tenant_hash,
+                        request.timestamp_ms,
+                    );
+                }
+            }
+        };
     let embedding_l0 = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
         level: 1,
-        vector: deterministic_context_embedding(&provider.embedding_model, &l0),
+        vector: embedding_vectors[0].clone(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_l1 = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
         level: 2,
-        vector: deterministic_context_embedding(&provider.embedding_model, &l1),
+        vector: embedding_vectors[1].clone(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_event = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
         level: 3,
-        vector: deterministic_context_embedding(&provider.embedding_model, &request.body),
+        vector: embedding_vectors[2].clone(),
         updated_at_ms: timestamp_ms,
     };
 
@@ -1383,7 +1470,8 @@ pub fn extract_context(
         if !response.status.ok {
             return ContextExtractReport {
                 status: response.status,
-                provider,
+                provider: provider.clone(),
+                embedding_generation: embedding_generation.clone(),
                 node,
                 event,
                 index_ref,
@@ -1400,6 +1488,7 @@ pub fn extract_context(
     ContextExtractReport {
         status: Status::ok(),
         provider,
+        embedding_generation,
         node,
         event,
         index_ref,
@@ -1488,6 +1577,7 @@ pub fn ingest_extract_context(
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: default_tiers(),
+        provider: request.provider,
     };
     let summary = ContextIngestExtractSummary {
         source_count,
@@ -2420,6 +2510,7 @@ pub fn run_context_pipeline_benchmark(
             min_confidence: 0.0,
             min_importance: 0.0,
             tiers: default_tiers(),
+            provider: ContextModelProviderConfig::default(),
         };
         let retrieve_start = Instant::now();
         let retrieve = retrieve_context(engine, retrieve_request.clone());
@@ -2937,6 +3028,12 @@ struct OpenAiChatMessage<'a> {
     content: String,
 }
 
+#[derive(Debug, Serialize)]
+struct OpenAiEmbeddingRequest<'a> {
+    model: &'a str,
+    input: Vec<&'a str>,
+}
+
 fn context_summaries_for_extract(
     provider: &ContextModelProviderConfig,
     request: &ContextExtractRequest,
@@ -2965,6 +3062,87 @@ fn context_summaries_for_extract(
     }
 }
 
+fn context_embeddings_for_extract(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<(Vec<Vec<f32>>, ContextEmbeddingGenerationReport), Status> {
+    let provider = normalize_provider(provider.clone());
+    if provider.mock_mode || provider.provider_kind == ContextProviderKind::Mock {
+        let vectors = inputs
+            .iter()
+            .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
+            .collect::<Vec<_>>();
+        let vector_dimension = vectors.first().map(Vec::len).unwrap_or_default();
+        return Ok((
+            vectors,
+            ContextEmbeddingGenerationReport {
+                status: Status::ok(),
+                provider_name: provider.provider_name,
+                provider_kind: provider.provider_kind,
+                embedding_model: provider.embedding_model,
+                vector_dimension,
+                requested_vector_count: inputs.len(),
+                generated_vector_count: inputs.len(),
+                batch_count: usize::from(!inputs.is_empty()),
+                live_call_count: 0,
+                fallback_used: false,
+                mock_mode: true,
+                production_evidence_ready: false,
+            },
+        ));
+    }
+
+    let vectors = match provider.provider_kind {
+        ContextProviderKind::OpenAiCompatible => {
+            call_openai_compatible_embedding_provider(&provider, inputs)?
+        }
+        ContextProviderKind::Mock => inputs
+            .iter()
+            .map(|(_, _, _, text)| deterministic_context_embedding(&provider.embedding_model, text))
+            .collect(),
+    };
+    let vector_dimension = vectors.first().map(Vec::len).unwrap_or_default();
+    if vectors.len() != inputs.len() || vector_dimension == 0 {
+        return Err(Status::error(
+            "embedding_provider_bad_response",
+            format!(
+                "embedding provider {} returned {} vectors for {} inputs",
+                provider.provider_name,
+                vectors.len(),
+                inputs.len()
+            ),
+        ));
+    }
+    if !vectors.iter().all(|vector| {
+        vector.len() == vector_dimension && vector.iter().all(|value| value.is_finite())
+    }) {
+        return Err(Status::error(
+            "embedding_provider_bad_response",
+            format!(
+                "embedding provider {} returned inconsistent or non-finite vectors",
+                provider.provider_name
+            ),
+        ));
+    }
+    Ok((
+        vectors,
+        ContextEmbeddingGenerationReport {
+            status: Status::ok(),
+            provider_name: provider.provider_name,
+            provider_kind: provider.provider_kind,
+            embedding_model: provider.embedding_model,
+            vector_dimension,
+            requested_vector_count: inputs.len(),
+            generated_vector_count: inputs.len(),
+            batch_count: usize::from(!inputs.is_empty()),
+            live_call_count: usize::from(!inputs.is_empty()),
+            fallback_used: false,
+            mock_mode: false,
+            production_evidence_ready: true,
+        },
+    ))
+}
+
 fn mock_context_summaries(
     provider: ContextModelProviderConfig,
     request: &ContextExtractRequest,
@@ -2983,6 +3161,94 @@ fn mock_context_summaries(
             request.tenant_hash, node_hash, request.source_id
         ),
     }
+}
+
+fn call_openai_compatible_embedding_provider(
+    provider: &ContextModelProviderConfig,
+    inputs: &[(&str, u64, u32, &str)],
+) -> Result<Vec<Vec<f32>>, Status> {
+    let (addr, path_prefix) = parse_openai_compatible_base_url(&provider.base_url)?;
+    let api_key = if provider.api_key_env.trim().is_empty() {
+        None
+    } else {
+        Some(std::env::var(&provider.api_key_env).map_err(|_| {
+            Status::error(
+                "embedding_provider_auth_missing",
+                format!(
+                    "embedding provider {} requires environment variable {}",
+                    provider.provider_name, provider.api_key_env
+                ),
+            )
+        })?)
+    };
+    let embedding_request = OpenAiEmbeddingRequest {
+        model: &provider.embedding_model,
+        input: inputs.iter().map(|(_, _, _, text)| *text).collect(),
+    };
+    let headers = api_key
+        .as_ref()
+        .map(|key| format!("Authorization: Bearer {key}\r\n"))
+        .unwrap_or_default();
+    let path = format!("{}/embeddings", path_prefix.trim_end_matches('/'));
+    let response: Value = post_json_with_options_and_headers(
+        &addr,
+        &path,
+        &embedding_request,
+        &headers,
+        HttpRequestOptions {
+            connect_timeout_ms: provider.timeout_ms.min(5_000).max(1),
+            io_timeout_ms: provider.timeout_ms.max(1),
+            max_retries: provider.max_retries,
+        },
+    )
+    .map_err(|err| {
+        Status::error(
+            "embedding_provider_request_failed",
+            format!(
+                "embedding provider {} request failed: {err}",
+                provider.provider_name
+            ),
+        )
+    })?;
+    response["data"]
+        .as_array()
+        .ok_or_else(|| {
+            Status::error(
+                "embedding_provider_bad_response",
+                format!(
+                    "embedding provider {} response missing data",
+                    provider.provider_name
+                ),
+            )
+        })?
+        .iter()
+        .map(|item| {
+            item["embedding"]
+                .as_array()
+                .ok_or_else(|| {
+                    Status::error(
+                        "embedding_provider_bad_response",
+                        format!(
+                            "embedding provider {} response missing data[].embedding",
+                            provider.provider_name
+                        ),
+                    )
+                })?
+                .iter()
+                .map(|value| {
+                    value.as_f64().map(|value| value as f32).ok_or_else(|| {
+                        Status::error(
+                            "embedding_provider_bad_response",
+                            format!(
+                                "embedding provider {} returned a non-float embedding value",
+                                provider.provider_name
+                            ),
+                        )
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()
 }
 
 fn call_openai_compatible_context_provider(
@@ -3121,7 +3387,7 @@ pub fn retrieve_context(
     } else {
         request.tiers.clone()
     };
-    let node_hashes = if request.node_hashes.is_empty() {
+    let mut node_hashes = if request.node_hashes.is_empty() {
         return ContextRetrieveReport {
             status: Status::error(
                 "node_hash_required",
@@ -3136,6 +3402,78 @@ pub fn retrieve_context(
     } else {
         request.node_hashes.clone()
     };
+    let retrieval_provider = normalize_provider(request.provider.clone());
+    let query_embedding = match context_query_embedding(&retrieval_provider, &request.query) {
+        Ok(vector) => vector,
+        Err(status) => {
+            return ContextRetrieveReport {
+                status,
+                blocks,
+                node_count,
+                event_count,
+                query_understanding_debug,
+                parity: context_pipeline_parity_evidence(),
+            };
+        }
+    };
+    let mut summary_scores = Vec::new();
+    for node_hash in &node_hashes {
+        let ref_hashes = vec![
+            context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l0"),
+            context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l1"),
+        ];
+        let embeddings = engine.execute(ExecuteRequest {
+            shard_id: request.shard_id,
+            command: Command::ContextQueryEmbeddings {
+                tenant_hash: request.tenant_hash,
+                ref_hashes,
+                limit: Some(2),
+            },
+        });
+        let mut best_score = 0i64;
+        let mut found = 0usize;
+        if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
+            found = embeddings.len();
+            best_score = embeddings
+                .iter()
+                .map(|embedding| {
+                    context_embedding_similarity_micros(&query_embedding, &embedding.vector)
+                })
+                .max()
+                .unwrap_or_default();
+        }
+        summary_scores.push((*node_hash, best_score, found));
+    }
+    summary_scores.sort_by_key(|(node_hash, score, _)| (Reverse(*score), *node_hash));
+    node_hashes = summary_scores
+        .iter()
+        .map(|(node_hash, _, _)| *node_hash)
+        .collect();
+    query_understanding_debug.tree_traversal_summary.enabled = true;
+    query_understanding_debug
+        .tree_traversal_summary
+        .fallback_to_flat = false;
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_candidate_count = summary_scores.len();
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_selected_count = summary_scores
+        .iter()
+        .filter(|(_, _, found)| *found > 0)
+        .count();
+    query_understanding_debug
+        .tree_traversal_summary
+        .query_embedding_dimension = query_embedding.len();
+    query_understanding_debug
+        .tree_traversal_summary
+        .query_embedding_provider = retrieval_provider.provider_name.clone();
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embeddings = summary_scores
+        .iter()
+        .map(|(node_hash, score, found)| format!("node:{node_hash}:score:{score}:refs:{found}"))
+        .collect();
 
     for node_hash in node_hashes {
         let node_response = engine.execute(ExecuteRequest {
@@ -4041,6 +4379,10 @@ fn context_query_understanding_debug(
             selected_leaf_count: 0,
             selected_node_count: 0,
             selected_path_count: 0,
+            summary_embedding_candidate_count: 0,
+            summary_embedding_selected_count: 0,
+            query_embedding_dimension: 0,
+            query_embedding_provider: String::new(),
             summary_embeddings: Vec::new(),
             top_k_per_layer: request.max_events.max(1),
         },
@@ -4095,14 +4437,14 @@ fn context_query_debug_finalize(
         .count();
     debug.tree_traversal_summary.selected_node_count = node_count;
     debug.tree_traversal_summary.selected_path_count = blocks.len();
-    debug.tree_traversal_summary.summary_embeddings = tiers
-        .iter()
-        .filter_map(|tier| match tier {
+    debug
+        .tree_traversal_summary
+        .summary_embeddings
+        .extend(tiers.iter().filter_map(|tier| match tier {
             ContextTier::L0 => Some("node_l0".to_string()),
             ContextTier::L1 => Some("node_l1".to_string()),
             ContextTier::L2 => None,
-        })
-        .collect();
+        }));
     debug.tree_traversal_summary.summary_embeddings.sort();
     debug.tree_traversal_summary.summary_embeddings.dedup();
 }
@@ -4833,6 +5175,44 @@ fn deterministic_context_embedding(model: &str, text: &str) -> Vec<f32> {
     vector
 }
 
+fn context_query_embedding(
+    provider: &ContextModelProviderConfig,
+    query: &str,
+) -> Result<Vec<f32>, Status> {
+    let inputs = [("query", stable_hash64(query), 0_u32, query)];
+    match context_embeddings_for_extract(provider, &inputs) {
+        Ok((vectors, _)) => Ok(vectors.into_iter().next().unwrap_or_default()),
+        Err(status) => {
+            if let Some(fallback) = provider.fallback_provider.as_deref() {
+                context_embeddings_for_extract(&normalize_provider(fallback.clone()), &inputs)
+                    .map(|(vectors, _)| vectors.into_iter().next().unwrap_or_default())
+            } else {
+                Err(status)
+            }
+        }
+    }
+}
+
+fn context_embedding_similarity_micros(left: &[f32], right: &[f32]) -> i64 {
+    if left.is_empty() || right.is_empty() {
+        return 0;
+    }
+    let len = left.len().min(right.len());
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for index in 0..len {
+        dot += left[index] * right[index];
+        left_norm += left[index] * left[index];
+        right_norm += right[index] * right[index];
+    }
+    if left_norm <= f32::EPSILON || right_norm <= f32::EPSILON {
+        0
+    } else {
+        ((dot / (left_norm.sqrt() * right_norm.sqrt())) * 1_000_000.0) as i64
+    }
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -4879,9 +5259,18 @@ fn empty_extract_report(
     tenant_hash: u64,
     timestamp_ms: u64,
 ) -> ContextExtractReport {
+    let embedding_generation = ContextEmbeddingGenerationReport {
+        status: status.clone(),
+        provider_name: provider.provider_name.clone(),
+        provider_kind: provider.provider_kind.clone(),
+        embedding_model: provider.embedding_model.clone(),
+        mock_mode: provider.mock_mode,
+        ..ContextEmbeddingGenerationReport::default()
+    };
     ContextExtractReport {
         status,
         provider,
+        embedding_generation,
         node: empty_node(),
         event: empty_event(),
         index_ref: ContextIndexRef {

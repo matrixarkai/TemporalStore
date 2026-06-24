@@ -347,6 +347,7 @@ fn main() {
         min_confidence: 0.0,
         min_importance: 0.0,
         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+        provider: ContextModelProviderConfig::default(),
     };
     let retrieve = retrieve_context(&engine, retrieve_request.clone());
     assert!(retrieve.status.ok, "{:?}", retrieve.status);
@@ -926,6 +927,7 @@ fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBen
                         min_confidence: 0.0,
                         min_importance: 0.0,
                         tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+                        provider: ContextModelProviderConfig::default(),
                     },
                 );
                 retrieved_source_sets.insert(source_digest, retrieve.blocks.clone());
@@ -2359,6 +2361,7 @@ mod tests {
                 min_confidence: 0.0,
                 min_importance: 0.0,
                 tiers: vec![ContextTier::L2],
+                provider: ContextModelProviderConfig::default(),
             },
         );
         assert!(retrieve.status.ok);
