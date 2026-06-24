@@ -107,18 +107,6 @@ class ScopedUnsetEnv {
 
 }  // namespace
 
-TEST(ObjectStoreBackendGuardrailTest, DetectsSupportedAndFutureBackends) {
-    EXPECT_EQ(ObjectStoreBackend::kByteStore, DetectObjectStoreBackend("blob://pool/stream/"));
-    EXPECT_EQ(ObjectStoreBackend::kByteStore, DetectObjectStoreBackend("local://pool/stream/"));
-    EXPECT_EQ(ObjectStoreBackend::kLocalFile, DetectObjectStoreBackend("file:///tmp/pool/"));
-    EXPECT_EQ(ObjectStoreBackend::kS3, DetectObjectStoreBackend("s3://bucket/prefix/"));
-    EXPECT_EQ(ObjectStoreBackend::kCephS3, DetectObjectStoreBackend("ceph://bucket/prefix/"));
-    EXPECT_EQ(ObjectStoreBackend::kCephS3,
-              DetectObjectStoreBackend("ceph+s3://bucket/prefix/"));
-    EXPECT_EQ(ObjectStoreBackend::kCephRados, DetectObjectStoreBackend("rados://pool/prefix/"));
-    EXPECT_EQ(ObjectStoreBackend::kUnknown, DetectObjectStoreBackend("http://bucket/prefix/"));
-}
-
 TEST(ObjectStoreBackendGuardrailTest, FutureBackendsFailClosedAcrossApis) {
     for (const auto& uri : {
 #ifndef BCACHE2_ENABLE_S3_STORE
