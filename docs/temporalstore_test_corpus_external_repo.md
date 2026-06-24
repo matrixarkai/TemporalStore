@@ -50,6 +50,8 @@ The lightweight C++ MatrixArk context contract runner now lives in `TemporalStor
 The C++ common/string/hash/set extension gtests were migrated into executable
 shared cases in `TemporalStoreTestCorpus` and removed from this repo:
 
+- `src/common/test/storage_pool_uri_guardrail_test.cc` ->
+  `common_storage_pool_uri_guardrail`
 - `src/extension/common/test.cc` -> `common_module_delete_ttl_expire_setex_lifecycle`
 - `src/extension/string/test.cc` -> `string_set_get_nx_xx_flags`
 - `src/extension/hash/test.cc` -> `hash_get_multi_get_missing_and_existing_fields`,
