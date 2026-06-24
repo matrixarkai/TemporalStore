@@ -160,6 +160,49 @@ class MatrixArkResourceParserTest(unittest.TestCase):
         self.assertEqual(jsonl_chunks[0].source_ref, "events.jsonl#record=0")
         self.assertEqual(jsonl_chunks[0].metadata["unit_kind"], "jsonl_record")
 
+    def test_csv_json_and_jsonl_records_are_grouped(self):
+        csv_text = "item,amount,approver\n" + "\n".join(f"gpu{i},{i},Alice" for i in range(25)) + "\n"
+        csv_chunks = parse_resource("budget.csv", resource_type="csv", text=csv_text, chunk_hash_base=2600)
+        self.assertEqual(csv_chunks[0].source_ref, "budget.csv#row=0-19")
+        self.assertEqual(csv_chunks[0].metadata["unit_kind"], "table_row_group")
+        self.assertEqual(csv_chunks[0].metadata["row_count"], 20)
+        self.assertEqual(csv_chunks[1].source_ref, "budget.csv#row=20-24")
+
+        jsonl_text = "\n".join(f'{{"event":"approval","index":{i}}}' for i in range(23)) + "\n"
+        jsonl_chunks = parse_resource("events.jsonl", resource_type="jsonl", text=jsonl_text, chunk_hash_base=2700)
+        self.assertEqual(jsonl_chunks[0].source_ref, "events.jsonl#record=0-19")
+        self.assertEqual(jsonl_chunks[0].metadata["unit_kind"], "jsonl_record_group")
+        self.assertEqual(jsonl_chunks[1].source_ref, "events.jsonl#record=20-22")
+
+        json_chunks = parse_resource("events.json", resource_type="json", text="[" + ",".join(f'{{"i":{i}}}' for i in range(21)) + "]", chunk_hash_base=2800)
+        self.assertEqual(json_chunks[0].source_ref, "events.json#record=0-19")
+        self.assertEqual(json_chunks[1].source_ref, "events.json#record=20")
+
+    def test_long_pdf_page_splits_into_page_sections(self):
+        try:
+            from reportlab.pdfgen import canvas  # type: ignore
+            import pypdf  # noqa: F401  # type: ignore
+        except Exception as exc:
+            raise unittest.SkipTest(f"PDF generation/parsing dependency unavailable: {exc}")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "policy.pdf"
+            pdf = canvas.Canvas(str(path))
+            pdf.drawString(72, 720, " ".join(f"approval{i}" for i in range(90)))
+            pdf.save()
+            chunks = parse_resource(
+                path,
+                resource_type="pdf",
+                max_chunk_tokens=30,
+                overlap_tokens=0,
+                max_chunk_chars=4096,
+                chunk_hash_base=2900,
+            )
+        self.assertGreater(len(chunks), 2)
+        self.assertEqual(chunks[0].source_ref, f"{path}#page=1")
+        self.assertEqual(chunks[1].source_ref, f"{path}#page=1&section=1")
+        self.assertEqual(chunks[1].metadata["page_section"], 1)
+
     def test_skill_section_lists_and_permissions_are_extracted(self):
         skill = parse_skill(
             "skills/ops/SKILL.md",
