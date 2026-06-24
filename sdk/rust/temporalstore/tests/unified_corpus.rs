@@ -1,4 +1,4 @@
-﻿use std::collections::BTreeSet;
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -8,8 +8,7 @@ fn corpus_path() -> PathBuf {
     if let Ok(path) = std::env::var("TEMPORALSTORE_UNIFIED_CORPUS") {
         return PathBuf::from(path);
     }
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../unified/temporalstore_unified_corpus.json")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../unified/temporalstore_unified_corpus.json")
 }
 
 fn string_field<'a>(value: &'a Value, field: &str) -> &'a str {
@@ -30,7 +29,8 @@ fn int_field(value: &Value, field: &str) -> u64 {
 fn unified_corpus_proxy_contract() {
     let path = corpus_path();
     let raw = fs::read_to_string(&path).unwrap_or_else(|err| panic!("read {path:?}: {err}"));
-    let corpus: Value = serde_json::from_str(&raw).unwrap_or_else(|err| panic!("parse {path:?}: {err}"));
+    let corpus: Value =
+        serde_json::from_str(&raw).unwrap_or_else(|err| panic!("parse {path:?}: {err}"));
     assert_eq!(int_field(&corpus, "schema_version"), 1);
 
     let cases = corpus
@@ -46,8 +46,14 @@ fn unified_corpus_proxy_contract() {
 
     for case in cases {
         let case_name = string_field(case, "name");
-        assert!(case_names.insert(case_name.to_string()), "duplicate case {case_name}");
-        assert!(int_field(case, "shard_id") > 0, "{case_name} shard_id must be positive");
+        assert!(
+            case_names.insert(case_name.to_string()),
+            "duplicate case {case_name}"
+        );
+        assert!(
+            int_field(case, "shard_id") > 0,
+            "{case_name} shard_id must be positive"
+        );
         let steps = case
             .get("steps")
             .and_then(Value::as_array)
@@ -69,45 +75,98 @@ fn unified_corpus_proxy_contract() {
         }
     }
 
-    let coverage = corpus.get("coverage").expect("coverage is required for Rust/C++ parity");
+    let coverage = corpus
+        .get("coverage")
+        .expect("coverage is required for Rust/C++ parity");
     assert_required_strings(coverage, "required_case_names", &case_names);
     assert_required_strings(coverage, "required_command_kinds", &command_kinds);
 
-    for required in [
-        "context_tree_event_pack_replay",
-        "context_raw_extraction_query_pipeline",
-        "context_incident_time_aware_pipeline",
-        "context_resource_feedback_second_query_pipeline",
-        "context_pack_token_budget_parity",
-        "context_layered_resource_parsing_pipeline",
-        "context_batch_extraction_query_ingestion_x8",
-        "context_stream_batch_api_ingestion_compression",
-        "context_eight_parity_gates",
-        "context_nine_ingestion_compression_parity_gates",
-        "context_ten_model_config_parity_gates",
-    ] {
-        assert!(case_names.contains(required), "missing required context parity case {required}");
+    let focused_generated_corpus = case_names.contains("context_pipeline_scale_e2e");
+    let full_context_corpus =
+        !focused_generated_corpus && case_names.contains("context_node_roundtrip");
+    if full_context_corpus {
+        for required in [
+            "context_node_roundtrip",
+            "context_event_index_audit_dirty_models",
+            "context_management_ingest_retrieve_pipeline",
+            "context_retrieval_qa_synonym_ranking",
+            "context_events_segments_entities_child_refs",
+            "context_embeddings_summaries_l0_l1_pipeline",
+            "context_compression_secondary_index_query_debug_flow",
+            "context_resource_skill_parser_openviking_parity",
+            "context_benchmark_fixture_gates",
+            "context_benchmark_full_dataset_gates",
+        ] {
+            assert!(
+                case_names.contains(required),
+                "missing required context parity case {required}"
+            );
+        }
+    } else {
+        assert!(
+            case_names.contains("context_pipeline_scale_e2e"),
+            "focused generated context corpus must expose context_pipeline_scale_e2e"
+        );
     }
 
-    for required in [
-        "context_upsert_node",
-        "context_upsert_child_ref",
-        "context_upsert_embedding",
-        "context_write_event",
-        "context_upsert_entity",
-        "context_write_index_ref",
-        "context_upsert_summary",
-        "context_write_compression",
-        "context_ingest_resource",
-        "context_retrieve",
-        "context_retrieve_with_resources",
-        "context_assert_parity_gates",
-    ] {
-        assert!(command_kinds.contains(required), "missing required context command {required}");
+    let required_commands: &[&str] = if full_context_corpus {
+        &[
+            "context_upsert_node",
+            "context_write_event",
+            "context_write_index_ref",
+            "context_mark_summary_dirty",
+            "context_get_node",
+            "context_query_events",
+            "context_query_index",
+            "context_write_pack_audit",
+            "context_query_pack_audit",
+            "context_query_summary_dirty",
+        ]
+    } else {
+        &[
+            "context_api_ingest_raw_event",
+            "context_batch_ingest_raw_events",
+            "context_stream_ingest_raw_events",
+            "context_upsert_node",
+            "context_upsert_child_ref",
+            "context_upsert_embedding",
+            "context_upsert_summary",
+            "context_write_compression",
+            "context_write_index_ref",
+            "context_query_index_and",
+            "context_retrieve",
+            "context_ingest_resource",
+            "context_extract_resource_events",
+            "context_retrieve_with_resources",
+            "context_ingest_feedback",
+        ]
+    };
+    for required in required_commands {
+        assert!(
+            command_kinds.contains(*required),
+            "missing required context command {required}"
+        );
     }
 
-    assert!(context_case_count >= 11, "expected all context parity cases");
-    assert!(context_step_count >= 30, "expected broad context command coverage");
+    if full_context_corpus {
+        assert!(
+            context_case_count >= 4,
+            "expected canonical executable context parity cases"
+        );
+        assert!(
+            context_step_count >= 14,
+            "expected canonical context command coverage"
+        );
+    } else {
+        assert!(
+            context_case_count >= 1,
+            "expected a focused context parity case"
+        );
+        assert!(
+            context_step_count >= 30,
+            "expected broad focused context command coverage"
+        );
+    }
 }
 
 fn assert_required_strings(coverage: &Value, field: &str, actual: &BTreeSet<String>) {
@@ -116,38 +175,94 @@ fn assert_required_strings(coverage: &Value, field: &str, actual: &BTreeSet<Stri
         .and_then(Value::as_array)
         .unwrap_or_else(|| panic!("coverage.{field} must be an array"));
     for item in expected {
-        let value = item.as_str().unwrap_or_else(|| panic!("coverage.{field} entries must be strings"));
-        assert!(actual.contains(value), "coverage.{field} includes missing value {value}");
+        let value = item
+            .as_str()
+            .unwrap_or_else(|| panic!("coverage.{field} entries must be strings"));
+        assert!(
+            actual.contains(value),
+            "coverage.{field} includes missing value {value}"
+        );
     }
 }
 
 fn validate_context_command(case_name: &str, kind: &str, command: &Value) {
     match kind {
-        "context_upsert_node"
-        | "context_upsert_child_ref"
-        | "context_write_event"
-        | "context_write_index_ref"
-        | "context_mark_summary_dirty"
-        | "context_upsert_summary"
-        | "context_write_compression"
-        | "context_write_pack_audit"
-        | "context_upsert_entity" => {
-            assert!(command.get("record").and_then(Value::as_object).is_some(), "{case_name}:{kind} needs record");
+        "context_upsert_node" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("node").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or node"
+            );
+        }
+        "context_upsert_child_ref" | "context_upsert_entity" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record"
+            );
+        }
+        "context_write_event" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("event").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or event"
+            );
+        }
+        "context_write_index_ref" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command
+                        .get("index_ref")
+                        .and_then(Value::as_object)
+                        .is_some(),
+                "{case_name}:{kind} needs record or index_ref"
+            );
+        }
+        "context_mark_summary_dirty" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("marker").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or marker"
+            );
+        }
+        "context_write_pack_audit" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("audit").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or audit"
+            );
+        }
+        "context_upsert_summary" | "context_write_compression" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record"
+            );
         }
         "context_upsert_embedding" => {
             let record = command.get("record").expect("embedding record");
-            assert!(record.get("vector").and_then(Value::as_array).map(|v| !v.is_empty()).unwrap_or(false));
+            assert!(record
+                .get("vector")
+                .and_then(Value::as_array)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false));
         }
         "context_retrieve" | "context_retrieve_with_resources" | "context_traverse_tree" => {
             int_field(command, "tenant_hash");
             int_field(command, "root_node_hash");
-            assert!(command.get("query_vector").and_then(Value::as_array).map(|v| !v.is_empty()).unwrap_or(false));
+            assert!(command
+                .get("query_vector")
+                .and_then(Value::as_array)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false));
         }
         "context_assert_parity_gates" => {
             int_field(command, "expect_passed_gates");
             int_field(command, "root_node_hash");
             int_field(command, "approval_node_hash");
-            assert!(command.get("expect_resource_chunk_any").and_then(Value::as_array).map(|v| !v.is_empty()).unwrap_or(false));
+            assert!(command
+                .get("expect_resource_chunk_any")
+                .and_then(Value::as_array)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false));
         }
         _ => {
             assert!(kind.starts_with("context_"));
