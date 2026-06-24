@@ -10,6 +10,7 @@ On the MatrixArk test server, both public paths should serve this same console:
 
 - `/monitoring/`
 - `/observation/`
+- `/studio/` as an optional OpenViking-style operations alias
 
 Covered views:
 
@@ -23,6 +24,8 @@ Covered views:
 - Open-source model registry for embeddings, reranking, extraction, summaries, and VLM/document parsing
 - Operator console for query extraction, tree traversal, resource ingestion, pack replay, feedback, and summary refresh
 - Agent Context Envelope page for the minimal message/hook payload MatrixArk expects from AI agents
+- Access management for local agent accounts, API-key application, key rotation,
+  key revocation, user/session isolation, and audit logs
 - Diagnostics and trace samples
 - Workload testing status
 - Dynamic runtime config values
@@ -41,6 +44,31 @@ Expected optional fields in `health.json`:
 - `context_ops`: status, KPIs, pipeline stages, test cards, request builder entries,
   query workbench, config groups, tree nodes, context-pack events/chunks/filters,
   open-source model registry, operator rows, safeguards, alerts, audit rows, and runbook steps
+
+Recommended local install shape:
+
+```text
+~/.matrixark/
+├── matrixark.conf
+├── data/
+├── logs/
+├── models/
+├── resources/
+├── skills/
+└── health.json
+```
+
+Recommended first-run commands once packaged:
+
+```bash
+matrixark-server init --home ~/.matrixark
+matrixark-server doctor
+matrixark-server start --backend cpp --local
+matrixark-server apply-key --agent codex
+```
+
+Today, the same pieces are available through the MCP server, Docker OSS scale
+script, this monitoring UI folder, and the Prometheus compose files.
 
 Local context UI smoke test:
 
