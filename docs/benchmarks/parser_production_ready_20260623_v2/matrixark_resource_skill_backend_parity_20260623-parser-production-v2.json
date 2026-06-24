@@ -1,0 +1,253 @@
+{
+  "all_ok": true,
+  "comparison": {
+    "checks": {
+      "embedding_types_equal": true,
+      "resource_ref_types_equal": true,
+      "resource_registry_count_equal": true,
+      "skill_ref_types_equal": true,
+      "skill_registry_count_equal": true
+    },
+    "status": "passed"
+  },
+  "failures": [],
+  "results": [
+    {
+      "backend": "cpp",
+      "checks": {
+        "all_ingests_accepted": true,
+        "chunks_present": true,
+        "cross_user_isolated": true,
+        "disabled_skill_not_selected": true,
+        "embeddings_written": true,
+        "indexes_written": true,
+        "resource_chunk_selected": true,
+        "resource_chunks_written": true,
+        "resource_manifests_written": true,
+        "resource_registry_count": true,
+        "skill_hash_present": true,
+        "skill_manifest_written": true,
+        "skill_registry_count": true,
+        "skill_sections_written": true,
+        "skill_selected": true,
+        "summaries_written": true
+      },
+      "elapsed_ms": 1591.33,
+      "ingests": {
+        "md": {
+          "resource_chunks": [
+            11000,
+            11001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        },
+        "pdf": {
+          "resource_chunks": [
+            13000,
+            13001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        },
+        "skill": {
+          "resource_chunks": [
+            14000,
+            14001
+          ],
+          "skill_hash": 4472779921714176921,
+          "status": "accepted"
+        },
+        "txt": {
+          "resource_chunks": [
+            12000,
+            12001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "registries": {
+        "resource_count": 3,
+        "skill_count": 1,
+        "skill_update_status": "disabled"
+      },
+      "retrieval": {
+        "cross_user_selected_count": 0,
+        "disabled_skill_selected_count": 6,
+        "resource_ref_types": [
+          "resource_chunk",
+          "skill",
+          "skill_section"
+        ],
+        "resource_selected_count": 9,
+        "skill_ref_types": [
+          "resource_chunk",
+          "skill",
+          "skill_section"
+        ],
+        "skill_selected_count": 9
+      },
+      "storage_prefix": "matrixark:resource-skill-parity:cpp:20260623-parser-production-v2",
+      "storage_records": {
+        "embedding_types": [
+          "event_text",
+          "resource_chunk",
+          "resource_l0",
+          "session_l0",
+          "skill_l0",
+          "skill_summary"
+        ],
+        "index_names": [
+          "resource_type:md",
+          "resource_type:pdf",
+          "resource_type:skill",
+          "resource_type:txt",
+          "skill_name:context-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_selected_refs",
+          "skill_trigger:replay_evidence",
+          "source_type:resource",
+          "source_type:skill"
+        ],
+        "record_counts": {
+          "context_child_ref": 6,
+          "context_embedding": 21,
+          "context_event": 4,
+          "context_index": 13,
+          "context_node": 8,
+          "context_pack_audit": 2,
+          "context_summary": 8,
+          "context_summary_dirty": 11,
+          "matrixark_audit_log": 8,
+          "resource_chunk": 8,
+          "resource_manifest": 3,
+          "session_buffer_event": 4,
+          "skill_manifest": 1,
+          "skill_section": 2
+        }
+      }
+    },
+    {
+      "backend": "rust",
+      "checks": {
+        "all_ingests_accepted": true,
+        "chunks_present": true,
+        "cross_user_isolated": true,
+        "disabled_skill_not_selected": true,
+        "embeddings_written": true,
+        "indexes_written": true,
+        "resource_chunk_selected": true,
+        "resource_chunks_written": true,
+        "resource_manifests_written": true,
+        "resource_registry_count": true,
+        "skill_hash_present": true,
+        "skill_manifest_written": true,
+        "skill_registry_count": true,
+        "skill_sections_written": true,
+        "skill_selected": true,
+        "summaries_written": true
+      },
+      "elapsed_ms": 1639.76,
+      "ingests": {
+        "md": {
+          "resource_chunks": [
+            11000,
+            11001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        },
+        "pdf": {
+          "resource_chunks": [
+            13000,
+            13001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        },
+        "skill": {
+          "resource_chunks": [
+            14000,
+            14001
+          ],
+          "skill_hash": 440317596409249019,
+          "status": "accepted"
+        },
+        "txt": {
+          "resource_chunks": [
+            12000,
+            12001
+          ],
+          "skill_hash": null,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "registries": {
+        "resource_count": 3,
+        "skill_count": 1,
+        "skill_update_status": "disabled"
+      },
+      "retrieval": {
+        "cross_user_selected_count": 0,
+        "disabled_skill_selected_count": 6,
+        "resource_ref_types": [
+          "resource_chunk",
+          "skill",
+          "skill_section"
+        ],
+        "resource_selected_count": 9,
+        "skill_ref_types": [
+          "resource_chunk",
+          "skill",
+          "skill_section"
+        ],
+        "skill_selected_count": 9
+      },
+      "storage_prefix": "matrixark:resource-skill-parity:rust:20260623-parser-production-v2",
+      "storage_records": {
+        "embedding_types": [
+          "event_text",
+          "resource_chunk",
+          "resource_l0",
+          "session_l0",
+          "skill_l0",
+          "skill_summary"
+        ],
+        "index_names": [
+          "resource_type:md",
+          "resource_type:pdf",
+          "resource_type:skill",
+          "resource_type:txt",
+          "skill_name:context-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_selected_refs",
+          "skill_trigger:replay_evidence",
+          "source_type:resource",
+          "source_type:skill"
+        ],
+        "record_counts": {
+          "context_child_ref": 6,
+          "context_embedding": 21,
+          "context_event": 4,
+          "context_index": 13,
+          "context_node": 8,
+          "context_pack_audit": 2,
+          "context_summary": 8,
+          "context_summary_dirty": 11,
+          "matrixark_audit_log": 8,
+          "resource_chunk": 8,
+          "resource_manifest": 3,
+          "session_buffer_event": 4,
+          "skill_manifest": 1,
+          "skill_section": 2
+        }
+      }
+    }
+  ],
+  "run_id": "20260623-parser-production-v2"
+}

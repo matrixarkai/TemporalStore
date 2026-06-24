@@ -9,6 +9,7 @@ front matter, section lists, and skill bundle directories.
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,6 +28,7 @@ VALID_SKILL_PRECEDENCE = {"low", "normal", "high", "critical"}
 VALID_OWNER_SCOPE = {"user", "team", "tenant", "account", "global"}
 SKIP_BUNDLE_DIRS = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "target", "build", "dist"}
 MAX_BUNDLE_FILES = 200
+DEFAULT_MAX_SKILL_TEXT_CHARS = int(os.environ.get("MATRIXARK_SKILL_MAX_TEXT_CHARS", str(2 * 1024 * 1024)))
 
 
 @dataclass(frozen=True)
@@ -58,7 +60,10 @@ def parse_skill(
     *,
     text: str | None = None,
     chunk_hash_base: int | None = None,
+    max_text_chars: int = DEFAULT_MAX_SKILL_TEXT_CHARS,
 ) -> ParsedSkill:
+    if max_text_chars <= 0:
+        raise ValueError("max_text_chars must be positive")
     raw_uri_text = str(raw_uri)
     bundle_files: list[str] = []
     bundle_manifest: Json = {}
@@ -73,7 +78,11 @@ def parse_skill(
             raw_uri_text = str(skill_path)
         else:
             skill_path = path
+        if skill_path.stat().st_size > max_text_chars:
+            raise ValueError(f"skill file too large: {skill_path} has {skill_path.stat().st_size} bytes, max is {max_text_chars}")
         text = skill_path.read_text(encoding="utf-8-sig")
+    if len(text) > max_text_chars:
+        raise ValueError(f"skill text too large: {len(text)} chars, max is {max_text_chars}")
     front_matter, body = _split_front_matter(text)
     front_matter = {**bundle_manifest, **front_matter}
     skill_text = body.strip() or text.strip()
@@ -96,6 +105,7 @@ def parse_skill(
         resource_type="skill",
         text=skill_text,
         chunk_hash_base=chunk_hash_base,
+        max_inline_text_chars=max_text_chars,
     )
     metadata = {
         "resource_type": "skill",
@@ -140,7 +150,9 @@ def _bundle_file_list(path: Path) -> list[str]:
     files = []
     for item in sorted(child for child in path.rglob("*") if child.is_file()):
         relative = item.relative_to(path)
-        if any(part.startswith(".") or part in SKIP_BUNDLE_DIRS for part in relative.parts[:-1]):
+        if item.is_symlink():
+            continue
+        if any(part.startswith(".") or part in SKIP_BUNDLE_DIRS for part in relative.parts):
             continue
         files.append(str(relative).replace("\\", "/"))
         if len(files) >= MAX_BUNDLE_FILES:
