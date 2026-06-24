@@ -141,13 +141,13 @@ Shared C++/Rust corpus:
 
 ```text
 compat/unified_temporalstore_cases.json
-cases: 127
-steps: 226
-executable behavior cases: 127
-executable behavior steps: 226
+cases: 128
+steps: 227
+executable behavior cases: 128
+executable behavior steps: 227
 C++ existing-test parity surface cases: 0
 C++ existing-test parity surface steps: 0
-C++ existing-test required paths: 168 unique paths
+C++ existing-test required paths: 170 unique paths
 ```
 
 Detailed inventory: `docs/unified_test_case_inventory.md`.
@@ -199,8 +199,8 @@ remain local.
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
 The duplicate-test validator currently reports `rust_attributed_tests=536`,
-`rust_test_guard_shared_corpus_marked_tests=24`, `shared_corpus_cases=127`,
-`shared_corpus_steps=226`, and `cpp_existing_test_surfaces=168`.
+`rust_test_guard_shared_corpus_marked_tests=25`, `shared_corpus_cases=128`,
+`shared_corpus_steps=227`, and `cpp_existing_test_surfaces=170`.
 It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
 `shared-corpus: <case>` or `rust-internal: <reason>`.
 
@@ -263,8 +263,8 @@ every executable corpus command and compares every expected response.
 
 Until that exists, the honest status is:
 
-- Rust executes all 226 executable shared behavior steps.
-- C++ validates the 127-case corpus shape, current context subset, exact C++ Raft case names,
+- Rust executes all 227 executable shared behavior steps.
+- C++ validates the 128-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, and C++
   client/proxy/metaserver/data-node control-plane required surfaces.

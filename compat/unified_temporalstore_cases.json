@@ -127,7 +127,8 @@
       "ops_grafana_metrics_cpp_parity",
       "context_resource_skill_parser_openviking_parity",
       "redis_operational_admin_commands",
-      "redis_slot_hash_cpp_crc64"
+      "redis_slot_hash_cpp_crc64",
+      "redis_engine_product_command_flow"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -318,6 +319,15 @@
         "status": "temporary_static_surface_gate",
         "blocker": "Native C++ Codex/MCP parity runner is not wired yet; static MCP integration paths remain required.",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-codex-mcp-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "Redis/admin",
+        "suites": [
+          "redis_admin_product_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "Native C++ Redis/admin product command corpus runner is not wired yet; Rust executes the broad Redis engine command flow while C++ parity remains tied to Redis/admin/API product surface evidence.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-redis-admin-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
       }
     ],
     "comparison_outputs": {
@@ -6035,6 +6045,29 @@
             "kind": "redis_slot_hash_cpp_crc64",
             "scenario": "slot_hash_crc64",
             "description": "Runs Redis-compatible slot/hash commands through the product Redis command parser."
+          }
+        }
+      ]
+    },
+    {
+      "name": "redis_engine_product_command_flow",
+      "shard_id": 1,
+      "family": "Redis/admin",
+      "description": "Shared C++/Rust Redis product command flow covering string, hash, set, Feature, IPS, and Risk commands through the engine-backed Redis command path.",
+      "steps": [
+        {
+          "name": "redis_engine_product_command_flow",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "redis_admin_product_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Runs the broad Redis-compatible product command flow through the Rust engine-backed Redis parser; C++ parity remains tied to the Redis/admin/API product surface docs until a native C++ shared runner consumes this case.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/redis.rs",
+              "docs/rust_product_test_reduction_guard.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust redis_string_hash_set_and_feature_commands_use_engine --lib -- --test-threads=1"
           }
         }
       ]

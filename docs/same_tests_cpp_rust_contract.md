@@ -29,13 +29,13 @@ Current corpus:
 ```text
 schema_version: 1
 name: temporalstore-unified-cpp-rust-corpus
-cases: 127
-steps: 226
-executable behavior cases: 127
-executable behavior steps: 226
+cases: 128
+steps: 227
+executable behavior cases: 128
+executable behavior steps: 227
 required command kinds: 66
 required response kinds: 19
-C++ existing-test parity surfaces: 168 unique required paths
+C++ existing-test parity surfaces: 170 unique required paths
 ```
 
 The shared cases are:

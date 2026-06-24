@@ -42,13 +42,13 @@ python3 tools/validate_temporalstore_test_corpus_dependency.py --require-externa
 Current inventory:
 
 ```text
-total cases: 127
-total steps: 226
-executable shared behavior cases: 127
-executable shared behavior steps: 226
+total cases: 128
+total steps: 227
+executable shared behavior cases: 128
+executable shared behavior steps: 227
 C++ existing-test parity surface cases: 0
 C++ existing-test parity surface steps: 0
-C++ required source/test/harness paths: 168 unique paths
+C++ required source/test/harness paths: 170 unique paths
 required command kinds: 66
 required response kinds: 19
 ```
@@ -337,10 +337,10 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 536
-shared-corpus marked Rust tests: 24
-shared corpus cases: 127
-shared corpus steps: 226
-C++ existing-test surfaces: 168
+shared-corpus marked Rust tests: 25
+shared corpus cases: 128
+shared corpus steps: 227
+C++ existing-test surfaces: 170
 ```
 
 The detailed reduction split and new-test guard live in

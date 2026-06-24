@@ -1818,6 +1818,7 @@ mod tests {
     }
 
     #[test]
+    // shared-corpus: redis_engine_product_command_flow;
     fn redis_string_hash_set_and_feature_commands_use_engine() {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
