@@ -2581,6 +2581,46 @@ def local_context_budget(args: Json) -> Json:
     }
 
 
+def is_resource_or_skill_candidate(candidate: Json) -> bool:
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or "")
+    return ref_type in {"resource_chunk", "skill_section"} or context_class in {"resource_fact", "resource_entity_fact"}
+
+
+def dropped_candidate_audit_ref(candidate: Json, *, reason: str, token_estimate: int) -> Json:
+    metadata = candidate.get("metadata", {}) if isinstance(candidate.get("metadata"), dict) else {}
+    return {
+        "ref_type": candidate.get("ref_type", ""),
+        "ref_hash": candidate.get("ref_hash"),
+        "context_class": candidate.get("context_class") or candidate.get("ref_type", ""),
+        "drop_reason": reason,
+        "reason": reason,
+        "score": candidate.get("score", 0.0),
+        "origin_score": candidate.get("origin_score", 0.0),
+        "packing_score": round(packing_sort_key(candidate, str(candidate.get("packing_policy") or "fact"))[0], 6),
+        "token_estimate": token_estimate,
+        "token_cost": token_estimate,
+        "raw_uri": candidate.get("raw_uri", ""),
+        "source_ref": candidate.get("source_ref", ""),
+        "citation": candidate.get("citation") or candidate.get("source_ref", ""),
+        "resource_type": candidate.get("resource_type", ""),
+        "resource_version": candidate.get("resource_version") or metadata.get("resource_version", ""),
+        "version_state": candidate.get("version_state", "current"),
+        "stale_or_superseded": bool(candidate.get("stale_or_superseded", False)),
+        "access_decision": candidate.get("access_decision", "allowed_by_scope"),
+        "selection_reason": candidate.get("selection_reason", ""),
+        "matched_index_terms": candidate.get("matched_index_terms", []),
+        "node_hash": candidate.get("node_hash"),
+        "node_path": candidate.get("node_path", []),
+    }
+
+
+def record_dropped_candidate(dropped: Json, candidate: Json, *, reason: str, token_estimate: int) -> None:
+    if not is_resource_or_skill_candidate(candidate):
+        return
+    dropped.setdefault("refs", []).append(dropped_candidate_audit_ref(candidate, reason=reason, token_estimate=token_estimate))
+
+
 def diversify_for_question_type(candidates: list[Json], question_type: str, *, total_limit: int) -> list[Json]:
     if question_type != "multi_hop":
         return candidates[:total_limit]
@@ -2645,6 +2685,7 @@ def select_token_budgeted_refs(
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
             "raw_l2": "raw L2 content was dropped because a smaller cited chunk or summary was enough",
         },
+        "refs": [],
     }
     seen_text_hashes: set[int] = set()
     for candidate in candidates:
@@ -2653,19 +2694,23 @@ def select_token_budgeted_refs(
         if candidate_text_hashes.intersection(duplicate_text_hashes):
             dropped["duplicate"] += 1
             dropped["estimated_tokens"]["duplicate"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="duplicate", token_estimate=ref_tokens)
             continue
         text_hash = stable_hash(str(candidate.get("text", ""))[:512])
         if text_hash in seen_text_hashes:
             dropped["duplicate"] += 1
             dropped["estimated_tokens"]["duplicate"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="duplicate", token_estimate=ref_tokens)
             continue
         if float(candidate.get("score", 0.0)) < 0.04:
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
             continue
         if remote_budget <= 0 or (selected and used_tokens + ref_tokens > remote_budget):
             dropped["over_budget"] += 1
             dropped["estimated_tokens"]["over_budget"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="over_budget", token_estimate=ref_tokens)
             continue
         seen_text_hashes.add(text_hash)
         selected.append(
@@ -2694,6 +2739,13 @@ def select_token_budgeted_refs(
         selected = [{**first, "text": " ".join(clipped_words), "token_estimate": len(clipped_words)}]
         used_tokens = len(clipped_words)
         dropped["over_budget"] = max(0, len(candidates) - 1)
+        for candidate in candidates[1:]:
+            record_dropped_candidate(
+                dropped,
+                candidate,
+                reason="over_budget",
+                token_estimate=max(1, token_count(str(candidate.get("text", "")))),
+            )
     return selected, used_tokens, dropped
 
 
