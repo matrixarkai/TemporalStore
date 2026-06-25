@@ -1326,18 +1326,64 @@ fn verify_ops_readiness_service_summary() {
         assert!(!blocked.ready);
         assert_eq!(blocked.gate_status, "blocked");
     }
+    let blocked_services = gates
+        .iter()
+        .filter(|gate| gate.gate_status != "ready")
+        .map(|gate| gate.service.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(blocked_services, vec!["data_node", "raft_replication"]);
+    assert_eq!(
+        report.next_blocked_service().map(|gate| gate.service),
+        Some("data_node".to_string())
+    );
     let data_node = report
         .service_summary("data_node")
         .expect("data node service summary should be exported");
+    assert!(!data_node.ready);
     assert!(data_node.areas.contains(&"dataserver".to_string()));
     assert!(data_node
         .areas
         .contains(&"data_node_distributed_raft".to_string()));
+    assert!(data_node
+        .blocker_classes
+        .contains(&"data_node_distributed_raft".to_string()));
+    assert!(data_node.next_action.contains("membership"));
+    assert!(report
+        .failed_capabilities_for_service("data_node")
+        .iter()
+        .any(|capability| capability
+            .capability
+            .contains("data-node multi-process rollout")));
+    assert!(!report.service_ready("data_node"));
     let gate = report
         .service_gate_report("data_node")
         .expect("data node service gate report should be exported");
+    assert!(!gate.ready);
+    assert_eq!(gate.gate_status, "blocked");
+    assert_eq!(gate.severity, "critical");
     assert_eq!(gate.remediation_order, 4);
     assert_eq!(gate.owner, "data_node_runtime");
+    assert!(gate.failed_capabilities.iter().any(|capability| capability
+        .capability
+        .contains("data-node multi-process rollout")));
+    let raft_gate = report
+        .service_gate_report("raft_replication")
+        .expect("raft replication service gate report should be exported");
+    assert!(!raft_gate.ready);
+    assert_eq!(raft_gate.gate_status, "blocked");
+    assert_eq!(raft_gate.severity, "critical");
+    assert!(raft_gate
+        .failed_capabilities
+        .iter()
+        .any(|capability| capability
+            .capability
+            .contains("data-node multi-process rollout")));
+    let scale_gate = report
+        .service_gate_report("scale_testing")
+        .expect("scale testing service gate report should be exported");
+    assert!(scale_gate.ready);
+    assert_eq!(scale_gate.gate_status, "ready");
+    assert_eq!(scale_gate.blocker_count, 0);
 }
 
 fn verify_redis_feature_module_flow() {

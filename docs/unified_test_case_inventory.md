@@ -562,10 +562,10 @@ Those should follow the same rule:
 
 ## Next Unification Work
 
-1. Promote remaining `temporalstore_compat.rs` product behavior into shared corpus cases:
-   readiness service-summary API and stream/page read APIs. Redis/feature/sequence/Raft/shared-store
-   compatibility tests now have explicit shared-corpus references and can be removed or shrunk once
-   the shared runner fully replaces their extra assertions.
+1. Keep new product behavior in shared corpus cases first. The retired
+   `temporalstore_compat.rs` integration target is replaced by
+   `crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs`, which runs the shared
+   contract through direct engine and HTTP client paths.
 2. Add sibling shared corpora for storage, Raft, control-plane, ingestion, and scale/fault
    scenarios when a single command/response JSON file becomes too large.
 3. Move the new control-plane shared cases from Rust-executable/C++-static validation to native

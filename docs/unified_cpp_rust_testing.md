@@ -155,7 +155,7 @@ bash tools/run_temporalstore_unified_validation.sh
 
 That gate unifies the existing local checks instead of replacing them:
 
-- unit/API compatibility: `temporalstore_compat`
+- shared corpus integration: `unified_temporalstore_corpus`
 - API contract: `validate_sdk_contract.py`
 - shared Rust/C++ corpus: `tools/run_temporalstore_unified_tests.sh`
 - shared control-plane case runners: `tools/run_control_plane_shared_cases.py --rust`

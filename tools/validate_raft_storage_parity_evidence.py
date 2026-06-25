@@ -159,6 +159,13 @@ AREAS: tuple[ParityArea, ...] = (
                 ("proposal_status", "replica_reads", "follower_write_rejection"),
             ),
             RustEvidence(
+                "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+                (
+                    "rust_executes_shared_cpp_rust_temporalstore_corpus",
+                    "rust_client_executes_shared_cpp_rust_temporalstore_corpus",
+                ),
+            ),
+            RustEvidence(
                 "compat/unified_temporalstore_cases.json",
                 (
                     '"rust_parity_gate": "tools/run_raft_distributed_parity.sh"',
@@ -499,6 +506,8 @@ def validate_cpp_paths(area: ParityArea, cases: dict[str, dict], cpp_repo: Path)
     checked: set[str] = set()
     for case_name in area.corpus_cases:
         for step in cases[case_name].get("steps") or []:
+            if step.get("command", {}).get("kind") != "existing_test":
+                continue
             for required_path in step["command"].get("required_paths") or []:
                 if not (cpp_repo / required_path).exists():
                     raise SystemExit(f"{area.name}: C++ required path missing: {required_path}")

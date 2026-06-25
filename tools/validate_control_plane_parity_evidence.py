@@ -51,8 +51,11 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-                ("production_readiness_service_summary_is_public_api",),
+                "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+                (
+                    "rust_executes_shared_cpp_rust_temporalstore_corpus",
+                    "rust_client_executes_shared_cpp_rust_temporalstore_corpus",
+                ),
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/readiness.rs",
@@ -138,6 +141,11 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/src/raft.rs",
                 (
                     "PersistSchedulerState",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft/tests.rs",
+                (
                     "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
                 ),
             ),
@@ -155,8 +163,13 @@ AREAS: tuple[ParityArea, ...] = (
                     "reload_shard_with",
                     "unload_shard_with",
                     "lifecycle_snapshot",
-                    "lifecycle_write_blocked",
                     "lifecycle_snapshot_persist_failed",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/data_node/lifecycle.rs",
+                (
+                    "lifecycle_write_blocked",
                 ),
             ),
             RustEvidence(
@@ -188,6 +201,11 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     "sync_table_topology",
                     "start_meta_sync_loop_handle",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/client/tests.rs",
+                (
                     "client_background_meta_sync_updates_existing_table_handle",
                 ),
             ),
@@ -214,6 +232,11 @@ AREAS: tuple[ParityArea, ...] = (
                 (
                     "refresh_stale_routes_from_meta",
                     "invalidate_routes_from_meta_topology",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/client/tests.rs",
+                (
                     "direct_client_refreshes_cached_route_after_failure",
                 ),
             ),
@@ -270,7 +293,17 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/src/client.rs",
                 (
                     "backend_failure_is_continuous",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/client/tests.rs",
+                (
                     "client_backend_pool_skips_cached_route_after_continuous_failure_threshold",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/client/tests.rs",
+                (
                     "direct_client_refreshes_cached_route_after_failure",
                 ),
             ),
@@ -294,11 +327,16 @@ AREAS: tuple[ParityArea, ...] = (
         suite="cpp_data_node_lifecycle_parity",
         rust_evidence=(
             RustEvidence(
-                "crates/temporalstore-rust/src/data_node.rs",
+                "crates/temporalstore-rust/src/data_node/tests.rs",
                 (
                     "runtime_load_reload_unload_records_lifecycle_transitions",
                     "runtime_rejects_foreground_writes_during_lifecycle_transition",
                     "runtime_auto_persists_lifecycle_snapshot_across_transitions",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/data_node/lifecycle.rs",
+                (
                     "lifecycle_write_blocked",
                 ),
             ),
@@ -365,10 +403,15 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/src/data_node.rs",
+                "crates/temporalstore-rust/src/data_node/tests.rs",
                 (
                     "runtime_auto_persists_lifecycle_snapshot_across_transitions",
                     "runtime_rejects_foreground_writes_during_lifecycle_transition",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/data_node/lifecycle.rs",
+                (
                     "lifecycle_write_blocked",
                 ),
             ),
