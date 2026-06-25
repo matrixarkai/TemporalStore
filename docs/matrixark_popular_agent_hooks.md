@@ -25,6 +25,8 @@ agent's JSON payload from stdin and normalizes it into MatrixArk MCP calls:
 ```text
 User prompt / before LLM -> matrixark_ingest + matrixark_retrieve
 Tool result / after LLM -> matrixark_ingest
+ResourceAdded / SkillAdded -> matrixark_ingest(kind=resource|skill)
+Feedback / accepted_refs / rejected_refs -> matrixark_feedback
 Stop / compact / idle -> matrixark_session_commit
 ```
 
@@ -106,6 +108,20 @@ Tool events / ingest:
   tool_result
   PermissionRequest
 
+Resource and skill events / import lifecycle:
+  ResourceAdded
+  SkillAdded
+  FileAdded
+  DocumentAdded
+  resource_import
+
+Feedback events / confirmation and correction memory:
+  Feedback
+  accepted_refs
+  rejected_refs
+  confirmation
+  correction
+
 Commit events / one-pass batch extraction:
   Stop
   SubagentStop
@@ -172,6 +188,10 @@ workspace_root
 cwd
 open_files[]
 tool_outputs[]
+raw_uri / uri / path / resource_path
+resource_type
+context_pack_id
+accepted_refs[] / rejected_refs[]
 ```
 
 ## Cursor Hook/Fallback Example
@@ -295,6 +315,43 @@ context_pack_id
 selected_ref_count
 used_context_tokens
 ```
+
+
+## Resource And Feedback Hooks
+
+OpenViking-style context systems do not only capture chat turns. MatrixArk now
+normalizes resource and feedback lifecycle events through the same universal hook
+adapter:
+
+```bash
+cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent cursor \
+  --event ResourceAdded \
+  --backend temporalstore-direct
+{
+  "raw_uri": "/repo/runbooks/gpu-approval.md",
+  "resource_type": "md",
+  "session_id": "cursor-thread-123",
+  "message": "New GPU approval runbook added."
+}
+JSON
+
+cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event Feedback \
+  --backend temporalstore-direct
+{
+  "message": "Yes, that answer is correct.",
+  "context_pack_id": "123456",
+  "accepted_refs": ["event:approval:gpu"],
+  "rejected_refs": []
+}
+JSON
+```
+
+Resource hooks call `matrixark_ingest(kind=resource|skill)` and preserve raw
+bytes by URI. Feedback hooks call `matrixark_feedback` so accepted/rejected refs
+and confirmations affect the next retrieval.
 
 ## Why MCP Still Matters
 
