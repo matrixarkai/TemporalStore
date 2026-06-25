@@ -276,6 +276,7 @@ fn context_relevance_ranks_qa_synonyms_and_phrases() {
     );
 }
 
+// shared-corpus: context_compression_secondary_index_query_debug_flow
 #[test]
 fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     let engine = test_engine();
@@ -353,6 +354,25 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
         .summary_embeddings
         .iter()
         .any(|entry| entry.starts_with("node:") && entry.contains(":score:")));
+    assert!(!retrieve
+        .query_understanding_debug
+        .verbose_filter_groups
+        .is_empty());
+    assert!(retrieve
+        .query_understanding_debug
+        .verbose_filter_groups
+        .iter()
+        .any(|group| group.candidate_count > 0 && group.matched_count > 0));
+    assert!(!retrieve.query_understanding_debug.selected_refs.is_empty());
+    assert_eq!(retrieve.query_understanding_debug.selected_refs[0].rank, 1);
+    assert!(retrieve
+        .query_understanding_debug
+        .selected_refs
+        .iter()
+        .any(|selected| selected
+            .matched_filter_groups
+            .iter()
+            .any(|group_id| group_id.starts_with("filter_group_"))));
     assert!(retrieve.parity.pipeline_ready);
     assert!(retrieve.parity.cpp_context_models_ready);
     assert!(retrieve.parity.openviking_tiers_ready);

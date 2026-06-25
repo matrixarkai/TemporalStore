@@ -838,10 +838,29 @@ pub struct ContextRetrieveReport {
 pub struct ContextQueryUnderstandingDebug {
     pub question_type: String,
     pub secondary_index_filter_groups: Vec<Vec<String>>,
+    #[serde(default)]
+    pub verbose_filter_groups: Vec<ContextQueryFilterGroupDebug>,
     pub candidates_passing_prefilter: usize,
     pub candidates_dropped_before_scoring: usize,
     pub tree_traversal_summary: ContextTreeTraversalDebug,
     pub prefilter_candidate_sample: Vec<ContextPrefilterCandidateDebug>,
+    #[serde(default)]
+    pub selected_refs: Vec<ContextSelectedRefDebug>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextQueryFilterGroupDebug {
+    pub group_id: String,
+    pub group_kind: String,
+    pub terms: Vec<String>,
+    pub candidate_ref_hashes: Vec<u64>,
+    pub matched_ref_hashes: Vec<u64>,
+    pub dropped_ref_hashes: Vec<u64>,
+    pub selected_ref_hashes: Vec<u64>,
+    pub candidate_count: usize,
+    pub matched_count: usize,
+    pub dropped_count: usize,
+    pub selected_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -875,6 +894,19 @@ pub struct ContextPrefilterCandidateDebug {
     pub candidate_terms: Vec<String>,
     pub passes_secondary_index_prefilter: bool,
     pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextSelectedRefDebug {
+    pub rank: usize,
+    pub uri: String,
+    pub source_ref: String,
+    pub tier: ContextTier,
+    pub ref_hash: u64,
+    pub node_hash: u64,
+    pub event_time_ms: u64,
+    pub relevance_score: u32,
+    pub matched_filter_groups: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -3719,6 +3751,7 @@ pub fn retrieve_context(
     });
     context_query_debug_finalize(
         &mut query_understanding_debug,
+        &request.query,
         &blocks,
         node_count,
         tiers.as_slice(),

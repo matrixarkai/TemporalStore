@@ -9,15 +9,15 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 508,
+    "grandfathered_tests": 507,
     "by_classification": {
-      "move_to_shared": 501,
+      "move_to_shared": 500,
       "rust_internal": 7
     },
     "by_family": {
       "Feature": 12,
       "IPS": 4,
-      "Raft": 140,
+      "Raft": 139,
       "Redis/admin": 32,
       "Risk": 8,
       "Sequence": 4,
@@ -3340,15 +3340,6 @@
       "test_id": "crates/temporalstore-rust/src/raft/tests.rs::distributed_raft_readiness_reports_remaining_production_blockers",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
       "test_name": "distributed_raft_readiness_reports_remaining_production_blockers",
-      "family": "Raft",
-      "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
-      "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",

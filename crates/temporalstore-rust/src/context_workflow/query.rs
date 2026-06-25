@@ -2,8 +2,9 @@ use crate::types::{ContextEvent, Status};
 
 use super::{
     context_embeddings_for_extract, normalize_provider, truncate_words, ContextBlock,
-    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryUnderstandingDebug,
-    ContextRetrieveRequest, ContextTier, ContextTreeTraversalDebug,
+    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryFilterGroupDebug,
+    ContextQueryUnderstandingDebug, ContextRetrieveRequest, ContextSelectedRefDebug, ContextTier,
+    ContextTreeTraversalDebug,
 };
 pub(super) fn tier_rank(tier: ContextTier) -> u8 {
     match tier {
@@ -43,7 +44,8 @@ pub(super) fn context_query_understanding_debug(
     let filter_groups = context_query_secondary_index_filter_groups(&terms);
     ContextQueryUnderstandingDebug {
         question_type: context_query_question_type(&terms),
-        secondary_index_filter_groups: filter_groups,
+        secondary_index_filter_groups: filter_groups.clone(),
+        verbose_filter_groups: context_query_verbose_filter_groups(&filter_groups),
         candidates_passing_prefilter: 0,
         candidates_dropped_before_scoring: 0,
         tree_traversal_summary: ContextTreeTraversalDebug {
@@ -62,6 +64,7 @@ pub(super) fn context_query_understanding_debug(
             top_k_per_layer: request.max_events.max(1),
         },
         prefilter_candidate_sample: Vec::new(),
+        selected_refs: Vec::new(),
     }
 }
 
@@ -72,6 +75,25 @@ pub(super) fn context_query_debug_record_candidate(
     event: &ContextEvent,
     passes_prefilter: bool,
 ) {
+    let ref_hash = stable_hash64(&format!(
+        "ctx-prefilter:{tenant_hash}:{node_hash}:{}:{}",
+        event.event_time_ms, event.event_id_hash
+    ));
+    let candidate_terms = context_event_candidate_terms(event);
+    let event_text = event.text.as_str();
+    for group in &mut debug.verbose_filter_groups {
+        group.candidate_count += 1;
+        push_debug_hash(&mut group.candidate_ref_hashes, ref_hash);
+        if passes_prefilter
+            && context_debug_filter_group_matches(group, &candidate_terms, event_text)
+        {
+            group.matched_count += 1;
+            push_debug_hash(&mut group.matched_ref_hashes, ref_hash);
+        } else {
+            group.dropped_count += 1;
+            push_debug_hash(&mut group.dropped_ref_hashes, ref_hash);
+        }
+    }
     if passes_prefilter {
         debug.candidates_passing_prefilter += 1;
     } else {
@@ -87,14 +109,11 @@ pub(super) fn context_query_debug_record_candidate(
         .prefilter_candidate_sample
         .push(ContextPrefilterCandidateDebug {
             record_type: "context_event".to_string(),
-            ref_hash: stable_hash64(&format!(
-                "ctx-prefilter:{tenant_hash}:{node_hash}:{}:{}",
-                event.event_time_ms, event.event_id_hash
-            )),
+            ref_hash,
             node_hash,
             event_time_ms: event.event_time_ms,
             node_path: vec![format!("tenant:{tenant_hash}"), format!("node:{node_hash}")],
-            candidate_terms: context_event_candidate_terms(event),
+            candidate_terms,
             passes_secondary_index_prefilter: passes_prefilter,
             text: truncate_words(&event.text, 32),
         });
@@ -102,6 +121,7 @@ pub(super) fn context_query_debug_record_candidate(
 
 pub(super) fn context_query_debug_finalize(
     debug: &mut ContextQueryUnderstandingDebug,
+    query: &str,
     blocks: &[ContextBlock],
     node_count: usize,
     tiers: &[ContextTier],
@@ -122,6 +142,44 @@ pub(super) fn context_query_debug_finalize(
         }));
     debug.tree_traversal_summary.summary_embeddings.sort();
     debug.tree_traversal_summary.summary_embeddings.dedup();
+    debug.selected_refs = blocks
+        .iter()
+        .enumerate()
+        .map(|(index, block)| {
+            let ref_hash = context_selected_ref_hash(block);
+            let matched_filter_groups = debug
+                .verbose_filter_groups
+                .iter_mut()
+                .filter_map(|group| {
+                    if context_debug_filter_group_matches(
+                        group,
+                        &[format!(
+                            "source_ref:{}",
+                            block.source_ref.to_ascii_lowercase()
+                        )],
+                        &format!("{} {}", block.text, block.source_ref),
+                    ) {
+                        group.selected_count += 1;
+                        push_debug_hash(&mut group.selected_ref_hashes, ref_hash);
+                        Some(group.group_id.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            ContextSelectedRefDebug {
+                rank: index + 1,
+                uri: block.uri.clone(),
+                source_ref: block.source_ref.clone(),
+                tier: block.tier,
+                ref_hash,
+                node_hash: block.node_hash,
+                event_time_ms: block.event_time_ms,
+                relevance_score: context_relevance_score(query, &block.text),
+                matched_filter_groups,
+            }
+        })
+        .collect();
 }
 
 pub(super) fn context_query_question_type(terms: &[String]) -> String {
@@ -222,6 +280,63 @@ pub(super) fn context_query_secondary_index_filter_groups(terms: &[String]) -> V
     groups.sort();
     groups.dedup();
     groups
+}
+
+fn context_query_verbose_filter_groups(
+    filter_groups: &[Vec<String>],
+) -> Vec<ContextQueryFilterGroupDebug> {
+    filter_groups
+        .iter()
+        .enumerate()
+        .map(|(index, terms)| ContextQueryFilterGroupDebug {
+            group_id: format!("filter_group_{}", index + 1),
+            group_kind: if terms.iter().any(|term| term.starts_with("query_term:")) {
+                "lexical_prefilter".to_string()
+            } else {
+                "secondary_index_prefilter".to_string()
+            },
+            terms: terms.clone(),
+            ..ContextQueryFilterGroupDebug::default()
+        })
+        .collect()
+}
+
+fn context_debug_filter_group_matches(
+    group: &ContextQueryFilterGroupDebug,
+    candidate_terms: &[String],
+    text: &str,
+) -> bool {
+    let text_lower = text.to_ascii_lowercase();
+    let text_normalized = context_normalize_for_match(text);
+    group.terms.iter().any(|term| {
+        if let Some(query_term) = term.strip_prefix("query_term:") {
+            query_term == "*"
+                || context_text_matches_term(&text_lower, &text_normalized, query_term)
+        } else if let Some(source_term) = term.strip_prefix("source_ref:") {
+            candidate_terms.iter().any(|candidate| {
+                candidate
+                    .strip_prefix("source_ref:")
+                    .map_or(false, |candidate_source| {
+                        candidate_source.contains(source_term)
+                    })
+            }) || text_lower.contains(source_term)
+        } else {
+            candidate_terms.iter().any(|candidate| candidate == term) || text_lower.contains(term)
+        }
+    })
+}
+
+fn context_selected_ref_hash(block: &ContextBlock) -> u64 {
+    stable_hash64(&format!(
+        "ctx-selected-ref:{}:{}:{}:{}",
+        block.uri, block.source_ref, block.node_hash, block.event_time_ms
+    ))
+}
+
+fn push_debug_hash(values: &mut Vec<u64>, value: u64) {
+    if values.len() < 32 && !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 pub(super) fn context_event_candidate_terms(event: &ContextEvent) -> Vec<String> {

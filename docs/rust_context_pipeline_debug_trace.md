@@ -1,6 +1,6 @@
 # Rust Context Pipeline Debug Trace
 
-Last validated: 2026-06-23
+Last validated: 2026-06-25
 
 This page records a real end-to-end Rust TemporalStore context pipeline run. It is intended for
 debugging and tracing ingestion, extraction, retrieval, injection, and benchmark replay through the
@@ -315,6 +315,71 @@ Command:
 ```text
 Command::ContextUpsertEmbedding
 ```
+
+## C++-Style Query Debug Object
+
+Rust retrieval now emits a verbose query-understanding object shaped for parity with the C++
+query-index debug pages. The object keeps the older compact fields and adds explicit
+filter-group accounting and selected-ref ordering:
+
+```json
+{
+  "question_type": "semantic_recall",
+  "secondary_index_filter_groups": [["query_term:checkout"]],
+  "verbose_filter_groups": [
+    {
+      "group_id": "filter_group_1",
+      "group_kind": "lexical_prefilter",
+      "terms": ["query_term:checkout"],
+      "candidate_count": 1,
+      "matched_count": 1,
+      "dropped_count": 0,
+      "selected_count": 1,
+      "candidate_ref_hashes": ["<bounded ref hash sample>"],
+      "matched_ref_hashes": ["<bounded ref hash sample>"],
+      "dropped_ref_hashes": [],
+      "selected_ref_hashes": ["<bounded selected ref hash sample>"]
+    }
+  ],
+  "prefilter_candidate_sample": [
+    {
+      "record_type": "context_event",
+      "candidate_terms": [
+        "event_kind:5",
+        "record_type:context_event",
+        "source_type:message"
+      ],
+      "passes_secondary_index_prefilter": true
+    }
+  ],
+  "selected_refs": [
+    {
+      "rank": 1,
+      "uri": "tsctx://tenant/<tenant>/node/<node>/event/<time>",
+      "source_ref": "mock-incident-1",
+      "tier": "l2",
+      "ref_hash": "<stable selected ref hash>",
+      "node_hash": "<node_hash>",
+      "event_time_ms": 1000,
+      "relevance_score": 100,
+      "matched_filter_groups": ["filter_group_1"]
+    }
+  ]
+}
+```
+
+The important parity points are:
+
+| Field | Purpose |
+| --- | --- |
+| `verbose_filter_groups` | Shows the C++-style query-understanding filter groups used for secondary-index or lexical prefiltering. |
+| `candidate_ref_hashes` / `matched_ref_hashes` / `dropped_ref_hashes` | Bounded samples explaining which event refs were considered, matched, or rejected before scoring. |
+| `selected_refs` | Final injection/retrieval order with rank, source ref, URI, tier, ref hash, event time, and relevance score. |
+| `matched_filter_groups` | Explains which query/filter group selected each evidence block. |
+
+This does not claim byte-for-byte C++ debug JSON compatibility; it gives Rust and C++ the same
+behavioral trace concepts so shared tests can compare query understanding, evidence selection, and
+prompt-injection ordering.
 
 ### `ContextAuditModel` / `ContextPackAudit`
 

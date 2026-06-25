@@ -367,7 +367,6 @@
     "crates/temporalstore-rust/src/raft/tests.rs::partition_chaos_majority_side_continues_and_healed_replica_catches_up",
     "crates/temporalstore-rust/src/raft/tests.rs::distributed_propose_does_not_wait_for_failed_followers_after_quorum",
     "crates/temporalstore-rust/src/raft/tests.rs::distributed_raft_readiness_reports_remaining_production_blockers",
-    "crates/temporalstore-rust/src/raft/tests.rs::raft_openraft_rollout_readiness_reports_real_process_rollout_evidence",
     "crates/temporalstore-rust/src/raft/tests.rs::raft_atomic_apply_readiness_covers_data_node_atomic_durability",
     "crates/temporalstore-rust/src/raft/tests.rs::raft_metaserver_membership_readiness_reports_real_scheduler_execution",
     "crates/temporalstore-rust/src/raft/tests.rs::raft_transport_security_readiness_covers_service_mtls",
