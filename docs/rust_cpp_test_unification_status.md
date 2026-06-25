@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-Date: 2026-06-18
+Date: 2026-06-25
 
 Rust attributed tests counted with `#[test]` and `#[tokio::test]` under
 `crates/temporalstore-rust`: **585**.
@@ -32,6 +32,27 @@ Rust product-test guard: new tests require shared-corpus or rust-internal marker
 shared corpus: no duplicate case names, per-case step names, or per-case command payloads
 C++ existing-test surfaces: no repeated required_paths
 ```
+
+The external `TemporalStoreTestCorpus` checkout now has a refreshed full draft migration inventory:
+
+```text
+canonical shared cases: 150
+canonical shared steps: 312
+draft translated existing tests: 2700
+draft Rust candidates: 554
+draft C++ candidates: 2146
+Rust marked local tests remaining: 45
+Rust marked local tests removable now: 0
+```
+
+Five Rust-local product tests were removed because their behavior is now covered by self-executing
+shared cases:
+
+- `feature_nested_proto_aggregate_semantics`
+- `redis_operational_admin_commands`
+- `redis_slot_hash_cpp_crc64`
+- `storage_shared_store_oplog_cursor_retention`
+- `storage_shared_store_checkpoint_cursor_retention`
 
 The duplicate-test guard derives its C++ Raft alias exemptions from
 `coverage.required_raft_case_names`, so the duplicate path rules and the unified Raft schema cannot
