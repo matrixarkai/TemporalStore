@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -189,7 +189,8 @@ flowchart TD
   D --> H
     </div>
     <p>Callers do not manually create <code>ContextNode</code> records. MatrixArk materializes a node path from <code>metadata.node_path</code> or a default session/resource path. Records attach to the leaf node, while summary dirty markers allow parent refresh to happen asynchronously.</p>
-    <p>If L0/L1 summaries are missing or stale, retrieval falls back to event, entity, chunk, and recent raw embeddings. Summaries are an optimization, not a correctness dependency.</p>
+    <div class="note"><strong>Default summary refresh cadence:</strong> the MCP summary refresher wakes every <code>MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS</code>, default <code>1000</code> ms, and refreshes up to <code>MATRIXARK_SUMMARY_REFRESH_LIMIT</code>, default <code>64</code>, dirty nodes per tick. It writes versioned <code>ContextSummary(node_l0)</code> and <code>ContextEmbedding(node_l0)</code> for every refreshed node, and writes <code>node_l1</code> summaries/embeddings when the node has enough accumulated content, child summaries, or event volume to need a richer overview.</div>
+    <p>Session/resource boundaries may still call <code>matrixark_refresh_summaries</code> immediately when the caller needs freshness before retrieval. If L0/L1 summaries are missing or stale, retrieval falls back to event, entity, chunk, and recent raw embeddings. Summaries are an optimization, not a correctness dependency.</p>
   </section>
 
   <section>

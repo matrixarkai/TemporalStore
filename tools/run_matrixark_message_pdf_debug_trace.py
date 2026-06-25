@@ -300,6 +300,8 @@ def write_outputs(
         f"- Embedding model: `{trace['embedding_model']}`",
         f"- Embedding execution mode: `{trace['embedding_execution_mode']}`",
         f"- Query: `{QUERY}`",
+        f"- Summary refresh: background interval `{trace['summary_refresh_policy']['background_interval_ms']}` ms, limit `{trace['summary_refresh_policy']['background_limit']}` dirty nodes per tick",
+        f"- Node L1 policy: {trace['summary_refresh_policy']['node_l1_policy']}",
         "",
         "## Record Counts",
         "",
@@ -410,7 +412,8 @@ def write_outputs(
   <header>
     <h1>MatrixArk Message + PDF Debug Trace</h1>
     <p class="muted">Conversation + PDF ingestion, extraction, resource chunking, embeddings, summaries, tree traversal, ContextPack, audit, and replay.</p>
-    <p><span class="pill">{html.escape(trace['embedding_model'])}</span><span class="pill">{html.escape(trace['embedding_execution_mode'])}</span></p>
+    <p><span class="pill">{html.escape(trace['embedding_model'])}</span><span class="pill">{html.escape(trace['embedding_execution_mode'])}</span><span class="pill">Summary refresh: background interval {trace['summary_refresh_policy']['background_interval_ms']} ms</span><span class="pill">Limit {trace['summary_refresh_policy']['background_limit']} dirty nodes/tick</span></p>
+    <p class="muted">Node L1 policy: {html.escape(trace['summary_refresh_policy']['node_l1_policy'])}</p>
   </header>
   <main>
     <section class="grid">
@@ -490,6 +493,12 @@ def main() -> int:
         "query": QUERY,
         "embedding_model": embedding_model_name(),
         "embedding_execution_mode": embedding_execution_mode_name(),
+        "summary_refresh_policy": {
+            "background_interval_ms": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000")),
+            "background_limit": int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64")),
+            "boundary_refresh_tool": "matrixark_refresh_summaries",
+            "node_l1_policy": "generate when child summaries, >=3 source events, or >=180 estimated source tokens",
+        },
         "calls": [],
         "pdf_resources": [],
     }
