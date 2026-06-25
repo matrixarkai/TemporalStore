@@ -72,6 +72,7 @@
                 <tr><td>matrixark_admin_create_account</td><td>Create account and tenant</td><td>admin:account</td><td>bootstrap only or tenant admin boundary</td></tr>
                 <tr><td>matrixark_admin_update_account</td><td>Enable/disable account or tenant</td><td>admin:account</td><td>context APIs blocked when disabled</td></tr>
                 <tr><td>matrixark_admin_create_user</td><td>Register user</td><td>admin:user</td><td>hashes user under tenant</td></tr>
+                <tr><td>matrixark_auth_sso_login</td><td>Map Google/Gmail, Okta, Azure AD, or GitHub login claims to a MatrixArk user</td><td>verified IdP claim</td><td>OAuth/OIDC token must be verified by portal/gateway in enforced mode</td></tr>
                 <tr><td>matrixark_admin_update_user</td><td>Enable/disable user</td><td>admin:user</td><td>disabled users cannot use context APIs</td></tr>
                 <tr><td>matrixark_admin_create_api_key</td><td>Issue scoped key</td><td>admin:api_key</td><td>raw key returned once</td></tr>
                 <tr><td>matrixark_admin_list_api_keys</td><td>Inventory keys</td><td>admin:api_key</td><td>never returns raw key or hash</td></tr>

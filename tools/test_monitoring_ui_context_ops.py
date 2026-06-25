@@ -154,6 +154,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-user",
             "portal-session",
             "portal-agent",
+            "portal-provider",
+            "portal-email",
             "portal-page-size",
             "portal-refresh",
             "portal-copy",
@@ -163,6 +165,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-keys",
             "portal-register-payload",
             "portal-key-payload",
+            "portal-sso-payload",
             "portal-key-management-payload",
             "portal-request",
             "portal-table-head",
@@ -181,6 +184,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         html = (UI_DIR / "management-portal.html").read_text(encoding="utf-8")
         self.assertIn("matrixark_management_portal", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
+        self.assertIn("matrixark_auth_sso_login", html)
+        self.assertIn("Google / Gmail", html)
         self.assertIn("matrixark_admin_create_user", html)
         self.assertIn("matrixark_ingestion_dashboard", html)
         self.assertIn("Context Packs", html)
