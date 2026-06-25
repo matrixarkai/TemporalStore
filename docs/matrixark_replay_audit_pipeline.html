@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk Replay And Audit Pipeline</title>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#5f6b7a; --line:#d8dee8; --bg:#f7f9fc; --card:#ffffff; --accent:#1769e0; }
+    body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif; }
+    main { max-width:1120px; margin:0 auto; padding:42px 24px 80px; }
+    h1 { font-size:38px; line-height:1.08; margin:0 0 14px; }
+    h2 { margin-top:34px; padding-top:8px; font-size:24px; }
+    h3 { margin-top:24px; font-size:18px; }
+    p { color:var(--ink); }
+    .lead { font-size:18px; color:var(--muted); max-width:900px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:18px 20px; margin:18px 0; }
+    code { background:#eef3fb; padding:2px 5px; border-radius:4px; font-size:.92em; }
+    pre { background:#101828; color:#e6edf7; padding:16px; overflow:auto; border-radius:8px; }
+    pre code { background:transparent; padding:0; color:inherit; }
+    ul { padding-left:24px; }
+    li { margin:5px 0; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(260px,1fr)); gap:14px; }
+    .pill { display:inline-block; margin:3px 5px 3px 0; padding:4px 8px; border:1px solid var(--line); border-radius:999px; background:#fff; color:#304056; font-size:13px; }
+    .diagram { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; overflow:auto; }
+    .note { border-left:4px solid var(--accent); padding:10px 14px; background:#eef5ff; border-radius:4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>MatrixArk Replay And Audit Pipeline</h1>
+  <p class="lead">Replay and audit are wired for MatrixArk context retrieval. Retrieval writes <code>context_pack_audit</code>, operational and access actions write <code>matrixark_audit_log</code>, and <code>matrixark_replay</code> can return the persisted record stream needed to reconstruct selected evidence.</p>
+
+  <section class="card">
+    <h2>Why This Matters</h2>
+    <p>Replay and audit answer what MatrixArk returned, why those refs were selected, what was dropped, which token budget and retrieval policy were used, and which account, tenant, user, session, or API key performed the action.</p>
+    <div>
+      <span class="pill">selected refs</span><span class="pill">dropped refs</span><span class="pill">tree traversal</span><span class="pill">secondary filters</span><span class="pill">token budget</span><span class="pill">access audit</span>
+    </div>
+  </section>
+
+  <h2>Retrieval To Replay Flow</h2>
+  <div class="diagram">
+<pre class="mermaid"><code>flowchart TD
+  A["matrixark_retrieve(query, scope, max_context_tokens)"]
+  B["Query understanding and secondary-index planning"]
+  C["Tree traversal with ContextNode L0/L1 embeddings"]
+  D["Select events, entities, segments"]
+  E["Select resource chunks"]
+  F["Select skill sections only"]
+  G["Question-type-aware token packing"]
+  H["Return ContextPack"]
+  I["Write context_pack_audit"]
+  J["matrixark_replay(context_pack_id)"]
+  K["Return raw records plus matching audit"]
+  A --> B --> C --> D --> G
+  C --> E --> G
+  C --> F --> G
+  G --> H
+  G --> I
+  I --> J --> K</code></pre>
+  </div>
+
+  <h2>What <code>context_pack_audit</code> Stores</h2>
+  <div class="grid">
+    <div class="card"><h3>Identity</h3><p><code>context_pack_id</code>, <code>query</code>, <code>scope</code>, <code>created_at_ms</code>.</p></div>
+    <div class="card"><h3>Evidence</h3><p><code>selected_refs</code>, <code>dropped_refs</code>, selected ref counts, compact source previews, citations.</p></div>
+    <div class="card"><h3>Retrieval</h3><p><code>tree_traversal</code>, <code>secondary_index_filter</code>, <code>recall_policy</code>, layer scores, candidate counts.</p></div>
+    <div class="card"><h3>Budget</h3><p>Local, remote, and total prompt context tokens plus the remote context budget.</p></div>
+  </div>
+
+  <h2>Selected And Dropped Refs</h2>
+  <p><code>selected_refs</code> preserve <code>ref_type</code>, <code>ref_hash</code>, <code>node_path</code>, <code>source_ref</code>, <code>score</code>, <code>selection_reason</code>, <code>matched_index_terms</code>, token estimate, and citation metadata where available.</p>
+  <p><code>dropped_refs</code> explain failure and tuning causes: <code>over_budget</code>, <code>duplicate</code>, <code>stale_or_superseded</code>, <code>low_score</code>, <code>access_scope_denied</code>, <code>secondary_index_filter_miss</code>, or <code>disabled_skill</code>.</p>
+
+  <h2>Access Audit Flow</h2>
+  <div class="diagram">
+<pre class="mermaid"><code>flowchart TD
+  A["MCP tool call"]
+  B["authorize_and_enrich()"]
+  C["Validate API key, scope, role"]
+  D["Run tool"]
+  E["Write matrixark_audit_log"]
+  A --> B --> C --> D --> E</code></pre>
+  </div>
+  <p>MatrixArk writes <code>matrixark_audit_log</code> for actions such as <code>context.ingest</code>, <code>context.retrieve</code>, <code>context.replay</code>, <code>resource.list</code>, <code>skill.list</code>, <code>skill.update</code>, backend readiness, backend metrics, and admin/account/key operations.</p>
+
+  <h2>Replay API</h2>
+<pre><code>{
+  "name": "matrixark_replay",
+  "arguments": {
+    "context_pack_id": "123"
+  }
+}</code></pre>
+  <p>The current replay implementation flushes pending audit buffers, returns the stored records for the current backend/prefix, and lets the consumer find the matching <code>context_pack_audit</code> by <code>context_pack_id</code>. This works across local JSONL, C++ direct, and Rust record-log backends.</p>
+
+  <h2>Audit Buffering</h2>
+  <p>Direct C++ and Rust-backed adapters support audit modes:</p>
+  <ul>
+    <li><code>sync</code>: write audit immediately.</li>
+    <li><code>buffered</code>: buffer and flush in the background to reduce retrieval tail latency.</li>
+    <li><code>drop</code>: skip ContextPack audit writes for extreme load testing only.</li>
+  </ul>
+  <p class="note"><code>matrixark_replay</code> calls <code>flush_audits()</code> first, so replay can see the latest buffered ContextPack audit before returning records.</p>
+
+  <h2>Resource And Skill Replay</h2>
+  <div class="diagram">
+<pre class="mermaid"><code>flowchart TD
+  A["Resource or SKILL.md ingestion"]
+  B["ResourceManifest / SkillManifest"]
+  C["ResourceChunk / SkillSection"]
+  D["ContextSummary and ContextEmbedding"]
+  E["ContextIndex"]
+  F["Retrieve selected chunk or skill section"]
+  G["context_pack_audit selected_refs"]
+  H["Replay source_ref and record"]
+  A --> B --> C --> D
+  C --> E
+  E --> F --> G --> H</code></pre>
+  </div>
+  <p>Resource replay uses <code>resource_chunk</code> refs. Skill replay uses <code>skill_section</code> refs. For skills, MatrixArk writes <code>skill_manifest</code>, <code>skill_registry</code>, <code>skill_section</code>, skill-as-resource <code>resource_chunk</code>, <code>skill_l0</code> summary, and embeddings for <code>skill_l0</code>, <code>skill_summary</code>, <code>skill_section</code>, and <code>resource_chunk</code>.</p>
+
+  <h2>C++ And Rust Status</h2>
+  <p>The resource/skill backend parity harness validates the same replay/audit contract for local JSONL, C++ TemporalStore, and Rust TemporalStore record-log backends. It checks <code>context_pack_audit</code>, replayable selected refs, resource chunk replay, skill section replay, and access audit for retrieve/replay/resource/skill actions.</p>
+
+  <h2>Debug Commands</h2>
+<pre><code>cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus
+TEMPORALSTORE_CONSUMER_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+MATRIXARK_EMBEDDING_PROVIDER=hash MATRIXARK_REQUIRE_OSS_EMBEDDINGS=0 \
+MATRIXARK_UNDERSTANDING_PROVIDER=rules MATRIXARK_REQUIRE_OSS_UNDERSTANDING=0 \
+python3 tools/run_matrixark_resource_skill_backend_parity.py --backends local --run-id replay-audit-local</code></pre>
+<pre><code>python3 tools/run_matrixark_resource_skill_backend_parity.py --backends cpp --run-id replay-audit-cpp</code></pre>
+<pre><code>MATRIXARK_TEMPORALSTORE_RUST_ROOT=/tmp/matrixark-rust-replay-audit \
+python3 tools/run_matrixark_resource_skill_backend_parity.py --backends rust --run-id replay-audit-rust</code></pre>
+
+  <h2>Report Checks</h2>
+  <ul>
+    <li><code>context_pack_audits_written: true</code></li>
+    <li><code>resource_pack_replayable: true</code></li>
+    <li><code>skill_pack_replayable: true</code></li>
+    <li><code>access_audit_retrieve: true</code></li>
+    <li><code>access_audit_replay: true</code></li>
+    <li><code>access_audit_resource_list: true</code></li>
+    <li><code>access_audit_skill_list: true</code></li>
+    <li><code>access_audit_skill_update: true</code></li>
+  </ul>
+
+  <h2>Current Limitations</h2>
+  <ul>
+    <li>Replay currently returns the backend record stream plus matching audit data. A narrower replay bundle can be added later for production APIs.</li>
+    <li>Buffered audit mode can lose the newest unflushed audit records if the process crashes. Use sync mode for regulated or benchmark runs.</li>
+    <li>Audit logs do not store raw resource bytes. They point to <code>raw_uri</code>, <code>source_ref</code>, chunk hashes, and selected record refs.</li>
+  </ul>
+
+  <h2>Recommended Production Policy</h2>
+  <p>Use buffered ContextPack audit for normal serving, sync audit for regulated or benchmark runs, keep access audit enabled, and always record selected refs, dropped refs, token counts, tree traversal, and secondary-index filter details.</p>
+</main>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'default' });
+</script>
+</body>
+</html>
