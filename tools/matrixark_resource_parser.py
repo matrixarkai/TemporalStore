@@ -117,6 +117,33 @@ def content_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
 
 
+def normalize_parse_warnings(metadata: Json) -> list[str]:
+    warnings: list[str] = []
+
+    def add_warning(value: Any) -> None:
+        text = compact_ws(str(value or ""))
+        if text and text not in warnings:
+            warnings.append(text[:240])
+
+    raw_warnings = metadata.get("parse_warnings", [])
+    if isinstance(raw_warnings, str):
+        add_warning(raw_warnings)
+    elif isinstance(raw_warnings, list):
+        for value in raw_warnings:
+            add_warning(value)
+
+    if metadata.get("needs_vlm"):
+        add_warning("visual_content_requires_vlm_or_ocr")
+    if metadata.get("needs_ocr"):
+        add_warning("scanned_or_binary_content_requires_ocr")
+    if metadata.get("ocr_status") == "unavailable":
+        add_warning(metadata.get("ocr_reason") or "ocr_unavailable")
+    skipped = metadata.get("directory_skipped_files")
+    if isinstance(skipped, int) and skipped > 0:
+        add_warning(f"directory_skipped_files:{skipped}")
+    return warnings
+
+
 def resource_content_version(raw_uri: str, units: list[Json]) -> str:
     digest = hashlib.sha256()
     digest.update(raw_uri.encode("utf-8", errors="ignore"))
@@ -293,6 +320,9 @@ def parse_resource(
             metadata["citation"] = source_ref
             metadata["supersedes_chunk_hash"] = supersedes.get(source_ref) or supersedes.get(piece_hash)
             metadata["embedding_text"] = build_embedding_text(piece, metadata, source_ref)
+            metadata["parse_warnings"] = normalize_parse_warnings(metadata)
+            metadata["raw_storage_policy"] = "raw_uri_only"
+            metadata["raw_bytes_stored"] = False
             chunk_hash = (
                 chunk_hash_base + len(chunks)
                 if chunk_hash_base is not None
@@ -629,13 +659,15 @@ def _record_group_units(records: list[tuple[int, str, str]], family: str) -> lis
 
 
 def _binary_stub_units(raw_uri: str, kind: str, *, reason: str = "") -> list[Json]:
+    warning = reason or "no OCR/VLM provider returned text"
     return [
         {
             "text": f"Binary {kind} resource at {raw_uri}. Use a VLM or OCR provider to extract visual content.",
             "unit_kind": "binary_stub",
             "needs_vlm": True,
             "ocr_status": "unavailable",
-            "ocr_reason": reason or "no OCR/VLM provider returned text",
+            "ocr_reason": warning,
+            "parse_warnings": [warning, "raw_bytes_not_stored"],
         }
     ]
 
@@ -704,6 +736,10 @@ def _parse_directory_units(
     for unit in units:
         unit["directory_file_count"] = parsed_files
         unit["directory_skipped_files"] = skipped_files
+        if skipped_files > 0:
+            warnings = unit.setdefault("parse_warnings", [])
+            if isinstance(warnings, list):
+                warnings.append(f"directory_skipped_files:{skipped_files}")
     return units
 
 
