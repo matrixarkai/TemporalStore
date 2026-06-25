@@ -1548,6 +1548,30 @@ def sanitize_resource_metadata(metadata: Json) -> Json:
     return sanitized
 
 
+def registry_access_scope(scope: Json) -> Json:
+    return {
+        "account_id": str(scope.get("account_id") or ""),
+        "tenant_id": str(scope.get("tenant_id") or ""),
+        "team": str(scope.get("team") or ""),
+        "user_id": str(scope.get("user_id") or ""),
+        "session_id": str(scope.get("session_id") or ""),
+        "account_hash": scope.get("account_hash", 0),
+        "tenant_hash": scope.get("tenant_hash", 0),
+        "user_hash": scope.get("user_hash", 0),
+        "session_hash": scope.get("session_hash", 0),
+    }
+
+
+def deployment_scope_from_args(args: Json, envelope: Json) -> str:
+    value = str(
+        args.get("deployment_scope")
+        or envelope.get("metadata", {}).get("deployment_scope")
+        or os.environ.get("MATRIXARK_DEPLOYMENT_SCOPE")
+        or "local"
+    ).strip().lower()
+    return value if value in {"local", "global", "cloud", "on_prem", "hybrid"} else "local"
+
+
 def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:
     warnings: list[str] = []
     for chunk in chunks:
@@ -3279,6 +3303,8 @@ class MatrixArkLocalAdapter:
                 "parse_warnings": record.get("parse_warnings", []),
                 "parse_warning_count": record.get("parse_warning_count", 0),
                 "async_parent_summary_required": bool(record.get("async_parent_summary_required", False)),
+                "access_scope": record.get("access_scope", registry_access_scope(record.get("scope", {}))),
+                "deployment_scope": record.get("deployment_scope", "local"),
                 "import_task_hash": record.get("import_task_hash", 0),
                 "token_estimate": record.get("token_estimate", 0),
                 "node_hash": record.get("node_hash", 0),
@@ -3325,6 +3351,8 @@ class MatrixArkLocalAdapter:
                 "permissions": record.get("permissions", record.get("metadata", {}).get("permissions", [])),
                 "inputs": record.get("inputs", record.get("metadata", {}).get("inputs", [])),
                 "outputs": record.get("outputs", record.get("metadata", {}).get("outputs", [])),
+                "access_scope": record.get("access_scope", registry_access_scope(record.get("scope", {}))),
+                "deployment_scope": record.get("deployment_scope", "local"),
                 "node_hash": record.get("node_hash", 0),
                 "node_path": record.get("node_path", []),
                 "scope": record.get("scope", {}),
@@ -3450,6 +3478,8 @@ class MatrixArkLocalAdapter:
             resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
             resource_import_wait = bool(args.get("wait", True))
             resource_import_background = bool(args.get("_background_resource_import", False))
+            deployment_scope = deployment_scope_from_args(args, envelope)
+            access_scope = registry_access_scope(envelope["scope"])
             provided_task_hash = args.get("_resource_import_task_hash")
             resource_import_task_hash = (
                 int(provided_task_hash)
@@ -3554,9 +3584,38 @@ class MatrixArkLocalAdapter:
                             "permissions": parsed_skill.metadata.get("permissions", []),
                             "inputs": parsed_skill.metadata.get("inputs", []),
                             "outputs": parsed_skill.metadata.get("outputs", []),
+                            "access_scope": access_scope,
+                            "deployment_scope": deployment_scope,
                             "text": parsed_skill.text,
                             "token_estimate": parsed_skill.token_estimate,
                             "metadata": parsed_skill.metadata,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    self.append(
+                        {
+                            "record_type": "skill_registry",
+                            "registry_hash": stable_hash(f"skill_registry:{parsed_skill.skill_hash}:{deployment_scope}"),
+                            "skill_hash": parsed_skill.skill_hash,
+                            "import_task_hash": resource_import_task_hash,
+                            "raw_uri": raw_uri,
+                            "name": parsed_skill.name,
+                            "description": parsed_skill.description,
+                            "owner_scope": parsed_skill.metadata.get("owner_scope", "user"),
+                            "version": parsed_skill.metadata.get("version", "1"),
+                            "status": parsed_skill.metadata.get("status", "active"),
+                            "precedence": parsed_skill.metadata.get("precedence", "normal"),
+                            "triggers": parsed_skill.metadata.get("triggers", []),
+                            "allowed_tools": parsed_skill.metadata.get("allowed_tools", []),
+                            "examples": parsed_skill.metadata.get("examples", []),
+                            "permissions": parsed_skill.metadata.get("permissions", []),
+                            "inputs": parsed_skill.metadata.get("inputs", []),
+                            "outputs": parsed_skill.metadata.get("outputs", []),
+                            "access_scope": access_scope,
+                            "deployment_scope": deployment_scope,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
                             "scope": envelope["scope"],
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
@@ -3734,7 +3793,29 @@ class MatrixArkLocalAdapter:
                         "superseded_chunk_hashes": superseded_chunk_hashes[:200],
                         "summary_dirty_hashes": resource_dirty_hashes,
                         "async_parent_summary_required": bool(resource_dirty_hashes),
+                        "access_scope": access_scope,
+                        "deployment_scope": deployment_scope,
                         "token_estimate": sum(chunk.token_estimate for chunk in parsed_chunks),
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                self.append(
+                    {
+                        "record_type": "resource_registry",
+                        "registry_hash": stable_hash(f"resource_registry:{raw_uri}:{node_hash}:{resource_version_value}:{deployment_scope}"),
+                        "resource_hash": manifest_hash,
+                        "import_task_hash": resource_import_task_hash,
+                        "raw_uri": raw_uri,
+                        "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                        "resource_version": resource_version_value,
+                        "content_hash": resource_content_hash,
+                        "chunk_count": len(parsed_chunks),
+                        "superseded_chunk_hashes": superseded_chunk_hashes[:200],
+                        "access_scope": access_scope,
+                        "deployment_scope": deployment_scope,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -6635,6 +6716,11 @@ TOOLS: list[Json] = [
                 "wait": {"type": "boolean", "default": True, "description": "For resource/skill imports, wait for parsing and record writes in the local runtime. wait=false records a queued ResourceImportTask."},
                 "resource_version": {"type": "string", "description": "Optional caller-supplied resource version. Defaults to parser content version."},
                 "supersedes_chunk_hashes": {"type": "object", "description": "Optional map from source_ref or content_hash to the older chunk hash this import supersedes."},
+                "deployment_scope": {
+                    "type": "string",
+                    "enum": ["local", "global", "cloud", "on_prem", "hybrid"],
+                    "description": "Optional deployment visibility marker for resource/skill registry records. Defaults to local.",
+                },
                 "auto_batch_extract": {
                     "type": "boolean",
                     "default": False,
