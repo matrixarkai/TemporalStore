@@ -538,6 +538,15 @@ Completed since the last backlog update:
   - Support S3-compatible stores and future ByteStore-like backends.
   - Test MinIO or another S3-compatible implementation for local/dev only.
 
+- Add AWS credential and cloud object-store readiness for MatrixArk resource/skill ingestion.
+  - Support standard AWS credential discovery: `AWS_PROFILE`, `AWS_REGION`/`AWS_DEFAULT_REGION`, environment credentials, web identity/IRSA, EC2/ECS instance roles, and explicit `MATRIXARK_S3_ENDPOINT_URL` for S3-compatible stores.
+  - Add a credential preflight for cloud-mode ingestion: verify caller can `PutObject`, `GetObject`, and optional `DeleteObject` under the configured `s3_bucket`/`s3_prefix` before resource extraction starts.
+  - Keep MatrixArk API keys separate from AWS credentials: MatrixArk auth decides who may ingest; AWS IAM decides where raw files are uploaded/read.
+  - Define least-privilege IAM templates for resource uploads, resource reads, snapshot/archive reads, and optional lifecycle cleanup.
+  - Add local MinIO tests for `raw_storage_mode=cloud` so S3 upload/download behavior is validated without real AWS credentials.
+  - Never persist AWS access keys, session tokens, presigned URLs, or credential JSON in TemporalStore records, logs, ContextPacks, or benchmark artifacts; store only `s3://` raw URIs plus redacted credential-source metadata.
+  - Add future hooks for KMS/SSE, bucket policy validation, cross-account role assumption, and cloud audit correlation.
+
 - Define backend selection.
   - Local file: single-node/dev only.
   - Shared file/EFS: AWS simple shared-storage deployment.
