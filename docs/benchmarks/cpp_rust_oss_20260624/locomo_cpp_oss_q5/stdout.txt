@@ -1,0 +1,94 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.context_packs.jsonl",
+    "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.hypotheses.jsonl",
+    "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.judge.jsonl",
+    "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.progress.json",
+    "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.report.json",
+    "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.report.md",
+    "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_cpp_oss_q5/locomo_cpp_oss_q5.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 5,
+    "name": "locomo",
+    "questions_run": 5,
+    "sessions": 19,
+    "source_path": "/root/matrixark_benchmarks/data/locomo10.json",
+    "turns_ingested": 419,
+    "version": "locomo10.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 4,
+    "evidence_session_miss": 4,
+    "reader_exact_substring_miss": 4,
+    "reader_miss_with_evidence": 1,
+    "reader_support_miss": 5,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 5
+  },
+  "finished_at_ms": 1782353113633,
+  "latency": {
+    "avg_answer_bearing_tokens": 8.6,
+    "avg_latency_ms": 143.89410020085052,
+    "avg_prompt_tokens": 1200,
+    "ingestion_elapsed_ms": 1747,
+    "ingestion_throughput_turns_per_sec": 239.84,
+    "p50_latency_ms": 141.87271599075757,
+    "p95_latency_ms": 165.41587599203922
+  },
+  "models": {
+    "embedding_model": "hashing:hashing-local",
+    "judge_model": "qwen2.5:1.5b",
+    "judge_provider": "openai-compatible",
+    "reader_model": "qwen2.5:1.5b",
+    "reader_provider": "openai-compatible"
+  },
+  "retrieval_config": {
+    "batch_size": 40,
+    "ingest_mode": "batch",
+    "io_timeout_ms": 120000,
+    "judge_execution_mode": "openai-compatible",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "openai-compatible",
+    "request_timeout_ms": 120000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_prefix": "matrixark:bench:oss:20260624:locomo_cpp_oss_q5",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-direct",
+    "token_budget": 1200
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.007167,
+    "answer_hit": 0.2,
+    "answer_quality_under_budget": 0.0,
+    "answer_support_hit": 0.0,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_passed": true,
+    "context_recall": 1.0,
+    "evidence_session_recall": 0.2,
+    "final_judge_score": 0.0,
+    "judge_score_per_1k_tokens": 0.0
+  },
+  "started_at_ms": 1782352900261,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.007167,
+    "answer_bearing_tokens": 43,
+    "answer_bearing_tokens_per_question": 8.6,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 20588,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 6000
+  }
+}
