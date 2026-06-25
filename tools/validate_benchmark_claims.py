@@ -52,6 +52,8 @@ def main() -> int:
     validate_generic_aggregation_and_absence_rules()
     validate_cross_session_evidence_diversity()
     validate_rust_full_replay_report_contract()
+    validate_benchmark_readiness_contract_examples()
+    validate_benchmark_readiness_archives()
     validate_archive_paper_comparable_contract_examples()
     validate_archive_paper_comparable_claims()
     failures: list[str] = []
@@ -83,6 +85,114 @@ def validate_archive_paper_comparable_claims() -> None:
         missing = archive_paper_comparable_missing_fields(data)
         if missing:
             raise SystemExit(f"{relative(path)} overclaims paper comparable readiness; missing {missing!r}")
+
+
+def validate_benchmark_readiness_archives() -> None:
+    for path in (DOCS / "benchmark_archives").glob("*.json"):
+        data = json.loads(path.read_text(encoding="utf-8"))
+        missing = benchmark_readiness_missing_fields(data)
+        if missing:
+            raise SystemExit(f"{relative(path)} overclaims benchmark readiness; missing {missing!r}")
+
+
+def benchmark_readiness_missing_fields(data: dict) -> list[str]:
+    quality = data.get("quality_gate") if isinstance(data.get("quality_gate"), dict) else {}
+    ready = bool(
+        data.get("benchmark_quality_ready")
+        or data.get("benchmark_threshold_passed")
+        or quality.get("quality_ready")
+        or quality.get("passed")
+    )
+    if not ready:
+        return []
+    rust = data.get("rust_temporalstore_backend") if isinstance(data.get("rust_temporalstore_backend"), dict) else {}
+    missing: list[str] = []
+    if not bool(rust.get("all_pipelines_use_rust_temporalstore") or data.get("all_pipelines_use_rust_temporalstore")):
+        missing.append("all_pipelines_use_rust_temporalstore")
+    if bool(rust.get("python_only_diagnostic") or data.get("python_only_diagnostic")):
+        missing.append("python_only_diagnostic=false")
+    if not bool(rust.get("ready") or data.get("rust_temporalstore_backend_ready")):
+        missing.append("rust_temporalstore_backend_ready")
+    if bool(rust.get("direct_source_scoring") or data.get("rust_temporalstore_direct_source_scoring")):
+        missing.append("rust_temporalstore_direct_source_scoring=false")
+
+    # Full raw benchmark reports carry deeper ingestion evidence. Compact summary archives may only
+    # keep the backend-level proof, so require the detailed fields when the report emits them.
+    has_context_event_field = (
+        "context_event_ingest_ready" in rust
+        or "rust_temporalstore_context_event_ingest_ready" in data
+    )
+    if has_context_event_field and not bool(
+        rust.get("context_event_ingest_ready")
+        or data.get("rust_temporalstore_context_event_ingest_ready")
+    ):
+        missing.append("rust_temporalstore_context_event_ingest_ready")
+
+    has_source_set_fields = (
+        "ingested_source_sets" in rust
+        or "retrieved_source_sets" in rust
+        or "rust_temporalstore_ingested_source_sets" in data
+        or "rust_temporalstore_retrieved_source_sets" in data
+    )
+    if has_source_set_fields:
+        ingested = int(rust.get("ingested_source_sets") or data.get("rust_temporalstore_ingested_source_sets") or 0)
+        retrieved = int(rust.get("retrieved_source_sets") or data.get("rust_temporalstore_retrieved_source_sets") or 0)
+        if ingested <= 0:
+            missing.append("rust_temporalstore_ingested_source_sets>0")
+        if retrieved <= 0:
+            missing.append("rust_temporalstore_retrieved_source_sets>0")
+    return missing
+
+
+def validate_benchmark_readiness_contract_examples() -> None:
+    base = {
+        "benchmark_quality_ready": True,
+        "benchmark_threshold_passed": True,
+        "all_pipelines_use_rust_temporalstore": True,
+        "python_only_diagnostic": False,
+        "rust_temporalstore_backend_ready": True,
+        "rust_temporalstore_context_event_ingest_ready": True,
+        "rust_temporalstore_direct_source_scoring": False,
+        "rust_temporalstore_ingested_source_sets": 10,
+        "rust_temporalstore_retrieved_source_sets": 10,
+        "reader_mode_effective": "deterministic",
+        "rust_temporalstore_full_replay_ready": False,
+        "reader_open_source_calls": 0,
+    }
+    if benchmark_readiness_missing_fields(base):
+        raise SystemExit("valid Rust-backed deterministic benchmark readiness example should pass")
+
+    no_rust = json.loads(json.dumps(base))
+    no_rust["all_pipelines_use_rust_temporalstore"] = False
+    if "all_pipelines_use_rust_temporalstore" not in benchmark_readiness_missing_fields(no_rust):
+        raise SystemExit("benchmark readiness must require Rust TemporalStore pipeline evidence")
+
+    python_only = json.loads(json.dumps(base))
+    python_only["python_only_diagnostic"] = True
+    if "python_only_diagnostic=false" not in benchmark_readiness_missing_fields(python_only):
+        raise SystemExit("benchmark readiness must reject Python-only diagnostics")
+
+    direct_scoring = json.loads(json.dumps(base))
+    direct_scoring["rust_temporalstore_direct_source_scoring"] = True
+    if "rust_temporalstore_direct_source_scoring=false" not in benchmark_readiness_missing_fields(direct_scoring):
+        raise SystemExit("benchmark readiness must reject direct-source scoring")
+
+    no_backend = json.loads(json.dumps(base))
+    no_backend["rust_temporalstore_backend_ready"] = False
+    if "rust_temporalstore_backend_ready" not in benchmark_readiness_missing_fields(no_backend):
+        raise SystemExit("benchmark readiness must require Rust TemporalStore backend readiness")
+
+    compact = {
+        "quality_gate": {"quality_ready": True, "passed": True},
+        "rust_temporalstore_backend": {
+            "all_pipelines_use_rust_temporalstore": True,
+            "python_only_diagnostic": False,
+            "ready": True,
+            "direct_source_scoring": False,
+        },
+    }
+    if benchmark_readiness_missing_fields(compact):
+        raise SystemExit("compact archive benchmark readiness example should pass")
 
 
 def archive_paper_comparable_missing_fields(data: dict) -> list[str]:
