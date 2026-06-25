@@ -1,7 +1,7 @@
 use super::*;
 use crate::control::{Config, SetConfigRequest};
 use crate::http::{json_response, parse_json, post_json_with_options, serve, HttpRequestOptions};
-use crate::meta::{TableMetaInfo, TablePartition};
+use crate::meta::{ServerMetaInfo, TableMetaInfo, TablePartition};
 use crate::rebalance::{
     CppPartitionSetTopology, DeterministicTaskScheduler, NetworkSchedulerTaskExecution,
     RebalanceStep, SchedulerTaskKind, SchedulerTaskResult, ShardReplica, ShardReplicaState,
