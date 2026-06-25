@@ -1,0 +1,157 @@
+<!doctype html><html><head><meta charset="utf-8"><title>MatrixArk Resource And Skill Tree Retrieval</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1100px;margin:36px auto;padding:0 24px;color:#172033;background:#fbfcff}pre{white-space:pre-wrap;background:#fff;border:1px solid #d9e2f2;border-radius:10px;padding:22px;line-height:1.5;font-size:14px;box-shadow:0 8px 24px rgba(15,23,42,.06)}h1{font-size:28px}</style></head><body><h1>MatrixArk Resource And Skill Tree Retrieval</h1><pre># MatrixArk Resource And Skill Tree Retrieval
+
+## Where Resources And Skills Live
+
+Resources and skills are stored under normal `ContextNode` paths. They are not a separate global side index.
+
+Typical resource path:
+
+```text
+tenant:&lt;tenant_id&gt;
+└── user:&lt;user_id&gt; or team:&lt;team_id&gt;
+    └── resources
+        └── &lt;collection or type&gt;
+            └── &lt;resource_slug&gt;
+```
+
+Typical skill path:
+
+```text
+tenant:&lt;tenant_id&gt;
+└── user:&lt;user_id&gt; or team:&lt;team_id&gt;
+    └── skills
+        └── &lt;skill_name&gt;
+```
+
+For tests and local imports, callers may pass a shorter `metadata.node_path`, for example:
+
+```text
+resources/runbooks/gpu
+resources/policies/budget
+skills/context-debugger
+```
+
+MatrixArk materializes every prefix as a `context_node` and writes `context_child_ref` edges between adjacent layers. A resource or skill leaf node then owns the serving records below it.
+
+## Resource Records At The Leaf
+
+Resource ingestion writes:
+
+- `resource_import_task`
+- `resource_manifest`
+- `resource_registry`
+- `resource_chunk`
+- `context_summary` with `resource_l0`
+- `context_embedding` for `resource_l0`, `resource_chunk`, `event_text`, and `entity_state`
+- `context_index` entries such as `source_type:resource`, `resource_type:&lt;type&gt;`, `unit_kind:&lt;kind&gt;`, `keyword:&lt;term&gt;`, `heading_slug:&lt;slug&gt;`, and `relative_path:&lt;path&gt;`
+- resource-derived `context_event` records for extracted facts
+- resource-derived `context_entity` records for evolving state, with `source_chunk_hash` and `source_ref`
+
+Raw bytes are not stored in TemporalStore. The store keeps `raw_uri`, chunks, citations, summaries, embeddings, indexes, registries, task state, and replay/audit records.
+
+## Skill Records At The Leaf
+
+`SKILL.md` ingestion writes:
+
+- `skill_manifest`
+- `skill_registry`
+- `skill_section`
+- `resource_chunk` with `resource_type=skill`
+- `context_summary` with `skill_l0`
+- `context_embedding` for `skill_l0`, `skill_summary`, and skill section chunks
+- `context_index` entries such as `source_type:skill`, `resource_type:skill`, `skill_name:&lt;name&gt;`, `skill_trigger:&lt;trigger&gt;`, and `skill_tool:&lt;tool&gt;`
+
+Skills are retrieved separately from ordinary memory and resources, then packed as only the relevant skill sections. MatrixArk should not stuff an entire skill bundle into the prompt by default.
+
+## Layer-By-Layer Retrieval
+
+Retrieval is tree-first:
+
+```mermaid
+flowchart TD
+  A[&quot;raw query + scope&quot;] --&gt; B[&quot;query understanding&quot;]
+  B --&gt; C[&quot;access filter: account / tenant / user / session / team&quot;]
+  C --&gt; D[&quot;start at scoped root ContextNode&quot;]
+  D --&gt; E[&quot;list child nodes&quot;]
+  E --&gt; F[&quot;apply secondary-index filters when available&quot;]
+  F --&gt; G[&quot;score child L0/L1 summary embeddings&quot;]
+  G --&gt; H[&quot;keep top children for this layer&quot;]
+  H --&gt; I{&quot;leaf or enough candidates?&quot;}
+  I -- &quot;no&quot; --&gt; E
+  I -- &quot;yes&quot; --&gt; J[&quot;fetch events / entities / segments&quot;]
+  J --&gt; K[&quot;fetch resource chunks and resource facts&quot;]
+  K --&gt; L[&quot;fetch skill sections&quot;]
+  L --&gt; M[&quot;rank by semantic score + sparse score + time decay + business score&quot;]
+  M --&gt; N[&quot;question-type-aware ContextPack&quot;]
+  N --&gt; O[&quot;ContextPackAudit / replay&quot;]
+```
+
+The current Python MCP runtime reports this in every retrieve response:
+
+```json
+{
+  &quot;recall_policy&quot;: {
+    &quot;tree_traversal&quot;: {
+      &quot;enabled&quot;: true,
+      &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;],
+      &quot;selected_node_count&quot;: 4,
+      &quot;selected_path_count&quot;: 4,
+      &quot;selected_leaf_count&quot;: 2,
+      &quot;fallback_to_flat&quot;: false
+    },
+    &quot;secondary_index_filter&quot;: {
+      &quot;enabled&quot;: true,
+      &quot;applied_before_embedding_scoring&quot;: true
+    }
+  }
+}
+```
+
+If a node summary embedding is missing or stale, retrieval may fall back to flat candidate scoring for correctness. That fallback must be visible as `fallback_to_flat=true`; it is not the desired steady state for production resource/skill retrieval.
+
+## How Secondary Indexes Help
+
+The query parser extracts general filters before vector scoring, for example:
+
+- `source_type:resource`
+- `source_type:skill`
+- `resource_type:pdf`
+- `resource_type:skill`
+- `unit_kind:table_rows`
+- `keyword:approval`
+- `skill_trigger:replay_evidence`
+- `skill_tool:matrixark_replay`
+- `entity_type:policy`
+- `event_type:resource_fact`
+
+These filters prune candidates before embedding similarity. The layer scan then scores fewer child folders and fewer leaf records.
+
+## C++ And Rust Parity Gate
+
+The shared parity runner validates both backends from ingestion through retrieval:
+
+```bash
+cd /root/src/github-services/TemporalStoreTestCorpus
+TEMPORALSTORE_CONSUMER_REPO=/tmp/temporalstore-mcp-scale-failover \
+  python3 tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust
+```
+
+It verifies:
+
+- resource and skill import records
+- chunks, manifests, registries, summaries, embeddings, and secondary indexes
+- resource facts as `context_event` and `context_entity`
+- resource retrieval and skill-section retrieval
+- disabled-skill exclusion
+- cross-user isolation
+- replayable `context_pack_audit`
+- tree traversal metadata for resource and skill queries
+
+For quick local debugging:
+
+```bash
+TEMPORALSTORE_CONSUMER_REPO=/tmp/temporalstore-mcp-scale-failover \
+  python3 tools/run_matrixark_resource_skill_backend_parity.py --backends local
+```
+
+</pre></body></html>
