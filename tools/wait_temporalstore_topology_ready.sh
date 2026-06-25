@@ -105,7 +105,7 @@ try:
         adapter = MatrixArkTemporalStoreRustAdapter(rust_cli=rust_cli, **common)
     else:
         raise SystemExit(f"unknown backend {backend!r}")
-    result = adapter.ensure_backend_ready(reason="wait_temporalstore_topology_ready", probe=True)
+    result = adapter.ensure_backend_ready(reason="wait_temporalstore_topology_ready")
 except Exception as exc:
     result = {
         "status": "topology_not_ready",
