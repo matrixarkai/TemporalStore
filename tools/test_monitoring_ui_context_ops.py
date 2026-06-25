@@ -180,6 +180,12 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-identity-policy",
             "portal-token-metrics",
             "portal-limit-policy",
+
+            "portal-metadata-backend",
+            "portal-metadata-env",
+            "portal-metadata-schema",
+            "portal-metadata-policy",
+            "portal-metadata-active",
             "portal-table-head",
             "portal-table-body",
             "portal-row-details",
@@ -193,6 +199,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "Quick Start",
             "Registration, SSO, And API Keys",
             "Token And Usage Monitoring",
+            "Metadata Store",
+            "Active Metadata Backend",
             "Agent Install Snippets",
             "Identity Resolution",
             "Ingestion And Access History",
@@ -211,6 +219,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("GitHub", html)
         self.assertIn("Used context tokens", html)
         self.assertIn("mcpServers", html)
+        self.assertIn("MATRIXARK_METADATA_BACKEND", html)
+        self.assertIn("bytekv_sql", html)
+        self.assertIn("mysql://matrixark", html)
+        self.assertIn("matrixark_metadata_records", html)
 
     def test_matrixark_site_has_management_portal(self) -> None:
         html = (SITE_DIR / "management-portal.html").read_text(encoding="utf-8")
@@ -221,6 +233,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("matrixark_auth_sso_login", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
         self.assertIn("mcpServers", html)
+        self.assertIn("MATRIXARK_METADATA_BACKEND", html)
+        self.assertIn("bytekv_sql", html)
+        self.assertIn("mysql://matrixark", html)
+        self.assertIn("matrixark_metadata_records", html)
         self.assertIn(".portal-token-grid", css)
 
         for page_name in [

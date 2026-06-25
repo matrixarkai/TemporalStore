@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MatrixArk Management Metadata Store</title><style>body{font-family:Inter,system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 18px;line-height:1.6;color:#1f2933}pre,code{background:#101828;color:#f9fafb;border-radius:8px}code{padding:2px 5px}pre{padding:14px;overflow:auto}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d7dde5;padding:8px;text-align:left}h1,h2{line-height:1.2}</style></head>
+<body>
+<h1>MatrixArk Management Metadata Store</h1>
+<p>MatrixArk separates <strong>context serving data</strong> from <strong>control-plane metadata</strong>.</p>
+<ul><li>TemporalStore stores ContextNode, ContextEvent, ContextEntity, ContextSummary, ContextEmbedding, resources, skills, ContextPacks, and replay audit.</li><li>The metadata store can store accounts, tenants, users, SSO mappings, API-key metadata, usage rows, and admin audit.</li></ul>
+<p>This lets the backend portal use a normal transactional SQL store for user management while keeping context retrieval TemporalStore-native.</p>
+<h2>Backends</h2>
+<table><thead><tr><th>Backend</th><th>Use case</th><th>Configuration</th></tr></thead><tbody><tr><td><code>record_log</code></td><td>Local/dev, no database dependency</td><td><code>MATRIXARK_METADATA_BACKEND=record_log</code></td></tr><tr><td><code>sqlite</code></td><td>Local tests and single-node demos</td><td><code>MATRIXARK_METADATA_BACKEND=sqlite</code></td></tr><tr><td><code>mysql</code></td><td>Cloud/control-plane deployment</td><td>MySQL DSN</td></tr><tr><td><code>bytekv_sql</code></td><td>ByteKV SQL-compatible deployment</td><td>ByteKV MySQL-compatible DSN</td></tr></tbody></table>
+<h2>MySQL</h2><pre>export MATRIXARK_METADATA_BACKEND=mysql
+export MATRIXARK_METADATA_DSN='mysql://matrixark:password@mysql:3306/matrixark'
+export MATRIXARK_METADATA_AUTO_INIT=1</pre>
+<h2>ByteKV SQL</h2><pre>export MATRIXARK_METADATA_BACKEND=bytekv_sql
+export MATRIXARK_METADATA_DSN='bytekv+mysql://matrixark:password@bytekv-sql:3306/matrixark'
+export MATRIXARK_METADATA_AUTO_INIT=1</pre>
+<p>ByteKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.</p>
+<h2>Table</h2><pre>matrixark_metadata_records(record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json)</pre>
+<p>Indexes cover scope, record type/time, and API-key id. Switching metadata backends does not automatically migrate old records; copy existing <code>matrixark_*</code> admin records before changing stores.</p>
+</body></html>
