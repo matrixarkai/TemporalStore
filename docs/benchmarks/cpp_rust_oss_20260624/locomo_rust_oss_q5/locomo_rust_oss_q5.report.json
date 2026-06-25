@@ -41,12 +41,20 @@
     "p95_latency_ms": 170.23913300363347
   },
   "models": {
+    "embedding_execution_mode": "hashing-local",
+    "embedding_fallback_used": false,
     "embedding_model": "hashing:hashing-local",
+    "embedding_provider": "hash",
     "judge_model": "qwen2.5:1.5b",
     "judge_provider": "openai-compatible",
     "reader_model": "qwen2.5:1.5b",
-    "reader_provider": "openai-compatible"
+    "reader_provider": "openai-compatible",
+    "runtime_embedding_model_confirmed": false,
+    "warnings": [
+      "cpp_rust_oss_20260624 report predates OSS embedding flags"
+    ]
   },
+  "parity_caveat": "reader/judge OSS only; embeddings were hash/deterministic and must be rerun with explicit OSS embedding flags before claiming OSS embedding parity",
   "retrieval_config": {
     "batch_size": 40,
     "ingest_mode": "batch",

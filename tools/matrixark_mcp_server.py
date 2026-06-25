@@ -69,6 +69,7 @@ _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
 _EMBEDDING_VECTOR_CACHE: dict[tuple[str, str], list[float]] = {}
 _EMBEDDING_VECTOR_CACHE_LOCK = threading.RLock()
+_EMBEDDING_FALLBACK_USED = False
 _DIRECT_RECORD_CACHE: dict[str, tuple[int, list[Json]]] = {}
 _DIRECT_RECORD_CACHE_LOCK = threading.RLock()
 _DIRECT_RECORD_CACHE_MAX_PREFIXES = 64
@@ -1978,7 +1979,23 @@ def embedding_model_name() -> str:
     return "matrixark-local-token-hash-v1"
 
 
+def embedding_execution_mode_name() -> str:
+    provider = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic").strip().lower()
+    if embedding_fallback_used():
+        return "local_hash_embedding_fallback"
+    if provider in {"oss", "open_source", "sentence_transformers", "sentence-transformers"}:
+        return "oss_embedding_model"
+    if provider == "hash":
+        return "hashing-local"
+    return "deterministic-token-hash"
+
+
+def embedding_fallback_used() -> bool:
+    return _EMBEDDING_FALLBACK_USED
+
+
 def oss_embedding_for_text(text: str) -> list[float]:
+    global _EMBEDDING_FALLBACK_USED
     model_ref = os.environ.get("MATRIXARK_EMBEDDING_MODEL_PATH") or os.environ.get(
         "MATRIXARK_EMBEDDING_MODEL",
         "sentence-transformers/all-MiniLM-L6-v2",
@@ -1995,6 +2012,7 @@ def oss_embedding_for_text(text: str) -> list[float]:
     except Exception as exc:  # pragma: no cover - depends on optional local model packages.
         if os.environ.get("MATRIXARK_REQUIRE_OSS_EMBEDDINGS", "").strip().lower() in {"1", "true", "yes"}:
             raise MatrixArkError(f"OSS embedding model is required but unavailable: {model_ref}: {exc}") from exc
+        _EMBEDDING_FALLBACK_USED = True
         previous = os.environ.get("MATRIXARK_EMBEDDING_PROVIDER")
         try:
             os.environ["MATRIXARK_EMBEDDING_PROVIDER"] = "deterministic"
@@ -4510,6 +4528,9 @@ class MatrixArkLocalAdapter:
             "event_id_hash": event_id_hash,
             "node_hash": record["node_hash"],
             "hook_captured": hook is not None,
+            "embedding_model": embedding_model_name(),
+            "embedding_execution_mode": embedding_execution_mode_name(),
+            "embedding_fallback_used": embedding_fallback_used(),
             "extraction_mode": extraction["mode"],
             "classification": extraction.get("classification", "UNCLASSIFIED"),
             "prior_context": extraction.get("prior_context", ""),
@@ -4837,6 +4858,9 @@ class MatrixArkLocalAdapter:
             "classification": extraction["classification"],
             "batch_id_hash": batch_id_hash,
             "node_hash": node_hash,
+            "embedding_model": embedding_model_name(),
+            "embedding_execution_mode": embedding_execution_mode_name(),
+            "embedding_fallback_used": embedding_fallback_used(),
             "message_count": extraction["message_count"],
             "token_count_estimate": extraction["token_count_estimate"],
             "events_written": 0 if derive_from_existing_events else len(envelope["messages"]),
@@ -5020,6 +5044,8 @@ class MatrixArkLocalAdapter:
             "question_type": question_type,
             "packing_policy": f"deadline_fallback:{question_type}",
             "query_embedding_model": embedding_model_name(),
+            "embedding_execution_mode": embedding_execution_mode_name(),
+            "embedding_fallback_used": embedding_fallback_used(),
             "recall_policy": {
                 "deadline_ms": deadline_ms,
                 "elapsed_ms": elapsed_ms,
@@ -5676,6 +5702,8 @@ class MatrixArkLocalAdapter:
             "question_type": question_type,
             "packing_policy": f"question_type_aware:{question_type}",
             "query_embedding_model": embedding_model_name(),
+            "embedding_execution_mode": embedding_execution_mode_name(),
+            "embedding_fallback_used": embedding_fallback_used(),
             "recall_policy": {
                 "tree_traversal": {
                     "enabled": True,
