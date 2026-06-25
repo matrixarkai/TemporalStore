@@ -547,6 +547,22 @@ pub struct LoadFinishRequest {
     pub scheduler_generation: Option<u64>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaControlPlaneParityReport {
+    pub status: Status,
+    pub table_topology_ready: bool,
+    pub transitional_state_model_ready: bool,
+    pub topology_history_ready: bool,
+    pub scheduler_owned_finish_load_ready: bool,
+    pub scheduler_generation_check_ready: bool,
+    pub durable_replay_ready: bool,
+    pub real_data_node_coordination_ready: bool,
+    pub scheduler_finish_generation_count: usize,
+    pub topology_event_count: usize,
+    pub topology_version: u64,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct MetaStats {
     pub register_shard_total: u64,
@@ -693,6 +709,7 @@ pub(crate) struct MetaState {
     next_table_id: u64,
     topology_version: u64,
     topology_events: VecDeque<TopologyChangeEvent>,
+    scheduler_finish_generations: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -707,6 +724,8 @@ pub struct MetaSnapshot {
     pub stats: MetaStats,
     pub next_table_id: u64,
     pub topology_version: u64,
+    #[serde(default)]
+    pub scheduler_finish_generations: BTreeMap<String, u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -800,6 +819,7 @@ impl SingleNodeMeta {
             next_table_id,
             topology_version: snapshot.topology_version,
             topology_events: VecDeque::new(),
+            scheduler_finish_generations: snapshot.scheduler_finish_generations,
         })
     }
 
@@ -832,6 +852,7 @@ impl MetaSnapshot {
             stats: stats_from_state(&state),
             next_table_id: state.next_table_id,
             topology_version: state.topology_version,
+            scheduler_finish_generations: state.scheduler_finish_generations.clone(),
         }
     }
 }
@@ -1717,6 +1738,30 @@ impl SingleNodeMeta {
                 ),
             };
         }
+        if request.scheduler_task_id.is_some() && request.scheduler_generation.is_none() {
+            return AckResponse {
+                status: Status::error(
+                    "scheduler_generation_required",
+                    "scheduler-owned finish_load must include scheduler_generation",
+                ),
+            };
+        }
+        if let Some(generation) = request.scheduler_generation {
+            let generation_key =
+                scheduler_finish_generation_key(request.shard_id, &request.server_addr);
+            if let Some(previous) = state.scheduler_finish_generations.get(&generation_key) {
+                if generation < *previous {
+                    return AckResponse {
+                        status: Status::error(
+                            "stale_scheduler_generation",
+                            format!(
+                                "finish_load scheduler_generation {generation} is older than accepted generation {previous}"
+                            ),
+                        ),
+                    };
+                }
+            }
+        }
         if let Some(table) = table_for_shard(&state, request.shard_id) {
             if table.info.state == MetaEntityState::Dropped {
                 return AckResponse {
@@ -1742,6 +1787,14 @@ impl SingleNodeMeta {
                 latest_snapshot,
             },
         );
+        if let Some(generation) = request.scheduler_generation {
+            let generation_key = scheduler_finish_generation_key(request.shard_id, &server_addr);
+            state
+                .scheduler_finish_generations
+                .entry(generation_key)
+                .and_modify(|previous| *previous = (*previous).max(generation))
+                .or_insert(generation);
+        }
         record_topology_event(
             &mut state,
             "finish_load",
@@ -1750,6 +1803,85 @@ impl SingleNodeMeta {
         );
         AckResponse {
             status: Status::ok(),
+        }
+    }
+
+    pub fn control_plane_parity_report(&self) -> MetaControlPlaneParityReport {
+        let state = self.inner.read().expect("meta lock poisoned");
+        let table_topology_ready = !state.tables.is_empty()
+            && state
+                .tables
+                .values()
+                .all(|table| table.info.shard_count > 0 && table.info.replica_count > 0);
+        let transitional_state_model_ready = state
+            .tables
+            .values()
+            .any(|table| table.info.state != MetaEntityState::Normal)
+            || state
+                .servers
+                .values()
+                .any(|server| server.state != MetaEntityState::Normal)
+            || state
+                .proxies
+                .values()
+                .any(|proxy| proxy.state != MetaEntityState::Normal)
+            || state.topology_events.iter().any(|event| {
+                matches!(
+                    event.kind.as_str(),
+                    "table_state" | "server_state" | "proxy_state"
+                )
+            });
+        let topology_history_ready =
+            state.topology_version > 0 && !state.topology_events.is_empty();
+        let scheduler_owned_finish_load_ready = !state.scheduler_finish_generations.is_empty();
+        let scheduler_generation_check_ready = scheduler_owned_finish_load_ready;
+        let durable_replay_ready = self.mutation_log.is_some();
+        let real_data_node_coordination_ready = state.servers.values().any(|server| {
+            !server.shard_states.is_empty() || !server.runtime_load.degraded_reasons.is_empty()
+        });
+
+        let mut blockers = Vec::new();
+        if !table_topology_ready {
+            blockers.push("table/shard topology evidence missing".to_string());
+        }
+        if !transitional_state_model_ready {
+            blockers.push("transitional table/server/proxy state evidence missing".to_string());
+        }
+        if !topology_history_ready {
+            blockers.push("topology history evidence missing".to_string());
+        }
+        if !scheduler_owned_finish_load_ready {
+            blockers.push("scheduler-owned finish_load token evidence missing".to_string());
+        }
+        if !durable_replay_ready {
+            blockers.push("durable mutation log replay evidence missing".to_string());
+        }
+        if !real_data_node_coordination_ready {
+            blockers.push(
+                "real data-node heartbeat/lifecycle coordination evidence missing".to_string(),
+            );
+        }
+
+        MetaControlPlaneParityReport {
+            status: if blockers.is_empty() {
+                Status::ok()
+            } else {
+                Status::error(
+                    "metaserver_control_plane_parity_blocked",
+                    blockers.join("; "),
+                )
+            },
+            table_topology_ready,
+            transitional_state_model_ready,
+            topology_history_ready,
+            scheduler_owned_finish_load_ready,
+            scheduler_generation_check_ready,
+            durable_replay_ready,
+            real_data_node_coordination_ready,
+            scheduler_finish_generation_count: state.scheduler_finish_generations.len(),
+            topology_event_count: state.topology_events.len(),
+            topology_version: state.topology_version,
+            blockers,
         }
     }
 
@@ -2038,6 +2170,10 @@ impl SingleNodeMeta {
             }
         }
     }
+}
+
+fn scheduler_finish_generation_key(shard_id: ShardId, server_addr: &str) -> String {
+    format!("{shard_id}@{server_addr}")
 }
 
 fn build_partitions(state: &MetaState, table: &TableMetaInfo) -> Vec<TablePartition> {
@@ -3728,6 +3864,231 @@ mod tests {
         assert!(ack.status.ok);
         assert_eq!(meta.get(42).location.unwrap().server_addr, "s1");
         assert_eq!(meta.stats().load_finish_total, 1);
+    }
+
+    // shared-corpus: control_scheduler_token_stale_rejection;
+    #[test]
+    fn metaserver_finish_load_enforces_scheduler_generation_and_replays_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("scheduler-finish-load.jsonl");
+        let snapshot_path = dir.path().join("scheduler-finish-load-snapshot.json");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "s1".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "s1".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: vec![ServerShardServingState {
+                shard_id: 42,
+                serving_state: "serving".to_string(),
+                worker_index: 0,
+                worker_threads: 1,
+                loaded: true,
+                readonly: false,
+                load_version: 9,
+                table_name: "tbl".to_string(),
+                shard_uri: "file:///tmp/shard-42".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 1024,
+                total_records: 1,
+                storage_bytes: 10,
+                cache_memory_bytes: 1,
+                page_store_bytes_written: 10,
+                oplog_sequence: 1,
+                dirty_object_count: 0,
+                dirty_slot_count: 0,
+            }],
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 42,
+            shard_count: 1,
+            replica_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+        meta.freeze_proxy(StateChangeRequest {
+            endpoint: "proxy-does-not-exist".to_string(),
+            freeze_cooldown_ms: 0,
+        });
+
+        let missing_generation = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 9,
+            status: Status::ok(),
+            scheduler_task_id: Some(100),
+            scheduler_generation: None,
+        });
+        assert_eq!(
+            missing_generation.status.code,
+            "scheduler_generation_required"
+        );
+
+        let accepted = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 9,
+            status: Status::ok(),
+            scheduler_task_id: Some(100),
+            scheduler_generation: Some(10),
+        });
+        assert!(accepted.status.ok, "{accepted:?}");
+
+        let stale = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 42,
+            load_version: 9,
+            status: Status::ok(),
+            scheduler_task_id: Some(101),
+            scheduler_generation: Some(9),
+        });
+        assert_eq!(stale.status.code, "stale_scheduler_generation");
+
+        let snapshot = meta.save_snapshot(&snapshot_path).unwrap();
+        assert_eq!(
+            snapshot.scheduler_finish_generations.get("42@s1").copied(),
+            Some(10)
+        );
+
+        let recovered_from_log = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        assert_eq!(
+            recovered_from_log
+                .export_snapshot()
+                .scheduler_finish_generations
+                .get("42@s1")
+                .copied(),
+            Some(10)
+        );
+        assert_eq!(
+            recovered_from_log
+                .finish_load(LoadFinishRequest {
+                    server_addr: "s1".to_string(),
+                    shard_id: 42,
+                    load_version: 9,
+                    status: Status::ok(),
+                    scheduler_task_id: Some(102),
+                    scheduler_generation: Some(8),
+                })
+                .status
+                .code,
+            "stale_scheduler_generation"
+        );
+
+        let recovered_from_snapshot = SingleNodeMeta::default();
+        assert!(
+            recovered_from_snapshot
+                .install_snapshot_from_file(&snapshot_path)
+                .unwrap()
+                .status
+                .ok
+        );
+        assert_eq!(
+            recovered_from_snapshot
+                .export_snapshot()
+                .scheduler_finish_generations
+                .get("42@s1")
+                .copied(),
+            Some(10)
+        );
+    }
+
+    // shared-corpus: control_metaserver_scheduler_lifecycle_workflow;
+    #[test]
+    fn metaserver_control_plane_parity_report_covers_scheduler_topology_and_node_coordination() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("control-plane-parity.jsonl");
+        let meta = SingleNodeMeta::with_mutation_log(&log_path).unwrap();
+        meta.register_server(RegisterServerRequest {
+            server_addr: "s1".to_string(),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v1".to_string(),
+        });
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: "s1".to_string(),
+            boot_time_ms: 1,
+            binary_version: "v1".to_string(),
+            shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: vec![ServerShardServingState {
+                shard_id: 77,
+                serving_state: "serving".to_string(),
+                worker_index: 0,
+                worker_threads: 1,
+                loaded: true,
+                readonly: false,
+                load_version: 5,
+                table_name: "tbl".to_string(),
+                shard_uri: "file:///tmp/shard-77".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 2048,
+                total_records: 2,
+                storage_bytes: 20,
+                cache_memory_bytes: 2,
+                page_store_bytes_written: 20,
+                oplog_sequence: 2,
+                dirty_object_count: 0,
+                dirty_slot_count: 0,
+            }],
+        });
+        meta.add_namespace(AddNamespaceRequest {
+            namespace: "ns".to_string(),
+        });
+        meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+            first_shard_id: 77,
+            shard_count: 1,
+            replica_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            serving_options: crate::meta::TableServingOptions::default(),
+        });
+        meta.freeze_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        meta.unfreeze_table(DeleteTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "tbl".to_string(),
+        });
+        let finish = meta.finish_load(LoadFinishRequest {
+            server_addr: "s1".to_string(),
+            shard_id: 77,
+            load_version: 5,
+            status: Status::ok(),
+            scheduler_task_id: Some(200),
+            scheduler_generation: Some(20),
+        });
+        assert!(finish.status.ok, "{finish:?}");
+
+        let report = meta.control_plane_parity_report();
+        assert!(report.status.ok, "{report:?}");
+        assert!(report.table_topology_ready);
+        assert!(report.transitional_state_model_ready);
+        assert!(report.topology_history_ready);
+        assert!(report.scheduler_owned_finish_load_ready);
+        assert!(report.scheduler_generation_check_ready);
+        assert!(report.durable_replay_ready);
+        assert!(report.real_data_node_coordination_ready);
+        assert_eq!(report.scheduler_finish_generation_count, 1);
+        assert!(report.topology_event_count >= 4);
+        assert!(report.blockers.is_empty());
     }
 
     #[test]
