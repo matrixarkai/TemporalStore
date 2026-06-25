@@ -12,6 +12,7 @@ use serde_json::json;
 use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
 
 const DEFAULT_SHARD_ID: u64 = 1;
+const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
 
 #[derive(Debug, Deserialize)]
 struct RecordLogRequest {
@@ -183,6 +184,9 @@ fn serve() -> i32 {
     let mut failed_count: u64 = 0;
     let mut records_written: u64 = 0;
     let mut records_read: u64 = 0;
+    let mut latency_sum_ms: u128 = 0;
+    let mut latency_max_ms: u128 = 0;
+    let mut latency_buckets = [0_u64; LATENCY_BUCKETS_MS.len()];
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(value) => value,
@@ -237,6 +241,9 @@ fn serve() -> i32 {
                         failed_count,
                         records_written,
                         records_read,
+                        latency_sum_ms,
+                        latency_max_ms,
+                        &latency_buckets,
                     ),
                     mode: "long_lived_stdio_gateway".to_string(),
                     cached_clients: Some(0),
@@ -253,6 +260,13 @@ fn serve() -> i32 {
         let elapsed_ms = started.elapsed().as_millis();
         let response = response_from_result(result, elapsed_ms);
         command_count += 1;
+        latency_sum_ms += elapsed_ms;
+        latency_max_ms = latency_max_ms.max(elapsed_ms);
+        for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+            if elapsed_ms <= *upper_bound {
+                latency_buckets[idx] += 1;
+            }
+        }
         if !response.ok {
             failed_count += 1;
         }
@@ -307,8 +321,13 @@ fn render_prometheus_metrics(
     failed_count: u64,
     records_written: u64,
     records_read: u64,
+    latency_sum_ms: u128,
+    latency_max_ms: u128,
+    latency_buckets: &[u64; LATENCY_BUCKETS_MS.len()],
 ) -> String {
-    format!(
+    let uptime_seconds = ((unix_ms().saturating_sub(started_at_ms)) as f64 / 1000.0).max(0.001);
+    let qps = command_count as f64 / uptime_seconds;
+    let mut output = format!(
         concat!(
             "# HELP matrixark_rust_record_log_process_start_time_ms Unix millisecond timestamp when this Rust record-log process started.\n",
             "# TYPE matrixark_rust_record_log_process_start_time_ms gauge\n",
@@ -324,14 +343,81 @@ fn render_prometheus_metrics(
             "matrixark_rust_record_log_records_written_total {}\n",
             "# HELP matrixark_rust_record_log_records_read_total Total MatrixArk records/hash entries read by the Rust record-log bridge.\n",
             "# TYPE matrixark_rust_record_log_records_read_total counter\n",
-            "matrixark_rust_record_log_records_read_total {}\n"
+            "matrixark_rust_record_log_records_read_total {}\n",
+            "# HELP matrixark_rust_record_log_qps Current process-lifetime average command QPS.\n",
+            "# TYPE matrixark_rust_record_log_qps gauge\n",
+            "matrixark_rust_record_log_qps {:.6}\n",
+            "# HELP matrixark_backend_qps Backend-normalized process-lifetime average command QPS.\n",
+            "# TYPE matrixark_backend_qps gauge\n",
+            "matrixark_backend_qps{{backend=\"rust\"}} {:.6}\n",
+            "# HELP matrixark_backend_commands_total Backend-normalized total commands.\n",
+            "# TYPE matrixark_backend_commands_total counter\n",
+            "matrixark_backend_commands_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_errors_total Backend-normalized failed commands.\n",
+            "# TYPE matrixark_backend_errors_total counter\n",
+            "matrixark_backend_errors_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_timeouts_total Backend-normalized timeout count.\n",
+            "# TYPE matrixark_backend_timeouts_total counter\n",
+            "matrixark_backend_timeouts_total{{backend=\"rust\"}} 0\n",
+            "# HELP matrixark_rust_record_log_command_latency_ms Command latency histogram in milliseconds.\n",
+            "# TYPE matrixark_rust_record_log_command_latency_ms histogram\n",
+            "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.\n",
+            "# TYPE matrixark_backend_command_latency_ms histogram\n"
         ),
         started_at_ms,
         command_count,
         failed_count,
         records_written,
-        records_read
-    )
+        records_read,
+        qps,
+        qps,
+        command_count,
+        failed_count
+    );
+    for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
+        output.push_str(&format!(
+            "matrixark_rust_record_log_command_latency_ms_bucket{{le=\"{}\"}} {}\n",
+            upper_bound, latency_buckets[idx]
+        ));
+        output.push_str(&format!(
+            "matrixark_backend_command_latency_ms_bucket{{backend=\"rust\",le=\"{}\"}} {}\n",
+            upper_bound, latency_buckets[idx]
+        ));
+    }
+    output.push_str(&format!(
+        "matrixark_rust_record_log_command_latency_ms_bucket{{le=\"+Inf\"}} {}\n",
+        command_count
+    ));
+    output.push_str(&format!(
+        "matrixark_backend_command_latency_ms_bucket{{backend=\"rust\",le=\"+Inf\"}} {}\n",
+        command_count
+    ));
+    output.push_str(&format!(
+        "matrixark_rust_record_log_command_latency_ms_sum {}\n",
+        latency_sum_ms
+    ));
+    output.push_str(&format!(
+        "matrixark_backend_command_latency_ms_sum{{backend=\"rust\"}} {}\n",
+        latency_sum_ms
+    ));
+    output.push_str(&format!(
+        "matrixark_rust_record_log_command_latency_ms_count {}\n",
+        command_count
+    ));
+    output.push_str(&format!(
+        "matrixark_backend_command_latency_ms_count{{backend=\"rust\"}} {}\n",
+        command_count
+    ));
+    output.push_str(&format!(
+        "# HELP matrixark_rust_record_log_command_latency_max_ms Max observed command latency in milliseconds.\n\
+         # TYPE matrixark_rust_record_log_command_latency_max_ms gauge\n\
+         matrixark_rust_record_log_command_latency_max_ms {}\n\
+         # HELP matrixark_backend_command_latency_max_ms Backend-normalized max observed command latency in milliseconds.\n\
+         # TYPE matrixark_backend_command_latency_max_ms gauge\n\
+         matrixark_backend_command_latency_max_ms{{backend=\"rust\"}} {}\n",
+        latency_max_ms, latency_max_ms
+    ));
+    output
 }
 
 fn unix_ms() -> u128 {

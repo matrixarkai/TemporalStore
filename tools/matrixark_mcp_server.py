@@ -6337,8 +6337,12 @@ class MatrixArkRustCliClient:
         self._records_written_total = 0
         self._records_read_total = 0
         self._backpressure_rejections_total = 0
+        self._timeouts_total = 0
         self._last_latency_ms = 0.0
         self._max_observed_latency_ms = 0.0
+        self._latency_samples_ms: list[float] = []
+        self._context_record_counts: dict[str, int] = {}
+        self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
 
     def close(self) -> None:
@@ -6458,23 +6462,55 @@ class MatrixArkRustCliClient:
             self._commands_total += 1
             if failed:
                 self._commands_failed_total += 1
+                if "timed out" in str(response or "").lower() or elapsed_ms >= self.request_timeout_ms:
+                    self._timeouts_total += 1
             if backpressure:
                 self._backpressure_rejections_total += 1
             self._last_latency_ms = elapsed_ms
             self._max_observed_latency_ms = max(self._max_observed_latency_ms, elapsed_ms)
+            self._latency_samples_ms.append(elapsed_ms)
+            if len(self._latency_samples_ms) > 2048:
+                del self._latency_samples_ms[: len(self._latency_samples_ms) - 2048]
             if response and response.get("ok"):
                 count = int(response.get("count") or 0)
                 if op in {"put_string", "hset"}:
                     self._records_written_total += 1
+                    self._count_context_record(kwargs.get("value"))
                 elif op == "batch_hset":
                     self._records_written_total += count or len(kwargs.get("entries") or [])
+                    for entry in kwargs.get("entries") or []:
+                        if isinstance(entry, dict):
+                            self._count_context_record(entry.get("value"))
                 elif op in {"get_string", "hget"}:
                     self._records_read_total += 1
                 elif op in {"batch_hget", "hgetall", "scan_hash"}:
                     self._records_read_total += count
 
+    def _count_context_record(self, value: Any) -> None:
+        if not isinstance(value, str) or not value.startswith("{"):
+            return
+        try:
+            payload = json.loads(value)
+        except Exception:
+            return
+        record_type = str(payload.get("record_type") or "")
+        if not record_type:
+            return
+        self._context_record_counts[record_type] = self._context_record_counts.get(record_type, 0) + 1
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
+        return ordered[index]
+
     def metrics_snapshot(self) -> Json:
         with self._metrics_lock:
+            elapsed_s = max(0.001, time.time() - self._started_at)
+            samples = list(self._latency_samples_ms)
+            context_counts = dict(sorted(self._context_record_counts.items()))
             return {
                 "gateway_mode": "long_lived_stdio_gateway",
                 "transport": "stdio",
@@ -6483,11 +6519,17 @@ class MatrixArkRustCliClient:
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
                 "commands_failed_total": self._commands_failed_total,
+                "timeouts_total": self._timeouts_total,
+                "qps": round(self._commands_total / elapsed_s, 6),
                 "records_written_total": self._records_written_total,
                 "records_read_total": self._records_read_total,
                 "backpressure_rejections_total": self._backpressure_rejections_total,
                 "last_latency_ms": round(self._last_latency_ms, 3),
+                "p95_latency_ms": round(self._percentile(samples, 0.95), 3),
+                "p99_latency_ms": round(self._percentile(samples, 0.99), 3),
                 "max_observed_latency_ms": round(self._max_observed_latency_ms, 3),
+                "matrixark_context_records_total": sum(context_counts.values()),
+                "matrixark_context_records_by_type": context_counts,
             }
 
     def _call(self, op: str, **kwargs: Any) -> str:
