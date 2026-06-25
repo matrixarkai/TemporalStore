@@ -6342,6 +6342,12 @@ class MatrixArkRustCliClient:
                     proc.kill()
                 except Exception:
                     pass
+        for stream in (proc.stdin, proc.stdout, proc.stderr):
+            try:
+                if stream is not None:
+                    stream.close()
+            except Exception:
+                pass
 
     def _ensure_proc(self) -> subprocess.Popen[str]:
         if self._proc is not None and self._proc.poll() is None:
@@ -6376,7 +6382,10 @@ class MatrixArkRustCliClient:
                 return json.loads(line)
             except json.JSONDecodeError as exc:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
-        raise MatrixArkError(f"Rust TemporalStore {op} timed out waiting for response")
+        raise MatrixArkError(
+            f"Rust TemporalStore {op} timed out waiting for response from {self.cli_path} "
+            f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
+        )
 
     def _call_json(self, op: str, **kwargs: Any) -> Json:
         command = {
