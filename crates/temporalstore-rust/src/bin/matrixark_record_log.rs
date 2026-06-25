@@ -215,10 +215,12 @@ fn serve() -> i32 {
         let request: Result<RecordLogRequest, _> = serde_json::from_str(&line);
         let result = match request {
             Ok(request) if request.op == "shutdown" => {
+                let cached_clients = cached_engine_count();
+                clear_engine_cache();
                 let output = RecordLogOutput {
                     status: "shutting_down".to_string(),
                     mode: "long_lived_stdio_gateway".to_string(),
-                    cached_clients: Some(0),
+                    cached_clients: Some(cached_clients),
                     ..empty_output(PathBuf::new())
                 };
                 let response = response_from_result(
@@ -244,9 +246,10 @@ fn serve() -> i32 {
                         latency_sum_ms,
                         latency_max_ms,
                         &latency_buckets,
+                        cached_engine_count(),
                     ),
                     mode: "long_lived_stdio_gateway".to_string(),
-                    cached_clients: Some(0),
+                    cached_clients: Some(cached_engine_count()),
                     ..empty_output(PathBuf::new())
                 };
                 Ok(("metrics_prometheus".to_string(), output))
@@ -324,6 +327,7 @@ fn render_prometheus_metrics(
     latency_sum_ms: u128,
     latency_max_ms: u128,
     latency_buckets: &[u64; LATENCY_BUCKETS_MS.len()],
+    cached_clients: usize,
 ) -> String {
     let uptime_seconds = ((unix_ms().saturating_sub(started_at_ms)) as f64 / 1000.0).max(0.001);
     let qps = command_count as f64 / uptime_seconds;
@@ -359,6 +363,12 @@ fn render_prometheus_metrics(
             "# HELP matrixark_backend_timeouts_total Backend-normalized timeout count.\n",
             "# TYPE matrixark_backend_timeouts_total counter\n",
             "matrixark_backend_timeouts_total{{backend=\"rust\"}} 0\n",
+            "# HELP matrixark_rust_record_log_cached_clients Cached TemporalEngine clients in the long-lived Rust gateway.\n",
+            "# TYPE matrixark_rust_record_log_cached_clients gauge\n",
+            "matrixark_rust_record_log_cached_clients {}\n",
+            "# HELP matrixark_backend_cached_clients Backend-normalized cached client/connection count.\n",
+            "# TYPE matrixark_backend_cached_clients gauge\n",
+            "matrixark_backend_cached_clients{{backend=\"rust\"}} {}\n",
             "# HELP matrixark_rust_record_log_command_latency_ms Command latency histogram in milliseconds.\n",
             "# TYPE matrixark_rust_record_log_command_latency_ms histogram\n",
             "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.\n",
@@ -372,7 +382,9 @@ fn render_prometheus_metrics(
         qps,
         qps,
         command_count,
-        failed_count
+        failed_count,
+        cached_clients,
+        cached_clients
     );
     for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
         output.push_str(&format!(
@@ -648,6 +660,12 @@ fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, TemporalEngine>> {
 
 fn cached_engine_count() -> usize {
     engine_cache().lock().map(|cache| cache.len()).unwrap_or(0)
+}
+
+fn clear_engine_cache() {
+    if let Ok(mut cache) = engine_cache().lock() {
+        cache.clear();
+    }
 }
 
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
