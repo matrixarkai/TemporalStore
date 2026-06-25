@@ -1461,6 +1461,7 @@ function renderContextOps(context) {
   renderScaleTestsInto("context-tests", data.tests);
   renderOpsWorkspace(data);
   renderDataPlane(data);
+  renderResourceSkillOps(data);
   renderTableRows("context-pipeline-body", data.pipeline, [
     "step",
     "input",
@@ -1739,6 +1740,148 @@ function renderDataPlane(data) {
 function countMatches(items, needle) {
   const pattern = needle.toLowerCase();
   return asArray(items).filter((item) => JSON.stringify(item).toLowerCase().includes(pattern)).length;
+}
+
+function defaultResourceSkillOps() {
+  return {
+    status: "watch",
+    import_tasks: [],
+    parse_warnings: [],
+    resource_tree: [],
+    chunk_preview: [],
+    skill_registry: [],
+    version_history: [],
+    summary_lag: [],
+    retrieval_replay: [],
+  };
+}
+
+function renderResourceSkillOps(data) {
+  const ops = {
+    ...defaultResourceSkillOps(),
+    ...(data.resource_skill_ops || {}),
+  };
+  const statusEl = byId("resource-skill-status");
+  if (statusEl) {
+    statusEl.className = `status-pill ${statusClass(ops.status)}`;
+    statusEl.innerHTML = `<span class="dot"></span>${escapeHtml(ops.status)}`;
+  }
+  renderCardStack("resource-import-tasks", ops.import_tasks, [
+    ["task_id", "task"],
+    ["raw_uri", "raw uri"],
+    ["status", "status"],
+    ["progress", "progress"],
+    ["chunks", "chunks"],
+    ["warnings", "warnings"],
+    ["summary_status", "summary"],
+  ]);
+  renderCompactRecords("resource-parse-warnings", ops.parse_warnings, [
+    ["raw_uri", "raw uri"],
+    ["parser", "parser"],
+    ["warning", "warning"],
+    ["action", "action"],
+  ]);
+  renderCardStack("resource-tree-view", ops.resource_tree, [
+    ["path", "path"],
+    ["resource_id", "resource"],
+    ["resource_type", "type"],
+    ["version", "version"],
+    ["scope", "scope"],
+    ["chunks", "chunks"],
+    ["indexes", "indexes"],
+  ]);
+  renderCardStack("resource-chunk-preview", ops.chunk_preview, [
+    ["chunk_id", "chunk"],
+    ["source_ref", "source"],
+    ["unit_kind", "unit"],
+    ["tokens", "tokens"],
+    ["selected", "selected"],
+    ["reason", "reason"],
+    ["text", "preview"],
+  ]);
+  renderCardStack("skill-registry-view", ops.skill_registry, [
+    ["skill_id", "skill"],
+    ["version", "version"],
+    ["status", "status"],
+    ["precedence", "precedence"],
+    ["scope", "scope"],
+    ["triggers", "triggers"],
+    ["allowed_tools", "tools"],
+  ]);
+  renderCompactRecords("resource-version-history", ops.version_history, [
+    ["raw_uri", "raw uri"],
+    ["version", "version"],
+    ["content_hash", "hash"],
+    ["supersedes", "supersedes"],
+    ["normal_retrieval", "latest-version filter"],
+  ]);
+  renderCompactRecords("resource-summary-lag", ops.summary_lag, [
+    ["node_path", "node"],
+    ["dirty_reason", "reason"],
+    ["lag_ms", "lag ms"],
+    ["status", "status"],
+  ]);
+  renderCardStack("resource-retrieval-replay", ops.retrieval_replay, [
+    ["query_id", "query"],
+    ["selected_refs", "selected"],
+    ["dropped_refs", "dropped"],
+    ["audit_ref", "audit"],
+    ["reason", "reason"],
+  ]);
+}
+
+function renderCardStack(id, records, fields) {
+  const el = byId(id);
+  if (!el) {
+    return;
+  }
+  const items = asArray(records);
+  if (!items.length) {
+    el.innerHTML = `<p class="empty-records">No records yet.</p>`;
+    return;
+  }
+  el.innerHTML = items
+    .map(
+      (record) => `
+        <article class="ops-mini-card">
+          <dl>
+            ${fields.map(([key, label]) => renderMetadataRow(label, record[key])).join("")}
+          </dl>
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderCompactRecords(id, records, fields) {
+  const el = byId(id);
+  if (!el) {
+    return;
+  }
+  const items = asArray(records);
+  if (!items.length) {
+    el.innerHTML = `<p class="empty-records">No records yet.</p>`;
+    return;
+  }
+  el.innerHTML = items
+    .map(
+      (record) => `
+        <article class="compact-record-card">
+          ${fields.map(([key, label]) => renderMetadataRow(label, record[key])).join("")}
+        </article>
+      `,
+    )
+    .join("");
+}
+
+function renderMetadataRow(key, value) {
+  const rendered = Array.isArray(value) ? value.join(", ") : value ?? "-";
+  return `
+    <div class="metadata-line">
+      <dt>${escapeHtml(key)}</dt>
+      <dd>${escapeHtml(rendered)}</dd>
+    </div>
+  `;
 }
 
 function hydrateContextTopology(topology) {
@@ -2189,7 +2332,7 @@ function renderNodeDetail(node, topology) {
     ${renderRecordSection("Resources", records.resources, ["raw_uri", "source_ref", "type", "chunks", "parser", "text"])}
     ${renderRecordSection("Compression", records.compression, ["id", "window", "summary"])}
     <details class="topology-metadata detail-metadata" open>
-      <summary>Raw Metadata (${Object.keys(metadata).length})</summary>
+      <summary>Metadata Details (${Object.keys(metadata).length})</summary>
       <dl>${renderMetadataRows(metadata)}</dl>
     </details>
   `;
@@ -2356,7 +2499,12 @@ function renderRecordSection(title, rows, preferredKeys) {
 function wireContextTreeControls(topology) {
   const tree = byId("context-tree");
   const selectedPath = new Set(asArray(topology?.selected_path).map(String));
-  if (tree) tree.__matrixarkTopology = topology;
+  if (tree) {
+    tree.__matrixarkTopology = topology;
+    if (!tree.dataset) {
+      tree.dataset = {};
+    }
+  }
   if (!tree || tree.dataset.wired === "true") {
     return;
   }

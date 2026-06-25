@@ -52,6 +52,15 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         required_ids = {
             "health-source-banner",
             "context-runtime-status",
+            "resource-skill-status",
+            "resource-import-tasks",
+            "resource-parse-warnings",
+            "resource-tree-view",
+            "resource-chunk-preview",
+            "skill-registry-view",
+            "resource-version-history",
+            "resource-summary-lag",
+            "resource-retrieval-replay",
             "context-ops-workspace",
             "context-data-plane",
             "context-kpis",
@@ -77,6 +86,15 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         }
         self.assertTrue(required_ids.issubset(parser.ids))
         self.assertIn("LLM Context Operations", parser.headings)
+        self.assertIn("Resource And Skill Operations", parser.headings)
+        self.assertIn("Import Tasks", parser.headings)
+        self.assertIn("Parse Warnings", parser.headings)
+        self.assertIn("Resource Tree", parser.headings)
+        self.assertIn("Chunk Preview", parser.headings)
+        self.assertIn("Skill Registry", parser.headings)
+        self.assertIn("Version History", parser.headings)
+        self.assertIn("Dirty Summary Lag", parser.headings)
+        self.assertIn("Retrieval Replay", parser.headings)
         self.assertIn("Operations Workspace", parser.headings)
         self.assertIn("Context Data Plane", parser.headings)
         self.assertIn("Pipeline Test Console", parser.headings)
@@ -141,6 +159,16 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertTrue(any(row["run"] == "C++ module parity" for row in context["e2e_parity_runs"]))
         self.assertTrue(any(alert["label"] == "Token budget" for alert in context["alerts"]))
         self.assertTrue(any(row["label"] == "Feedback memory" for row in context["audit"]))
+        resource_skill = context["resource_skill_ops"]
+        self.assertEqual("ready", resource_skill["status"])
+        self.assertTrue(any(task["status"] == "completed" for task in resource_skill["import_tasks"]))
+        self.assertTrue(any(warning["value"] == "warning" for warning in resource_skill["parse_warnings"]))
+        self.assertTrue(any(row["path"] == "/resources/runbooks/gpu.md" for row in resource_skill["resource_tree"]))
+        self.assertTrue(any(chunk["chunk_hash"] == "7101" and chunk["selected"] == "yes" for chunk in resource_skill["chunk_preview"]))
+        self.assertTrue(any(skill["skill"] == "context-debugger" for skill in resource_skill["skill_registry"]))
+        self.assertTrue(any(version["supersedes"] == "v2" for version in resource_skill["version_history"]))
+        self.assertTrue(any(lag["worker"] == "refresh queued" for lag in resource_skill["summary_lag"]))
+        self.assertTrue(any(replay["audit"] == "ContextPackAudit" for replay in resource_skill["retrieval_replay"]))
         self.assertEqual("77027771", context["query_workbench"]["query_id"])
         self.assertTrue(any(group["group"] == "Traversal" for group in context["config"]))
         self.assertTrue(any(row["role"] == "Reranker" for row in context["model_registry"]))
@@ -182,6 +210,23 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "renderContextOps(data.context_ops)",
             "function renderOpsWorkspace",
             "renderOpsWorkspace(data)",
+            "function renderResourceSkillOps",
+            "defaultResourceSkillOps",
+            "resource_skill_ops",
+            "resource-import-tasks",
+            "resource-parse-warnings",
+            "resource-tree-view",
+            "resource-chunk-preview",
+            "skill-registry-view",
+            "resource-version-history",
+            "resource-summary-lag",
+            "resource-retrieval-replay",
+            "renderCardStack",
+            "renderCompactRecords",
+            "renderMetadataRow",
+            "ContextPackAudit",
+            "latest-version filter",
+
             "function renderDataPlane",
             "renderDataPlane(data)",
             "function countMatches",
