@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::cache::MultiLayerCache;
+use crate::page_store::{LocalPageStore, PageAddress};
+use crate::types::ShardId;
+
 use super::state::{ShardState, SlotLayoutState};
+use super::read_page_bytes;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {
@@ -119,4 +124,55 @@ fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
         SlotLayoutState::MultiPageObject => "multi_page_object",
         SlotLayoutState::MultiObject => "multi_object",
     }
+}
+
+pub(super) fn slot_index_page_address(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<PageAddress> {
+    shard
+        .slot_index
+        .slots
+        .values()
+        .flat_map(|slot| slot.page_refs.values())
+        .filter(|page| {
+            !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.as_deref() == component
+        })
+        .map(|page| page.address.clone())
+        .next()
+}
+
+pub(super) fn slot_index_component_page_addresses(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<(Option<String>, PageAddress)> {
+    let mut refs = shard
+        .slot_index
+        .slots
+        .values()
+        .flat_map(|slot| slot.page_refs.values())
+        .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
+        .map(|page| (page.component.clone(), page.address.clone()))
+        .collect::<Vec<_>>();
+    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    refs
+}
+
+pub(super) fn read_slot_index_value(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<Vec<u8>> {
+    slot_index_page_address(shard, model_id, object_key, component)
+        .and_then(|address| read_page_bytes(cache, page_store, shard_id, &address))
 }
