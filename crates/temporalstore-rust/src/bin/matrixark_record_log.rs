@@ -166,7 +166,7 @@ fn response_from_result(
                 error_code,
                 retryable: Some(retryable),
             }
-        },
+        }
     }
 }
 
@@ -406,6 +406,21 @@ fn render_prometheus_metrics(
             "# HELP matrixark_backend_cached_clients Backend-normalized cached client/connection count.\n",
             "# TYPE matrixark_backend_cached_clients gauge\n",
             "matrixark_backend_cached_clients{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_records_written_total Backend-normalized MatrixArk records written.\n",
+            "# TYPE matrixark_backend_records_written_total counter\n",
+            "matrixark_backend_records_written_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_records_read_total Backend-normalized MatrixArk records read.\n",
+            "# TYPE matrixark_backend_records_read_total counter\n",
+            "matrixark_backend_records_read_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_context_records_total MatrixArk context records visible through the backend adapter.\n",
+            "# TYPE matrixark_context_records_total gauge\n",
+            "matrixark_context_records_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_audit_buffered_records Backend-normalized buffered audit records.\n",
+            "# TYPE matrixark_backend_audit_buffered_records gauge\n",
+            "matrixark_backend_audit_buffered_records{{backend=\"rust\"}} 0\n",
+            "# HELP matrixark_backend_audit_flush_failures_total Backend-normalized audit flush failures.\n",
+            "# TYPE matrixark_backend_audit_flush_failures_total counter\n",
+            "matrixark_backend_audit_flush_failures_total{{backend=\"rust\"}} 0\n",
             "# HELP matrixark_rust_record_log_command_latency_ms Command latency histogram in milliseconds.\n",
             "# TYPE matrixark_rust_record_log_command_latency_ms histogram\n",
             "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.\n",
@@ -421,7 +436,10 @@ fn render_prometheus_metrics(
         command_count,
         failed_count,
         cached_clients,
-        cached_clients
+        cached_clients,
+        records_written,
+        records_read,
+        records_written.saturating_add(records_read)
     );
     for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
         output.push_str(&format!(
