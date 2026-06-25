@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
 import os
 from dataclasses import dataclass
 from enum import IntEnum
@@ -197,12 +198,30 @@ def _load_library(path: Optional[str] = None) -> ctypes.CDLL:
         candidates.append(env_path)
     candidates.extend(["libbcache2.so", "bcache2.dll", "libbcache2.dylib"])
 
+    load_mode = getattr(ctypes, "RTLD_GLOBAL", None)
+    preload_errors = []
+    for dependency in ("crypto", "ssl", "fmt", "leveldb", "rocksdb", "snappy", "lz4", "zstd", "bz2"):
+        dependency_path = ctypes.util.find_library(dependency)
+        if not dependency_path:
+            continue
+        try:
+            if load_mode is None:
+                ctypes.CDLL(dependency_path)
+            else:
+                ctypes.CDLL(dependency_path, mode=load_mode)
+        except OSError as exc:
+            preload_errors.append(f"{dependency_path}: {exc}")
+
     errors = []
     for candidate in candidates:
         try:
-            return ctypes.CDLL(candidate)
+            if load_mode is None:
+                return ctypes.CDLL(candidate)
+            return ctypes.CDLL(candidate, mode=load_mode)
         except OSError as exc:
             errors.append(f"{candidate}: {exc}")
+    if preload_errors:
+        errors.extend(f"preload {error}" for error in preload_errors)
     raise TemporalStoreError(0, "failed to load TemporalStore library: " + "; ".join(errors))
 
 
