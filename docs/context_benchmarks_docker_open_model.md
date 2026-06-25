@@ -11,8 +11,10 @@ The repo also includes a Hugging Face Transformers endpoint for the exact
 `tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
 is packaged by `Dockerfile.context-oss-reader`.
 
-Claim level: packaged open-model benchmark path. A production parity claim requires a mounted real
-dataset, a successful real reader call, and passing threshold output in the archived report.
+Claim level: packaged open-model benchmark path. This page does not present production parity or
+VikingMem paper-comparable evidence by itself. Those labels require a mounted real dataset, a
+successful real reader call, no deterministic fallback, full Rust TemporalStore replay, and passing
+threshold output in the archived report.
 
 ## Defaults
 
@@ -126,17 +128,21 @@ The runner writes:
 
 - `manifest.json`
 - `locomo_report.json` and `locomo_misses.jsonl` when LOCOMO is present
-- `locomo_paper_comparable_report.json` when LOCOMO passes
+- `locomo_paper_comparable_report.json` when LOCOMO produces a strict live-reader archive; this is
+  paper-comparable only when `paper_comparable_claim_ready=true`
 - `longmemeval_s_report.json` and `longmemeval_s_misses.jsonl` when LongMemEval_s is present
-- `longmemeval_s_paper_comparable_report.json` when LongMemEval_s passes
+- `longmemeval_s_paper_comparable_report.json` when LongMemEval_s produces a strict live-reader
+  archive; this is paper-comparable only when `paper_comparable_claim_ready=true`
 - `docker_start.log` or `model_pull.log` when infrastructure setup fails before scoring
 
 The `*_paper_comparable_report.json` files use
 `matrixark_vikingmem_paper_comparable_report_v1` and include the dataset SHA-256,
 input bytes, model/provider, reader mode, exact reader prompt templates, Rust
 TemporalStore backend evidence, thresholds, p50/p95 latencies, token reduction,
-quality-gate state, and category breakdown. These are the files to archive when
-comparing Rust runs with VikingMem/OpenViking or C++ benchmark outputs.
+quality-gate state, and category breakdown. They are diagnostic archives unless
+`quality_gate.paper_comparable_claim_ready=true`; only then should they be used as
+VikingMem/OpenViking paper-comparable evidence or compared as paper-comparable C++ benchmark
+outputs.
 
 The local endpoint runner always requires the Rust TemporalStore backend. The lower-level
 LOCOMO/LongMemEval_s full gate commands also require it unless they are run in an explicitly
