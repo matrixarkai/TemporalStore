@@ -4227,6 +4227,22 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+                if skill_hash is not None:
+                    self.append(
+                        {
+                            "record_type": "context_embedding",
+                            "embedding_type": "skill_section",
+                            "ref_type": "skill_section",
+                            "ref_hash": chunk.chunk_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "dim": len(vector),
+                            "model": embedding_model_name(),
+                            "vector": vector,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
                 chunk_index_terms = ordered_unique(
                     [
                         context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
@@ -5223,6 +5239,8 @@ class MatrixArkLocalAdapter:
             elif record_type == "context_embedding" and record.get("embedding_type") == "compression_summary":
                 compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "resource_chunk":
+                resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+            elif record_type == "context_embedding" and record.get("embedding_type") == "skill_section":
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
                 skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
