@@ -2517,6 +2517,110 @@ a {
   line-height: 1.3;
 }
 
+.portal-platform-grid,
+.portal-ops-grid,
+.portal-slo-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.portal-platform-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.portal-platform-grid article,
+.portal-ops-grid article,
+.portal-slo-grid article {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.portal-platform-grid article {
+  display: grid;
+  align-content: space-between;
+  gap: 12px;
+  min-height: 176px;
+}
+
+.portal-platform-grid article > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.portal-platform-grid strong,
+.portal-ops-grid strong {
+  font-size: 14px;
+}
+
+.portal-platform-grid p {
+  font-size: 13px;
+  line-height: 1.42;
+}
+
+.portal-platform-grid small {
+  color: var(--accent);
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.portal-slo-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.portal-slo-grid article {
+  min-height: 108px;
+  display: grid;
+  align-content: space-between;
+}
+
+.portal-slo-grid span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.portal-slo-grid strong {
+  font-size: 20px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.portal-slo-grid small {
+  line-height: 1.3;
+}
+
+.portal-ops-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.portal-ops-grid article {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  min-height: 230px;
+}
+
+.alert-ok {
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.alert-warning {
+  border-color: var(--warn-soft);
+  background: #fffbeb;
+}
+
+.alert-critical {
+  border-color: var(--bad-soft);
+  background: #fef2f2;
+}
+
 .portal-debug-kpis,
 .portal-debug-grid {
   display: grid;
@@ -2593,7 +2697,10 @@ a {
 @media (max-width: 1100px) {
   .portal-token-grid,
   .portal-debug-kpis,
-  .portal-debug-grid {
+  .portal-debug-grid,
+  .portal-platform-grid,
+  .portal-slo-grid,
+  .portal-ops-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2601,7 +2708,10 @@ a {
 @media (max-width: 720px) {
   .portal-token-grid,
   .portal-debug-kpis,
-  .portal-debug-grid {
+  .portal-debug-grid,
+  .portal-platform-grid,
+  .portal-slo-grid,
+  .portal-ops-grid {
     grid-template-columns: 1fr;
   }
 }
