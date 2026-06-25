@@ -1,0 +1,741 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk Codex MCP And Hook Installation Manual</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --line:#d6dbdf; --bg:#f8fafc; --panel:#ffffff; }
+    body { margin:0; font-family: Inter, Segoe UI, Arial, sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+    main { max-width: 1120px; margin: 0 auto; padding: 40px 28px 80px; }
+    article { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.06); }
+    h1 { margin-top:0; font-size:32px; line-height:1.15; }
+    pre { overflow:auto; white-space:pre-wrap; background:#111827; color:#f8fafc; padding:18px; border-radius:7px; font-size:13px; line-height:1.45; }
+  </style>
+</head>
+<body><main><article><pre># MatrixArk Codex MCP And Hook Installation Manual
+
+This manual explains how Codex connects to MatrixArk, how automatic hooks differ from MCP tool calls, and how to call the MatrixArk ingestion, extraction, retrieval, feedback, replay, resource, and skill APIs from Codex.
+
+MatrixArk should not require Codex, Claude, Cursor, or another agent to understand MatrixArk&#x27;s internal data models. The agent sends messages, local context hints, files, and lifecycle events. MatrixArk resolves identity, extracts context, writes TemporalStore records, refreshes summaries, retrieves a ContextPack, and records audit/replay data.
+
+## 1. Two Integration Modes
+
+```mermaid
+flowchart TD
+  A[&quot;Codex prompt/tool/session event&quot;] --&gt; B[&quot;Codex hook command&quot;]
+  B --&gt; C[&quot;tools/matrixark_codex_hook.py&quot;]
+  C --&gt; D[&quot;matrixark_ingest&quot;]
+  C --&gt; E[&quot;matrixark_retrieve before LLM&quot;]
+  C --&gt; F[&quot;matrixark_session_commit on Stop/PostCompact/Idle&quot;]
+  D --&gt; G[&quot;TemporalStore: events, entities, segments, indexes, summaries, embeddings&quot;]
+  E --&gt; H[&quot;ContextPack returned to Codex&quot;]
+  F --&gt; I[&quot;Batch extraction + async summary refresh&quot;]
+```
+
+Use both modes when possible:
+
+| Mode | What it does | When to use |
+|---|---|---|
+| MCP tools | Exposes `matrixark_ingest`, `matrixark_retrieve`, `matrixark_feedback`, `matrixark_replay`, admin, resource, and skill APIs to Codex. | Reliable default in Codex Desktop and Codex CLI. Good for explicit agent calls and debugging. |
+| Codex hooks | Automatically captures lifecycle events and calls MatrixArk without the agent remembering to call tools. | Best for always-on ingestion, retrieval before LLM, tool-result capture, and session commits. |
+
+Important: MCP by itself does not automatically ingest every message. Codex must call the MCP tool, or a hook must call the MCP server on each lifecycle event.
+
+## 2. Install MatrixArk MCP For Codex
+
+### Recommended local C++ TemporalStore MCP config
+
+Add this to `C:\Users\Deeproute\.codex\config.toml`:
+
+```toml
+[mcp_servers.matrixark]
+command = &quot;wsl.exe&quot;
+args = [&quot;--cd&quot;, &quot;/root/src/github-services/TemporalStore&quot;, &quot;-e&quot;, &quot;bash&quot;, &quot;-lc&quot;, &quot;exec tools/matrixark_mcp_cpp_server.sh&quot;]
+startup_timeout_sec = 180
+```
+
+Why `startup_timeout_sec` matters: if the C++ TemporalStore topology or OSS models are warming up, Codex can otherwise report:
+
+```text
+MCP client for `matrixark` timed out after 120 seconds.
+```
+
+Set `startup_timeout_sec = 180` or `240` for local development.
+
+### Rust backend MCP config
+
+Use this when validating Rust parity:
+
+```toml
+[mcp_servers.matrixark]
+command = &quot;wsl.exe&quot;
+args = [&quot;--cd&quot;, &quot;/root/src/github-services/TemporalStore&quot;, &quot;-e&quot;, &quot;bash&quot;, &quot;-lc&quot;, &quot;exec tools/matrixark_mcp_rust_server.sh&quot;]
+startup_timeout_sec = 180
+```
+
+If a Rust-specific launcher is not present in a checkout, use the generic MCP server with environment variables:
+
+```toml
+[mcp_servers.matrixark]
+command = &quot;wsl.exe&quot;
+args = [&quot;--cd&quot;, &quot;/root/src/github-services/TemporalStore&quot;, &quot;-e&quot;, &quot;bash&quot;, &quot;-lc&quot;, &quot;MATRIXARK_MCP_BACKEND=temporalstore-rust exec python3 tools/matrixark_mcp_server.py --line-json&quot;]
+startup_timeout_sec = 180
+```
+
+### Local debug MCP config
+
+Use this only for API debugging without C++/Rust storage:
+
+```toml
+[mcp_servers.matrixark]
+command = &quot;wsl.exe&quot;
+args = [&quot;--cd&quot;, &quot;/root/src/github-services/TemporalStore&quot;, &quot;-e&quot;, &quot;bash&quot;, &quot;-lc&quot;, &quot;MATRIXARK_MCP_BACKEND=local exec python3 tools/matrixark_mcp_server.py --line-json&quot;]
+startup_timeout_sec = 60
+```
+
+Restart Codex after editing `config.toml`.
+
+## 3. Backend Environment Variables
+
+The C++ hook launcher `tools/matrixark_codex_cpp_hook.sh` defaults to:
+
+```bash
+MATRIXARK_MCP_BACKEND=temporalstore-direct
+MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
+MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
+MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
+MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
+TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+MATRIXARK_HOOK_FAIL_OPEN=1
+MATRIXARK_HOOK_AUTOSTART_CPP=1
+```
+
+The Rust hook launcher `tools/matrixark_codex_rust_hook.sh` defaults to:
+
+```bash
+MATRIXARK_MCP_BACKEND=temporalstore-rust
+MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook:rust
+MATRIXARK_TEMPORALSTORE_RUST_CLI=/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log
+MATRIXARK_HOOK_FAIL_OPEN=1
+```
+
+Local identity defaults for hooks:
+
+```bash
+MATRIXARK_ACCOUNT_ID=acct_codex
+MATRIXARK_TENANT_ID=tenant_codex
+MATRIXARK_USER_ID=$USERNAME
+MATRIXARK_TEAM=codex
+MATRIXARK_PROJECT=local
+MATRIXARK_SESSION_COMMIT_THRESHOLD=20
+MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=600000
+MATRIXARK_HOOK_MAX_CONTEXT_TOKENS=1024
+```
+
+For local product mode, MatrixArk can also use these defaults:
+
+```text
+account_id = acct_local
+tenant_id  = derived from agent name, for example tenant_codex
+user_id    = local OS user unless an API key/SSO mapping resolves a MatrixArk user
+session_id = optional; captured from hook/MCP payload when available
+```
+
+In cloud mode, the API key resolves and enforces the final account, tenant, user, scopes, and allowed sessions. The agent can send hints, but MatrixArk remains the authority.
+
+## 4. Install Codex Hooks
+
+Codex hook availability depends on the Codex surface/version. If hooks are not visible in the desktop command palette, use MCP tools first. If the Codex runtime supports `.codex/hooks.json`, install lifecycle hooks like this in the project or user Codex config area:
+
+```json
+{
+  &quot;hooks&quot;: {
+    &quot;UserPromptSubmit&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ],
+    &quot;PostToolUse&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostToolUse&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ],
+    &quot;Stop&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event Stop&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ],
+    &quot;PostCompact&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh --event PostCompact&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ]
+  }
+}
+```
+
+Use the Rust hook launcher for Rust parity:
+
+```json
+{
+  &quot;hooks&quot;: {
+    &quot;UserPromptSubmit&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ],
+    &quot;Stop&quot;: [
+      {
+        &quot;command&quot;: &quot;/root/src/github-services/TemporalStore/tools/matrixark_codex_rust_hook.sh --event Stop&quot;,
+        &quot;timeout_ms&quot;: 60000
+      }
+    ]
+  }
+}
+```
+
+Recommended hook lifecycle:
+
+| Codex event | MatrixArk action |
+|---|---|
+| `UserPromptSubmit` | Ingest user message, append session buffer, retrieve ContextPack before LLM. |
+| `PostToolUse` | Ingest tool result summary, file refs, command state, and useful output. |
+| `Stop` | Ingest assistant/final signal and force session commit. |
+| `PostCompact` | Ingest compacted session summary and force session commit. |
+| `IdleTimeout` / `SessionIdle` | Commit pending session window without requiring a new message. |
+
+## 5. What Codex Sends
+
+Codex hook payloads vary. `tools/matrixark_codex_hook.py` extracts message text from common fields:
+
+```text
+prompt
+user_prompt
+input
+text
+message
+params.prompt
+params.input
+params.text
+turn.input
+messages[].content
+items[].content
+raw_text
+```
+
+It extracts session identity in this order:
+
+```text
+1. explicit --session-id or MATRIXARK_SESSION_ID
+2. payload fields: session_id, thread_id, conversation_id, transcript_id
+3. payload path hash: transcript_path, conversation_path, thread_path, log_path
+4. persisted local fallback under MATRIXARK_CODEX_SESSION_STATE_DIR
+```
+
+It also preserves compact local context when present:
+
+```text
+local_context
+context
+open_files
+active_files
+files
+buffers
+selected_text
+selection
+tool_outputs
+terminal_output
+```
+
+Codex does not need to send MatrixArk schemas. It sends what it knows. MatrixArk extracts `ContextEvent`, `ContextEntity`, `ContextSegment`, `ContextIndex`, `ContextSummary`, and `ContextEmbedding` internally.
+
+## 6. End-To-End Hook Behavior
+
+```mermaid
+sequenceDiagram
+  participant Codex
+  participant Hook
+  participant MCP as MatrixArk MCP
+  participant TS as C++/Rust TemporalStore
+
+  Codex-&gt;&gt;Hook: UserPromptSubmit JSON
+  Hook-&gt;&gt;MCP: matrixark_ingest(message, scope, hook metadata)
+  MCP-&gt;&gt;TS: write ContextEvent + embedding + indexes + dirty marker
+  Hook-&gt;&gt;MCP: matrixark_retrieve(query, local_context, token budget)
+  MCP-&gt;&gt;TS: tree traversal + secondary-index filter + candidate reads
+  MCP--&gt;&gt;Hook: ContextPack
+  Hook--&gt;&gt;Codex: selected refs + token count
+  Codex-&gt;&gt;Hook: PostToolUse / Stop / PostCompact
+  Hook-&gt;&gt;MCP: matrixark_ingest(tool/assistant/summary)
+  Hook-&gt;&gt;MCP: matrixark_session_commit on boundary
+  MCP-&gt;&gt;TS: batch segments/entities/indexes/summaries/audit
+```
+
+On a single incoming message, MatrixArk does lightweight online work:
+
+```text
+one message arrives
+-&gt; write ContextEvent
+-&gt; write event embedding
+-&gt; write session_buffer_event
+-&gt; update lightweight session/node summaries
+-&gt; mark node summary dirty
+-&gt; retrieve ContextPack if this is UserPromptSubmit
+-&gt; return immediately
+```
+
+Later, batch extraction runs:
+
+```text
+pending messages &gt;= 20, or Stop/PostCompact, or idle timeout, or manual commit
+-&gt; one-pass batch extraction
+-&gt; write ContextSegment records
+-&gt; update ContextEntity state
+-&gt; write ContextIndex records
+-&gt; write batch summary and embeddings
+-&gt; clear/supersede session buffer markers
+```
+
+## 7. MCP API Calls
+
+The examples below are what Codex or any MCP client can call. The MCP server schema enforces required fields; optional fields can be omitted for local debugging.
+
+### Ingest one message
+
+Minimal local message:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU request after finance reviewed the budget.&quot;}
+  ]
+}
+```
+
+Scoped message with hook metadata:
+
+```json
+{
+  &quot;kind&quot;: &quot;message&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU request after finance reviewed the budget.&quot;}
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:local:demo&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_mcp&quot;,
+    &quot;node_path&quot;: [
+      &quot;account:acct_local&quot;,
+      &quot;tenant:tenant_codex&quot;,
+      &quot;principal:user:deeproute&quot;,
+      &quot;collection:sessions&quot;,
+      &quot;session:codex:local:demo&quot;
+    ]
+  },
+  &quot;agent_hook&quot;: {
+    &quot;source&quot;: &quot;codex&quot;,
+    &quot;hook_type&quot;: &quot;before_llm&quot;,
+    &quot;hook_id&quot;: &quot;manual-demo-001&quot;,
+    &quot;observed_at_ms&quot;: 1782420000000,
+    &quot;trigger&quot;: &quot;UserPromptSubmit&quot;,
+    &quot;auto_captured&quot;: true
+  }
+}
+```
+
+### Batch extract a session window
+
+Use this for VikingMem-style logical session extraction after enough messages accumulate:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;I prefer Qwen for local tests.&quot;},
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Noted. We&#x27;ll use Qwen locally.&quot;},
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Also keep C++ TemporalStore as the production baseline.&quot;}
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:local:demo&quot;
+  },
+  &quot;threshold_messages&quot;: 20,
+  &quot;force&quot;: true,
+  &quot;metadata&quot;: {&quot;source&quot;: &quot;manual_batch_extract&quot;}
+}
+```
+
+### Commit pending session events
+
+```json
+{
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:local:demo&quot;
+  },
+  &quot;commit_reason&quot;: &quot;hook_boundary&quot;,
+  &quot;threshold_messages&quot;: 20,
+  &quot;force&quot;: true
+}
+```
+
+Commit policies:
+
+```text
+pending messages &gt;= 20  -&gt; threshold commit
+Stop/PostCompact        -&gt; hook_boundary commit
+idle &gt; 10-30 minutes    -&gt; idle_timeout commit
+agent request           -&gt; manual_api commit
+rolling window          -&gt; commit next 20 pending messages, not the whole session
+```
+
+### Retrieve context
+
+```json
+{
+  &quot;query&quot;: &quot;What GPU approvals are current, and what budget risks were mentioned?&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:local:demo&quot;
+  },
+  &quot;max_context_tokens&quot;: 2048,
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-buffer:planner.md&quot;, &quot;text&quot;: &quot;GPU budget planning notes...&quot;}
+  ]
+}
+```
+
+Retrieval flow:
+
+```text
+raw query
+-&gt; query understanding
+-&gt; secondary-index filter planning
+-&gt; tree-first traversal with node_l0/node_l1 embeddings
+-&gt; retrieve events/entities/segments/resources/skills
+-&gt; staleness and temporal scoring
+-&gt; token-budget packing
+-&gt; ContextPack + ContextPackAudit
+```
+
+### Feedback
+
+```json
+{
+  &quot;context_pack_id&quot;: &quot;ctxpack_123&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Final answer: Alice approved the GPU request, but finance still needs the latest budget revision.&quot;}
+  ],
+  &quot;accepted_refs&quot;: [&quot;context_event:approval_gpu_1&quot;],
+  &quot;rejected_refs&quot;: [],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:local:demo&quot;
+  }
+}
+```
+
+Short feedback such as `yes`, `correct`, or `approved` is only treated as confirmation when MatrixArk has prior context: a `context_pack_id`, accepted refs, or bounded same-session prior messages/summaries.
+
+### Replay
+
+```json
+{
+  &quot;context_pack_id&quot;: &quot;ctxpack_123&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;
+  }
+}
+```
+
+Replay explains what was selected, dropped, blocked, repaired, or used as prior context.
+
+### Ingestion dashboard
+
+```json
+{
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;
+  },
+  &quot;table&quot;: &quot;messages&quot;,
+  &quot;page_size&quot;: 50
+}
+```
+
+Supported dashboard tables include messages, resources, skills, events, entities, and context packs when enabled by the backend.
+
+## 8. Resource And Skill Ingestion Through MCP
+
+### Local resource file
+
+```json
+{
+  &quot;kind&quot;: &quot;resource&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Import resource file:///home/deeproute/docs/runbook.pdf&quot;}
+  ],
+  &quot;raw_uri&quot;: &quot;file:///home/deeproute/docs/runbook.pdf&quot;,
+  &quot;resource_type&quot;: &quot;pdf&quot;,
+  &quot;raw_storage_mode&quot;: &quot;local&quot;,
+  &quot;wait&quot;: true,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_resource_import&quot;,
+    &quot;node_path&quot;: [&quot;account:acct_local&quot;, &quot;tenant:tenant_codex&quot;, &quot;principal:user:deeproute&quot;, &quot;collection:resources&quot;]
+  }
+}
+```
+
+### Cloud resource file
+
+For MatrixArk cloud, the agent can either send an existing S3/object-store URI or upload through MatrixArk first if that upload API is enabled. After upload, the ingest call should contain the stable `raw_uri`:
+
+```json
+{
+  &quot;kind&quot;: &quot;resource&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Import cloud resource s3://matrixark-user-files/acct_local/runbook.pdf&quot;}
+  ],
+  &quot;raw_uri&quot;: &quot;s3://matrixark-user-files/acct_local/runbook.pdf&quot;,
+  &quot;resource_type&quot;: &quot;pdf&quot;,
+  &quot;raw_storage_mode&quot;: &quot;s3&quot;,
+  &quot;s3_bucket&quot;: &quot;matrixark-user-files&quot;,
+  &quot;s3_prefix&quot;: &quot;acct_local/&quot;,
+  &quot;wait&quot;: false,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;
+  }
+}
+```
+
+Raw bytes are not stored in TemporalStore. TemporalStore stores `raw_uri`, chunks, citations, summaries, embeddings, indexes, registry records, import task state, and replay/audit records.
+
+### Skill bundle or SKILL.md
+
+```json
+{
+  &quot;kind&quot;: &quot;skill&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Import skill file:///home/deeproute/.codex/skills/build-debug/SKILL.md&quot;}
+  ],
+  &quot;raw_uri&quot;: &quot;file:///home/deeproute/.codex/skills/build-debug/SKILL.md&quot;,
+  &quot;resource_type&quot;: &quot;skill&quot;,
+  &quot;raw_storage_mode&quot;: &quot;local&quot;,
+  &quot;wait&quot;: true,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_skill_import&quot;,
+    &quot;node_path&quot;: [&quot;account:acct_local&quot;, &quot;tenant:tenant_codex&quot;, &quot;principal:user:deeproute&quot;, &quot;collection:skills&quot;]
+  }
+}
+```
+
+Skill ingestion writes:
+
+```text
+SkillManifest
+SkillSection
+ResourceChunk(resource_type=skill)
+ContextSummary(skill_l0 / skill_summary)
+ContextEmbedding(skill_l0, skill_summary, skill sections/chunks)
+ContextIndex(skill_name, skill_trigger, skill_tool, source_type=skill)
+```
+
+Retrieval selects only relevant skill sections, never the full skill bundle by default.
+
+## 9. Manual Hook Smoke Tests
+
+### Local backend hook smoke
+
+```bash
+cd /root/src/github-services/TemporalStore
+printf &#x27;%s\n&#x27; &#x27;{&quot;prompt&quot;:&quot;Alice approved the GPU request.&quot;,&quot;thread_id&quot;:&quot;manual-hook-demo&quot;,&quot;cwd&quot;:&quot;/root/src/github-services/TemporalStore&quot;}&#x27; \
+  | MATRIXARK_MCP_BACKEND=local \
+    python3 tools/matrixark_codex_hook.py \
+      --event UserPromptSubmit \
+      --backend local \
+      --event-log /tmp/matrixark-hook-local.jsonl
+```
+
+Expected output includes:
+
+```json
+{
+  &quot;status&quot;: &quot;ok&quot;,
+  &quot;event&quot;: &quot;UserPromptSubmit&quot;,
+  &quot;session_id&quot;: &quot;codex:manual-hook-demo&quot;,
+  &quot;retrieve&quot;: {
+    &quot;selected_ref_count&quot;: 1
+  }
+}
+```
+
+### C++ TemporalStore hook smoke
+
+```bash
+cd /root/src/github-services/TemporalStore
+printf &#x27;%s\n&#x27; &#x27;{&quot;prompt&quot;:&quot;Alice approved the GPU request.&quot;,&quot;thread_id&quot;:&quot;manual-hook-cpp&quot;,&quot;cwd&quot;:&quot;/root/src/github-services/TemporalStore&quot;}&#x27; \
+  | MATRIXARK_ACCOUNT_ID=acct_local \
+    MATRIXARK_TENANT_ID=tenant_codex \
+    MATRIXARK_USER_ID=&quot;${USER:-deeproute}&quot; \
+    tools/matrixark_codex_cpp_hook.sh --event UserPromptSubmit
+```
+
+### Rust TemporalStore hook smoke
+
+```bash
+cd /root/src/github-services/TemporalStore
+printf &#x27;%s\n&#x27; &#x27;{&quot;prompt&quot;:&quot;Alice approved the GPU request.&quot;,&quot;thread_id&quot;:&quot;manual-hook-rust&quot;,&quot;cwd&quot;:&quot;/root/src/github-services/TemporalStore&quot;}&#x27; \
+  | MATRIXARK_ACCOUNT_ID=acct_local \
+    MATRIXARK_TENANT_ID=tenant_codex \
+    MATRIXARK_USER_ID=&quot;${USER:-deeproute}&quot; \
+    tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit
+```
+
+## 10. MCP Smoke Test
+
+List tools through the configured C++ MCP launcher:
+
+```powershell
+$req = &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{}}&#x27; + &quot;`n&quot;
+Set-Content -NoNewline -Encoding ascii &quot;$env:TEMP\matrixark-mcp-smoke.jsonl&quot; $req
+wsl --cd /root/src/github-services/TemporalStore -e bash -lc &#x27;timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json &lt; /mnt/c/Users/Deeproute/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000&#x27;
+```
+
+Call a tool directly over line JSON:
+
+```bash
+cd /root/src/github-services/TemporalStore
+cat &gt; /tmp/matrixark-ingest-call.jsonl &lt;&lt;&#x27;JSON&#x27;
+{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/call&quot;,&quot;params&quot;:{&quot;name&quot;:&quot;matrixark_ingest&quot;,&quot;arguments&quot;:{&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Alice approved the GPU request.&quot;}],&quot;scope&quot;:{&quot;account_id&quot;:&quot;acct_local&quot;,&quot;tenant_id&quot;:&quot;tenant_codex&quot;,&quot;user_id&quot;:&quot;deeproute&quot;,&quot;session_id&quot;:&quot;manual-mcp-demo&quot;}}}}
+JSON
+MATRIXARK_MCP_BACKEND=local python3 tools/matrixark_mcp_server.py --line-json &lt; /tmp/matrixark-ingest-call.jsonl
+```
+
+## 11. What To Verify In MatrixArk
+
+After a successful hook or MCP ingest, check:
+
+```text
+matrixark_ingestion_dashboard(table=messages)
+matrixark_ingestion_dashboard(table=events)
+matrixark_ingestion_dashboard(table=entities)
+matrixark_ingestion_dashboard(table=context_packs)
+matrixark_retrieve(query=&quot;what did Alice approve?&quot;)
+matrixark_replay(context_pack_id=&quot;...&quot;)
+```
+
+Expected data model flow:
+
+```text
+message/hook payload
+-&gt; ContextEvent(raw replayable evidence)
+-&gt; ContextEmbedding(event_text)
+-&gt; session_buffer_event
+-&gt; ContextIndex(event_type, entity_type, keywords, source_type, session/user scope)
+-&gt; ContextSummaryDirty
+-&gt; async ContextSummary(node_l0/node_l1)
+-&gt; ContextEmbedding(node_l0/node_l1)
+-&gt; ContextPackAudit after retrieval
+```
+
+For resource/skill imports, also check:
+
+```text
+ResourceImportTask
+ResourceManifest / ResourceRegistry
+ResourceChunk
+SkillManifest / SkillRegistry
+SkillSection
+ContextSummary(resource_l0 / skill_l0)
+ContextEmbedding(resource_chunk / skill section / summaries)
+ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path, skill_trigger, skill_tool)
+```
+
+## 12. Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| MCP startup timeout | C++/Rust backend or models are warming up. | Increase `startup_timeout_sec` to 180 or 240. |
+| `MATRIXARK_CPP_TEMPORALSTORE_ENDPOINT is not set` | HTTP gateway mode requested but endpoint is missing. | Use `tools/matrixark_mcp_cpp_server.sh` direct SDK mode or set the gateway endpoint. |
+| `Slot not found` / `Partition info not found` | TemporalStore topology is still installing slots. | Run backend readiness/warmup and retry after metaserver reports slot coverage. |
+| MCP tools work but messages are not automatic | MCP is callable, not a lifecycle hook by itself. | Install hook commands or ask Codex to call `matrixark_ingest` explicitly. |
+| Hook blocks Codex | Backend slow or unavailable. | Keep `MATRIXARK_HOOK_FAIL_OPEN=1` so Codex continues and MatrixArk logs a warning. |
+| No stable session id | Codex payload lacks thread/session fields. | Set `MATRIXARK_SESSION_ID` or rely on the fallback state file under `MATRIXARK_CODEX_SESSION_STATE_DIR`. |
+| OSS model fallback | Model path missing or network download failed. | Set `MATRIXARK_EMBEDDING_MODEL_PATH` and use local downloaded model files. |
+
+## 13. Production Defaults
+
+For production-like Codex integration:
+
+```text
+C++ TemporalStore remains the production-performance baseline.
+Rust TemporalStore should use the long-lived gateway/binding path, not process-per-operation CLI mode.
+Hooks should fail open to avoid breaking the agent loop.
+MCP API keys should scope account/tenant/user/session access.
+MatrixArk should own extraction and schema mapping; agents send simple messages, files, and hints.
+Summaries refresh asynchronously; ingestion should not wait for L0/L1 regeneration.
+ContextPackAudit and replay should be enabled for every retrieval.
+```
+
+## 14. Minimal Agent Contract
+
+For a normal message, the smallest useful MCP call is:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;The finance owner approved the GPU budget.&quot;}
+  ]
+}
+```
+
+For reliable multi-user isolation, send at least:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;The finance owner approved the GPU budget.&quot;}
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_local&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;deeproute&quot;,
+    &quot;session_id&quot;: &quot;codex:thread:123&quot;
+  }
+}
+```
+
+MatrixArk can infer defaults locally, but production should use an API key and explicit or hook-captured `user_id` / `session_id` for audit and isolation.
+</pre></article></main></body></html>
