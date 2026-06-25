@@ -75,6 +75,10 @@ struct RecordLogResponse {
     elapsed_ms: Option<u128>,
     #[serde(skip_serializing_if = "String::is_empty")]
     error: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    error_code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    retryable: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -140,23 +144,56 @@ fn response_from_result(
             cached_clients: output.cached_clients,
             elapsed_ms: Some(elapsed_ms),
             error: String::new(),
+            error_code: String::new(),
+            retryable: None,
         },
-        Err((op, error)) => RecordLogResponse {
-            ok: false,
-            value: String::new(),
-            entries: BTreeMap::new(),
-            records: Vec::new(),
-            count: None,
-            op,
-            root: String::new(),
-            status: String::new(),
-            mode: String::new(),
-            prometheus: String::new(),
-            cached_clients: None,
-            elapsed_ms: Some(elapsed_ms),
-            error,
+        Err((op, error)) => {
+            let (error_code, retryable) = classify_error(&error);
+            RecordLogResponse {
+                ok: false,
+                value: String::new(),
+                entries: BTreeMap::new(),
+                records: Vec::new(),
+                count: None,
+                op,
+                root: String::new(),
+                status: String::new(),
+                mode: String::new(),
+                prometheus: String::new(),
+                cached_clients: None,
+                elapsed_ms: Some(elapsed_ms),
+                error,
+                error_code,
+                retryable: Some(retryable),
+            }
         },
     }
+}
+
+fn classify_error(error: &str) -> (String, bool) {
+    let lower = error.to_ascii_lowercase();
+    if lower.contains("missing ")
+        || lower.contains("invalid json")
+        || lower.contains("unsupported op")
+        || lower.contains("utf-8")
+    {
+        return ("invalid_argument".to_string(), false);
+    }
+    if lower.contains("slot not found")
+        || lower.contains("partition info not found")
+        || lower.contains("partition no primary")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        return ("temporarily_unavailable".to_string(), true);
+    }
+    if lower.contains("failed to create")
+        || lower.contains("failed to read")
+        || lower.contains("failed to serialize")
+    {
+        return ("internal_io_error".to_string(), true);
+    }
+    ("internal_error".to_string(), true)
 }
 
 fn run() -> Result<(String, RecordLogOutput), (String, String)> {

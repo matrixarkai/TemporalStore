@@ -202,6 +202,8 @@ def parse_host_port(address: str) -> tuple[str, int] | None:
 
 
 def metaserver_reachable(address: str, timeout_ms: int = BACKEND_READINESS_CONNECT_TIMEOUT_MS) -> Json:
+    if address in {"local", "embedded", "no-metaserver"}:
+        return {"ok": True, "address": address, "mode": "no-metaserver"}
     parsed = parse_host_port(address)
     if parsed is None:
         return {"ok": False, "address": address, "error": "invalid metaserver address"}
@@ -6407,7 +6409,7 @@ class MatrixArkRustCliClient:
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
         )
 
-    def _call_json(self, op: str, **kwargs: Any) -> Json:
+    def _call_json(self, op: str, *, raise_on_error: bool = True, **kwargs: Any) -> Json:
         command = {
             "op": op,
             "metaserver": self.metaserver,
@@ -6447,6 +6449,8 @@ class MatrixArkRustCliClient:
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
             self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
+            if not raise_on_error:
+                return response
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
         self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False)
         return response
@@ -6518,6 +6522,15 @@ class MatrixArkRustCliClient:
                 "gateway_mode": "long_lived_stdio_gateway",
                 "transport": "stdio",
                 "cli_path": self.cli_path,
+                "process_per_operation_enabled": False,
+                "single_shot_mode": "debug_only",
+                "supports_health": True,
+                "supports_readiness": True,
+                "supports_metrics": True,
+                "supports_batch_append": True,
+                "supports_prefix_scan": True,
+                "supports_graceful_shutdown": True,
+                "structured_errors": True,
                 "max_inflight": 1,
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
@@ -6655,6 +6668,22 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
             "gateway_mode": "long_lived_stdio_gateway",
+            "production_path": "long_lived_only",
+            "process_per_operation_enabled": False,
+            "single_shot_mode": "debug_only",
+            "capabilities": {
+                "health_endpoint": True,
+                "readiness_endpoint": True,
+                "metrics_endpoint": True,
+                "batch_append": True,
+                "prefix_scan": True,
+                "connection_pooling": True,
+                "client_pooling": True,
+                "backpressure": True,
+                "graceful_shutdown": True,
+                "timeout_handling": True,
+                "structured_errors_cpp_compatible": True,
+            },
             "health": health,
             "readiness": readiness,
             "prometheus": prometheus,
