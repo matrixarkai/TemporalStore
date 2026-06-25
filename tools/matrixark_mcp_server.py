@@ -451,6 +451,16 @@ def validate_hook(hook: Json | None) -> Json | None:
     return hook
 
 
+def adapter_ensure_backend_ready(adapter: Any, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
+    """Call adapter readiness across old/new adapter signatures."""
+    try:
+        return adapter.ensure_backend_ready(reason=reason, probe=probe, timeout_ms=timeout_ms)
+    except TypeError as exc:
+        text = str(exc)
+        if "unexpected keyword argument" not in text or "probe" not in text:
+            raise
+        return adapter.ensure_backend_ready(reason=reason)
+
 def has_confirmation_context(envelope: Json) -> bool:
     metadata = optional_object(envelope, "metadata")
     return bool(
@@ -7157,6 +7167,15 @@ class MatrixArkRustCliClient:
                 "max_observed_latency_ms": round(self._max_observed_latency_ms, 3),
                 "matrixark_context_records_total": sum(context_counts.values()),
                 "matrixark_context_records_by_type": context_counts,
+                "process_per_operation_enabled": False,
+                "single_shot_mode": "debug_only",
+                "supports_health": True,
+                "supports_readiness": True,
+                "supports_metrics": True,
+                "supports_batch_append": True,
+                "supports_prefix_scan": True,
+                "supports_graceful_shutdown": True,
+                "structured_errors": True,
             }
 
     def _call(self, op: str, **kwargs: Any) -> str:
@@ -8813,7 +8832,8 @@ class MatrixArkMcpServer:
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
         if name == "matrixark_backend_ready":
-            result = self.adapter.ensure_backend_ready(
+            result = adapter_ensure_backend_ready(
+                self.adapter,
                 reason=str(args.get("reason") or "manual"),
                 probe=bool(args.get("probe", True)),
                 timeout_ms=args.get("timeout_ms"),
@@ -9091,7 +9111,7 @@ def main() -> int:
     else:
         adapter = MatrixArkLocalAdapter(args.event_log)
     if backend_ready_required(args.backend):
-        readiness = adapter.ensure_backend_ready(reason="mcp_startup", probe=True)
+        readiness = adapter_ensure_backend_ready(adapter, reason="mcp_startup", probe=True)
         if readiness.get("status") != "ready":
             raise MatrixArkError(f"MatrixArk MCP backend not ready at startup: {json.dumps(readiness, sort_keys=True)}")
     _mcp_debug_log("main: adapter ready; serving")
