@@ -182,7 +182,6 @@ Detailed inventory: `docs/unified_test_case_inventory.md`.
 | Area | Count | Location | Notes |
 | --- | ---: | --- | --- |
 | Shared corpus runner tests | 2 | `crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs` | Runs the same shared corpus through direct engine and HTTP client paths. |
-| C++-like API/integration tests | 14 | `crates/temporalstore-rust/tests/temporalstore_compat.rs` | Rust-local tests named against C++ behavior. 11 now carry explicit `shared-corpus:` references; the three remaining unmarked tests need readiness/stream corpus cases. |
 | C++ migration corpus test | 1 | `crates/temporalstore-rust/tests/storage_migration_corpus.rs` | Rust consumes converted C++ storage artifacts and validates storage lifecycle paths. |
 
 The shared corpus currently covers common/string/hash/set, Redis-compatible set, Feature,
@@ -248,10 +247,10 @@ Target disposition:
 
 ## Highest-Value Tests To Share Next
 
-1. Promote `temporalstore_compat.rs` cases into `compat/unified_temporalstore_cases.json`.
-   The Feature policy/filter/aggregate, Sequence batch/filter, Redis feature, Raft consistency,
-   and shared-store replication compatibility tests now have explicit shared-corpus references.
-   Remaining unmarked candidates are readiness service-summary API and stream/page read APIs.
+1. Keep adding product behavior to `compat/unified_temporalstore_cases.json` first.
+   The former `temporalstore_compat.rs` integration target has been retired in favor of
+   `unified_temporalstore_corpus.rs`, which executes the shared corpus through direct engine and
+   HTTP client paths.
 
 2. Add shared storage lifecycle corpus cases for the large storage bucket:
    packed page recovery, slot dump/load, compaction, GC retention, tiny-cache refill, shared-store
