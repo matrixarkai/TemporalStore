@@ -1583,6 +1583,69 @@ RESOURCE_FACT_KEYWORDS = re.compile(
     flags=re.IGNORECASE,
 )
 
+RESOURCE_FACT_SCHEMAS: list[Json] = [
+    {
+        "fact_type": "resource_decision",
+        "entity_type": "resource_decision",
+        "entity_prefix": "decision",
+        "keywords": ["decision", "decided", "approved", "rejected", "selected"],
+    },
+    {
+        "fact_type": "resource_owner",
+        "entity_type": "resource_owner",
+        "entity_prefix": "owner",
+        "keywords": ["owner", "owns", "reviewer", "assignee", "responsible"],
+    },
+    {
+        "fact_type": "resource_cost",
+        "entity_type": "resource_cost",
+        "entity_prefix": "cost",
+        "keywords": ["cost", "budget", "amount", "price", "spend", "$"],
+    },
+    {
+        "fact_type": "resource_deadline",
+        "entity_type": "resource_deadline",
+        "entity_prefix": "deadline",
+        "keywords": ["deadline", "due", "by monday", "by tuesday", "by wednesday", "by thursday", "by friday", "by saturday", "by sunday"],
+    },
+    {
+        "fact_type": "resource_api_contract",
+        "entity_type": "resource_api_contract",
+        "entity_prefix": "api",
+        "keywords": ["api", "endpoint", "contract", "schema", "request", "response", "http", "grpc"],
+    },
+    {
+        "fact_type": "resource_troubleshooting_step",
+        "entity_type": "resource_troubleshooting",
+        "entity_prefix": "troubleshooting",
+        "keywords": ["troubleshoot", "debug", "incident", "alert", "rollback", "runbook", "remediation", "mitigation"],
+    },
+    {
+        "fact_type": "resource_policy",
+        "entity_type": "resource_policy",
+        "entity_prefix": "policy",
+        "keywords": ["policy", "must", "should", "required", "requires", "cannot", "allowed"],
+    },
+    {
+        "fact_type": "resource_approval",
+        "entity_type": "resource_approval",
+        "entity_prefix": "approval",
+        "keywords": ["approval", "approved", "approve", "signoff", "confirmed"],
+    },
+    {
+        "fact_type": "resource_risk",
+        "entity_type": "resource_risk",
+        "entity_prefix": "risk",
+        "keywords": ["risk", "blocker", "blocked", "failure", "unsafe", "degraded"],
+    },
+    {
+        "fact_type": "resource_procedure",
+        "entity_type": "resource_procedure",
+        "entity_prefix": "procedure",
+        "keywords": ["procedure", "step", "checklist", "first", "then", "verify", "confirm"],
+    },
+]
+
 
 def should_extract_resource_fact(text: str, metadata: Json) -> bool:
     if RESOURCE_FACT_KEYWORDS.search(text):
@@ -1591,19 +1654,53 @@ def should_extract_resource_fact(text: str, metadata: Json) -> bool:
     return unit_kind in {"table_row", "table_row_group", "xlsx_row", "xlsx_row_group", "json_document", "json_record", "json_record_group"}
 
 
-def resource_fact_type(text: str, metadata: Json) -> str:
+def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
     lower = text.lower()
-    if any(term in lower for term in ["approval", "approved", "budget", "cost", "purchase"]):
-        return "resource_approval_fact"
-    if any(term in lower for term in ["deadline", "due", "owner", "owns", "reviewer"]):
-        return "resource_task_fact"
-    if any(term in lower for term in ["api", "endpoint", "contract", "schema"]):
-        return "resource_api_contract"
-    if any(term in lower for term in ["runbook", "rollback", "incident", "alert", "troubleshoot"]):
-        return "resource_runbook_step"
-    if any(term in lower for term in ["policy", "must", "required", "requires", "risk"]):
-        return "resource_policy_fact"
-    return "resource_fact"
+    matches = [
+        schema
+        for schema in RESOURCE_FACT_SCHEMAS
+        if any(keyword in lower for keyword in schema["keywords"])
+    ]
+    if matches:
+        return matches
+    if should_extract_resource_fact(text, metadata):
+        return [{"fact_type": "resource_fact", "entity_type": "resource_fact", "entity_prefix": "fact", "keywords": []}]
+    return []
+
+
+def extract_resource_fact_value(text: str, fact_type: str) -> str:
+    patterns = {
+        "resource_owner": r"\b(?:owner|owns|reviewer|assignee|responsible)\s*(?:is|:|=)?\s*([^.;\n]{2,120})",
+        "resource_deadline": r"\b(?:deadline|due)\s*(?:is|:|=|by)?\s*([^.;\n]{2,120})",
+        "resource_cost": r"\b(?:cost|budget|amount|price|spend)\s*(?:is|:|=)?\s*([^.;\n]{2,120})",
+        "resource_api_contract": r"\b(?:api|endpoint|contract|schema)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
+        "resource_approval": r"\b(?:approval|approved|approve|signoff|confirmed)\s*(?:is|:|=)?\s*([^.;\n]{0,140})",
+        "resource_risk": r"\b(?:risk|blocker|blocked|failure)\s*(?:is|:|=)?\s*([^.;\n]{2,160})",
+        "resource_decision": r"\b(?:decision|decided)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_policy": r"\b(?:policy|must|should|required|requires)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_troubleshooting_step": r"\b(?:troubleshoot|debug|incident|alert|rollback|runbook|remediation|mitigation)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+        "resource_procedure": r"\b(?:procedure|step|checklist|verify|confirm)\s*(?:is|:|=)?\s*([^.;\n]{2,180})",
+    }
+    pattern = patterns.get(fact_type, "")
+    if pattern:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return summarize_text(match.group(1).strip(" :-"), limit=180)
+    return summarize_text(text, limit=220)
+
+
+def resource_fact_entity_name(schema: Json, value: str, chunk_metadata: Json, raw_uri: str) -> str:
+    anchor = str(
+        chunk_metadata.get("heading")
+        or chunk_metadata.get("heading_slug")
+        or chunk_metadata.get("relative_path")
+        or chunk_metadata.get("source_ref")
+        or raw_uri
+    )[:80]
+    prefix = str(schema.get("entity_prefix") or schema.get("entity_type") or "fact")
+    if value and value != anchor:
+        return f"{prefix}:{anchor}:{value[:60]}"
+    return f"{prefix}:{anchor}"
 
 
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
@@ -3673,113 +3770,120 @@ class MatrixArkLocalAdapter:
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:32]
             for chunk in fact_chunks:
                 chunk_metadata = sanitize_resource_metadata(chunk.metadata)
-                fact_event_type = resource_fact_type(chunk.text, chunk.metadata)
-                fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
-                resource_fact_event_hashes.append(fact_event_hash)
-                fact_summary = summarize_text(chunk.text, limit=320)
-                fact_extraction = {
-                    "mode": "matrixark_resource_fact_extraction",
-                    "classification": "RESOURCE_FACT",
-                    "event_type": fact_event_type,
-                    "status": "observed",
-                    "source_chunk_hash": chunk.chunk_hash,
-                    "source_ref": chunk.source_ref,
-                    "resource_version": resource_version_value,
-                }
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_event",
-                        "event_id_hash": fact_event_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "text": chunk.text,
-                        "summary_text": fact_summary,
-                        "envelope": {**envelope, "kind": "resource_fact"},
-                        "internal_extraction": fact_extraction,
+                for fact_schema in matched_resource_fact_schemas(chunk.text, chunk.metadata):
+                    fact_event_type = str(fact_schema["fact_type"])
+                    fact_entity_type = str(fact_schema["entity_type"])
+                    fact_value = extract_resource_fact_value(chunk.text, fact_event_type)
+                    fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
+                    resource_fact_event_hashes.append(fact_event_hash)
+                    fact_summary = summarize_text(f"{fact_event_type}: {fact_value}", limit=320)
+                    fact_extraction = {
+                        "mode": "matrixark_resource_fact_extraction",
+                        "classification": "RESOURCE_FACT",
+                        "event_type": fact_event_type,
+                        "entity_type": fact_entity_type,
+                        "status": "observed",
+                        "value": fact_value,
                         "source_chunk_hash": chunk.chunk_hash,
                         "source_ref": chunk.source_ref,
                         "resource_version": resource_version_value,
-                        "scope": envelope["scope"],
-                        "updated_at_ms": envelope["ingestion_time_ms"],
                     }
-                )
-                fact_vector = embedding_for_text(fact_event_type + " " + chunk.text)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_embedding",
-                        "embedding_type": "event_text",
-                        "ref_type": "event",
-                        "ref_hash": fact_event_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(fact_vector),
-                        "model": embedding_model_name(),
-                        "vector": fact_vector,
-                        "scope": envelope["scope"],
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                entity_name = str(chunk_metadata.get("heading") or chunk_metadata.get("relative_path") or chunk_metadata.get("source_ref") or raw_uri)[:120]
-                entity_hash = stable_hash(f"{node_hash}:resource_fact:{entity_name}:{chunk.chunk_hash}")
-                resource_fact_entity_hashes.append(entity_hash)
-                entity_state = summarize_text(chunk.text, limit=320)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_entity",
-                        "entity_hash": entity_hash,
-                        "batch_id_hash": resource_import_task_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "scope": envelope["scope"],
-                        "entity_type": "resource_fact",
-                        "entity_name": entity_name,
-                        "state": entity_state,
-                        "confidence": 0.72,
-                        "operator": "LATEST",
-                        "source_refs": [chunk.source_ref],
-                        "source_event_ids": [fact_event_hash],
-                        "source_chunk_hash": chunk.chunk_hash,
-                        "resource_version": resource_version_value,
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                entity_vector = embedding_for_text("resource_fact " + entity_name + " " + entity_state)
-                resource_fact_records.append(
-                    {
-                        "record_type": "context_embedding",
-                        "embedding_type": "entity_state",
-                        "ref_type": "entity",
-                        "ref_hash": entity_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "dim": len(entity_vector),
-                        "model": embedding_model_name(),
-                        "vector": entity_vector,
-                        "scope": envelope["scope"],
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
-                )
-                for index_name in ordered_unique([
-                    context_index_name("source_type", "resource_fact"),
-                    context_index_name("event_type", fact_event_type),
-                    context_index_name("entity_type", "resource_fact"),
-                    context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
-                ] + metadata_index_terms(chunk_metadata)):
                     resource_fact_records.append(
                         {
-                            "record_type": "context_index",
-                            "index_name": index_name,
-                            "index_hash": stable_hash(f"{index_name}:{fact_event_hash}"),
-                            "batch_id_hash": resource_import_task_hash,
-                            "ref_type": "resource_fact",
-                            "ref_hash": fact_event_hash,
-                            "chunk_hash": chunk.chunk_hash,
+                            "record_type": "context_event",
+                            "event_id_hash": fact_event_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
+                            "text": chunk.text,
+                            "summary_text": fact_summary,
+                            "envelope": {**envelope, "kind": "resource_fact"},
+                            "internal_extraction": fact_extraction,
+                            "source_chunk_hash": chunk.chunk_hash,
+                            "source_ref": chunk.source_ref,
+                            "resource_version": resource_version_value,
                             "scope": envelope["scope"],
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
+                    fact_vector = embedding_for_text(fact_event_type + " " + fact_value + " " + chunk.text)
+                    resource_fact_records.append(
+                        {
+                            "record_type": "context_embedding",
+                            "embedding_type": "event_text",
+                            "ref_type": "event",
+                            "ref_hash": fact_event_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "dim": len(fact_vector),
+                            "model": embedding_model_name(),
+                            "vector": fact_vector,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    entity_name = resource_fact_entity_name(fact_schema, fact_value, chunk_metadata, raw_uri)
+                    entity_hash = stable_hash(f"{node_hash}:{fact_entity_type}:{entity_name}:{chunk.chunk_hash}")
+                    resource_fact_entity_hashes.append(entity_hash)
+                    entity_state = summarize_text(f"{fact_event_type}: {fact_value}. Source: {chunk.text}", limit=360)
+                    resource_fact_records.append(
+                        {
+                            "record_type": "context_entity",
+                            "entity_hash": entity_hash,
+                            "batch_id_hash": resource_import_task_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "scope": envelope["scope"],
+                            "entity_type": fact_entity_type,
+                            "entity_name": entity_name,
+                            "state": entity_state,
+                            "confidence": 0.78,
+                            "operator": "LATEST",
+                            "source_refs": [chunk.source_ref],
+                            "source_event_ids": [fact_event_hash],
+                            "source_chunk_hash": chunk.chunk_hash,
+                            "source_ref": chunk.source_ref,
+                            "resource_version": resource_version_value,
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    entity_vector = embedding_for_text(fact_entity_type + " " + entity_name + " " + entity_state)
+                    resource_fact_records.append(
+                        {
+                            "record_type": "context_embedding",
+                            "embedding_type": "entity_state",
+                            "ref_type": "entity",
+                            "ref_hash": entity_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "dim": len(entity_vector),
+                            "model": embedding_model_name(),
+                            "vector": entity_vector,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+                    for index_name in ordered_unique([
+                        context_index_name("source_type", "resource_fact"),
+                        context_index_name("event_type", fact_event_type),
+                        context_index_name("entity_type", fact_entity_type),
+                        context_index_name("entity_type", "resource_fact"),
+                        context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
+                    ] + metadata_index_terms(chunk_metadata)):
+                        resource_fact_records.append(
+                            {
+                                "record_type": "context_index",
+                                "index_name": index_name,
+                                "index_hash": stable_hash(f"{index_name}:{fact_event_hash}"),
+                                "batch_id_hash": resource_import_task_hash,
+                                "ref_type": "resource_fact",
+                                "ref_hash": fact_event_hash,
+                                "chunk_hash": chunk.chunk_hash,
+                                "node_hash": node_hash,
+                                "node_path": node_path,
+                                "scope": envelope["scope"],
+                                "updated_at_ms": envelope["ingestion_time_ms"],
+                            }
+                        )
             if resource_fact_records:
                 self.append_many(resource_fact_records)
             resource_import_metrics = {
