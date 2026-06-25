@@ -29,6 +29,29 @@ These reports are deterministic-reader engineering evidence. They are not a Viki
 live-reader claim because no live GPT-4o-mini or OpenAI-compatible reader endpoint was configured for
 this run.
 
+## Production-Performance Wording
+
+The correct current wording is: **Rust is feature-correct for parity testing; C++
+remains the production-performance baseline.**
+
+Rust should not be described as production-performance parity until the benchmark
+evidence proves all of the following:
+
+- Rust is moved fully off CLI-per-operation paths into a long-lived native
+  backend or gateway.
+- Full official LOCOMO and full official LongMemEval_s run on both C++ and Rust.
+- Both backends use the same OSS embedding model, reader, judge, token budget,
+  storage mode, and benchmark config.
+- Each run saves canonical artifacts: result JSON, report JSON/Markdown,
+  hypotheses JSONL, ContextPack JSONL, judge JSONL, and backend metrics.
+- The comparison covers recall, judge score, token use, p50/p95/p99 latency,
+  QPS, errors, and fallback flags.
+- The unified corpus covers async oplog, batch append, Redis surface,
+  proxy/client, multi-node, and Raft mode.
+
+This page records useful Rust benchmark evidence, but the production baseline
+remains C++ until those proof gates are green.
+
 ## Commands
 
 LOCOMO:
