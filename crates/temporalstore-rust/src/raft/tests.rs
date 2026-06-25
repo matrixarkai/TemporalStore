@@ -2054,11 +2054,8 @@ fn distributed_propose_does_not_wait_for_failed_followers_after_quorum() {
 #[test]
 fn distributed_raft_readiness_reports_remaining_production_blockers() {
     let readiness = distributed_raft_readiness();
-    assert_eq!(readiness.complete, cfg!(feature = "openraft-engine"));
-    assert_eq!(
-        readiness.production_ready,
-        cfg!(feature = "openraft-engine")
-    );
+    assert!(!readiness.complete);
+    assert!(!readiness.production_ready);
     assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
     assert!(readiness.local_model_tested);
     assert!(readiness.transport_contracts_present);
@@ -2105,6 +2102,14 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
         .missing
         .iter()
         .any(|item| item.contains("process startup")));
+    assert!(readiness
+        .missing
+        .iter()
+        .any(|item| item.contains("data-node multi-process rollout evidence")));
+    assert!(readiness
+        .missing
+        .iter()
+        .any(|item| item.contains("metaserver multi-process rollout evidence")));
 }
 
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
@@ -2813,7 +2818,7 @@ fn byteraft_snapshot_sender_timeout_clears_pipeline_and_reports_retry() {
 }
 
 #[test]
-fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
+fn raft_openraft_rollout_readiness_fails_closed_without_process_rollout_evidence() {
     let readiness = raft_openraft_rollout_readiness();
     assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
     assert!(readiness.data_node_process_startup_selects_openraft);
@@ -2830,11 +2835,11 @@ fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
     assert!(readiness
         .missing
         .iter()
-        .any(|item| item.contains("data-node process rollout")));
+        .any(|item| item.contains("data-node multi-process rollout evidence")));
     assert!(readiness
         .missing
         .iter()
-        .any(|item| item.contains("metaserver process rollout")));
+        .any(|item| item.contains("metaserver multi-process rollout evidence")));
     if !cfg!(feature = "openraft-engine") {
         assert!(readiness
             .missing
@@ -2852,7 +2857,106 @@ fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
     assert!(distributed
         .missing
         .iter()
-        .any(|item| item.contains("OpenRaft data-node process rollout")));
+        .any(|item| item.contains("data-node multi-process rollout evidence")));
+}
+
+fn ready_openraft_process_node(node_id: RaftNodeId) -> OpenRaftProcessNodeEvidence {
+    OpenRaftProcessNodeEvidence {
+        node_id,
+        addr: format!("127.0.0.1:{}", 19000 + node_id),
+        wal_dir: format!("/tmp/temporalstore-openraft-test/node-{node_id}"),
+        commit_index: 11,
+        applied_index: 11,
+        snapshot_id: Some("snapshot-11".to_string()),
+        restarted: true,
+        log_store_validated: true,
+    }
+}
+
+fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutReport {
+    OpenRaftDataNodeProcessRolloutReport {
+        shard_id: 7,
+        voters: vec![1, 2, 3],
+        learners: Vec::new(),
+        nodes: vec![
+            ready_openraft_process_node(1),
+            ready_openraft_process_node(2),
+            ready_openraft_process_node(3),
+        ],
+        write_proposed_through_process_api: true,
+        leader_transfer_validated: true,
+        failover_validated: true,
+        recovered_after_restart: true,
+        restart_recovery_validated: true,
+        snapshot_install_validated: true,
+        applied_fence_validated: true,
+        multi_process_log_store_validated: true,
+        ready: true,
+        blockers: Vec::new(),
+    }
+}
+
+fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
+    OpenRaftMetaProcessRolloutReport {
+        voters: vec![1, 2, 3],
+        learners: Vec::new(),
+        nodes: vec![
+            ready_openraft_process_node(1),
+            ready_openraft_process_node(2),
+            ready_openraft_process_node(3),
+        ],
+        mutation_proposed_through_process_api: true,
+        applied_raft_mutations: 4,
+        generated_scheduler_tasks: 2,
+        scheduler_retries: 1,
+        stale_scheduler_token_rejected: true,
+        data_node_membership_results_ready: true,
+        read_index_validated: true,
+        snapshot_install_validated: true,
+        recovered_after_restart: true,
+        scheduler_task_replay_validated: true,
+        multi_process_log_store_validated: true,
+        ready: true,
+        blockers: Vec::new(),
+    }
+}
+
+#[test]
+fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
+    let data_report = ready_data_node_openraft_rollout_report();
+    let meta_report = ready_meta_openraft_rollout_report();
+    let readiness =
+        raft_openraft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
+
+    assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
+    assert!(readiness.data_node_real_process_rollout_validated);
+    assert!(readiness.metaserver_real_process_rollout_validated);
+    assert!(readiness.multi_process_log_store_validation_present);
+    assert_eq!(
+        readiness.production_ready,
+        cfg!(feature = "openraft-engine")
+    );
+    if cfg!(feature = "openraft-engine") {
+        assert!(readiness.missing.is_empty());
+    } else {
+        assert!(readiness
+            .missing
+            .iter()
+            .any(|item| item.contains("OpenRaft production engine adapter")));
+    }
+
+    let mut local_fixture_like_data = data_report;
+    local_fixture_like_data.nodes.truncate(1);
+    let rejected = raft_openraft_rollout_readiness_from_reports(
+        Some(&local_fixture_like_data),
+        Some(&meta_report),
+    );
+    assert!(!rejected.data_node_real_process_rollout_validated);
+    assert!(!rejected.production_ready);
+    assert!(rejected
+        .missing
+        .iter()
+        .any(|item| item.contains("data-node multi-process rollout evidence")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence
@@ -3240,27 +3344,24 @@ fn local_raft_deployment_mode_is_rejected() {
 
 #[test]
 fn production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled() {
-    if cfg!(feature = "openraft-engine") {
-        let readiness = validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed)
-            .expect("default readiness build should enable OpenRaft production adapter");
-        assert!(readiness.production_ready);
-        assert!(readiness.missing.is_empty());
-        require_production_raft_ready().expect("production Raft gate should pass");
-    } else {
-        let err =
-            validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
-        assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
-        assert!(!err
-            .missing
-            .iter()
-            .any(|item| item.contains("applied Raft index")));
-        assert!(!err.missing.iter().any(|item| item.contains("learner add")));
+    let err = validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
+    assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
+    assert!(!err
+        .missing
+        .iter()
+        .any(|item| item.contains("applied Raft index")));
+    assert!(!err.missing.iter().any(|item| item.contains("learner add")));
+    assert!(err
+        .missing
+        .iter()
+        .any(|item| item.contains("multi-process rollout evidence")));
+    if !cfg!(feature = "openraft-engine") {
         assert!(err
             .missing
             .iter()
             .any(|item| item.contains("OpenRaft production engine adapter")));
-        assert_eq!(require_production_raft_ready().unwrap_err(), err);
     }
+    assert_eq!(require_production_raft_ready().unwrap_err(), err);
 }
 
 #[test]
@@ -6058,6 +6159,15 @@ fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership
     assert!(!rollout.multi_process_log_store_validation_present);
     assert!(!rollout.production_ready);
 
+    let data_report = ready_data_node_openraft_rollout_report();
+    let meta_report = ready_meta_openraft_rollout_report();
+    let rollout_with_evidence =
+        raft_openraft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
+    assert!(rollout_with_evidence.data_node_real_process_rollout_validated);
+    assert!(rollout_with_evidence.metaserver_real_process_rollout_validated);
+    assert!(rollout_with_evidence.multi_process_log_store_validation_present);
+    assert!(rollout_with_evidence.production_ready);
+
     let membership = raft_metaserver_membership_readiness();
     assert!(membership.networked_scheduler_transport_present);
     assert!(membership.persisted_scheduler_task_state_present);
@@ -6068,10 +6178,10 @@ fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership
     assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
     assert!(readiness.metaserver_driven_membership_present);
     assert!(!readiness.production_ready);
-    assert!(readiness.missing.iter().any(|item| {
-        item.contains("durable OpenRaft data-node process rollout")
-            || item.contains("durable OpenRaft metaserver process rollout")
-    }));
+    assert!(readiness
+        .missing
+        .iter()
+        .any(|item| item.contains("multi-process rollout evidence")));
     assert!(matches!(
         validate_raft_deployment_mode(RaftDeploymentMode::LocalModel),
         Err(RaftProductionReadinessError { message, .. })

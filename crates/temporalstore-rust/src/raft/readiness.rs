@@ -123,13 +123,58 @@ pub struct RaftByteRaftRuntimeReadiness {
 }
 
 pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
+    raft_openraft_rollout_readiness_from_reports(None, None)
+}
+
+pub fn raft_openraft_rollout_readiness_from_reports(
+    data_node_report: Option<&OpenRaftDataNodeProcessRolloutReport>,
+    metaserver_report: Option<&OpenRaftMetaProcessRolloutReport>,
+) -> RaftOpenRaftRolloutReadiness {
     let adapter_present = cfg!(feature = "openraft-engine");
     let data_node_process_startup_selects_openraft = true;
     let metaserver_process_startup_selects_openraft = true;
     let durable_log_state_present = true;
-    let data_node_real_process_rollout_validated = false;
-    let metaserver_real_process_rollout_validated = false;
-    let multi_process_log_store_validation_present = false;
+    let data_node_real_process_rollout_validated = data_node_report
+        .map(|report| {
+            report.ready
+                && report.write_proposed_through_process_api
+                && report.recovered_after_restart
+                && report.restart_recovery_validated
+                && report.snapshot_install_validated
+                && report.applied_fence_validated
+                && report.multi_process_log_store_validated
+                && report.nodes.len() >= 3
+                && report.nodes.iter().all(|node| {
+                    node.restarted
+                        && node.log_store_validated
+                        && node.applied_index >= node.commit_index
+                })
+        })
+        .unwrap_or(false);
+    let metaserver_real_process_rollout_validated = metaserver_report
+        .map(|report| {
+            report.ready
+                && report.mutation_proposed_through_process_api
+                && report.applied_raft_mutations > 0
+                && report.read_index_validated
+                && report.snapshot_install_validated
+                && report.recovered_after_restart
+                && report.scheduler_task_replay_validated
+                && report.multi_process_log_store_validated
+                && report.nodes.len() >= 3
+                && report.nodes.iter().all(|node| {
+                    node.restarted
+                        && node.log_store_validated
+                        && node.applied_index >= node.commit_index
+                })
+        })
+        .unwrap_or(false);
+    let multi_process_log_store_validation_present = data_node_report
+        .map(|report| report.multi_process_log_store_validated)
+        .unwrap_or(false)
+        && metaserver_report
+            .map(|report| report.multi_process_log_store_validated)
+            .unwrap_or(false);
     let local_rollout_ready = adapter_present
         && data_node_process_startup_selects_openraft
         && metaserver_process_startup_selects_openraft
@@ -138,21 +183,34 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
         && data_node_real_process_rollout_validated
         && metaserver_real_process_rollout_validated
         && multi_process_log_store_validation_present;
-    let missing = if production_ready {
-        Vec::new()
-    } else if !adapter_present {
-        vec![
+    let mut missing = Vec::new();
+    if !adapter_present {
+        missing.push(
             "enable the OpenRaft production engine adapter feature for readiness-eligible process rollout"
                 .to_string(),
-        ]
-    } else {
-        vec![
-            "complete durable OpenRaft data-node process rollout with spawned process evidence, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery, and per-node log-store inspection"
+        );
+    }
+    if !data_node_real_process_rollout_validated {
+        missing.push(
+            "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, restart recovery, snapshots, applied fences, and log-store validation"
                 .to_string(),
-            "complete durable OpenRaft metaserver process rollout with spawned process evidence, independent WAL/snapshot dirs, observed mutations, read-index responses, restart recovery, and per-node log-store inspection"
+        );
+    }
+    if !metaserver_real_process_rollout_validated {
+        missing.push(
+            "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, read-index, restart recovery, snapshots, scheduler replay, and log-store validation"
                 .to_string(),
-        ]
-    };
+        );
+    }
+    if !multi_process_log_store_validation_present {
+        missing.push(
+            "provide both data-node and metaserver multi-process log-store validation evidence"
+                .to_string(),
+        );
+    }
+    if production_ready {
+        missing.clear();
+    }
 
     RaftOpenRaftRolloutReadiness {
         adapter_present,
