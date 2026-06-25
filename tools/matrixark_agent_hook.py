@@ -93,6 +93,59 @@ COMMIT_EVENTS = {
     "sessionidle",
     "session_idle",
 }
+RESOURCE_EVENTS = {
+    "resourceadded",
+    "resource_added",
+    "addresource",
+    "add_resource",
+    "resource",
+    "fileadded",
+    "file_added",
+    "documentadded",
+    "document_added",
+    "resourceimport",
+    "resource_import",
+    "skilladded",
+    "skill_added",
+}
+FEEDBACK_EVENTS = {
+    "feedback",
+    "userfeedback",
+    "user_feedback",
+    "acceptrefs",
+    "accept_refs",
+    "acceptedrefs",
+    "accepted_refs",
+    "rejectrefs",
+    "reject_refs",
+    "rejectedrefs",
+    "rejected_refs",
+    "confirmation",
+    "correction",
+}
+
+RESOURCE_TYPE_BY_SUFFIX = {
+    ".md": "md",
+    ".markdown": "md",
+    ".txt": "txt",
+    ".log": "log",
+    ".html": "html",
+    ".htm": "html",
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".csv": "csv",
+    ".tsv": "tsv",
+    ".json": "json",
+    ".jsonl": "jsonl",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+}
 
 
 def norm(value: str) -> str:
@@ -157,6 +210,10 @@ def role_for_agent_event(event: str) -> str:
 
 def hook_type_for_agent_event(event: str) -> str:
     e = norm(event)
+    if e in RESOURCE_EVENTS:
+        return "resource_added"
+    if e in FEEDBACK_EVENTS:
+        return "feedback"
     if e in TOOL_EVENTS:
         return "tool_result"
     if e in COMMIT_EVENTS:
@@ -173,6 +230,14 @@ def should_retrieve(event: str) -> bool:
 
 def should_commit(event: str) -> bool:
     return norm(event) in COMMIT_EVENTS
+
+
+def is_resource_event(event: str) -> bool:
+    return norm(event) in RESOURCE_EVENTS
+
+
+def is_feedback_event(event: str) -> bool:
+    return norm(event) in FEEDBACK_EVENTS
 
 
 def commit_reason(event: str) -> str:
@@ -242,6 +307,69 @@ def local_context_from_payload(payload: Json) -> list[Json]:
     return refs
 
 
+def payload_resource_uri(payload: Json) -> str:
+    return first_string_at(
+        payload,
+        [
+            ["raw_uri"],
+            ["rawUri"],
+            ["uri"],
+            ["url"],
+            ["path"],
+            ["file_path"],
+            ["filePath"],
+            ["resource_path"],
+            ["resourcePath"],
+            ["document_path"],
+            ["documentPath"],
+            ["params", "raw_uri"],
+            ["params", "uri"],
+            ["params", "path"],
+            ["metadata", "raw_uri"],
+            ["metadata", "uri"],
+            ["metadata", "path"],
+        ],
+    )
+
+
+def payload_resource_type(payload: Json, raw_uri: str) -> str:
+    direct = first_string_at(
+        payload,
+        [
+            ["resource_type"],
+            ["resourceType"],
+            ["type"],
+            ["mime_type"],
+            ["mimeType"],
+            ["params", "resource_type"],
+            ["params", "resourceType"],
+            ["metadata", "resource_type"],
+            ["metadata", "resourceType"],
+        ],
+    )
+    if direct:
+        value = direct.strip().lower()
+        if "/" in value:
+            value = value.split("/")[-1]
+        return value
+    suffix = Path(raw_uri).suffix.lower()
+    return RESOURCE_TYPE_BY_SUFFIX.get(suffix, "skill" if Path(raw_uri).name.lower() == "skill.md" else "")
+
+
+def payload_list(payload: Json, keys: list[str]) -> list[str]:
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return [str(item) for item in value if str(item)]
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in keys:
+            value = metadata.get(key)
+            if isinstance(value, list):
+                return [str(item) for item in value if str(item)]
+    return []
+
+
 def scope_from_args(args: argparse.Namespace) -> Json:
     return {
         "account_id": args.account_id,
@@ -258,7 +386,10 @@ def main() -> int:
     payload = read_stdin_payload()
     args.session_id, session_id_source = resolve_session_id(payload, args)
     text = payload_text(payload) or args.query
-    if not text and not should_commit(args.event):
+    raw_uri = payload_resource_uri(payload)
+    resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
+    event_hook_type = hook_type_for_agent_event(args.event)
+    if not text and not raw_uri and not should_commit(args.event):
         print(json.dumps({"status": "skipped", "reason": "empty hook payload", "agent": args.agent}))
         return 0
 
@@ -268,30 +399,62 @@ def main() -> int:
     if args.api_key:
         common["api_key"] = args.api_key
 
+    hook_meta: Json = {
+        "source": args.agent,
+        "hook_type": event_hook_type,
+        "hook_id": f"{args.agent}:{args.event}:{int(time.time() * 1000)}",
+        "observed_at_ms": int(time.time() * 1000),
+        "idempotency_key": str(payload.get("id") or payload.get("turn_id") or payload.get("message_id") or raw_uri or ""),
+        "trigger": args.event,
+        "auto_captured": True,
+        "session_id_source": session_id_source,
+    }
+    base_metadata: Json = {
+        "source": f"{args.agent}_hook",
+        "agent": args.agent,
+        "agent_event": args.event,
+        "raw_hook_payload": payload,
+        "session_id_source": session_id_source,
+    }
+
     ingest: Json = {}
-    if text:
-        ingest_args: Json = {
+    feedback: Json = {}
+    if is_feedback_event(args.event):
+        feedback_args: Json = {
+            **common,
+            "messages": [{"role": role_for_agent_event(args.event), "content": text or json.dumps(payload, sort_keys=True)[:1000]}],
+            "metadata": base_metadata,
+            "context_pack_id": first_string_at(payload, [["context_pack_id"], ["contextPackId"], ["metadata", "context_pack_id"]]),
+            "accepted_refs": payload_list(payload, ["accepted_refs", "acceptedRefs"]),
+            "rejected_refs": payload_list(payload, ["rejected_refs", "rejectedRefs"]),
+            "understanding_provider": args.understanding_provider,
+            "segment_provider": args.segment_provider,
+            "agent_hook": hook_meta,
+        }
+        feedback = call_tool(server, "matrixark_feedback", feedback_args)
+    elif is_resource_event(args.event) or raw_uri:
+        kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" or norm(args.event).startswith("skill") else "resource"
+        ingest_args = {
+            **common,
+            "kind": kind,
+            "messages": [{"role": "user", "content": text or f"{kind} added: {raw_uri}"}],
+            "raw_uri": raw_uri or "inline-resource",
+            "resource_type": resource_type or kind,
+            "metadata": {**base_metadata, "raw_uri": raw_uri, "resource_type": resource_type or kind},
+            "understanding_provider": args.understanding_provider,
+            "segment_provider": args.segment_provider,
+            "agent_hook": hook_meta,
+            "wait": bool(payload.get("wait", True)),
+        }
+        ingest = call_tool(server, "matrixark_ingest", ingest_args)
+    elif text:
+        ingest_args = {
             **common,
             "messages": [{"role": role_for_agent_event(args.event), "content": text}],
             "understanding_provider": args.understanding_provider,
             "segment_provider": args.segment_provider,
-            "metadata": {
-                "source": f"{args.agent}_hook",
-                "agent": args.agent,
-                "agent_event": args.event,
-                "raw_hook_payload": payload,
-                "session_id_source": session_id_source,
-            },
-            "agent_hook": {
-                "source": args.agent,
-                "hook_type": hook_type_for_agent_event(args.event),
-                "hook_id": f"{args.agent}:{args.event}:{int(time.time() * 1000)}",
-                "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": str(payload.get("id") or payload.get("turn_id") or payload.get("message_id") or ""),
-                "trigger": args.event,
-                "auto_captured": True,
-                "session_id_source": session_id_source,
-            },
+            "metadata": base_metadata,
+            "agent_hook": hook_meta,
         }
         if should_retrieve(args.event):
             ingest_args["auto_batch_extract"] = True
@@ -348,6 +511,9 @@ def main() -> int:
                 "session_id": args.session_id,
                 "session_id_source": session_id_source,
                 "ingested": bool(ingest),
+                "feedbacked": bool(feedback),
+                "resource_uri": raw_uri,
+                "resource_type": resource_type,
                 "retrieved": {
                     "context_pack_id": retrieve.get("context_pack_id"),
                     "selected_ref_count": len(retrieve.get("selected_refs", [])) if retrieve else 0,

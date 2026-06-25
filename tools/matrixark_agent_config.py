@@ -134,15 +134,21 @@ def hook_examples_text(repo_root: str) -> str:
 python3 {hook} --agent claude --event UserPromptSubmit
 python3 {hook} --agent claude --event PostToolUse
 python3 {hook} --agent claude --event Stop
+python3 {hook} --agent claude --event ResourceAdded
+python3 {hook} --agent claude --event Feedback
 
 # Codex hook command
 python3 {hook} --agent codex --event UserPromptSubmit
 python3 {hook} --agent codex --event PostToolUse
 python3 {hook} --agent codex --event Stop
+python3 {hook} --agent codex --event ResourceAdded
+python3 {hook} --agent codex --event Feedback
 
 # Cursor / Windsurf / Cline / Continue fallback hook command
 # Use this when the client has an external hook/task runner. Otherwise use MCP.
 python3 {hook} --agent cursor --event UserPromptSubmit
+python3 {hook} --agent cursor --event ResourceAdded
+python3 {hook} --agent cursor --event Feedback
 python3 {hook} --agent windsurf --event UserPromptSubmit
 python3 {hook} --agent cline --event UserPromptSubmit
 python3 {hook} --agent roo --event UserPromptSubmit
