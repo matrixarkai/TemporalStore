@@ -41,18 +41,22 @@ canonical shared steps: 312
 draft translated existing tests: 2700
 draft Rust candidates: 554
 draft C++ candidates: 2146
-Rust marked local tests remaining: 45
+Rust marked local tests remaining: 41
 Rust marked local tests removable now: 0
 ```
 
-Five Rust-local product tests were removed because their behavior is now covered by self-executing
-shared cases:
+Nine Rust-local product tests have been removed because their behavior is now covered by
+self-executing shared cases:
 
 - `feature_nested_proto_aggregate_semantics`
 - `redis_operational_admin_commands`
 - `redis_slot_hash_cpp_crc64`
 - `storage_shared_store_oplog_cursor_retention`
 - `storage_shared_store_checkpoint_cursor_retention`
+- `sequence_cpp_feature_rows` / `sequence_batch_filter_groups`
+- `ips_options_range` / `ips_snapshot_stat_filter_batch`
+- `risk_counter_window` / `risk_family_query_and_delete` / `risk_manager_debug_fol`
+- `storage_shared_store_sync_replay` / `storage_shared_store_async_replay`
 
 The duplicate-test guard derives its C++ Raft alias exemptions from
 `coverage.required_raft_case_names`, so the duplicate path rules and the unified Raft schema cannot
