@@ -3135,6 +3135,7 @@ class MatrixArkLocalAdapter:
                 "original_chunk_count": record.get("original_chunk_count", record.get("chunk_count", 0)),
                 "deduped_chunk_count": record.get("deduped_chunk_count", 0),
                 "superseded_chunk_count": record.get("superseded_chunk_count", 0),
+                "superseded_chunk_hashes": record.get("superseded_chunk_hashes", []),
                 "raw_storage_policy": record.get("raw_storage_policy", "raw_uri_only"),
                 "raw_bytes_stored": bool(record.get("raw_bytes_stored", False)),
                 "parse_warnings": record.get("parse_warnings", []),
@@ -3481,6 +3482,11 @@ class MatrixArkLocalAdapter:
             resource_version_value = str(parsed_chunks[0].metadata.get("resource_version") or "")
             resource_content_hash = content_hash("\n".join(str(chunk.metadata.get("content_hash") or content_hash(chunk.text)) for chunk in parsed_chunks))
             superseded_chunk_count = sum(1 for chunk in parsed_chunks if chunk.metadata.get("supersedes_chunk_hash"))
+            superseded_chunk_hashes = [
+                int(chunk.metadata["supersedes_chunk_hash"])
+                for chunk in parsed_chunks
+                if isinstance(chunk.metadata.get("supersedes_chunk_hash"), int)
+            ]
             parse_warnings = aggregate_parse_warnings_from_chunks(parsed_chunks)
             chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
             resource_kind = "skill" if skill_hash is not None else "resource"
@@ -3579,6 +3585,7 @@ class MatrixArkLocalAdapter:
                         "deduped_chunk_count": deduped_chunk_count,
                         "deduped_source_refs": deduped_source_refs[:50],
                         "superseded_chunk_count": superseded_chunk_count,
+                        "superseded_chunk_hashes": superseded_chunk_hashes[:200],
                         "summary_dirty_hashes": resource_dirty_hashes,
                         "async_parent_summary_required": bool(resource_dirty_hashes),
                         "token_estimate": sum(chunk.token_estimate for chunk in parsed_chunks),
@@ -3808,6 +3815,7 @@ class MatrixArkLocalAdapter:
                     "original_chunk_count": original_chunk_count,
                     "deduped_chunk_count": deduped_chunk_count,
                     "superseded_chunk_count": superseded_chunk_count,
+                    "superseded_chunk_hashes": superseded_chunk_hashes[:200],
                     "resource_fact_count": len(resource_fact_event_hashes),
                     "resource_entity_count": len(resource_fact_entity_hashes),
                     "summary_dirty_hashes": resource_dirty_hashes,
@@ -3976,6 +3984,7 @@ class MatrixArkLocalAdapter:
             "resource_raw_storage_policy": "raw_uri_only" if envelope["kind"] in {"resource", "skill"} else "",
             "resource_raw_bytes_stored": False if envelope["kind"] in {"resource", "skill"} else None,
             "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_superseded_chunk_hashes": superseded_chunk_hashes if envelope["kind"] in {"resource", "skill"} else [],
             "resource_fact_events": resource_fact_event_hashes,
             "resource_fact_event_count": len(resource_fact_event_hashes),
             "resource_fact_entities": resource_fact_entity_hashes,
@@ -4915,7 +4924,7 @@ class MatrixArkLocalAdapter:
                     resource_version_value
                     and latest_version
                     and resource_version_value != latest_version
-                ) or bool(metadata.get("supersedes_chunk_hash"))
+                )
                 if is_superseded_version and not include_superseded_resources:
                     secondary_index_dropped_count += 1
                     continue
@@ -4951,6 +4960,7 @@ class MatrixArkLocalAdapter:
                         "source_ref": record.get("source_ref", ""),
                         "resource_type": record.get("resource_type", ""),
                         "resource_version": metadata.get("resource_version", ""),
+                        "supersedes_chunk_hash": metadata.get("supersedes_chunk_hash"),
                         "version_state": "historical" if ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", "")) else "current",
                         "stale_or_superseded": bool(ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", ""))),
                         "access_decision": "allowed_by_scope",
