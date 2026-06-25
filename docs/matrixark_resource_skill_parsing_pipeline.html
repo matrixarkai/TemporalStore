@@ -1,0 +1,217 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MatrixArk Resource And Skill Parsing Pipeline</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <style>
+    :root { color-scheme: light; --ink:#172033; --muted:#586174; --line:#d8dee9; --soft:#f6f8fb; --brand:#0f766e; --accent:#7c3aed; }
+    body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:#fff; line-height:1.55; }
+    header { padding:40px 44px 28px; background:linear-gradient(135deg,#eefdf9,#f5f3ff); border-bottom:1px solid var(--line); }
+    main { max-width:1100px; margin:0 auto; padding:32px 28px 72px; }
+    h1 { margin:0 0 12px; font-size:34px; line-height:1.1; letter-spacing:0; }
+    h2 { margin:36px 0 12px; font-size:24px; border-bottom:1px solid var(--line); padding-bottom:8px; }
+    h3 { margin:26px 0 10px; font-size:18px; }
+    p { margin:10px 0; }
+    ul, ol { padding-left:24px; }
+    li { margin:5px 0; }
+    code { background:var(--soft); border:1px solid var(--line); border-radius:5px; padding:1px 5px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:.92em; }
+    pre { background:#111827; color:#f9fafb; padding:16px; border-radius:8px; overflow:auto; }
+    pre code { background:transparent; border:0; color:inherit; padding:0; }
+    .lead { color:var(--muted); font-size:17px; max-width:920px; }
+    .note { border-left:4px solid var(--brand); background:#f0fdfa; padding:12px 14px; border-radius:6px; margin:18px 0; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap:14px; margin:16px 0; }
+    .card { border:1px solid var(--line); border-radius:8px; padding:14px; background:#fff; }
+    .card h3 { margin-top:0; }
+    .mermaid { background:#fff; border:1px solid var(--line); border-radius:8px; padding:18px; margin:16px 0 24px; overflow:auto; }
+    table { width:100%; border-collapse:collapse; margin:16px 0; }
+    th, td { border:1px solid var(--line); padding:9px 10px; text-align:left; vertical-align:top; }
+    th { background:var(--soft); }
+  </style>
+</head>
+<body>
+<header>
+  <h1>MatrixArk Resource And Skill Parsing Pipeline</h1>
+  <p class="lead">How MatrixArk parses resources and skills, chunks them, generates embeddings, extracts facts, and writes ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceManifest, ResourceChunk, SkillManifest, and SkillSection records.</p>
+</header>
+<main>
+  <section>
+    <h2>Current Resource Flow</h2>
+    <div class="mermaid">
+flowchart TD
+  A["matrixark_ingest(kind=resource, raw_uri, resource_type, scope, metadata.node_path)"]
+  B["ResourceImportTask queued/running"]
+  C["ResourceParser dispatch by type"]
+  D["Parse into bounded cited chunks"]
+  E["Dedupe chunks by content_hash"]
+  F["Generate chunk embeddings"]
+  G["Write resource records"]
+  H["Extract resource facts"]
+  I["Mark node summary dirty"]
+  J["ResourceImportTask completed"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    </div>
+    <p>Callers send a simple resource request. MatrixArk validates the source, creates a <code>resource_import_task</code>, dispatches the parser, creates cited chunks, dedupes by <code>content_hash</code>, generates embeddings, writes registry and context records, extracts resource facts, and marks the target node summary dirty.</p>
+    <p>Supported parser inputs include <code>.md</code>, <code>.txt</code>, <code>.log</code>, <code>.html</code>, <code>.pdf</code>, <code>.docx</code>, <code>.pptx</code>, <code>.xlsx</code>, <code>.csv</code>, <code>.tsv</code>, <code>.json</code>, <code>.jsonl</code>, local directories/repos, and images/scanned documents through the OCR/VLM command path when configured.</p>
+    <div class="note">Raw bytes are not copied into TemporalStore. TemporalStore stores <code>raw_uri</code>, parsed chunks, citations, summaries, embeddings, indexes, registry records, task state, and replay metadata.</div>
+  </section>
+
+  <section>
+    <h2>Chunking</h2>
+    <table>
+      <thead><tr><th>Input</th><th>Chunking Strategy</th></tr></thead>
+      <tbody>
+        <tr><td>Markdown, HTML, text, logs</td><td>Heading-aware sections, then bounded token/character windows.</td></tr>
+        <tr><td>CSV, TSV, XLSX</td><td>Row-group/table chunks instead of one tiny row per chunk.</td></tr>
+        <tr><td>JSON, JSONL</td><td>Top-level object/path chunks or record groups.</td></tr>
+        <tr><td>PDF, PPTX, DOCX</td><td>Page, slide, paragraph, and table-derived chunks.</td></tr>
+        <tr><td>Code and directories</td><td>Relative path metadata, symbol-aware parsing when available, fallback token windows.</td></tr>
+        <tr><td>Images/scanned PDFs</td><td>VLM/OCR caption chunks when configured; otherwise parse warnings.</td></tr>
+      </tbody>
+    </table>
+    <p>Each <code>resource_chunk</code> carries <code>chunk_hash</code>, <code>source_ref</code>, <code>text</code>, <code>token_estimate</code>, <code>content_hash</code>, <code>resource_version</code>, <code>unit_kind</code>, <code>relative_path</code>, and optional <code>heading_slug</code>, <code>page_number</code>, <code>slide_number</code>, <code>row_range</code>, and <code>parse_warnings</code>.</p>
+  </section>
+
+  <section>
+    <h2>Embeddings</h2>
+    <div class="mermaid">
+flowchart LR
+  A["Chunk text"]
+  B["embedding_text_for_chunk()"]
+  C["Adds source path, headings, columns, keywords"]
+  D["embedding_for_text() / embeddings_for_texts()"]
+  E["context_embedding record"]
+  A --> B --> C --> D --> E
+    </div>
+    <p>Stored chunk text stays citation-friendly. Embedding text is richer: it can include source ref, relative path, heading path, table columns, keywords, and content. This improves retrieval without polluting the final prompt with metadata-heavy text.</p>
+    <p><code>context_embedding</code> records are written for <code>resource_chunk</code>, <code>resource_l0</code>, <code>skill_l0</code>, <code>skill_summary</code>, resource-derived <code>event_text</code>, resource-derived <code>entity_state</code>, and node L0/L1 summaries.</p>
+    <pre><code>export MATRIXARK_EMBEDDING_PROVIDER=oss
+export MATRIXARK_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+export MATRIXARK_EMBEDDING_MODEL_PATH=/models/all-MiniLM-L6-v2
+export MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1</code></pre>
+  </section>
+
+  <section>
+    <h2>Resource Records Written</h2>
+    <div class="mermaid">
+flowchart TD
+  A["Resource chunks"]
+  B["resource_manifest"]
+  C["resource_registry"]
+  D["resource_chunk"]
+  E["context_summary(resource_l0)"]
+  F["context_embedding(resource_l0/resource_chunk)"]
+  G["context_index"]
+  H["context_event(resource_fact)"]
+  I["context_entity(resource fact/entity state)"]
+  A --> B
+  A --> C
+  A --> D
+  A --> E
+  D --> F
+  E --> F
+  D --> G
+  D --> H
+  H --> I
+    </div>
+    <div class="grid">
+      <div class="card"><h3>Import And Registry</h3><p><code>resource_import_task</code>, <code>resource_manifest</code>, and <code>resource_registry</code> track lifecycle, identity, version, parser metadata, and access scope.</p></div>
+      <div class="card"><h3>Serving Units</h3><p><code>resource_chunk</code> stores bounded cited text. <code>context_summary</code> stores L0 summaries for traversal and preview.</p></div>
+      <div class="card"><h3>Retrieval Structures</h3><p><code>context_embedding</code> stores vectors. <code>context_index</code> stores filters like source type, resource type, unit kind, keyword, heading, and path.</p></div>
+      <div class="card"><h3>Extracted Memory</h3><p><code>context_event</code> and <code>context_entity</code> store facts such as owners, approvals, deadlines, policies, costs, procedures, risks, and API contracts with source chunk refs.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Skill Flow</h2>
+    <div class="mermaid">
+flowchart TD
+  A["matrixark_ingest(kind=skill, raw_uri=SKILL.md or bundle)"]
+  B["SkillParser"]
+  C["Parse front matter and body"]
+  D["Extract triggers/tools/scope/version/status"]
+  E["Parse skill body into sections"]
+  F["Write skill manifest and registry"]
+  G["Write skill sections"]
+  H["Generate skill summary/chunk embeddings"]
+  I["Index skill_trigger and skill_tool"]
+  J["Retrieve only relevant skill sections into ContextPack"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I --> J
+    </div>
+    <p>The skill parser extracts <code>name</code>, <code>description</code>, <code>triggers</code>, <code>allowed_tools</code>, <code>owner_scope</code>, <code>examples</code>, <code>permissions</code>, <code>inputs</code>, <code>outputs</code>, <code>precedence</code>, <code>status</code>, <code>version</code>, <code>category</code>, and bundle metadata.</p>
+    <p>Records written include <code>skill_manifest</code>, <code>skill_registry</code>, <code>skill_section</code>, <code>resource_chunk(resource_type=skill)</code>, <code>context_summary(skill_l0)</code>, <code>context_embedding(skill_summary/skill_l0/resource_chunk)</code>, and <code>context_index(skill_name/skill_trigger/skill_tool/source_type/resource_type)</code>.</p>
+  </section>
+
+  <section>
+    <h2>ContextNode And Summaries</h2>
+    <div class="mermaid">
+flowchart TD
+  A["metadata.node_path or default session node path"]
+  B["ensure_context_node_path()"]
+  C["ContextNode chain materialized"]
+  D["Resource/skill/event records attach to leaf node_hash"]
+  E["append_node_summary_embeddings()"]
+  F["context_summary node_l0/node_l1"]
+  G["context_embedding node_l0/node_l1"]
+  H["context_summary_dirty for async parent refresh"]
+  A --> B --> C --> D --> E --> F --> G
+  D --> H
+    </div>
+    <p>Callers do not manually create <code>ContextNode</code> records. MatrixArk materializes a node path from <code>metadata.node_path</code> or a default session/resource path. Records attach to the leaf node, while summary dirty markers allow parent refresh to happen asynchronously.</p>
+    <p>If L0/L1 summaries are missing or stale, retrieval falls back to event, entity, chunk, and recent raw embeddings. Summaries are an optimization, not a correctness dependency.</p>
+  </section>
+
+  <section>
+    <h2>Retrieval</h2>
+    <div class="mermaid">
+flowchart TD
+  A["matrixark_retrieve(query, scope, max_context_tokens)"]
+  B["Infer query type and secondary index filters"]
+  C["Scope filter: account/tenant/user/session/team"]
+  D["Tree-first traversal using node L0/L1 embeddings"]
+  E["Secondary index prefilter"]
+  F["Score resource chunks, skill sections, events, entities"]
+  G["Apply version/stale/superseded rules"]
+  H["Question-type-aware packing"]
+  I["ContextPack + ContextPackAudit"]
+  A --> B --> C --> D --> E --> F --> G --> H --> I
+    </div>
+    <p>Resource chunks and skill sections are selected separately. Disabled skills are excluded. Superseded chunks are excluded unless historical replay is requested. ContextPack audit records selected and dropped refs, scores, token cost, version, stale/superseded state, access decision, and citation.</p>
+    <ul>
+      <li>Facts: extracted resource/event observation first.</li>
+      <li>Procedures: relevant skill section or troubleshooting chunk first.</li>
+      <li>Evidence: raw cited chunk first.</li>
+      <li>Current state: entity state plus source chunk/event.</li>
+      <li>Broad exploration: L0/L1 summaries first.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Test Commands</h2>
+    <pre><code>cd /root/src/github-services/TemporalStore
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends local
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends rust
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust</code></pre>
+  </section>
+
+  <section>
+    <h2>Debug Checklist</h2>
+    <ol>
+      <li><code>resource_import_task</code>: lifecycle and parser status.</li>
+      <li><code>resource_manifest</code> / <code>skill_manifest</code>: identity, version, parser metadata.</li>
+      <li><code>resource_registry</code> / <code>skill_registry</code>: discovery and access scope.</li>
+      <li><code>resource_chunk</code> / <code>skill_section</code>: cited serving units.</li>
+      <li><code>context_embedding</code>: chunk, summary, fact, and entity vectors.</li>
+      <li><code>context_index</code>: filterable fields.</li>
+      <li><code>context_event</code>: extracted facts.</li>
+      <li><code>context_entity</code>: evolving state.</li>
+      <li><code>context_summary</code>: L0/L1 traversal summaries.</li>
+      <li><code>context_pack_audit</code>: selected and dropped refs.</li>
+    </ol>
+  </section>
+</main>
+<script>mermaid.initialize({ startOnLoad: true, theme: 'default' });</script>
+</body>
+</html>
