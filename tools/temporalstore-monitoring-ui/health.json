@@ -1342,7 +1342,7 @@
       }
     ],
     "topology": {
-      "summary": "TemporalStore node graph with idempotent child refs and compact parent metadata",
+      "summary": "TemporalStore node graph with idempotent child refs and compact parent metadata; chunk object ctx:resource:1001:10029901; collection object ctx:node:1001:1001300.",
       "selected_path": [
         "1001000",
         "1001100",
@@ -1702,6 +1702,140 @@
         "evidence": "context_ten_model_config_parity_gates",
         "detail": "end-to-end parity table renders API, stream, batch, resource, feedback, compression, audit, model/config, and C++ lanes"
       }
-    ]
+    ],
+    "resource_skill_ops": {
+      "status": "ready",
+      "import_tasks": [
+        {
+          "task_id": "task_gpu_runbook",
+          "raw_uri": "file:///runbooks/gpu.md",
+          "status": "completed",
+          "progress": "100%",
+          "chunks": "2",
+          "warnings": "0",
+          "summary": "L0/L1 queued"
+        },
+        {
+          "task_id": "task_budget_pdf",
+          "raw_uri": "file:///policies/budget.pdf",
+          "status": "completed",
+          "progress": "100%",
+          "chunks": "3",
+          "warnings": "1",
+          "summary": "OCR fallback warning"
+        }
+      ],
+      "parse_warnings": [
+        {
+          "label": "budget.pdf",
+          "value": "warning",
+          "detail": "scanned page used text fallback; VLM/OCR provider recommended"
+        },
+        {
+          "label": "gpu.md",
+          "value": "clean",
+          "detail": "headings and links preserved"
+        }
+      ],
+      "resource_tree": [
+        {
+          "path": "/resources/runbooks/gpu.md",
+          "type": "md",
+          "chunks": "2",
+          "summary": "GPU approval policy",
+          "status": "active"
+        },
+        {
+          "path": "/resources/policies/budget.pdf",
+          "type": "pdf",
+          "chunks": "3",
+          "summary": "Budget exception workflow",
+          "status": "active"
+        },
+        {
+          "path": "/skills/context-debugger/SKILL.md",
+          "type": "skill",
+          "chunks": "2",
+          "summary": "Replay and audit skill",
+          "status": "active"
+        }
+      ],
+      "chunk_preview": [
+        {
+          "chunk_hash": "7101",
+          "source_ref": "runbooks/gpu.md#approval-policy",
+          "unit_kind": "heading_section",
+          "tokens": "9",
+          "selected": "yes",
+          "text": "GPU purchases require finance approval before ordering."
+        },
+        {
+          "chunk_hash": "7102",
+          "source_ref": "runbooks/gpu.md#troubleshooting",
+          "unit_kind": "procedure",
+          "tokens": "12",
+          "selected": "no",
+          "text": "If the GPU order fails, check quota and retry after approval."
+        }
+      ],
+      "skill_registry": [
+        {
+          "skill": "context-debugger",
+          "status": "active",
+          "scope": "team",
+          "precedence": "high",
+          "triggers": "inspect selected refs, replay evidence",
+          "tools": "matrixark_replay, matrixark_audit"
+        }
+      ],
+      "version_history": [
+        {
+          "resource": "gpu.md",
+          "version": "v3",
+          "supersedes": "v2",
+          "changed": "chunk 7101 supersedes sha256:old7101",
+          "retrieval": "latest only"
+        },
+        {
+          "resource": "budget.pdf",
+          "version": "v1",
+          "supersedes": "-",
+          "changed": "initial import",
+          "retrieval": "active"
+        }
+      ],
+      "summary_lag": [
+        {
+          "node": "/resources/runbooks",
+          "dirty": "0",
+          "oldest_ms": "0",
+          "worker": "caught up",
+          "embedding": "resource_l0"
+        },
+        {
+          "node": "/resources/policies",
+          "dirty": "1",
+          "oldest_ms": "1800",
+          "worker": "refresh queued",
+          "embedding": "resource_l1"
+        }
+      ],
+      "retrieval_replay": [
+        {
+          "query_id": "9901",
+          "selected": "chunk 7101, skill 8201",
+          "dropped": "chunk 7102",
+          "reason": "over budget / lower score",
+          "audit": "ContextPackAudit"
+        },
+        {
+          "query_id": "9902",
+          "selected": "budget.pdf page 1",
+          "dropped": "superseded v2 chunks",
+          "reason": "latest-version filter",
+          "audit": "ContextPackAudit"
+        }
+      ]
+    }
   }
 }
