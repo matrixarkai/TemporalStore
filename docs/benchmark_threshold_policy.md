@@ -28,6 +28,24 @@ Benchmark result docs must stay strict:
 
 `tools/validate_benchmark_claims.py` enforces this wording guard for benchmark result docs.
 
+## Readiness Levels
+
+Context benchmark readiness and VikingMem paper-comparable claims are separate gates:
+
+- **Context benchmark readiness** requires Rust TemporalStore backend evidence: the report must show
+  `all_pipelines_use_rust_temporalstore=true`, `python_only_diagnostic=false`,
+  `rust_temporalstore_backend_ready=true`, and no direct-source scoring shortcut. Raw benchmark
+  reports should also carry Context-event ingest evidence and positive ingested/retrieved source-set
+  counts.
+- **VikingMem paper-comparable evidence** additionally requires a real full dataset artifact, live
+  open-source/GPT-4o-mini compatible reader calls, full Rust TemporalStore replay, passing full
+  dataset thresholds, and archived report fields for dataset hash, model/provider, prompt,
+  latencies, token reduction, and category breakdown.
+
+Deterministic full-dataset reports can satisfy the first gate when Rust TemporalStore evidence is
+present. They must keep `paper_comparable_claim_ready=false` until the live-reader/full-replay
+archive gate passes.
+
 ## Profiles
 
 | Profile | Intended use | Min cases | Min retrieval hit | Min reader hit | Min token reduction | Retrieval p95 | Reader p95 | OSS reader |
