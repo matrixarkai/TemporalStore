@@ -6440,6 +6440,9 @@ class MatrixArkRustCliClient:
         records = response.get("records", [])
         return records if isinstance(records, list) else []
 
+    def scan_hash(self, key: str) -> Json:
+        return self._call_json("scan_hash", key=key)
+
     def metrics_prometheus(self) -> str:
         return str(self._call_json("metrics_prometheus").get("prometheus", ""))
 

@@ -48,6 +48,12 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                     ]
                 )
                 self.assertEqual([record.get("value") for record in records], ["two", "three"])
+                scan = client.scan_hash(key)
+                self.assertEqual(scan.get("count"), 3)
+                self.assertIn("00000000000000000001", scan.get("entries", {}))
+                metrics = client.metrics_prometheus()
+                self.assertIn("matrixark_rust_record_log_commands_total", metrics)
+                self.assertIn("matrixark_rust_record_log_records_written_total", metrics)
             finally:
                 client.shutdown()
                 if old_root is None:
