@@ -8,8 +8,8 @@ LOCAL_SCALE_TIMEOUT="${TS_CPP_LIKE_SCALE_TIMEOUT:-120s}"
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
 
-echo "== c++ smoketest / consistency / stream compat =="
-cargo test -p temporalstore-rust --test temporalstore_compat -- --test-threads=1
+echo "== shared c++/rust corpus integration tests =="
+cargo test -p temporalstore-rust --test unified_temporalstore_corpus -- --test-threads=1
 
 echo "== shared c++/rust corpus contract =="
 tools/run_temporalstore_unified_tests.sh

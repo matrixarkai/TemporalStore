@@ -33,29 +33,13 @@ Representative C++ files inspected:
 - Shared C++/Rust behavioral corpus:
   `tools/run_temporalstore_unified_tests.sh`
 
-- C++ basic smoke string/hash reload, TTL, delete:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_basic_smoketest`
+- Shared C++/Rust integration target:
+  `cargo test -p temporalstore-rust --test unified_temporalstore_corpus -- --test-threads=1`
 
-- C++ consistency bench mixed hash writes/reads:
-  `cargo test -p temporalstore-rust --test temporalstore_compat consistency_bench_style`
-
-- C++ stream random-size, reopen, scan, and cross-block large records:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_stream`
-
-- C++ feature module simple/missing/truncation/policy/replace/delete flow:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_feature_module`
-
-- C++ FeatureModel/feature sequence filtered query semantics:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_feature_filter_count_is_scan_bound_before_filtering`
-
-- C++ SDK sequence feature add/query/batch shape:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_sequence_feature_sdk`
-
-- C++ long sequence feature benchmark shape with 5K rows and filters:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_long_sequence_feature_5k`
-
-- C++ Redis/module-style feature command path:
-  `cargo test -p temporalstore-rust --test temporalstore_compat cxx_redis_feature_commands`
+  This replaces the old Rust-local `temporalstore_compat` integration target. Basic smoke,
+  consistency, stream, Feature, Sequence, IPS, Risk, Redis/admin, Context, control-plane,
+  ingestion, storage, and Raft behavior should be added to the shared corpus first, then
+  executed through this target.
 
 - C++ DataRaft serialization, corrupt payload rejection, fail-closed backend:
   `cargo test -p temporalstore-rust cpp_data_raft`
@@ -86,7 +70,7 @@ Run:
 tools/run_temporalstore_cpp_like_tests.sh
 ```
 
-The runner executes the compatibility tests, selected unit tests, distributed
+The runner executes the unified shared corpus, selected unit tests, distributed
 Raft harness, scale/failover/shared-store harness, and storage-mode harness.
 It also executes the shared C++/Rust corpus contract in
 `compat/unified_temporalstore_cases.json`; set `TS_CPP_UNIFIED_TEST_CMD` to run

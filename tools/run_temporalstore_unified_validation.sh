@@ -62,8 +62,8 @@ python3 tools/validate_ingestion_ops_parity_evidence.py
 python3 tools/run_ingestion_shared_cases.py --validate-only
 python3 tools/validate_sdk_contract.py
 
-echo "== unified: unit and API compatibility tests =="
-cargo test -p temporalstore-rust --test temporalstore_compat -- --test-threads=1
+echo "== unified: shared corpus integration tests =="
+cargo test -p temporalstore-rust --test unified_temporalstore_corpus -- --test-threads=1
 
 echo "== unified: shared control-plane cases =="
 python3 tools/run_control_plane_shared_cases.py --rust
