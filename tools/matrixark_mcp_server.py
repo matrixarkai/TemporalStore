@@ -5358,6 +5358,12 @@ class MatrixArkLocalAdapter:
                 "sparse_score": sparse_score,
                 "embedding_score": embedding_score,
                 "node_score": node_score,
+                "matched_index_terms": sorted(index_terms),
+                "selection_reason": (
+                    "selected by tree path, secondary indexes, and resource fact/event hybrid score"
+                    if record.get("source_chunk_hash")
+                    else "selected by tree path, secondary indexes, and event hybrid score"
+                ),
                 "event_type": event_type,
                 "context_class": "resource_fact" if record.get("source_chunk_hash") else "event",
                 "source_chunk_hash": record.get("source_chunk_hash"),
@@ -5424,6 +5430,12 @@ class MatrixArkLocalAdapter:
                 "sparse_score": sparse_score,
                 "embedding_score": embedding_score,
                 "node_score": node_score,
+                "matched_index_terms": sorted(index_terms),
+                "selection_reason": (
+                    "selected by tree path, secondary indexes, and resource entity state score"
+                    if record.get("source_chunk_hash")
+                    else "selected by tree path, secondary indexes, and entity state score"
+                ),
                 "entity_type": record.get("entity_type", ""),
                 "entity_name": record.get("entity_name", ""),
                 "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
@@ -5494,6 +5506,8 @@ class MatrixArkLocalAdapter:
                 "sparse_score": sparse_score,
                 "embedding_score": embedding_score,
                 "node_score": node_score,
+                "matched_index_terms": sorted(index_terms),
+                "selection_reason": "selected by tree path, secondary indexes, segment saliency, and segment hybrid score",
                 "saliency_score": saliency_score,
                 "topic": record.get("topic", ""),
                 "coordinate_tuples": record.get("coordinate_tuples", []),
