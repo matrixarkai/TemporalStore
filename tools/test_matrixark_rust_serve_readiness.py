@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,26 @@ from matrixark_mcp_server import MatrixArkRustCliClient
 
 
 class MatrixArkRustServeReadinessTest(unittest.TestCase):
-    def test_rust_serve_mode_round_trips_readiness_hset_and_hget(self) -> None:
+    def _cli_path(self) -> Path:
         repo = Path(__file__).resolve().parents[1]
-        cli_path = Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", repo / "target/release/matrixark_record_log"))
+        return Path(os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", repo / "target/release/matrixark_record_log"))
+
+    def test_single_shot_mode_is_debug_only(self) -> None:
+        cli_path = self._cli_path()
+        if not cli_path.exists():
+            self.skipTest(f"Rust matrixark_record_log binary is not built: {cli_path}")
+        completed = subprocess.run(
+            [str(cli_path)],
+            input='{"op":"health","namespace":"deploy_ns","table":"deploy_table"}\n',
+            text=True,
+            capture_output=True,
+            timeout=5,
+        )
+        self.assertNotEqual(completed.returncode, 0)
+        self.assertIn("single-shot mode is debug-only", completed.stderr)
+
+    def test_rust_serve_mode_round_trips_readiness_hset_and_hget(self) -> None:
+        cli_path = self._cli_path()
         if not cli_path.exists():
             self.skipTest(f"Rust matrixark_record_log binary is not built: {cli_path}")
 
@@ -54,6 +72,11 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 metrics = client.metrics_prometheus()
                 self.assertIn("matrixark_rust_record_log_commands_total", metrics)
                 self.assertIn("matrixark_rust_record_log_records_written_total", metrics)
+                client_metrics = client.metrics_snapshot()
+                self.assertEqual(client_metrics.get("gateway_mode"), "long_lived_stdio_gateway")
+                self.assertEqual(client_metrics.get("transport"), "stdio")
+                self.assertGreaterEqual(client_metrics.get("commands_total", 0), 7)
+                self.assertEqual(client_metrics.get("backpressure_rejections_total"), 0)
             finally:
                 client.shutdown()
                 if old_root is None:

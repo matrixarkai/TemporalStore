@@ -11,7 +11,21 @@ TIMEOUT_MS="${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}"
 REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
 TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-${ROOT}/output-ubuntu22/release/sdk/lib/libbcache2.so}"
-RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log}"
+if [[ -n "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
+  RUST_CLI="$MATRIXARK_TEMPORALSTORE_RUST_CLI"
+else
+  RUST_CLI=""
+  for candidate in \
+    "${ROOT}/target/release/matrixark_record_log" \
+    "${ROOT}/target/debug/matrixark_record_log" \
+    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log"; do
+    if [[ -x "$candidate" ]]; then
+      RUST_CLI="$candidate"
+      break
+    fi
+  done
+  RUST_CLI="${RUST_CLI:-${ROOT}/target/release/matrixark_record_log}"
+fi
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
