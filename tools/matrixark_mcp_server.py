@@ -58,6 +58,7 @@ DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUF
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
+BACKEND_LATENCY_BUCKETS_MS = (1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
 MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
 MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
@@ -5910,6 +5911,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._write_retries = max(0, DIRECT_WRITE_RETRIES)
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
+        self._metrics_lock = threading.RLock()
+        self._metrics_started_at_ms = now_ms()
+        self._commands_total = 0
+        self._errors_total = 0
+        self._timeouts_total = 0
+        self._latency_sum_ms = 0.0
+        self._latency_max_ms = 0.0
+        self._latency_buckets = [0 for _ in BACKEND_LATENCY_BUCKETS_MS]
+        self._records_written_total = 0
+        self._records_read_total = 0
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -5918,10 +5929,90 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-cpp"
 
+    def _observe_backend_command(self, latency_ms: float, *, error: bool = False, timeout: bool = False, records_written: int = 0, records_read: int = 0) -> None:
+        with self._metrics_lock:
+            self._commands_total += 1
+            if error:
+                self._errors_total += 1
+            if timeout:
+                self._timeouts_total += 1
+            self._latency_sum_ms += max(0.0, latency_ms)
+            self._latency_max_ms = max(self._latency_max_ms, latency_ms)
+            for idx, bucket_ms in enumerate(BACKEND_LATENCY_BUCKETS_MS):
+                if latency_ms <= bucket_ms:
+                    self._latency_buckets[idx] += 1
+            self._records_written_total += max(0, records_written)
+            self._records_read_total += max(0, records_read)
+
+    def _render_backend_prometheus(self) -> str:
+        with self._metrics_lock:
+            commands_total = self._commands_total
+            errors_total = self._errors_total
+            timeouts_total = self._timeouts_total
+            latency_sum_ms = self._latency_sum_ms
+            latency_max_ms = self._latency_max_ms
+            latency_buckets = list(self._latency_buckets)
+            records_written_total = self._records_written_total
+            records_read_total = self._records_read_total
+            started_at_ms = self._metrics_started_at_ms
+        elapsed_s = max(0.001, (now_ms() - started_at_ms) / 1000.0)
+        qps = commands_total / elapsed_s
+        cached_clients = 1
+        context_records_total = self._entry_count_cache if self._entry_count_cache is not None else 0
+        output = [
+            "# HELP matrixark_backend_qps Backend-normalized process-lifetime average command QPS.",
+            "# TYPE matrixark_backend_qps gauge",
+            f'matrixark_backend_qps{{backend="cpp"}} {qps:.6f}',
+            "# HELP matrixark_backend_commands_total Backend-normalized total commands.",
+            "# TYPE matrixark_backend_commands_total counter",
+            f'matrixark_backend_commands_total{{backend="cpp"}} {commands_total}',
+            "# HELP matrixark_backend_errors_total Backend-normalized failed commands.",
+            "# TYPE matrixark_backend_errors_total counter",
+            f'matrixark_backend_errors_total{{backend="cpp"}} {errors_total}',
+            "# HELP matrixark_backend_timeouts_total Backend-normalized timeout count.",
+            "# TYPE matrixark_backend_timeouts_total counter",
+            f'matrixark_backend_timeouts_total{{backend="cpp"}} {timeouts_total}',
+            "# HELP matrixark_backend_cached_clients Backend-normalized cached client/connection count.",
+            "# TYPE matrixark_backend_cached_clients gauge",
+            f'matrixark_backend_cached_clients{{backend="cpp"}} {cached_clients}',
+            "# HELP matrixark_backend_records_written_total Backend-normalized MatrixArk records written.",
+            "# TYPE matrixark_backend_records_written_total counter",
+            f'matrixark_backend_records_written_total{{backend="cpp"}} {records_written_total}',
+            "# HELP matrixark_backend_records_read_total Backend-normalized MatrixArk records read.",
+            "# TYPE matrixark_backend_records_read_total counter",
+            f'matrixark_backend_records_read_total{{backend="cpp"}} {records_read_total}',
+            "# HELP matrixark_context_records_total MatrixArk context records visible through the backend adapter.",
+            "# TYPE matrixark_context_records_total gauge",
+            f'matrixark_context_records_total{{backend="cpp"}} {context_records_total}',
+            "# HELP matrixark_backend_audit_buffered_records Backend-normalized buffered audit records.",
+            "# TYPE matrixark_backend_audit_buffered_records gauge",
+            f'matrixark_backend_audit_buffered_records{{backend="cpp"}} {len(self._audit_buffer)}',
+            "# HELP matrixark_backend_audit_flush_failures_total Backend-normalized audit flush failures.",
+            "# TYPE matrixark_backend_audit_flush_failures_total counter",
+            f'matrixark_backend_audit_flush_failures_total{{backend="cpp"}} {self._audit_flush_failures}',
+            "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.",
+            "# TYPE matrixark_backend_command_latency_ms histogram",
+        ]
+        for idx, bucket_ms in enumerate(BACKEND_LATENCY_BUCKETS_MS):
+            output.append(f'matrixark_backend_command_latency_ms_bucket{{backend="cpp",le="{bucket_ms}"}} {latency_buckets[idx]}')
+        output.extend(
+            [
+                f'matrixark_backend_command_latency_ms_bucket{{backend="cpp",le="+Inf"}} {commands_total}',
+                f'matrixark_backend_command_latency_ms_sum{{backend="cpp"}} {latency_sum_ms:.6f}',
+                f'matrixark_backend_command_latency_ms_count{{backend="cpp"}} {commands_total}',
+                "# HELP matrixark_backend_command_latency_max_ms Backend-normalized max observed command latency in milliseconds.",
+                "# TYPE matrixark_backend_command_latency_max_ms gauge",
+                f'matrixark_backend_command_latency_max_ms{{backend="cpp"}} {latency_max_ms:.6f}',
+            ]
+        )
+        return "\n".join(output) + "\n"
+
     def backend_metrics(self) -> Json:
+        prometheus = self._render_backend_prometheus()
         return {
             "backend": self._backend_label(),
-            "metrics_format": "json",
+            "metrics_format": "prometheus",
+            "prometheus": prometheus,
             "metrics": {
                 "mode": "direct-sdk",
                 "metaserver": self._metaserver,
@@ -5933,6 +6024,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "audit_flush_failures": self._audit_flush_failures,
                 "entry_count_cache": self._entry_count_cache,
                 "records_cache_ready": self._records_cache is not None,
+                "commands_total": self._commands_total,
+                "errors_total": self._errors_total,
+                "timeouts_total": self._timeouts_total,
+                "qps": self._commands_total / max(0.001, (now_ms() - self._metrics_started_at_ms) / 1000.0),
+                "p95_latency_ms": None,
+                "p99_latency_ms": None,
+                "max_observed_latency_ms": self._latency_max_ms,
             },
         }
 
@@ -6055,43 +6153,50 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def append_many(self, records: list[Json]) -> None:
         if not records:
             return
+        started = time.monotonic()
         with self._records_lock:
-            if self._records_cache is None:
-                self.read_all()
-            assert self._records_cache is not None
-            if self._legacy_index_mode:
-                if self._index_cache is None:
-                    self._index_cache = self._get_index()
-                entries: list[Json] = []
-                for record in records:
-                    payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
-                    record_id = (
-                        f"{len(self._index_cache):020d}:"
-                        f"{record.get('record_type', 'record')}:"
-                        f"{stable_hash(json.dumps(record, sort_keys=True))}"
-                    )
-                    entries.append({"key": self._record_hash_key, "field": record_id, "value": payload})
-                    self._index_cache.append(record_id)
-                self._hset_many_with_backoff(entries)
-                self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
-                self._records_cache.extend(records)
-                self._put_direct_record_cache(len(self._records_cache), self._records_cache)
-                return
+            try:
+                if self._records_cache is None:
+                    self.read_all()
+                assert self._records_cache is not None
+                if self._legacy_index_mode:
+                    if self._index_cache is None:
+                        self._index_cache = self._get_index()
+                    entries: list[Json] = []
+                    for record in records:
+                        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+                        record_id = (
+                            f"{len(self._index_cache):020d}:"
+                            f"{record.get('record_type', 'record')}:"
+                            f"{stable_hash(json.dumps(record, sort_keys=True))}"
+                        )
+                        entries.append({"key": self._record_hash_key, "field": record_id, "value": payload})
+                        self._index_cache.append(record_id)
+                    self._hset_many_with_backoff(entries)
+                    self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
+                    self._records_cache.extend(records)
+                    self._put_direct_record_cache(len(self._records_cache), self._records_cache)
+                    self._observe_backend_command((time.monotonic() - started) * 1000.0, records_written=len(records))
+                    return
 
-            sequence = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
-            entries = []
-            for bundle in self._record_bundles(records):
-                record_key, record_id = self._record_location(sequence)
-                payload_value: Json
-                payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
-                payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
-                entries.append({"key": record_key, "field": record_id, "value": payload})
-                sequence += 1
-            self._hset_many_with_backoff(entries)
-            self._put_string_with_backoff(self._count_key, str(sequence))
-            self._entry_count_cache = sequence
-            self._records_cache.extend(records)
-            self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+                sequence = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+                entries = []
+                for bundle in self._record_bundles(records):
+                    record_key, record_id = self._record_location(sequence)
+                    payload_value: Json
+                    payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
+                    payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
+                    entries.append({"key": record_key, "field": record_id, "value": payload})
+                    sequence += 1
+                self._hset_many_with_backoff(entries)
+                self._put_string_with_backoff(self._count_key, str(sequence))
+                self._entry_count_cache = sequence
+                self._records_cache.extend(records)
+                self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+                self._observe_backend_command((time.monotonic() - started) * 1000.0, records_written=len(records))
+            except Exception as exc:
+                self._observe_backend_command((time.monotonic() - started) * 1000.0, error=True, timeout="timeout" in str(exc).lower())
+                raise
 
     def append_audit(self, record: Json) -> None:
         if self._audit_mode == "drop":
@@ -6195,31 +6300,41 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return bundles
 
     def read_all(self) -> list[Json]:
+        started = time.monotonic()
         with self._records_lock:
-            if self._records_cache is not None:
-                return list(self._records_cache)
-            count = self._get_count()
-            if count > 0:
-                self._legacy_index_mode = False
-                self._entry_count_cache = count
-                cached = self._get_direct_record_cache(count)
-                if cached is not None:
-                    self._records_cache = cached
+            try:
+                if self._records_cache is not None:
+                    self._observe_backend_command((time.monotonic() - started) * 1000.0, records_read=len(self._records_cache))
                     return list(self._records_cache)
-                with self._direct_record_load_lock():
+                count = self._get_count()
+                if count > 0:
+                    self._legacy_index_mode = False
+                    self._entry_count_cache = count
                     cached = self._get_direct_record_cache(count)
                     if cached is not None:
                         self._records_cache = cached
+                        self._observe_backend_command((time.monotonic() - started) * 1000.0, records_read=len(self._records_cache))
                         return list(self._records_cache)
-                    self._records_cache = self._load_records_by_count(count)
-                    self._put_direct_record_cache(count, self._records_cache)
-                    return list(self._records_cache)
-            index = self._get_index()
-            self._index_cache = index
-            self._legacy_index_mode = bool(index)
-            self._entry_count_cache = None
-            self._records_cache = self._load_records(index)
-            return list(self._records_cache)
+                    with self._direct_record_load_lock():
+                        cached = self._get_direct_record_cache(count)
+                        if cached is not None:
+                            self._records_cache = cached
+                            self._observe_backend_command((time.monotonic() - started) * 1000.0, records_read=len(self._records_cache))
+                            return list(self._records_cache)
+                        self._records_cache = self._load_records_by_count(count)
+                        self._put_direct_record_cache(count, self._records_cache)
+                        self._observe_backend_command((time.monotonic() - started) * 1000.0, records_read=len(self._records_cache))
+                        return list(self._records_cache)
+                index = self._get_index()
+                self._index_cache = index
+                self._legacy_index_mode = bool(index)
+                self._entry_count_cache = None
+                self._records_cache = self._load_records(index)
+                self._observe_backend_command((time.monotonic() - started) * 1000.0, records_read=len(self._records_cache))
+                return list(self._records_cache)
+            except Exception as exc:
+                self._observe_backend_command((time.monotonic() - started) * 1000.0, error=True, timeout="timeout" in str(exc).lower())
+                raise
 
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
