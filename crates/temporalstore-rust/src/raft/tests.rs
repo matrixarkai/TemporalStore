@@ -1,4 +1,4 @@
-use super::*;
+﻿use super::*;
 use crate::control::{Config, SetConfigRequest};
 use crate::http::{json_response, parse_json, post_json_with_options, serve, HttpRequestOptions};
 use crate::meta::{ServerMetaInfo, TableMetaInfo, TablePartition};
@@ -2817,6 +2817,7 @@ fn byteraft_snapshot_sender_timeout_clears_pipeline_and_reports_retry() {
     assert!(retry.is_ok(), "timed-out sender should allow retry");
 }
 
+// shared-corpus: raft_openraft_process_rollout_evidence
 #[test]
 fn raft_openraft_rollout_readiness_fails_closed_without_process_rollout_evidence() {
     let readiness = raft_openraft_rollout_readiness();
@@ -2921,6 +2922,7 @@ fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
     }
 }
 
+// shared-corpus: raft_openraft_process_rollout_evidence
 #[test]
 fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
     let data_report = ready_data_node_openraft_rollout_report();
@@ -7381,3 +7383,5 @@ fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
         matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("ahead of committed index"))
     );
 }
+
+
