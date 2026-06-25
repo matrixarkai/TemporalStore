@@ -7423,13 +7423,20 @@ class MatrixArkAccessManager:
         identity = self.authenticate(tool_name, args)
         scope = optional_object(args, "scope")
         args["scope"] = enrich_scope_with_identity(scope, identity)
-        args["_matrixark_auth"] = {
+        auth_summary = {
             "mode": identity["mode"],
             "api_key_id": identity["api_key_id"],
             "account_id": identity["account_id"],
             "tenant_id": identity["tenant_id"],
             "role": identity["role"],
         }
+        if identity.get("user_id"):
+            auth_summary["user_id"] = identity["user_id"]
+        if identity.get("session_id"):
+            auth_summary["session_id"] = identity["session_id"]
+        if identity.get("agent_name"):
+            auth_summary["agent_name"] = identity["agent_name"]
+        args["_matrixark_auth"] = auth_summary
         if identity["mode"] == "api_key":
             self.append_api_key_usage(tool_name, identity, args["scope"])
         return identity
