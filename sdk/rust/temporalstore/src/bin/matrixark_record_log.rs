@@ -30,7 +30,7 @@ struct Command {
 struct HashEntry {
     key: String,
     field: String,
-    value: String,
+    value: Option<String>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -322,8 +322,19 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
         "batch_hset" => {
             if let Some(entries) = &command.entries {
                 stats.records_written = entries.len() as u64;
-                stats.bytes_written = entries.iter().map(|entry| entry.value.len() as u64).sum();
+                stats.bytes_written = entries
+                    .iter()
+                    .map(|entry| entry.value.as_ref().map(|value| value.len() as u64).unwrap_or(0))
+                    .sum();
             }
+        }
+        "batch_hget" => {
+            stats.records_read = result
+                .get("read")
+                .and_then(Value::as_u64)
+                .or_else(|| command.entries.as_ref().map(|entries| entries.len() as u64))
+                .unwrap_or(0);
+            stats.bytes_read = result.to_string().len() as u64;
         }
         "write_matrixark_record" => {
             stats.records_written = 1;
@@ -542,10 +553,31 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .ok_or_else(|| "missing entries".to_string())?;
             for entry in entries {
                 client
-                    .hset(&entry.key, &entry.field, &entry.value)
+                    .hset(
+                        &entry.key,
+                        &entry.field,
+                        entry
+                            .value
+                            .as_deref()
+                            .ok_or_else(|| "batch_hset entry missing value".to_string())?,
+                    )
                     .map_err(|err| err.to_string())?;
             }
             Ok(json!({"ok": true, "written": entries.len()}))
+        }
+        "batch_hget" => {
+            let entries = command
+                .entries
+                .as_ref()
+                .ok_or_else(|| "missing entries".to_string())?;
+            let mut reads = Vec::with_capacity(entries.len());
+            for entry in entries {
+                let value = client
+                    .hget(&entry.key, &entry.field)
+                    .map_err(|err| err.to_string())?;
+                reads.push(json!({"key": &entry.key, "field": &entry.field, "value": value}));
+            }
+            Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
         }
         "write_matrixark_record" => {
             let record = command
@@ -690,6 +722,16 @@ fn serve() -> i32 {
             let _ = stdout.flush();
             continue;
         }
+        if command.op == "health" {
+            println!("{}", json!({"ok": true, "status": "ok", "mode": "long_lived_stdio_gateway"}));
+            let _ = stdout.flush();
+            continue;
+        }
+        if command.op == "shutdown" {
+            println!("{}", json!({"ok": true, "status": "shutting_down"}));
+            let _ = stdout.flush();
+            return 0;
+        }
         let key = config_key(&command);
         if !clients.contains_key(&key) {
             match connect(&command) {
@@ -706,6 +748,19 @@ fn serve() -> i32 {
                     continue;
                 }
             }
+        }
+        if command.op == "readiness" {
+            println!(
+                "{}",
+                json!({
+                    "ok": true,
+                    "status": "ready",
+                    "mode": "long_lived_stdio_gateway",
+                    "cached_clients": clients.len()
+                })
+            );
+            let _ = stdout.flush();
+            continue;
         }
         let op = command.op.clone();
         let started = Instant::now();
