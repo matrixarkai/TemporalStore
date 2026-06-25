@@ -10,7 +10,21 @@ export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:
 export MATRIXARK_TEMPORALSTORE_NAMESPACE="${MATRIXARK_TEMPORALSTORE_NAMESPACE:-deploy_ns}"
 export MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
 export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixark:mcp:codex}"
+if [[ -z "${TEMPORALSTORE_LIB:-}" ]]; then
+  for candidate in \
+    "$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so" \
+    "$ROOT/output/sdk/lib/libbcache2.so" \
+    "$ROOT/build-ubuntu22/test-release/sdk/lib/libbcache2.so"; do
+    if [[ -f "$candidate" ]]; then
+      export TEMPORALSTORE_LIB="$candidate"
+      break
+    fi
+  done
+fi
 export TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-$ROOT/output-ubuntu22/release/sdk/lib/libbcache2.so}"
+if [[ -f "$TEMPORALSTORE_LIB" ]]; then
+  export LD_LIBRARY_PATH="$(dirname "$TEMPORALSTORE_LIB"):${LD_LIBRARY_PATH:-}"
+fi
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
 export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-1}"
@@ -59,4 +73,3 @@ exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
   --request-timeout-ms "$MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS" \
   --io-timeout-ms "$MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS" \
   "$@"
-

@@ -15,6 +15,17 @@ export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEO
 export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-1}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
 export MATRIXARK_TEMPORALSTORE_LOCAL_STORE="${MATRIXARK_TEMPORALSTORE_LOCAL_STORE:-/tmp/matrixark-mcp-temporalstore-local-rust.jsonl}"
+if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
+  for candidate in \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
+    "$ROOT/target/release/matrixark_record_log" \
+    "$ROOT/target/debug/matrixark_record_log"; do
+    if [[ -x "$candidate" ]]; then
+      export MATRIXARK_TEMPORALSTORE_RUST_CLI="$candidate"
+      break
+    fi
+  done
+fi
 export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log}"
 export LD_LIBRARY_PATH="$ROOT/output-ubuntu22/release/sdk/lib:${LD_LIBRARY_PATH:-}"
 
@@ -66,4 +77,3 @@ exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
   --request-timeout-ms "$MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS" \
   --io-timeout-ms "$MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS" \
   "$@"
-
