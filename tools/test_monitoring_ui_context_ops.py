@@ -110,6 +110,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("Replay Audit", parser.headings)
         self.assertIn("context-layout", parser.classes)
         self.assertIn("ingestion-dashboard.html", (UI_DIR / "index.html").read_text(encoding="utf-8"))
+        self.assertIn("management-portal.html", (UI_DIR / "index.html").read_text(encoding="utf-8"))
 
     def test_ingestion_dashboard_markup_contract(self) -> None:
         parser = IdCollector()
@@ -141,6 +142,48 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("matrixark_ingestion_dashboard", html)
         self.assertIn("Context Packs", html)
         self.assertIn("Resources", html)
+
+
+    def test_management_portal_markup_contract(self) -> None:
+        parser = IdCollector()
+        parser.feed((UI_DIR / "management-portal.html").read_text(encoding="utf-8"))
+        required_ids = {
+            "portal-status",
+            "portal-account",
+            "portal-tenant",
+            "portal-user",
+            "portal-session",
+            "portal-agent",
+            "portal-page-size",
+            "portal-refresh",
+            "portal-copy",
+            "portal-messages",
+            "portal-resources",
+            "portal-nodes",
+            "portal-keys",
+            "portal-register-payload",
+            "portal-key-payload",
+            "portal-key-management-payload",
+            "portal-request",
+            "portal-table-head",
+            "portal-table-body",
+            "portal-row-details",
+            "portal-topology",
+            "portal-metrics",
+        }
+        self.assertTrue(required_ids.issubset(parser.ids))
+        self.assertIn("Management Portal", parser.headings)
+        self.assertIn("User Backend Portal", parser.headings)
+        self.assertIn("Registration And API Keys", parser.headings)
+        self.assertIn("Ingestion History", parser.headings)
+        self.assertIn("Context Topology", parser.headings)
+        self.assertIn("Metrics And Audit", parser.headings)
+        html = (UI_DIR / "management-portal.html").read_text(encoding="utf-8")
+        self.assertIn("matrixark_management_portal", html)
+        self.assertIn("matrixark_admin_apply_api_key", html)
+        self.assertIn("matrixark_admin_create_user", html)
+        self.assertIn("matrixark_ingestion_dashboard", html)
+        self.assertIn("Context Packs", html)
 
     def test_context_sample_health_has_operable_pipeline(self) -> None:
         health = json.loads((UI_DIR / "health.json").read_text(encoding="utf-8"))
@@ -384,6 +427,11 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             ".ui-readiness-grid",
             ".ui-readiness-card",
             ".resource-skill-metrics",
+            ".portal-scope-grid",
+            ".portal-action-grid",
+            ".portal-tabs",
+            ".portal-topology-tree",
+            ".portal-node",
             ".resource-metric-card",
             ".tree-node",
             ".topology-map",

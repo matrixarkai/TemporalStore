@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixArk Management Portal</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">MatrixArk</p>
+          <h1>Management Portal</h1>
+        </div>
+        <div class="toolbar">
+          <a class="button-link" href="./index.html">Operations</a>
+          <a class="button-link" href="./access-management.html">Access</a>
+          <a class="button-link" href="./ingestion-dashboard.html">Ingestion</a>
+          <a class="button-link" href="./matrixark-api-reference.html">API</a>
+        </div>
+      </header>
+
+      <section class="panel portal-hero-panel">
+        <div class="panel-head">
+          <div>
+            <h2>User Backend Portal</h2>
+            <p>Registration, API-key application, scoped context inventory, topology, metrics, and audit in one MatrixArk backend view.</p>
+          </div>
+          <span id="portal-status" class="status-pill"><span class="dot"></span>sample</span>
+        </div>
+        <div class="portal-scope-grid" aria-label="Portal scope">
+          <label>Account ID<input id="portal-account" value="acct_local" /></label>
+          <label>Tenant ID<input id="portal-tenant" value="tenant_codex" /></label>
+          <label>User ID<input id="portal-user" value="deeproute" /></label>
+          <label>Session ID<input id="portal-session" placeholder="optional" /></label>
+          <label>Agent<input id="portal-agent" value="codex" /></label>
+          <label>Page Size<input id="portal-page-size" type="number" min="1" max="50" value="10" /></label>
+        </div>
+        <div class="toolbar section-gap">
+          <button id="portal-refresh" type="button">Build Portal Request</button>
+          <button id="portal-copy" type="button">Copy Request</button>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="Portal metrics">
+        <article><span>Messages</span><strong id="portal-messages">4</strong><small>chat, tool, feedback</small></article>
+        <article><span>Resources</span><strong id="portal-resources">3</strong><small>manifests, chunks, tasks</small></article>
+        <article><span>Context Graph</span><strong id="portal-nodes">7</strong><small>nodes with summaries</small></article>
+        <article><span>API Keys</span><strong id="portal-keys">2</strong><small>active or revoked metadata</small></article>
+      </section>
+
+      <section class="layout context-layout">
+        <article class="panel panel-wide">
+          <div class="panel-head"><div><h2>Registration And API Keys</h2><p>Users can apply for a scoped key, rotate or revoke keys, and inspect redacted inventory.</p></div></div>
+          <div class="portal-action-grid">
+            <article><strong>Register user</strong><span>Create account/tenant/user records in local mode or under an admin key in cloud mode.</span><pre id="portal-register-payload"></pre></article>
+            <article><strong>Apply for API key</strong><span>One-call local onboarding for Codex, Claude, Cursor, or service agents.</span><pre id="portal-key-payload"></pre></article>
+            <article><strong>Manage keys</strong><span>List, rotate, revoke, and audit without exposing raw key material after creation.</span><pre id="portal-key-management-payload"></pre></article>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Portal Request</h2></div>
+          <pre id="portal-request"></pre>
+        </article>
+      </section>
+
+      <section class="layout context-layout">
+        <article class="panel panel-wide">
+          <div class="panel-head"><div><h2>Ingestion History</h2><p>Paged tables from <code>matrixark_ingestion_dashboard</code> for messages, resources, skills, events, entities, and ContextPack audits.</p></div></div>
+          <div class="portal-tabs" role="tablist" aria-label="Portal tables">
+            <button type="button" data-table="messages">Messages</button>
+            <button type="button" data-table="resources">Resources</button>
+            <button type="button" data-table="skills">Skills</button>
+            <button type="button" data-table="events">Events</button>
+            <button type="button" data-table="entities">Entities</button>
+            <button type="button" data-table="context_packs">Context Packs</button>
+          </div>
+          <div class="table-wrap dashboard-table-wrap"><table><thead id="portal-table-head"></thead><tbody id="portal-table-body"></tbody></table></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Selected Record</h2></div>
+          <pre id="portal-row-details">Select a row to inspect metadata.</pre>
+        </article>
+      </section>
+
+      <section class="layout context-layout">
+        <article class="panel panel-wide">
+          <div class="panel-head"><div><h2>Context Topology</h2><p>Filesystem-like ContextNode graph for this user/agent, with node summaries and embeddings tracked separately.</p></div></div>
+          <div id="portal-topology" class="portal-topology-tree"></div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Metrics And Audit</h2></div>
+          <div id="portal-metrics" class="metric-list"></div>
+        </article>
+      </section>
+    </main>
+    <script>
+      const samplePortal = {
+        status: 'ok', account_id: 'acct_local', tenant_id: 'tenant_codex',
+        metrics: {message_count: 4, resource_count: 3, skill_count: 2, context_node_count: 7, context_summary_count: 9, context_embedding_count: 18, dirty_summary_count: 1, api_key_count: 2, user_count: 1, event_count: 6, entity_count: 4, context_pack_count: 2},
+        users: [{user_id: 'deeproute', display_name: 'deeproute', external_subject: 'local:deeproute', status: 'active'}],
+        api_keys: [{api_key_id: 'key_123', status: 'active', role: 'local_agent', scopes: ['context:ingest','context:retrieve','context:replay'], allowed_user_ids: ['deeproute']},{api_key_id: 'key_old', status: 'revoked', role: 'agent_hook', scopes: ['context:ingest']}],
+        audit_logs: [{action: 'context.ingest', status: 'ok', api_key_id: 'key_123'}, {action: 'context.retrieve', status: 'ok', api_key_id: 'key_123'}],
+        topology: {nodes: [
+          {node_name: 'tenant:tenant_codex', depth: 1, node_path: ['tenant:tenant_codex'], status: 'active'},
+          {node_name: 'user:deeproute', depth: 2, node_path: ['tenant:tenant_codex','user:deeproute'], status: 'active'},
+          {node_name: 'session:thread-1', depth: 3, node_path: ['tenant:tenant_codex','user:deeproute','session:thread-1'], status: 'active'},
+          {node_name: 'resources', depth: 3, node_path: ['tenant:tenant_codex','user:deeproute','resources'], status: 'active'},
+          {node_name: 'gpu_policy', depth: 4, node_path: ['tenant:tenant_codex','user:deeproute','resources','gpu_policy'], status: 'active'}
+        ]},
+        dashboard: {
+          messages: {total: 3, rows: [{role:'user', kind:'message', content:'Alice approved the GPU purchase.', event_type:'approval_confirmation'}, {role:'assistant', kind:'message', content:'Approval recorded with finance evidence.', event_type:'status_update'}]},
+          resources: {total: 2, rows: [{row_type:'resource_manifest', raw_uri:'s3://matrixark/raw/gpu_policy.pdf', resource_type:'pdf', chunk_count:8}, {row_type:'resource_chunk', source_ref:'gpu_policy.pdf#page=2', unit_kind:'pdf_page', token_estimate:142}]},
+          skills: {total: 1, rows: [{row_type:'skill_manifest', name:'context-debugger', status:'active', triggers:['context pack','replay']}]},
+          events: {total: 2, rows: [{event_type:'approval_confirmation', text:'Finance approved the GPU purchase.', source_ref:''}]},
+          entities: {total: 2, rows: [{entity_type:'owner', entity_name:'gpu_rollout', value:'Priya', status:'current'}]},
+          context_packs: {total: 1, rows: [{context_pack_id:'pack-123', query:'what GPU approval is current?', used_context_tokens:174, selected_ref_count:4}]}
+        }
+      };
+      const columns = {messages:['role','kind','content','event_type'], resources:['row_type','raw_uri','resource_type','chunk_count','source_ref','unit_kind','token_estimate'], skills:['row_type','name','status','triggers','allowed_tools'], events:['event_type','text','source_ref'], entities:['entity_type','entity_name','value','status'], context_packs:['context_pack_id','query','used_context_tokens','selected_ref_count']};
+      let selectedTable = 'messages';
+      function scope(){const get=id=>document.getElementById(id).value.trim(); const s={account_id:get('portal-account'), tenant_id:get('portal-tenant'), user_id:get('portal-user'), agent_name:get('portal-agent')}; const session=get('portal-session'); if(session)s.session_id=session; return s;}
+      function portalRequest(){return {tool:'matrixark_management_portal', arguments:{scope:scope(), page_size:Number(document.getElementById('portal-page-size').value)||10, include_revoked:true}};}
+      function actionPayloads(){const s=scope(); return {register:{tool:'matrixark_admin_create_user',arguments:{account_id:s.account_id,tenant_id:s.tenant_id,user_id:s.user_id,display_name:s.user_id,external_subject:`local:${s.user_id}`}}, key:{tool:'matrixark_admin_apply_api_key',arguments:{account_id:s.account_id,tenant_id:s.tenant_id,agent_name:s.agent_name,user_id:s.user_id,scopes:['context:ingest','context:retrieve','context:feedback','context:replay','resource:read','skill:read']}}, manage:{tool:'matrixark_admin_list_api_keys',arguments:{scope:s,include_revoked:true}}};}
+      function text(v){return Array.isArray(v)?v.join(', '):(v==null?'':String(v));}
+      function renderTable(){const rows=(samplePortal.dashboard[selectedTable]||{rows:[]}).rows; const cols=columns[selectedTable]||[]; document.getElementById('portal-table-head').innerHTML='<tr>'+cols.map(c=>`<th>${c}</th>`).join('')+'</tr>'; const body=document.getElementById('portal-table-body'); body.innerHTML=''; rows.forEach(row=>{const tr=document.createElement('tr'); tr.tabIndex=0; tr.innerHTML=cols.map(c=>`<td>${text(row[c]).slice(0,200)}</td>`).join(''); tr.addEventListener('click',()=>document.getElementById('portal-row-details').textContent=JSON.stringify(row,null,2)); body.appendChild(tr);});}
+      function renderTopology(){document.getElementById('portal-topology').innerHTML=samplePortal.topology.nodes.map(node=>`<div class="portal-node depth-${Math.min(node.depth,5)}"><strong>${node.node_name}</strong><span>${node.node_path.join(' / ')}</span><small>${node.status}</small></div>`).join('');}
+      function renderMetrics(){const m=samplePortal.metrics; const rows=[['Users',m.user_count],['Messages',m.message_count],['Resources',m.resource_count],['Skills',m.skill_count],['Events',m.event_count],['Entities',m.entity_count],['Context packs',m.context_pack_count],['Summaries',m.context_summary_count],['Embeddings',m.context_embedding_count],['Dirty summaries',m.dirty_summary_count]]; document.getElementById('portal-metrics').innerHTML=rows.map(([k,v])=>`<div><strong>${k}</strong><span>${v}</span></div>`).join('')+'<div><strong>Recent audit</strong><span>'+samplePortal.audit_logs.map(a=>a.action).join(', ')+'</span></div>';}
+      function render(){document.getElementById('portal-request').textContent=JSON.stringify(portalRequest(),null,2); const actions=actionPayloads(); document.getElementById('portal-register-payload').textContent=JSON.stringify(actions.register,null,2); document.getElementById('portal-key-payload').textContent=JSON.stringify(actions.key,null,2); document.getElementById('portal-key-management-payload').textContent=JSON.stringify(actions.manage,null,2); document.getElementById('portal-messages').textContent=samplePortal.metrics.message_count; document.getElementById('portal-resources').textContent=samplePortal.metrics.resource_count; document.getElementById('portal-nodes').textContent=samplePortal.metrics.context_node_count; document.getElementById('portal-keys').textContent=samplePortal.metrics.api_key_count; renderTable(); renderTopology(); renderMetrics();}
+      document.querySelectorAll('.portal-tabs button').forEach(button=>button.addEventListener('click',()=>{selectedTable=button.dataset.table; renderTable();}));
+      document.getElementById('portal-refresh').addEventListener('click',render);
+      document.getElementById('portal-copy').addEventListener('click',async()=>{await navigator.clipboard?.writeText(JSON.stringify(portalRequest(),null,2)); document.getElementById('portal-status').lastChild.textContent='request copied';});
+      render();
+    </script>
+  </body>
+</html>
