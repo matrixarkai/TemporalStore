@@ -17,6 +17,11 @@ name = "matrixark_record_log"
 path = "src/bin/matrixark_record_log.rs"
 required-features = ["direct"]
 
+[[bin]]
+name = "matrixark_gateway"
+path = "src/bin/matrixark_record_log.rs"
+required-features = ["direct"]
+
 
 [[example]]
 name = "proxy_sequence_features"

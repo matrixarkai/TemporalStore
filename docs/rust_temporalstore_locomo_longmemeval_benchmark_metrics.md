@@ -37,8 +37,9 @@ remains the production-performance baseline.**
 Rust should not be described as production-performance parity until the benchmark
 evidence proves all of the following:
 
-- Rust is moved fully off CLI-per-operation paths into a long-lived native
-  backend or gateway.
+- Rust is moved fully off CLI-per-operation paths into a long-lived backend or
+  gateway. The current MatrixArk Rust path is a persistent stdio gateway around
+  the Rust SDK; native HTTP/binding transport can replace it later.
 - Full official LOCOMO and full official LongMemEval_s run on both C++ and Rust.
 - Both backends use the same OSS embedding model, reader, judge, token budget,
   storage mode, and benchmark config.

@@ -133,6 +133,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_admin_map_sso_user": {"admin:sso"},
     "matrixark_admin_audit": {"admin:audit"},
     "matrixark_backend_ready": set(),
+    "matrixark_backend_metrics": set(),
 }
 
 
@@ -3076,6 +3077,16 @@ class MatrixArkLocalAdapter:
             },
         }
 
+    def backend_metrics(self) -> Json:
+        return {
+            "backend": getattr(self, "_backend_label", lambda: "local")(),
+            "metrics_format": "json",
+            "metrics": {
+                "mode": "local-jsonl",
+                "event_log": str(self.event_log),
+            },
+        }
+
     def append(self, record: Json) -> None:
         with self.event_log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -5870,6 +5881,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-cpp"
 
+    def backend_metrics(self) -> Json:
+        return {
+            "backend": self._backend_label(),
+            "metrics_format": "json",
+            "metrics": {
+                "mode": "direct-sdk",
+                "metaserver": self._metaserver,
+                "namespace": self._namespace,
+                "table": self._table,
+                "storage_prefix": self._storage_prefix,
+                "audit_mode": self._audit_mode,
+                "audit_buffered_records": len(self._audit_buffer),
+                "audit_flush_failures": self._audit_flush_failures,
+                "entry_count_cache": self._entry_count_cache,
+                "records_cache_ready": self._records_cache is not None,
+            },
+        }
+
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
         with self._readiness_lock:
             if self._readiness_cache and self._readiness_cache.get("status") == "ready":
@@ -5996,6 +6025,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if self._legacy_index_mode:
                 if self._index_cache is None:
                     self._index_cache = self._get_index()
+                entries: list[Json] = []
                 for record in records:
                     payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
                     record_id = (
@@ -6003,21 +6033,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                         f"{record.get('record_type', 'record')}:"
                         f"{stable_hash(json.dumps(record, sort_keys=True))}"
                     )
-                    self._hset_with_backoff(self._record_hash_key, record_id, payload)
+                    entries.append({"key": self._record_hash_key, "field": record_id, "value": payload})
                     self._index_cache.append(record_id)
+                self._hset_many_with_backoff(entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
                 self._records_cache.extend(records)
                 self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 return
 
             sequence = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+            entries = []
             for bundle in self._record_bundles(records):
                 record_key, record_id = self._record_location(sequence)
                 payload_value: Json
                 payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
-                self._hset_with_backoff(record_key, record_id, payload)
+                entries.append({"key": record_key, "field": record_id, "value": payload})
                 sequence += 1
+            self._hset_many_with_backoff(entries)
             self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             self._records_cache.extend(records)
@@ -6044,6 +6077,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._write_with_backoff(lambda: self._client.hset(key, field, value), op="hset")
         if self._write_throttle_s > 0:
             time.sleep(self._write_throttle_s)
+
+    def _hset_many_with_backoff(self, entries: list[Json]) -> None:
+        if not entries:
+            return
+        batch_hset = getattr(self._client, "batch_hset", None)
+        if callable(batch_hset):
+            self._write_with_backoff(lambda: batch_hset(entries), op="batch_hset")
+            if self._write_throttle_s > 0:
+                time.sleep(self._write_throttle_s)
+            return
+        for entry in entries:
+            self._hset_with_backoff(str(entry["key"]), str(entry["field"]), str(entry["value"]))
 
     def _put_string_with_backoff(self, key: str, value: str) -> None:
         self._write_with_backoff(lambda: self._client.put_string(key, value), op="put_string")
@@ -6166,6 +6211,29 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _load_records_by_count(self, count: int) -> list[Json]:
         records = []
+        batch_hget = getattr(self._client, "batch_hget", None)
+        if callable(batch_hget):
+            entries = []
+            for sequence in range(count):
+                record_key, record_id = self._record_location(sequence)
+                entries.append({"key": record_key, "field": record_id})
+            try:
+                read_records = batch_hget(entries)
+            except Exception:
+                read_records = []
+            for item in read_records:
+                if not isinstance(item, dict):
+                    continue
+                payload = item.get("value", "")
+                if not payload:
+                    continue
+                decoded = json.loads(str(payload))
+                if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
+                    records.extend(item for item in decoded["record_bundle"] if isinstance(item, dict))
+                elif isinstance(decoded, dict):
+                    records.append(decoded)
+            if records or count == 0:
+                return records
         for sequence in range(count):
             record_key, record_id = self._record_location(sequence)
             try:
@@ -6278,7 +6346,7 @@ class MatrixArkRustCliClient:
                 raise MatrixArkError(f"Rust TemporalStore {op} returned invalid JSON: {line[:200]!r}") from exc
         raise MatrixArkError(f"Rust TemporalStore {op} timed out waiting for response")
 
-    def _call(self, op: str, **kwargs: Any) -> str:
+    def _call_json(self, op: str, **kwargs: Any) -> Json:
         command = {
             "op": op,
             "metaserver": self.metaserver,
@@ -6301,6 +6369,10 @@ class MatrixArkRustCliClient:
             response = self._read_json_line(proc, op)
         if not response.get("ok"):
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
+        return response
+
+    def _call(self, op: str, **kwargs: Any) -> str:
+        response = self._call_json(op, **kwargs)
         return str(response.get("value", ""))
 
     def put_string(self, key: str, value: str) -> None:
@@ -6314,6 +6386,33 @@ class MatrixArkRustCliClient:
 
     def hget(self, key: str, field: str) -> str:
         return self._call("hget", key=key, field=field)
+
+    def batch_hset(self, entries: list[Json]) -> None:
+        if not entries:
+            return
+        self._call_json("batch_hset", entries=entries)
+
+    def batch_hget(self, entries: list[Json]) -> list[Json]:
+        if not entries:
+            return []
+        response = self._call_json("batch_hget", entries=entries)
+        records = response.get("records", [])
+        return records if isinstance(records, list) else []
+
+    def metrics_prometheus(self) -> str:
+        return str(self._call_json("metrics_prometheus").get("prometheus", ""))
+
+    def health(self) -> Json:
+        return self._call_json("health")
+
+    def readiness(self) -> Json:
+        return self._call_json("readiness")
+
+    def shutdown(self) -> None:
+        try:
+            self._call_json("shutdown")
+        finally:
+            self.close()
 
 
 class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
@@ -6369,6 +6468,39 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
     def _backend_label(self) -> str:
         return "temporalstore-rust"
+
+    def backend_metrics(self) -> Json:
+        health: Json
+        readiness: Json
+        try:
+            health = self._client.health()
+        except Exception as exc:
+            health = {"ok": False, "error": str(exc)}
+        try:
+            readiness = self._client.readiness()
+        except Exception as exc:
+            readiness = {"ok": False, "error": str(exc)}
+        try:
+            prometheus = self._client.metrics_prometheus()
+        except Exception as exc:
+            prometheus = f"# matrixark_rust_gateway_metrics_error {json.dumps(str(exc))}\n"
+        return {
+            "backend": self._backend_label(),
+            "metrics_format": "prometheus",
+            "gateway_mode": "long_lived_stdio_gateway",
+            "health": health,
+            "readiness": readiness,
+            "prometheus": prometheus,
+            "metrics": {
+                "metaserver": self._metaserver,
+                "namespace": self._namespace,
+                "table": self._table,
+                "storage_prefix": self._storage_prefix,
+                "audit_mode": self._audit_mode,
+                "audit_buffered_records": len(self._audit_buffer),
+                "audit_flush_failures": self._audit_flush_failures,
+            },
+        }
 
 
 
@@ -7548,6 +7680,17 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_backend_metrics",
+        "description": "Return backend health, readiness, and low-cost metrics for the active MatrixArk storage adapter.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_account",
         "description": "Create a MatrixArk account and default tenant.",
         "inputSchema": {
@@ -7850,6 +7993,15 @@ class MatrixArkMcpServer:
                 details={"backend": result.get("backend"), "attempts": result.get("attempts")},
             )
             return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_backend_metrics":
+            result = self.adapter.backend_metrics()
+            self.access.append_audit(
+                "backend.metrics",
+                identity,
+                status="ok",
+                details={"backend": result.get("backend"), "metrics_format": result.get("metrics_format")},
+            )
+            return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_ingest":
             result = self.adapter.ingest(args, hook=hook)
             self.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash")})
@@ -8045,7 +8197,7 @@ def main() -> int:
     parser.add_argument(
         "--rust-cli",
         default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
-        help="Path to the Rust matrixark_record_log binary for --backend temporalstore-rust.",
+        help="Path to the Rust matrixark_gateway or matrixark_record_log binary for --backend temporalstore-rust.",
     )
     parser.add_argument(
         "--request-timeout-ms",
