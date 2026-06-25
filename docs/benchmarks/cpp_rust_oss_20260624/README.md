@@ -19,10 +19,13 @@ controlled slices.
   - LOCOMO: `/root/matrixark_benchmarks/data/locomo10.json`
   - LongMemEval_s: `/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json`
 
-Important caveat: the benchmark runner currently still reports
-`embedding_model=hashing:hashing-local`; it does not expose an OSS embedding
-provider flag yet. These results therefore prove C++ vs Rust parity with an OSS
-reader/judge, but not full VikingMem-style OSS embedding parity.
+Important caveat: these artifacts report `embedding_model=hashing:hashing-local`.
+They should be treated as reader/judge OSS only, not full VikingMem-style OSS
+embedding parity. The benchmark runner now has explicit OSS embedding flags;
+rerun C++ and Rust with the same `--embedding-provider oss`,
+`--embedding-model sentence-transformers/all-MiniLM-L6-v2`, and
+`--embedding-model-path .../all-MiniLM-L6-v2` before using this report for OSS
+embedding claims.
 
 ## LOCOMO q5 / conversation-limit 1
 
@@ -97,9 +100,8 @@ Artifact directories:
 - The OSS Qwen 1.5B reader/judge path is functional, but quality is weak on
   LOCOMO. The context recall is high, so the remaining score gap is mostly
   reader/judge quality and answer packing, not backend storage correctness.
-- The next parity gap is adding a real OSS embedding provider path to the
-  benchmark runner and MatrixArk service so `nomic-embed-text` or
-  `sentence-transformers/all-MiniLM-L6-v2` replaces `hashing:hashing-local`.
+- The next parity gap is rerunning this report with the new OSS embedding flags
+  and confirming `runtime_embedding_model_confirmed=true`.
 
 ## Commands Used
 
@@ -107,11 +109,16 @@ The four runs used the shared benchmark runner:
 
 ```bash
 cd /root/src/github-services/TemporalStoreTestCorpus
+OSS_EMBEDDING_PATH=/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2
 OPENAI_API_KEY=dummy python3 tools/run_matrixark_dataset_benchmark.py \
   --consumer-repo /root/src/github-services/TemporalStore \
   --dataset locomo \
   --data-path /root/matrixark_benchmarks/data/locomo10.json \
   --backend temporalstore-direct \
+  --embedding-provider oss \
+  --embedding-model sentence-transformers/all-MiniLM-L6-v2 \
+  --embedding-model-path "$OSS_EMBEDDING_PATH" \
+  --require-oss-embeddings true \
   --reader-provider openai-compatible \
   --judge-provider openai-compatible \
   --reader-model qwen2.5:1.5b \
