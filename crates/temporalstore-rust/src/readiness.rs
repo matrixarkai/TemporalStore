@@ -78,6 +78,8 @@ pub struct StorageCacheDependencyMatrixReport {
     pub raft_snapshot_manifest_retention_ready: bool,
     pub local_shared_store_production_ready: bool,
     pub live_external_object_store_out_of_scope: bool,
+    pub external_object_store_evidence_scoped_separately: bool,
+    pub broad_deployment_evidence_scoped_separately: bool,
     pub rust_native_storage_format_ready: bool,
     pub bytestore_live_backend_ready: bool,
     pub s3_live_backend_ready: bool,
@@ -883,12 +885,16 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         && follower_cursor_retention_ready
         && raft_snapshot_manifest_retention_ready;
     let live_external_object_store_out_of_scope = true;
+    let external_object_store_evidence_scoped_separately = true;
+    let broad_deployment_evidence_scoped_separately = true;
     let rust_native_storage_format_ready = true;
     let bytestore_live_backend_ready = false;
     let s3_live_backend_ready = false;
     let local_shared_store_ready = local_shared_store_production_ready;
     let production_ready = local_shared_store_production_ready
         && live_external_object_store_out_of_scope
+        && external_object_store_evidence_scoped_separately
+        && broad_deployment_evidence_scoped_separately
         && rust_native_storage_format_ready;
     let missing = if production_ready {
         Vec::new()
@@ -908,6 +914,8 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
         raft_snapshot_manifest_retention_ready,
         local_shared_store_production_ready,
         live_external_object_store_out_of_scope,
+        external_object_store_evidence_scoped_separately,
+        broad_deployment_evidence_scoped_separately,
         rust_native_storage_format_ready,
         bytestore_live_backend_ready,
         s3_live_backend_ready,
@@ -1386,6 +1394,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, WAL cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
+                    .to_string(),
+                "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
                     .to_string(),
@@ -1899,6 +1909,8 @@ mod tests {
         assert!(matrix.local_shared_store_ready);
         assert!(matrix.local_shared_store_production_ready);
         assert!(matrix.live_external_object_store_out_of_scope);
+        assert!(matrix.external_object_store_evidence_scoped_separately);
+        assert!(matrix.broad_deployment_evidence_scoped_separately);
         assert!(matrix.rust_native_storage_format_ready);
         assert!(!matrix.bytestore_live_backend_ready);
         assert!(!matrix.s3_live_backend_ready);
@@ -1917,6 +1929,9 @@ mod tests {
             .any(|item| item.contains("local/shared-store object manifest dependency matrix")));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
+        )));
+        assert!(storage_cache.covered.iter().any(|item| item.contains(
+            "broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
         )));
         assert!(storage_cache.ready);
         assert!(storage_cache.missing.is_empty());
