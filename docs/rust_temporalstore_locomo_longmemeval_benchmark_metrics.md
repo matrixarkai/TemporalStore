@@ -29,6 +29,20 @@ These reports are deterministic-reader engineering evidence. They are not a Viki
 live-reader claim because no live GPT-4o-mini or OpenAI-compatible reader endpoint was configured for
 this run.
 
+## Evidence Label Policy
+
+Every benchmark result on this page must be read through one of these labels:
+
+| Label | What it proves | What it does not prove |
+| --- | --- | --- |
+| Deterministic engineering evidence | Rust TemporalStore ingestion, context storage, retrieval, replay, deterministic reader/scorer, and threshold behavior for a fixed dataset artifact. | Live model-reader quality, VikingMem paper comparability, or production-performance parity. |
+| Live-reader evidence | Deterministic evidence plus a configured OpenAI-compatible reader endpoint, no deterministic fallback, and `reader_open_source_calls > 0`. | Paper comparability unless full-dataset thresholds and archive fields also pass. |
+| Paper-comparable evidence | Full dataset, full Rust replay, live reader calls, archived provider/model/prompt metadata, category breakdown, thresholds passed, and `paper_comparable_claim_ready=true`. | Fixture-only, bounded-replay, fallback-reader, or Python-only diagnostic claims. |
+
+Unless a table row or report path explicitly says otherwise, the results below are deterministic
+engineering evidence only. They are useful for regression and Rust-vs-C++ behavior checks, but they
+must not be cited as VikingMem paper-comparable scores.
+
 ## Production-Performance Wording
 
 The correct current wording is: **Rust is feature-correct for parity testing; C++

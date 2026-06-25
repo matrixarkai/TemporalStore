@@ -29,6 +29,9 @@ Every benchmark result in this repository must use one of these labels:
 | Paper-comparable evidence | Full dataset, full Rust replay, live reader calls, archived provider/model/prompt metadata, thresholds passed, and `paper_comparable_claim_ready=true`. | Fixture-only, bounded-replay, fallback-reader, or Python-only diagnostic results. |
 
 Any result missing one of those labels should be treated as diagnostic-only until relabeled.
+Generated archives whose filename contains `paper_comparable` are not automatically paper-comparable
+evidence; the archive must also set `quality_gate.paper_comparable_claim_ready=true` and satisfy the
+full live-reader contract above.
 
 Current VikingMem/OpenViking-comparable status:
 
