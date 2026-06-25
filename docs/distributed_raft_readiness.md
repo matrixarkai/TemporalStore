@@ -6,6 +6,12 @@ Distributed Raft production readiness is based on multi-process OpenRaft evidenc
 data-node and metaserver paths. Local in-process Raft fixtures remain useful for unit tests and
 model checking, but they are not readiness-eligible production evidence.
 
+The default readiness API therefore fails closed until callers provide passing
+`OpenRaftDataNodeProcessRolloutReport` and `OpenRaftMetaProcessRolloutReport` evidence with
+process API writes/mutations, restart recovery, snapshot install, applied/read-index checks,
+scheduler replay, and multi-process log-store validation. `LocalModel` remains a deserialization
+compatibility variant only and is rejected for runtime deployment selection.
+
 The Rust code currently has:
 
 - production data-node Raft runtime options with OpenRaft/raft-rs engine selection

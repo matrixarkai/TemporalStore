@@ -150,13 +150,16 @@ Raft local coverage:
 
 ## Remaining Production Blockers
 
-The readiness gate now treats the Raft replication, data-node distributed Raft, and metaserver
-control-plane slice as ready when built with `openraft-engine` and backed by the local production
-harness evidence:
+The readiness gate now fails closed for the Raft replication and data-node distributed Raft slices
+unless it is given explicit multi-process OpenRaft rollout evidence for both data-node and
+metaserver paths. Local in-process Raft fixtures and local harnesses remain useful supporting
+evidence, but they cannot satisfy production readiness by themselves:
 
 - Raft OpenRaft rollout readiness is now explicit in the readiness gate: adapter presence,
-  data-node/metaserver startup selection, durable local log state, real `raft_node` OS-process WAL
-  restart validation, and metaserver rollout evidence emitted by the Raft harnesses are covered.
+  data-node/metaserver startup selection, durable local log state, data-node process API writes,
+  data-node restart/snapshot/applied-fence validation, metaserver process API mutations,
+  metaserver read-index/snapshot/scheduler replay validation, and multi-process log-store
+  validation are required.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
   persistence, WAL fence recovery validation, production runtime data-node atomic durability
   reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle

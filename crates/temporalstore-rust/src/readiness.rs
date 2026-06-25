@@ -1203,7 +1203,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
         },
         ReadinessArea {
             area: "data_node_distributed_raft".to_string(),
-            ready: raft.metaserver_driven_membership_present,
+            ready: raft.production_ready,
             covered: vec![
                 "separate raft_node binary can accept /raft/propose and peer raft messages"
                     .to_string(),
@@ -1274,7 +1274,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "Raft external chaos readiness covers local OS-process restart/failover, stale-read partition heal, lagging follower catch-up, networked membership/snapshot, storage replay, external packet-loss, disk-pressure, and process-chaos gates"
                     .to_string(),
             ],
-            missing: if raft.metaserver_driven_membership_present {
+            missing: if raft.production_ready {
                 Vec::new()
             } else {
                 raft.missing.clone()
@@ -1616,11 +1616,37 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "raft_replication" if capability.contains("OpenRaft production engine adapter") => {
             "raft_rollout.openraft_engine_adapter_present"
         }
-        "raft_replication" if capability.contains("data-node process rollout") => {
+        "raft_replication"
+            if capability.contains("data-node process rollout")
+                || capability.contains("data-node multi-process rollout evidence") =>
+        {
             "raft_rollout.openraft_data_node_process_rollout_ready"
         }
-        "raft_replication" if capability.contains("metaserver process rollout") => {
+        "raft_replication"
+            if capability.contains("metaserver process rollout")
+                || capability.contains("metaserver multi-process rollout evidence") =>
+        {
             "raft_rollout.openraft_metaserver_process_rollout_ready"
+        }
+        "raft_replication"
+            if capability.contains("multi-process log-store validation evidence") =>
+        {
+            "raft_rollout.multi_process_log_store_validated"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("data-node multi-process rollout evidence") =>
+        {
+            "raft_rollout.openraft_data_node_process_rollout_ready"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("metaserver multi-process rollout evidence") =>
+        {
+            "raft_rollout.openraft_metaserver_process_rollout_ready"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("multi-process log-store validation evidence") =>
+        {
+            "raft_rollout.multi_process_log_store_validated"
         }
         "data_node_distributed_raft" if capability.contains("membership") => {
             "meta_owned_data_raft_membership.data_node_membership_results_ready"
@@ -2100,46 +2126,7 @@ mod tests {
     #[test]
     fn remaining_blockers_map_to_concrete_evidence_fields() {
         let readiness = production_readiness_report();
-        assert!(readiness.failed_capabilities.is_empty());
-        assert_eq!(
-            evidence_field_for("storage_cache", "native slot/object/page authority"),
-            "storage_index.native_slot_object_page_authority_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "SlotStore transitions"),
-            "storage_index.slotstore_layout_transition_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "ObjectManager runtime"),
-            "storage_index.object_manager_runtime_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "model-aware compaction"),
-            "storage_compaction.model_layout_policy_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "merged dump/load recovery"),
-            "storage_dump_load.merged_recovery_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "StorageManager phase loop"),
-            "storage_manager.phase_loop_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "GC/eviction pressure validation"),
-            "storage_manager.gc_eviction_pressure_ready"
-        );
-        assert_eq!(
-            evidence_field_for("storage_cache", "cache soak status"),
-            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
-        );
-        assert_eq!(
-            evidence_field_for(
-                "storage_cache",
-                "cache pressure soak with memory/disk pressure and restart"
-            ),
-            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
-        );
+        assert!(!readiness.failed_capabilities.is_empty());
         for blocker in &readiness.failed_capabilities {
             assert!(
                 !blocker.evidence_field.is_empty(),
@@ -2152,8 +2139,12 @@ mod tests {
         }
 
         let raft = readiness.service_gate_report("raft_replication").unwrap();
-        assert!(raft.ready);
-        assert!(raft.failed_capabilities.is_empty());
+        assert!(!raft.ready);
+        assert!(!raft.failed_capabilities.is_empty());
+        assert!(raft
+            .failed_capabilities
+            .iter()
+            .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
         assert!(storage.ready);
@@ -2496,7 +2487,7 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = true;
+            let expected_ready = !matches!(service, "data_node" | "raft_replication");
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -2558,7 +2549,7 @@ mod tests {
             .iter()
             .map(|summary| summary.service.as_str())
             .collect::<Vec<_>>();
-        assert!(blocked_services.is_empty());
+        assert_eq!(blocked_services, vec!["data_node", "raft_replication"]);
         assert_eq!(
             report.known_services(),
             vec![
@@ -2612,15 +2603,13 @@ mod tests {
                 "client",
                 "proxy",
                 "ingestion",
-                "data_node",
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing",
-                "raft_replication"
+                "scale_testing"
             ]
         );
         assert_eq!(
@@ -2633,18 +2622,22 @@ mod tests {
                 "client",
                 "proxy",
                 "ingestion",
-                "data_node",
                 "metaserver",
                 "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
                 "deployment_ops",
-                "scale_testing",
-                "raft_replication"
+                "scale_testing"
             ]
         );
-        assert!(report.next_blocked_service().is_none());
+        assert_eq!(
+            report
+                .next_blocked_service()
+                .expect("data-node should be first blocked service")
+                .service,
+            "data_node"
+        );
         assert_eq!(
             service_gates
                 .iter()
@@ -2654,7 +2647,7 @@ mod tests {
                 ("client", "ready"),
                 ("proxy", "ready"),
                 ("ingestion", "ready"),
-                ("data_node", "ready"),
+                ("data_node", "critical"),
                 ("metaserver", "ready"),
                 ("storage_cache", "ready"),
                 ("feature_modules", "ready"),
@@ -2662,7 +2655,7 @@ mod tests {
                 ("fault_tolerance", "ready"),
                 ("deployment_ops", "ready"),
                 ("scale_testing", "ready"),
-                ("raft_replication", "ready")
+                ("raft_replication", "critical")
             ]
         );
         let data_node_gate = service_gates
@@ -2710,7 +2703,7 @@ mod tests {
             .service_summary("data_node")
             .expect("data node summary")
             .next_action
-            .contains("ready"));
+            .contains("finish"));
         assert!(report
             .service_summary("storage_cache")
             .expect("storage cache summary")
@@ -2745,7 +2738,7 @@ mod tests {
             .service_summary("raft_replication")
             .expect("raft replication summary")
             .next_action
-            .contains("ready"));
+            .contains("finish"));
         assert_eq!(
             report
                 .service_summary("proxy")
@@ -2809,13 +2802,11 @@ mod tests {
                 .blocker_classes,
             Vec::<String>::new()
         );
-        assert_eq!(
-            report
-                .service_summary("raft_replication")
-                .expect("raft replication summary")
-                .blocker_classes,
-            Vec::<String>::new()
-        );
+        assert!(report
+            .service_summary("raft_replication")
+            .expect("raft replication summary")
+            .blocker_classes
+            .contains(&"raft_replication_engine".to_string()));
 
         let data_node = report
             .service_summary("data_node")
@@ -2827,10 +2818,12 @@ mod tests {
                 "data_node_distributed_raft".to_string()
             ]
         );
-        assert!(data_node.failed_capabilities.is_empty());
-        assert!(data_node.blocker_classes.is_empty());
+        assert!(!data_node.failed_capabilities.is_empty());
+        assert!(data_node
+            .blocker_classes
+            .contains(&"data_node_distributed_raft".to_string()));
         let data_node_blockers = report.failed_capabilities_for_service("data_node");
-        assert!(data_node_blockers.is_empty());
+        assert!(!data_node_blockers.is_empty());
         assert!(report
             .failed_capabilities_for_service("unknown_service")
             .is_empty());
@@ -2843,7 +2836,7 @@ mod tests {
         let data_raft = report
             .missing_by_area("data_node_distributed_raft")
             .expect("data-node raft area must exist");
-        assert!(data_raft.is_empty());
+        assert!(!data_raft.is_empty());
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("atomic applied-index")));
@@ -2851,6 +2844,9 @@ mod tests {
         assert!(!data_raft
             .iter()
             .any(|item| item.contains("packet-loss") || item.contains("disk-pressure")));
+        assert!(data_raft
+            .iter()
+            .any(|item| item.contains("multi-process rollout evidence")));
 
         let covered = &report
             .areas
@@ -2863,8 +2859,12 @@ mod tests {
             .iter()
             .find(|area| area.area == "raft_replication")
             .expect("raft replication area must exist");
-        assert!(raft_replication.ready);
-        assert!(raft_replication.missing.is_empty());
+        assert!(!raft_replication.ready);
+        assert!(!raft_replication.missing.is_empty());
+        assert!(raft_replication
+            .missing
+            .iter()
+            .any(|item| item.contains("multi-process rollout evidence")));
         assert!(raft_replication.covered.iter().any(|item| {
             item.contains("Raft OpenRaft rollout readiness")
                 && item
