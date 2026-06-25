@@ -1,8 +1,17 @@
 .git
+.codex
 .local
+target
 build
 build-*
+build-ubuntu22
 output
+target-rust-bench
+benchmark_reports
+bytestorelab-master
+abase2_images
+bytestore_images
+*.log
 **/CMakeFiles
 **/CMakeCache.txt
 **/cmake_install.cmake

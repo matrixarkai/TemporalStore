@@ -1,0 +1,185 @@
+name: Rust production readiness
+
+on:
+  pull_request:
+    branches:
+      - rust-main
+  push:
+    branches:
+      - rust-main
+  workflow_dispatch:
+
+jobs:
+  rust-production-readiness:
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: .
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Validate unified C++/Rust corpus
+        run: python3 tools/run_temporalstore_unified_tests.py --validate-only
+
+      - name: Validate readiness workflow coverage
+        run: python3 tools/validate_readiness_workflow.py
+
+      - name: Compile all Rust targets
+        run: cargo check -p temporalstore-rust --all-targets
+
+      - name: Run unified Rust corpus
+        run: tools/run_temporalstore_unified_tests.sh
+
+      - name: Run unified local validation
+        run: bash tools/run_temporalstore_unified_validation.sh
+
+      - name: Run Rust unit and integration tests
+        run: cargo test -p temporalstore-rust --lib --tests -- --test-threads=1
+
+      - name: Capture production readiness report
+        shell: bash
+        run: |
+          set +e
+          mkdir -p target/readiness
+          cargo run -p temporalstore-rust --bin readiness_gate -- --service-reports \
+            > target/readiness/production_readiness_report.json \
+            2> target/readiness/production_readiness_gate.log
+          status=$?
+          set -e
+          cat target/readiness/production_readiness_gate.log
+          python3 - <<'PY'
+          import json
+          report = json.load(open("target/readiness/production_readiness_report.json"))
+          print(f"production_ready={report['production_ready']}")
+          print(f"cpp_parity_ready={report['cpp_parity_ready']}")
+          print(f"blocker_count={report['blocker_count']}")
+          for service in report["service_summaries"]:
+              print(
+                  f"- service {service['service']}: "
+                  f"ready={service['ready']} "
+                  f"blockers={service['blocker_count']} "
+                  f"next_action={service['next_action']}"
+              )
+          PY
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
+            echo "readiness_gate exited with unexpected status $status" >&2
+            exit "$status"
+          fi
+
+      - name: Run storage modes harness
+        run: cargo run -p temporalstore-rust --bin storage_modes_harness
+
+      - name: Export C++ storage migration artifacts
+        run: >
+          python3 tools/export_cpp_storage_migration_artifacts.py
+          --output target/readiness/storage-migration-artifacts
+          > target/readiness/storage-migration-artifacts-manifest.json
+
+      - name: Run compact scale harness
+        run: >
+          cargo run -p temporalstore-rust --bin scale_harness --
+          --nodes 3
+          --string-ops 80
+          --hash-ops 25
+          --sequence-keys 2
+          --sequence-len 40
+          --scale-events 1
+          --failover-every 40
+          --read-sample-every 20
+          --compare-shared-store true
+          --shared-store-ops 80
+          --shared-store-flush-every 10
+
+      - name: Build harness binaries
+        run: cargo build -p temporalstore-rust --bins
+
+      - name: Run Raft secondary replication harness
+        run: cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- --heartbeat-ms 25
+
+      - name: Upload production readiness artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-production-readiness
+          path: |
+            target/readiness/production_readiness_report.json
+            target/readiness/production_readiness_gate.log
+            target/readiness/storage-migration-artifacts-manifest.json
+            target/readiness/storage-migration-artifacts/**
+
+  service-readiness:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - client
+          - proxy
+          - ingestion
+          - data_node
+          - metaserver
+          - storage_cache
+          - feature_modules
+          - context_workflow
+          - fault_tolerance
+          - deployment_ops
+          - scale_testing
+          - raft_replication
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run service readiness gate
+        shell: bash
+        run: |
+          mkdir -p target/service-readiness
+          set +e
+          cargo run -p temporalstore-rust --bin readiness_gate -- --service "${{ matrix.service }}" \
+            > "target/service-readiness/${{ matrix.service }}.json" \
+            2> "target/service-readiness/${{ matrix.service }}.log"
+          status=$?
+          set -e
+          cat "target/service-readiness/${{ matrix.service }}.log"
+          python3 - <<'PY'
+          import json
+          import os
+          service = os.environ["SERVICE"]
+          report = json.load(open(f"target/service-readiness/{service}.json"))
+          summary = next(item for item in report["service_summaries"] if item["service"] == service)
+          print(f"service={service}")
+          print(f"ready={summary['ready']}")
+          print(f"blocker_count={summary['blocker_count']}")
+          print(f"classes={','.join(summary['blocker_classes'])}")
+          print(f"next_action={summary['next_action']}")
+          for blocker in summary["failed_capabilities"][:20]:
+              print(f"- {blocker}")
+          PY
+          if [ "$status" -ne 0 ] && [ "$status" -ne 1 ] && [ "$status" -ne 2 ]; then
+            echo "readiness_gate --service ${{ matrix.service }} exited with unexpected status $status" >&2
+            exit "$status"
+          fi
+        env:
+          SERVICE: ${{ matrix.service }}
+
+      - name: Upload service readiness artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-service-readiness-${{ matrix.service }}
+          path: |
+            target/service-readiness/${{ matrix.service }}.json
+            target/service-readiness/${{ matrix.service }}.log

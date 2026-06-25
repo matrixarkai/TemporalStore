@@ -1,0 +1,497 @@
+{
+  "schema_version": 1,
+  "name": "temporalstore-storage-migration-corpus",
+  "source_format": "cpp_exported_logical_artifacts_v1",
+  "format_compatibility": "migration_only_rust_native_pages",
+  "description": "Golden storage corpus for proving C++ logical object/page/slot/index/oplog exports can be converted into Rust-native storage pages, recovered, dumped, replayed through shared-store, and replicated through Raft.",
+  "cases": [
+    {
+      "name": "cpp_logical_storage_models_packed_timestamped_pages",
+      "shard_id": 11,
+      "operations": [
+        {
+          "name": "string_set",
+          "storage_mutation": true,
+          "command": {
+            "kind": "string_set",
+            "key": "storage:string",
+            "value": [115, 49]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "hash_set",
+          "storage_mutation": true,
+          "command": {
+            "kind": "hash_multi_set",
+            "key": "storage:hash",
+            "entries": [
+              ["field_a", [104, 97]],
+              ["field_b", [104, 98]]
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_add_a",
+          "storage_mutation": true,
+          "command": {
+            "kind": "set_add",
+            "key": "storage:set",
+            "member": [109, 97]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "set_add_b",
+          "storage_mutation": true,
+          "command": {
+            "kind": "set_add",
+            "key": "storage:set",
+            "member": [109, 98]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_append_packed_page",
+          "storage_mutation": true,
+          "command": {
+            "kind": "feature_append",
+            "key": "storage:feature",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "sequence_add_packed_page",
+          "storage_mutation": true,
+          "command": {
+            "kind": "sequence_add",
+            "key": "storage:sequence",
+            "rows": [
+              {
+                "timestamp_ms": 2000,
+                "gid": 21,
+                "action_type": 1,
+                "duration": 8,
+                "author_id": 301
+              },
+              {
+                "timestamp_ms": 2010,
+                "gid": 22,
+                "action_type": 2,
+                "duration": 13,
+                "author_id": 302
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "ips_add_with_metadata_a",
+          "storage_mutation": true,
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "storage:ips",
+            "timestamp_ms": 3000,
+            "instance": [105, 112, 115, 97],
+            "action_type": 7,
+            "table_id": 42,
+            "request_id": "storage-req-a"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "ips_add_with_metadata_b",
+          "storage_mutation": true,
+          "command": {
+            "kind": "ips_add_with_options",
+            "key": "storage:ips",
+            "timestamp_ms": 3010,
+            "instance": [105, 112, 115, 98],
+            "action_type": 8,
+            "table_id": 42,
+            "request_id": "storage-req-b"
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "risk_increment",
+          "storage_mutation": true,
+          "command": {
+            "kind": "risk_increment",
+            "key": "storage:risk",
+            "timestamp_ms": 4000,
+            "amount": 4
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_change_add",
+          "storage_mutation": true,
+          "command": {
+            "kind": "risk_change_add",
+            "key": "storage:risk-change",
+            "timestamp_ms": 4010,
+            "value": [114, 99, 49]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "risk_fol_set",
+          "storage_mutation": true,
+          "command": {
+            "kind": "risk_fol_set",
+            "key": "storage:risk-fol",
+            "value": [102, 111, 108],
+            "occur_time_ms": 4020,
+            "ttl_ms": 60000,
+            "fol_type": "last"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "context_upsert_node",
+          "storage_mutation": true,
+          "command": {
+            "kind": "context_upsert_node",
+            "tenant_hash": 77,
+            "node": {
+              "node_hash": 700,
+              "parent_hash": 0,
+              "kind": 2,
+              "canonical_name": "storage-node",
+              "l0": "root",
+              "status": 1,
+              "last_event_time_ms": 5000,
+              "summary_dirty": true,
+              "l1_ref": "storage-l1",
+              "raw_metadata_ref": "storage-raw"
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:node:77:700"
+          }
+        },
+        {
+          "name": "context_write_event",
+          "storage_mutation": true,
+          "command": {
+            "kind": "context_write_event",
+            "tenant_hash": 77,
+            "node_hash": 700,
+            "event": {
+              "event_id_hash": 900,
+              "event_time_ms": 5100,
+              "kind": 3,
+              "type": 4,
+              "actor_hash": 1234,
+              "status": 1,
+              "valid_until_ms": 6100,
+              "confidence": 0.75,
+              "importance": 0.5,
+              "text": "storage event",
+              "source_ref": "corpus",
+              "related_node_hashes": [700],
+              "compact_attrs": [1, 2, 3]
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:event:77:700"
+          }
+        },
+        {
+          "name": "context_write_index_ref",
+          "storage_mutation": true,
+          "command": {
+            "kind": "context_write_index_ref",
+            "tenant_hash": 77,
+            "index_name": "by_actor",
+            "index_value_hash": 1234,
+            "scope_hash": 0,
+            "event_time_ms": 5100,
+            "index_ref": {
+              "primary_node_hash": 700,
+              "primary_event_time_ms": 5100,
+              "event_id_hash": 900
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:77:by_actor:1234:0"
+          }
+        },
+        {
+          "name": "context_write_pack_audit",
+          "storage_mutation": true,
+          "command": {
+            "kind": "context_write_pack_audit",
+            "tenant_hash": 77,
+            "audit": {
+              "query_id": "q-storage",
+              "session_hash": 91,
+              "request_time_ms": 5200,
+              "query_hash": 92,
+              "max_prompt_tokens": 100,
+              "selected_tokens": 50,
+              "selected_refs": [
+                {
+                  "node_hash": 700,
+                  "event_time_ms": 5100,
+                  "reason": "selected"
+                }
+              ],
+              "blocked_refs": []
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:audit:77:91"
+          }
+        },
+        {
+          "name": "context_mark_summary_dirty",
+          "storage_mutation": true,
+          "command": {
+            "kind": "context_mark_summary_dirty",
+            "tenant_hash": 77,
+            "marker": {
+              "node_hash": 700,
+              "event_time_ms": 5300,
+              "reason": 5,
+              "propagate_depth": 2
+            }
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctx:dirty:77:700"
+          }
+        }
+      ],
+      "expected_reads": [
+        {
+          "name": "read_string",
+          "command": {
+            "kind": "string_get",
+            "key": "storage:string"
+          },
+          "expect": {
+            "kind": "bytes",
+            "value": [115, 49]
+          }
+        },
+        {
+          "name": "read_hash",
+          "command": {
+            "kind": "hash_multi_get",
+            "key": "storage:hash",
+            "fields": ["field_a", "field_missing", "field_b"]
+          },
+          "expect": {
+            "kind": "values",
+            "values": [[104, 97], null, [104, 98]]
+          }
+        },
+        {
+          "name": "read_set",
+          "command": {
+            "kind": "set_members",
+            "key": "storage:set"
+          },
+          "expect": {
+            "kind": "members",
+            "members": [[109, 97], [109, 98]]
+          }
+        },
+        {
+          "name": "read_feature",
+          "command": {
+            "kind": "feature_query",
+            "key": "storage:feature",
+            "start_ms": 1000,
+            "end_ms": 1020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [102, 49]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [102, 50]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [102, 51]
+              }
+            ]
+          }
+        },
+        {
+          "name": "read_sequence",
+          "command": {
+            "kind": "sequence_query",
+            "key": "storage:sequence",
+            "start_ms": 1990,
+            "end_ms": 2020,
+            "count": 10,
+            "filters": []
+          },
+          "expect": {
+            "kind": "sequence_rows",
+            "rows": [
+              {
+                "timestamp_ms": 2000,
+                "gid": 21,
+                "action_type": 1,
+                "duration": 8,
+                "author_id": 301
+              },
+              {
+                "timestamp_ms": 2010,
+                "gid": 22,
+                "action_type": 2,
+                "duration": 13,
+                "author_id": 302
+              }
+            ]
+          }
+        },
+        {
+          "name": "read_ips",
+          "command": {
+            "kind": "ips_query_range",
+            "key": "storage:ips",
+            "start_ms": 2990,
+            "end_ms": 3020,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 3000,
+                "value": [105, 112, 115, 97]
+              },
+              {
+                "timestamp_ms": 3010,
+                "value": [105, 112, 115, 98]
+              }
+            ]
+          }
+        },
+        {
+          "name": "read_risk_count",
+          "command": {
+            "kind": "risk_count",
+            "key": "storage:risk",
+            "start_ms": 3990,
+            "end_ms": 4010
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 4
+          }
+        },
+        {
+          "name": "read_context_node",
+          "command": {
+            "kind": "context_get_node",
+            "tenant_hash": 77,
+            "node_hash": 700
+          },
+          "expect": {
+            "kind": "context_node",
+            "object_key": "ctx:node:77:700",
+            "node": {
+              "node_hash": 700,
+              "parent_hash": 0,
+              "kind": 2,
+              "canonical_name": "storage-node",
+              "l0": "root",
+              "status": 1,
+              "last_event_time_ms": 5000,
+              "summary_dirty": true,
+              "l1_ref": "storage-l1",
+              "raw_metadata_ref": "storage-raw"
+            }
+          }
+        },
+        {
+          "name": "read_context_event",
+          "command": {
+            "kind": "context_query_events",
+            "tenant_hash": 77,
+            "node_hash": 700,
+            "start_time_ms": 5000,
+            "end_time_ms": 5200,
+            "limit": null
+          },
+          "expect": {
+            "kind": "context_events",
+            "object_key": "ctx:event:77:700",
+            "events": [
+              {
+                "event_id_hash": 900,
+                "event_time_ms": 5100,
+                "kind": 3,
+                "type": 4,
+                "actor_hash": 1234,
+                "status": 1,
+                "valid_until_ms": 6100,
+                "confidence": 0.75,
+                "importance": 0.5,
+                "text": "storage event",
+                "source_ref": "corpus",
+                "related_node_hashes": [700],
+                "compact_attrs": [1, 2, 3]
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

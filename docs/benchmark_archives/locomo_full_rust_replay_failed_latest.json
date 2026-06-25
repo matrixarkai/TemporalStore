@@ -1,0 +1,13 @@
+{
+  "batch_count": 10,
+  "batch_path": "/tmp/temporalstore-rust-context-locomo10-3660048.batch-0001.jsonl",
+  "batch_size": 8,
+  "completed_batches": [],
+  "failed_batch_index": 1,
+  "failure": "rust_temporalstore_batch_timeout",
+  "rust_temporalstore_backend_ready": false,
+  "rust_temporalstore_full_replay_ready": false,
+  "stderr_tail": "    Finished release [optimized] target(s) in 0.38s\n     Running `/tmp/temporalstore-context-benchmark-target/release/context_workflow_harness`\n",
+  "stdout_tail": "",
+  "timeout_seconds": 120.0
+}

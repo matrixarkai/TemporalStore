@@ -1,0 +1,68 @@
+{
+  "claim_level": "deterministic_full_rust_temporalstore_replay",
+  "dataset": "LongMemEval_s",
+  "dataset_counts": {
+    "case_count": 500,
+    "conversation_count": 500,
+    "source_count": 10960
+  },
+  "notes": [
+    "This is the successful full 500-case LongMemEval_s Rust TemporalStore replay after deterministic reader changes.",
+    "Source packing is disabled for LongMemEval_s in this evidence run because native per-session sources preserve exact per-query output and case/rank parity.",
+    "Packed-source LongMemEval_s attempts failed closed on case-count parity and were not accepted as production benchmark evidence.",
+    "This remains deterministic engineering evidence until a live OpenViking/C++ compatible OSS reader endpoint is configured and archived."
+  ],
+  "paper_comparable_blockers": [
+    "live OSS reader endpoint was not configured for this run",
+    "reader_mode is deterministic, not the OpenViking/C++ live model profile"
+  ],
+  "paper_comparable_claim_ready": false,
+  "quality": {
+    "answer_term_coverage": 0.6398996235884568,
+    "benchmark_hit_at_k": 1.0,
+    "benchmark_retrieval_p95_ms": 28.978386276867248,
+    "benchmark_threshold_passed": true,
+    "benchmark_token_reduction_percent": 81.40165238606907,
+    "reader_answer_coverage": 0.8695106649937264,
+    "reader_hit_rate": 0.974
+  },
+  "run": {
+    "batch_count": 0,
+    "elapsed_ms": 1207170.2344110236,
+    "input": "/tmp/longmemeval_s.json",
+    "misses_path": "/tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_misses.jsonl",
+    "reader_mode": "deterministic",
+    "report_path": "/tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_result.json",
+    "rust_temporalstore_report_path": "/tmp/ts_longmemeval_full_replay_rerun3/longmemeval_s_full_rust_replay_result.rust_temporalstore.json",
+    "source_packing": {
+      "enabled": false,
+      "pack_size": 0
+    },
+    "threshold_profile": "longmemeval_full"
+  },
+  "rust_temporalstore_evidence": {
+    "all_pipelines_use_rust_temporalstore": true,
+    "case_count_on_par": true,
+    "extra_in_rust_count": 0,
+    "hit_at_k_delta": 0.0,
+    "hit_delta_count": 0,
+    "mean_reciprocal_rank_delta": 0.0,
+    "missing_in_rust_count": 0,
+    "on_par": true,
+    "python_case_count": 500,
+    "python_hit_at_k": 1.0,
+    "python_mean_reciprocal_rank": 1.0,
+    "python_only_diagnostic": false,
+    "python_zero_hit_queries": 0,
+    "rank_delta_count": 0,
+    "rank_parity_enforced": true,
+    "rust_case_count": 500,
+    "rust_hit_at_k": 1.0,
+    "rust_mean_reciprocal_rank": 1.0,
+    "rust_temporalstore_backend_ready": true,
+    "rust_temporalstore_full_replay_ready": true,
+    "rust_zero_hit_queries": 0,
+    "zero_hit_queries_on_par": true
+  },
+  "schema": "matrixark_vikingmem_context_benchmark_archive_summary_v1"
+}

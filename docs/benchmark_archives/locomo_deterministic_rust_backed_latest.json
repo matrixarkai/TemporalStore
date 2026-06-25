@@ -1,0 +1,292 @@
+{
+  "archive_required_fields_ready": true,
+  "category_breakdown": {
+    "category_1": {
+      "answer_term_coverage": 0.5179640718562875,
+      "case_count": 282,
+      "deterministic_reader_answer_coverage": 0.8502994011976048,
+      "deterministic_reader_hit_rate": 0.8617021276595744,
+      "hit_rate": 0.9432624113475178,
+      "mean_reciprocal_rank": 0.36559213999146833,
+      "reader_answer_coverage": 0.8502994011976048,
+      "reader_hit_rate": 0.8617021276595744,
+      "zero_hit_queries": 16
+    },
+    "category_2": {
+      "answer_term_coverage": 0.8390804597701149,
+      "case_count": 321,
+      "deterministic_reader_answer_coverage": 0.8563218390804598,
+      "deterministic_reader_hit_rate": 0.8442367601246106,
+      "hit_rate": 0.9719626168224299,
+      "mean_reciprocal_rank": 0.6670290310436819,
+      "reader_answer_coverage": 0.8563218390804598,
+      "reader_hit_rate": 0.8442367601246106,
+      "zero_hit_queries": 9
+    },
+    "category_3": {
+      "answer_term_coverage": 0.4108527131782946,
+      "case_count": 96,
+      "deterministic_reader_answer_coverage": 0.7054263565891473,
+      "deterministic_reader_hit_rate": 0.7083333333333334,
+      "hit_rate": 0.9583333333333334,
+      "mean_reciprocal_rank": 0.3195540401894169,
+      "reader_answer_coverage": 0.7054263565891473,
+      "reader_hit_rate": 0.7083333333333334,
+      "zero_hit_queries": 4
+    },
+    "category_4": {
+      "answer_term_coverage": 0.8821510297482837,
+      "case_count": 841,
+      "deterministic_reader_answer_coverage": 0.9118993135011442,
+      "deterministic_reader_hit_rate": 0.9143876337693222,
+      "hit_rate": 0.9488703923900119,
+      "mean_reciprocal_rank": 0.5614114147243319,
+      "reader_answer_coverage": 0.9118993135011442,
+      "reader_hit_rate": 0.9143876337693222,
+      "zero_hit_queries": 43
+    },
+    "category_5": {
+      "answer_term_coverage": 1.0,
+      "case_count": 2,
+      "deterministic_reader_answer_coverage": 1.0,
+      "deterministic_reader_hit_rate": 1.0,
+      "hit_rate": 1.0,
+      "mean_reciprocal_rank": 0.5333333333333333,
+      "reader_answer_coverage": 1.0,
+      "reader_hit_rate": 1.0,
+      "zero_hit_queries": 0
+    }
+  },
+  "claim_level": "paper_comparable_report_fields",
+  "created_at_unix": 1782020651,
+  "dataset": {
+    "bytes": 2805274,
+    "case_count": 1542,
+    "conversation_count": 10,
+    "input": "/tmp/locomo10.json",
+    "name": "locomo",
+    "record_counts": {
+      "locomo": 10
+    },
+    "sha256": "79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4",
+    "source_count": 9363
+  },
+  "metrics": {
+    "answer_term_coverage": 0.7652637818612922,
+    "avg_retrieved_blocks_per_query": 127.86575875486382,
+    "avg_retrieved_tokens_per_query": 5292.215953307393,
+    "avg_source_tokens_per_query": 33044.17120622568,
+    "evidence_ref_coverage": 0.7399236317352567,
+    "hit_at_k": 0.953307392996109,
+    "mean_reciprocal_rank": 0.5324929680613693,
+    "reader_answer_coverage": 0.8725548310610551,
+    "reader_hit_rate": 0.877431906614786,
+    "reader_p50_ms": 3.4424259793013334,
+    "reader_p95_ms": 11.729911959264427,
+    "recall_at_k": 0.953307392996109,
+    "retrieval_p50_ms": 9.980443923268467,
+    "retrieval_p95_ms": 18.801711860578507,
+    "token_reduction_percent": 83.98441915737831
+  },
+  "model": {
+    "provider_name": "matrixark-cpp-oss-context",
+    "reader_error_count": 0,
+    "reader_fallback_count": 0,
+    "reader_mode_effective": "deterministic",
+    "reader_mode_requested": "deterministic",
+    "reader_model": "google/flan-t5-small",
+    "reader_open_source_calls": 0
+  },
+  "paper_name": "VikingMem/OpenViking long-memory benchmark",
+  "prompt": {
+    "max_context_chars": 12000,
+    "system": "You are an extractive long-memory benchmark reader. Answer only from the supplied context. Prefer short spans, names, dates, yes/no, or comma-separated lists. If the context is insufficient, say not enough context.",
+    "user_template": "Question: {question}\n\nContext:\n{context}\n\nAnswer:"
+  },
+  "quality_gate": {
+    "gold_evidence_window_used": false,
+    "paper_comparable_claim_ready": false,
+    "passed": true,
+    "quality_ready": true,
+    "violation_count": 0,
+    "violations": []
+  },
+  "report_contract_format": "matrixark_vikingmem_context_benchmark_report_v1",
+  "report_path": "/tmp/ts_contract_locomo_4_result.json",
+  "rust_temporalstore_backend": {
+    "case_count": 4,
+    "converted_jsonl": "/tmp/ts_contract_locomo_4.jsonl",
+    "full_replay_ready": false,
+    "full_replay_required": false,
+    "ready": true,
+    "report_path": "/tmp/ts_contract_locomo_4_harness.json",
+    "required": true,
+    "score_parity": {
+      "absolute_delta": 0.0,
+      "case_count_on_par": true,
+      "effective_tolerance": 1e-06,
+      "hit_at_k_delta": 0.0,
+      "mean_reciprocal_rank_delta": 1.888888889745033e-08,
+      "on_par": true,
+      "per_query_delta": {
+        "extra_in_rust": [],
+        "extra_in_rust_count": 0,
+        "hit_delta_count": 0,
+        "hit_deltas": [],
+        "missing_in_rust": [],
+        "missing_in_rust_count": 0,
+        "on_par": true,
+        "python_query_count": 4,
+        "python_zero_hit_query_ids": [
+          "conv_26-q2"
+        ],
+        "rank_delta_count": 0,
+        "rank_deltas": [],
+        "retrieval_latency_delta_p50_ms": 1185.0344495400786,
+        "retrieval_latency_delta_p95_ms": 1380.5680548239966,
+        "rust_query_count": 4,
+        "rust_zero_hit_query_ids": [
+          "conv_26-q2"
+        ],
+        "selected_source_id_delta_count": 4,
+        "selected_source_id_deltas": [
+          {
+            "python_selected_source_ids": [
+              "conv 26 session 1 summary",
+              "conv 26 session 1 turn 3",
+              "conv 26 session 1 observation caroline 1",
+              "conv 26 session 1 event caroline 1",
+              "conv 26 session 4 turn 15",
+              "conv 26 session 10 turn 3",
+              "conv 26 session 10 turn 5",
+              "conv 26 session 10 observation caroline 2",
+              "conv 26 session 12 turn 1",
+              "conv 26 session 13 summary"
+            ],
+            "query_id": "conv_26-q1",
+            "rust_selected_source_ids": [
+              "conv 26 session 1 summary",
+              "tsctx tenant 15584093007367930313 node 545356763418759685 source conv 26 session 1 summary",
+              "tsctx tenant 15584093007367930313 node 545356763418759685 source conv 26 session 1 summary",
+              "conv 26 session 1 turn 3",
+              "tsctx tenant 15584093007367930313 node 5046943801630492136 source conv 26 session 1 turn 3",
+              "tsctx tenant 15584093007367930313 node 5046943801630492136 source conv 26 session 1 turn 3",
+              "conv 26 session 1 observation caroline 1",
+              "tsctx tenant 15584093007367930313 node 14192180482225560174 source conv 26 session 1 observation caroline 1",
+              "tsctx tenant 15584093007367930313 node 14192180482225560174 source conv 26 session 1 observation caroline 1",
+              "conv 26 session 1 event caroline 1"
+            ],
+            "shared_selected_source_id_count": 16
+          },
+          {
+            "python_selected_source_ids": [
+              "conv 26 session 1 turn 14",
+              "conv 26 session 1 summary",
+              "conv 26 session 1 observation melanie 2",
+              "conv 26 session 4 turn 5",
+              "conv 26 session 4 summary",
+              "conv 26 session 8 summary",
+              "conv 26 session 9 turn 16",
+              "conv 26 session 9 summary",
+              "conv 26 session 13 turn 10",
+              "conv 26 session 14 turn 6"
+            ],
+            "query_id": "conv_26-q2",
+            "rust_selected_source_ids": [
+              "conv 26 session 1 turn 14",
+              "tsctx tenant 14698296731650272606 node 12275566532878819781 source conv 26 session 1 turn 14",
+              "tsctx tenant 14698296731650272606 node 12275566532878819781 source conv 26 session 1 turn 14",
+              "conv 26 session 1 summary",
+              "tsctx tenant 14698296731650272606 node 1982230066106527718 source conv 26 session 1 summary",
+              "tsctx tenant 14698296731650272606 node 1982230066106527718 source conv 26 session 1 summary",
+              "conv 26 session 1 observation melanie 2",
+              "tsctx tenant 14698296731650272606 node 2203390370573980130 source conv 26 session 1 observation melanie 2",
+              "tsctx tenant 14698296731650272606 node 2203390370573980130 source conv 26 session 1 observation melanie 2",
+              "conv 26 session 4 turn 5"
+            ],
+            "shared_selected_source_id_count": 16
+          },
+          {
+            "python_selected_source_ids": [
+              "conv 26 session 7 turn 8",
+              "conv 26 session 2 turn 9",
+              "conv 26 session 2 turn 14",
+              "conv 26 session 3 turn 3",
+              "conv 26 session 3 turn 4",
+              "conv 26 session 3 turn 6",
+              "conv 26 session 3 turn 8",
+              "conv 26 session 3 turn 10",
+              "conv 26 session 4 turn 14",
+              "conv 26 session 4 summary"
+            ],
+            "query_id": "conv_26-q3",
+            "rust_selected_source_ids": [
+              "conv 26 session 7 turn 8",
+              "tsctx tenant 18034504851503084052 node 7404901937097010222 source conv 26 session 7 turn 8",
+              "tsctx tenant 18034504851503084052 node 7404901937097010222 source conv 26 session 7 turn 8",
+              "conv 26 session 2 turn 9",
+              "tsctx tenant 18034504851503084052 node 3419532541231864248 source conv 26 session 2 turn 9",
+              "tsctx tenant 18034504851503084052 node 3419532541231864248 source conv 26 session 2 turn 9",
+              "conv 26 session 2 turn 14",
+              "tsctx tenant 18034504851503084052 node 12008904507716470268 source conv 26 session 2 turn 14",
+              "tsctx tenant 18034504851503084052 node 12008904507716470268 source conv 26 session 2 turn 14",
+              "conv 26 session 3 turn 3"
+            ],
+            "shared_selected_source_id_count": 16
+          },
+          {
+            "python_selected_source_ids": [
+              "conv 26 session 1 turn 17",
+              "conv 26 session 1 summary",
+              "conv 26 session 17 turn 7",
+              "conv 26 session 17 turn 8",
+              "conv 26 session 17 summary",
+              "conv 26 session 17 observation caroline 3",
+              "conv 26 session 1 turn 1",
+              "conv 26 session 1 turn 2",
+              "conv 26 session 1 turn 3",
+              "conv 26 session 1 turn 4"
+            ],
+            "query_id": "conv_26-q4",
+            "rust_selected_source_ids": [
+              "conv 26 session 1 turn 17",
+              "tsctx tenant 1070996699566613119 node 4059615996616118396 source conv 26 session 1 turn 17",
+              "tsctx tenant 1070996699566613119 node 4059615996616118396 source conv 26 session 1 turn 17",
+              "conv 26 session 1 summary",
+              "tsctx tenant 1070996699566613119 node 5571639224969684502 source conv 26 session 1 summary",
+              "tsctx tenant 1070996699566613119 node 5571639224969684502 source conv 26 session 1 summary",
+              "conv 26 session 17 turn 7",
+              "tsctx tenant 1070996699566613119 node 16055499698114925816 source conv 26 session 17 turn 7",
+              "tsctx tenant 1070996699566613119 node 16055499698114925816 source conv 26 session 17 turn 7",
+              "conv 26 session 17 turn 8"
+            ],
+            "shared_selected_source_id_count": 16
+          }
+        ],
+        "zero_hit_query_ids_match": true
+      },
+      "python_case_count": 4,
+      "python_hit_at_k": 0.75,
+      "python_mean_reciprocal_rank": 0.3611111111111111,
+      "python_zero_hit_queries": 1,
+      "rust_case_count": 4,
+      "rust_hit_at_k": 0.75,
+      "rust_mean_reciprocal_rank": 0.36111113,
+      "rust_zero_hit_queries": 1,
+      "tolerance": 0.0,
+      "zero_hit_queries_on_par": true
+    },
+    "strict_external_ready": false
+  },
+  "schema": "matrixark_vikingmem_paper_comparable_report_v1",
+  "source_report": "/tmp/ts_contract_locomo_4_result.json",
+  "thresholds": {
+    "max_reader_p95_ms": 50.0,
+    "max_retrieval_p95_ms": 250.0,
+    "min_case_count": 1542,
+    "min_hit_at_k": 0.94,
+    "min_reader_hit_rate": 0.58,
+    "min_token_reduction_percent": 80.0,
+    "require_open_source_reader": false
+  }
+}

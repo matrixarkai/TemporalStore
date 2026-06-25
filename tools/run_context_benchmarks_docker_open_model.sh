@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COMPOSE_FILE="${ROOT}/docker-compose.context-benchmarks.yml"
+MODEL="${TEMPORALSTORE_READER_MODEL:-qwen2.5:0.5b}"
+READER_IMAGE="${TEMPORALSTORE_READER_IMAGE:-ollama/ollama:0.3.14}"
+REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY="${TEMPORALSTORE_REQUIRE_FULL_RUST_REPLAY:-0}"
+RUST_TEMPORALSTORE_BATCH_SIZE="${TEMPORALSTORE_RUST_BACKEND_BATCH_SIZE:-0}"
+RUST_TEMPORALSTORE_RELEASE="${TEMPORALSTORE_RUST_BACKEND_RELEASE:-0}"
+INPUT_DIR="${TEMPORALSTORE_BENCHMARK_INPUT_DIR:-/tmp}"
+REPORT_DIR="${TEMPORALSTORE_BENCHMARK_REPORT_DIR:-${ROOT}/benchmark_reports}"
+READER_BASE_URL="http://open-reader:11434/v1"
+LOC_DEFAULT="/bench-input/locomo10.json"
+LONGMEM_DEFAULT="/bench-input/longmemeval_s.json"
+LOC_INPUT="${TEMPORALSTORE_LOCOMO_INPUT:-${LOC_DEFAULT}}"
+LONGMEM_INPUT="${TEMPORALSTORE_LONGMEMEVAL_INPUT:-${LONGMEM_DEFAULT}}"
+TIMESTAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+ARCHIVE_DIR="${REPORT_DIR}/open_model_${TIMESTAMP}"
+
+mkdir -p "${ARCHIVE_DIR}"
+
+write_manifest() {
+  local locomo_status="$1"
+  local longmem_status="$2"
+  local phase="${3:-complete}"
+  local error="${4:-}"
+  cat >"${ARCHIVE_DIR}/manifest.json" <<JSON
+{
+  "archive_dir": "${ARCHIVE_DIR}",
+  "reader_base_url": "${READER_BASE_URL}",
+  "reader_image": "${READER_IMAGE}",
+  "reader_model": "${MODEL}",
+  "require_full_rust_temporalstore_replay": "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}",
+  "rust_temporalstore_batch_size": "${RUST_TEMPORALSTORE_BATCH_SIZE}",
+  "rust_temporalstore_release": "${RUST_TEMPORALSTORE_RELEASE}",
+  "locomo_input": "${LOC_INPUT}",
+  "longmemeval_input": "${LONGMEM_INPUT}",
+  "locomo_status": "${locomo_status}",
+  "longmemeval_status": "${longmem_status}",
+  "phase": "${phase}",
+  "error": "${error}",
+  "created_at_utc": "${TIMESTAMP}"
+}
+JSON
+}
+
+if docker compose version >/dev/null 2>&1; then
+  COMPOSE=(docker compose -f "${COMPOSE_FILE}")
+elif command -v docker-compose >/dev/null 2>&1; then
+  COMPOSE=(docker-compose -f "${COMPOSE_FILE}")
+else
+  echo "docker compose or docker-compose is required" >&2
+  exit 2
+fi
+
+export TEMPORALSTORE_READER_IMAGE="${READER_IMAGE}"
+export TEMPORALSTORE_READER_MODEL="${MODEL}"
+export TEMPORALSTORE_BENCHMARK_INPUT_DIR="${INPUT_DIR}"
+export TEMPORALSTORE_BENCHMARK_REPORT_DIR="${REPORT_DIR}"
+
+if ! "${COMPOSE[@]}" up -d open-reader >"${ARCHIVE_DIR}/docker_start.log" 2>&1; then
+  write_manifest "not_run" "not_run" "docker_start_failed" "see docker_start.log"
+  cat "${ARCHIVE_DIR}/docker_start.log" >&2
+  exit 2
+fi
+if ! "${COMPOSE[@]}" exec -T open-reader ollama pull "${MODEL}" >"${ARCHIVE_DIR}/model_pull.log" 2>&1; then
+  write_manifest "not_run" "not_run" "model_pull_failed" "see model_pull.log"
+  cat "${ARCHIVE_DIR}/model_pull.log" >&2
+  exit 2
+fi
+
+run_runner() {
+  "${COMPOSE[@]}" run --rm benchmark-runner "$@"
+}
+
+locomo_status="skipped_missing_input"
+longmem_status="skipped_missing_input"
+
+if run_runner test -f "${LOC_INPUT}"; then
+  run_runner \
+    python3 tools/run_locomo_90_hit_rate.py \
+      --threshold-profile oss_reader_full \
+      --input "${LOC_INPUT}" \
+      --reader-mode open-source \
+      --reader-base-url "${READER_BASE_URL}" \
+      --reader-provider-name matrixark-cpp-oss-context \
+      --reader-model "${MODEL}" \
+      --reader-no-fallback \
+      --rust-temporalstore-batch-size "${RUST_TEMPORALSTORE_BATCH_SIZE}" \
+      $(if [[ "${RUST_TEMPORALSTORE_RELEASE}" == "1" || "${RUST_TEMPORALSTORE_RELEASE}" == "true" || "${RUST_TEMPORALSTORE_RELEASE}" == "TRUE" ]]; then printf '%s' '--rust-temporalstore-release'; fi) \
+      $(if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then printf '%s' '--require-full-rust-temporalstore-replay'; fi) \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_report.json \
+      --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_misses.jsonl
+  run_runner \
+    python3 tools/archive_context_benchmark_report.py \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_report.json \
+      --input "${LOC_INPUT}" \
+      --output /bench-output/"$(basename "${ARCHIVE_DIR}")"/locomo_paper_comparable_report.json \
+      --claim-level live_oss_reader_paper_comparable
+  locomo_status="passed"
+else
+  echo "Skipping LOCOMO: ${LOC_INPUT} is not present in benchmark-runner."
+fi
+
+if run_runner test -f "${LONGMEM_INPUT}"; then
+  run_runner \
+    python3 tools/run_longmemeval_s_full_path.py \
+      --threshold-profile longmemeval_full \
+      --input "${LONGMEM_INPUT}" \
+      --reader-mode open-source \
+      --reader-base-url "${READER_BASE_URL}" \
+      --reader-provider-name matrixark-cpp-oss-context \
+      --reader-model "${MODEL}" \
+      --reader-no-fallback \
+      --require-open-source-reader \
+      --rust-temporalstore-batch-size "${RUST_TEMPORALSTORE_BATCH_SIZE}" \
+      $(if [[ "${RUST_TEMPORALSTORE_RELEASE}" == "1" || "${RUST_TEMPORALSTORE_RELEASE}" == "true" || "${RUST_TEMPORALSTORE_RELEASE}" == "TRUE" ]]; then printf '%s' '--rust-temporalstore-release'; fi) \
+      $(if [[ "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "1" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "true" || "${REQUIRE_FULL_RUST_TEMPORALSTORE_REPLAY}" == "TRUE" ]]; then printf '%s' '--require-full-rust-temporalstore-replay'; fi) \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_report.json \
+      --misses /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_misses.jsonl
+  run_runner \
+    python3 tools/archive_context_benchmark_report.py \
+      --report /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_report.json \
+      --input "${LONGMEM_INPUT}" \
+      --output /bench-output/"$(basename "${ARCHIVE_DIR}")"/longmemeval_s_paper_comparable_report.json \
+      --claim-level live_oss_reader_paper_comparable
+  longmem_status="passed"
+else
+  echo "Skipping LongMemEval_s: ${LONGMEM_INPUT} is not present in benchmark-runner."
+fi
+
+write_manifest "${locomo_status}" "${longmem_status}"
+echo "Archived benchmark output under ${ARCHIVE_DIR}"

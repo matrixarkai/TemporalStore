@@ -1,0 +1,61 @@
+{
+  "acceptance_for_future_paper_comparable_claim": [
+    "real LOCOMO and LongMemEval_s artifacts mounted",
+    "live OpenViking/C++ compatible OSS reader endpoint completes /v1/chat/completions",
+    "reader_open_source_calls > 0 with no deterministic fallback",
+    "all_pipelines_use_rust_temporalstore=true",
+    "rust_temporalstore_full_replay_ready=true",
+    "threshold profiles pass and paper_comparable_claim_ready=true"
+  ],
+  "claim_level": "deterministic_full_rust_replay_ready_live_oss_reader_blocked",
+  "datasets": {
+    "locomo": {
+      "all_pipelines_use_rust_temporalstore": true,
+      "archive": "docs/benchmark_archives/locomo_full_rust_replay_latest.json",
+      "case_count": 1542,
+      "hit_at_k": 0.953307392996109,
+      "input": "/tmp/locomo10.json",
+      "python_only_diagnostic": false,
+      "reader_hit_rate": 0.8839169909208819,
+      "retrieval_p95_ms": 46.16009804303758,
+      "rust_temporalstore_full_replay_ready": true,
+      "source_packing": {
+        "case_count": 1542,
+        "enabled": true,
+        "max_original_sources_per_case": 1113,
+        "max_packed_sources_per_case": 35,
+        "original_source_count": 1475584,
+        "pack_size": 32,
+        "packed_source_count": 46782,
+        "preserves_all_source_text": true,
+        "source_count_reduction": 1428802
+      },
+      "token_reduction_percent": 83.98441915737831
+    },
+    "longmemeval_s": {
+      "all_pipelines_use_rust_temporalstore": true,
+      "archive": "docs/benchmark_archives/longmemeval_s_full_rust_replay_latest.json",
+      "case_count": 500,
+      "hit_at_k": 1.0,
+      "input": "/tmp/longmemeval_s.json",
+      "python_only_diagnostic": false,
+      "reader_hit_rate": 0.974,
+      "retrieval_p95_ms": 28.978386276867248,
+      "rust_temporalstore_full_replay_ready": true,
+      "source_count": 10960,
+      "token_reduction_percent": 81.40165238606907
+    }
+  },
+  "live_oss_reader": {
+    "archive": "docs/benchmark_archives/oss_reader_required_failed_latest.json",
+    "phase": "chat_completion_timeout",
+    "reader_model": "google/flan-t5-small",
+    "reader_open_source_calls": 0,
+    "reader_probe_ok": true,
+    "reader_provider_name": "matrixark-cpp-oss-context"
+  },
+  "paper_comparable_claim_ready": false,
+  "paper_comparable_status": "blocked_closed",
+  "schema": "matrixark_vikingmem_comparable_status_v1",
+  "summary": "Rust TemporalStore-backed deterministic full-dataset gates pass for LOCOMO and LongMemEval_s, but VikingMem/OpenViking paper-comparable status is blocked until a live OSS reader completes real model calls with reader_open_source_calls > 0."
+}
