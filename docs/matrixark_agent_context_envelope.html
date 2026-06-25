@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk Agent Context Envelope</title>
+  <style>
+    body { margin: 0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #fff; line-height: 1.55; }
+    header { padding: 38px 44px 28px; background: #f4f8fb; border-bottom: 1px solid #d8dee9; }
+    main { max-width: 1100px; margin: 0 auto; padding: 30px 28px 72px; }
+    h1 { margin: 0; font-size: 34px; letter-spacing: 0; }
+    h2 { margin-top: 34px; border-bottom: 1px solid #d8dee9; padding-bottom: 8px; font-size: 24px; }
+    h3 { margin-top: 24px; font-size: 18px; }
+    table { width: 100%; border-collapse: collapse; margin: 16px 0 22px; }
+    th, td { border: 1px solid #d8dee9; padding: 9px 10px; text-align: left; vertical-align: top; }
+    th { background: #eef2f6; }
+    pre { background: #111827; color: #f9fafb; border-radius: 8px; padding: 16px; overflow: auto; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    p code, li code { background: #f6f8fb; border: 1px solid #d8dee9; border-radius: 5px; padding: 1px 5px; }
+  </style>
+</head>
+<body>
+<header><h1>MatrixArk Agent Context Envelope</h1><p>What Codex, Claude, Cursor, and other agents can send, and how MatrixArk resolves identity and access safely.</p></header>
+<main>
+<p>﻿# MatrixArk Agent Context Envelope</p>
+<p>Date: 2026-06-25</p>
+<h2>Product Rule</h2>
+<p>Agents should send as much useful context as they already know, but they should not be trusted as the final authority for identity or access. MatrixArk accepts the agent-provided envelope as hints and evidence, then resolves and enforces the final `account_id`, `tenant_id`, `user_id`, `session_id`, API key scopes, roles, SSO mapping, audit, and per-user/session isolation on the server side.</p>
+<p>This is the safe model for Codex, Claude, Cursor, and other AI agents:</p>
+<pre><code class="language-text">
+agent sends what it knows
+-&gt; MatrixArk normalizes the envelope
+-&gt; API key / SSO / local mode resolve identity
+-&gt; access scope filters every write and retrieval
+-&gt; audit records what was accepted, inferred, rejected, and replayed
+</code></pre>
+<h2>What Codex Can Send</h2>
+<p>Codex can integrate with MatrixArk through MCP calls or lifecycle hooks. The current Codex manual documents MCP configuration and hook events such as `UserPromptSubmit`, `PostToolUse`, `PreCompact`, `PostCompact`, `Stop`, `SessionStart`, and others. Practically, MatrixArk should expect Codex to provide some of these fields when available, not all of them every time.</p>
+<table><tbody>
+<tr><th>Category</th><th>Examples Codex or a Codex hook may know</th><th>MatrixArk use</th></tr>
+<tr><td>Prompt text</td><td>`prompt`, `user_prompt`, `input`, `turn.input`, `messages[].content`</td><td>Ingest as `ContextEvent`; retrieve before LLM.</td></tr>
+<tr><td>Assistant/tool result</td><td>`tool_name`, `tool_input`, `tool_output`, `status`, terminal output</td><td>Ingest as tool/result evidence and possible feedback.</td></tr>
+<tr><td>Session/thread clues</td><td>`session_id`, `thread_id`, `conversation_id`, `transcript_id`, transcript path</td><td>Derive `session_id` hint; MatrixArk resolves final session scope.</td></tr>
+<tr><td>Workspace clues</td><td>`cwd`, `workspace_root`, `project_root`, repository path</td><td>Store as metadata; useful for node defaults and replay.</td></tr>
+<tr><td>Local context refs</td><td>open files, active files, selected text, buffers, terminal output, tool outputs</td><td>Pass to `retrieve.local_context` so MatrixArk can dedupe and fill remaining prompt budget.</td></tr>
+<tr><td>Resource/skill files</td><td>`raw_uri`, `path`, `file_path`, `document_path`, `SKILL.md`</td><td>Ingest as resource/skill; parse/chunk/embed/extract.</td></tr>
+<tr><td>Browser/app context</td><td>current URL, page title, visible selection, screenshots/asset refs when the agent exposes them</td><td>Store as metadata or resource refs.</td></tr>
+<tr><td>Feedback signals</td><td>accepted refs, rejected refs, `context_pack_id`, confirmation/correction text</td><td>Store as feedback memory and replayable audit.</td></tr>
+</tbody></table>
+<p>Codex does not automatically expose a stable MatrixArk account/user schema. For local hooks, default identity comes from config/env (`MATRIXARK_ACCOUNT_ID`, `MATRIXARK_TENANT_ID`, `MATRIXARK_USER_ID`) or local defaults. For cloud/product mode, MatrixArk API keys and optional SSO mapping become authoritative.</p>
+<h2>Minimal Message Ingest</h2>
+<p>An agent can send only a message. MatrixArk will fill local defaults for missing scope in local/dev mode.</p>
+<pre><code class="language-json">
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU purchase after finance reviewed the budget.&quot;}
+  ]
+}
+</code></pre>
+<p>MatrixArk normalizes this into a scoped event. In local mode defaults are:</p>
+<pre><code class="language-text">
+account_id = acct_local
+tenant_id  = derived from agent name when known, otherwise tenant_local/user default
+user_id    = local OS user or MATRIXARK_LOCAL_USER_ID
+session_id = provided/captured when possible; otherwise optional or generated by hook state
+</code></pre>
+<h2>Recommended Rich Envelope</h2>
+<p>When an agent knows more, send it. This is the recommended rich envelope for Codex/Claude/Cursor-style hooks:</p>
+<pre><code class="language-json">
+{
+  &quot;messages&quot;: [
+    {
+      &quot;role&quot;: &quot;user&quot;,
+      &quot;content&quot;: &quot;What is the current GPU approval and runbook blocker?&quot;,
+      &quot;created_at_ms&quot;: 1782415000000
+    }
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_hint_from_hook_or_config&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
+    &quot;user_id&quot;: &quot;local_or_sso_user_hint&quot;,
+    &quot;session_id&quot;: &quot;codex:thread-abc&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;codex_hook&quot;,
+    &quot;agent&quot;: &quot;codex&quot;,
+    &quot;agent_event&quot;: &quot;UserPromptSubmit&quot;,
+    &quot;agent_context&quot;: {
+      &quot;workspace_root&quot;: &quot;/repo/path&quot;,
+      &quot;current_url&quot;: &quot;http://127.0.0.1:8081/docs/debug.html&quot;,
+      &quot;tool_name&quot;: &quot;Bash&quot;,
+      &quot;local_context&quot;: [
+        {&quot;ref&quot;: &quot;src/service.py&quot;, &quot;kind&quot;: &quot;python&quot;, &quot;text&quot;: &quot;open buffer or snippet&quot;},
+        {&quot;ref&quot;: &quot;terminal&quot;, &quot;text&quot;: &quot;recent command output&quot;}
+      ],
+      &quot;payload_keys&quot;: [&quot;prompt&quot;, &quot;cwd&quot;, &quot;open_files&quot;]
+    }
+  },
+  &quot;agent_hook&quot;: {
+    &quot;source&quot;: &quot;codex&quot;,
+    &quot;hook_type&quot;: &quot;before_llm&quot;,
+    &quot;auto_captured&quot;: true,
+    &quot;hook_id&quot;: &quot;codex:UserPromptSubmit:1782415000000&quot;,
+    &quot;observed_at_ms&quot;: 1782415000000,
+    &quot;trigger&quot;: &quot;UserPromptSubmit&quot;,
+    &quot;session_id_source&quot;: &quot;payload_field&quot;
+  }
+}
+</code></pre>
+<p>MatrixArk treats `scope` fields from the agent as hints unless an API key/SSO/local policy confirms them. The final scope is written into records and audits.</p>
+<h2>Retrieval With Local Context</h2>
+<p>For retrieval hooks, the agent should pass local context it already selected. MatrixArk then returns only remote/shared memory needed to fill the remaining budget.</p>
+<pre><code class="language-json">
+{
+  &quot;query&quot;: &quot;What is the current GPU approval and blocker?&quot;,
+  &quot;scope&quot;: {&quot;user_id&quot;: &quot;deeproute&quot;, &quot;session_id&quot;: &quot;codex:thread-abc&quot;},
+  &quot;max_context_tokens&quot;: 1200,
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-buffer:main.py&quot;, &quot;text&quot;: &quot;current local code context&quot;},
+    {&quot;ref&quot;: &quot;terminal:last-command&quot;, &quot;text&quot;: &quot;recent test output&quot;}
+  ]
+}
+</code></pre>
+<p>This avoids blindly adding remote context on top of local context. MatrixArk can dedupe local refs, reserve budget for them, and return a compact ContextPack with selected remote events/entities/resources/skills.</p>
+<h2>Resource And Skill Files</h2>
+<p>Agents can send files in two ways:</p>
+<table><tbody>
+<tr><th>Mode</th><th>Agent sends</th><th>MatrixArk does</th></tr>
+<tr><td>Local mode</td><td>`raw_uri` as local path or `file://` path</td><td>Store URI, parse local file, write chunks/summaries/embeddings/indexes.</td></tr>
+<tr><td>Cloud mode</td><td>local path, uploaded URL, or inline text</td><td>Upload to S3 when configured, store S3 `raw_uri`, parse from S3/local temp, never store raw bytes in TemporalStore.</td></tr>
+<tr><td>MCP direct</td><td>`matrixark_ingest(kind=resource</td><td>skill, raw_uri=...)`</td><td>Runs resource/skill import task lifecycle.</td></tr>
+</tbody></table>
+<p>For `SKILL.md`, MatrixArk should parse skill-specific fields into `SkillManifest`, `SkillSection`, `ResourceChunk(resource_type=skill)`, skill summaries, embeddings, and indexes. It should retrieve only relevant skill sections, not the whole skill bundle by default.</p>
+<h2>Lifecycle Mapping</h2>
+<table><tbody>
+<tr><th>Agent lifecycle</th><th>MatrixArk action</th></tr>
+<tr><td>`SessionStart`</td><td>Optionally load prior ContextPack or session summary.</td></tr>
+<tr><td>`UserPromptSubmit` / before LLM</td><td>Ingest user message, pass local context, retrieve ContextPack.</td></tr>
+<tr><td>`PostToolUse`</td><td>Ingest tool result as replayable evidence.</td></tr>
+<tr><td>Assistant answer / `Stop`</td><td>Ingest assistant answer; commit pending session window.</td></tr>
+<tr><td>`PostCompact`</td><td>Ingest compacted session summary; commit pending window.</td></tr>
+<tr><td>Idle timeout</td><td>Commit pending session window.</td></tr>
+<tr><td>Resource added</td><td>Ingest resource/skill file.</td></tr>
+<tr><td>Feedback/confirmation</td><td>Store accepted/rejected refs, correction, or confirmation; link to prior ContextPack when available.</td></tr>
+</tbody></table>
+<h2>What MatrixArk Should Enforce</h2>
+<p>MatrixArk should always enforce these server-side, even if the agent sends hints:</p>
+<ul>
+<li>API key validity, roles, scopes, rotation, revocation.</li>
+<li>Account and tenant membership.</li>
+<li>User/session isolation.</li>
+<li>SSO mapping from Okta/Google/Azure AD identities to MatrixArk user IDs.</li>
+<li>Access filtering before scoring resources, skills, entities, events, and chunks.</li>
+<li>Audit logs for ingestion, retrieval, feedback, replay, resource import, and admin actions.</li>
+<li>Replayable `prior_refs`, selected refs, dropped refs, and context-pack audits.</li>
+</ul>
+<h2>Implementation Status</h2>
+<p>Current MatrixArk hook support:</p>
+<ul>
+<li>`tools/matrixark_codex_hook.py` captures Codex prompt/session/workspace/local context hints, sends message ingestion, local-context-aware retrieval, and session commits.</li>
+<li>`tools/matrixark_agent_hook.py` is the generic adapter for Claude/Cursor/Windsurf/Cline/Roo/Continue/Copilot/OpenCode/Aider/Gemini and other agents. It accepts permissive payload shapes and normalizes them.</li>
+<li>Both hooks now store `metadata.agent_context` and pass `local_context` to retrieval when present.</li>
+<li>MatrixArk server still resolves final identity from local defaults, API keys, SSO mapping, and access management.</li>
+</ul>
+<h2>Product Position</h2>
+<p>The agent should not be forced to understand MatrixArk internal data models. It should send a simple, rich envelope containing messages, local context refs, files/resources, lifecycle event, and any identity/session hints it knows. MatrixArk owns extraction, entity updates, summaries, embeddings, tree traversal, access control, and replay.</p>
+</main>
+</body>
+</html>

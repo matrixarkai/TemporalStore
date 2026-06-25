@@ -293,18 +293,59 @@ def resolve_session_id(payload: Json, args: argparse.Namespace) -> tuple[str, st
 
 def local_context_from_payload(payload: Json) -> list[Json]:
     refs: list[Json] = []
-    for key in ("local_context", "open_files", "files", "buffers", "tool_outputs"):
-        value = payload.get(key)
-        if isinstance(value, list):
-            for item in value[:16]:
+    containers = [payload]
+    for nested_key in ("params", "turn", "metadata", "context"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+    for container in containers:
+        for key in ("local_context", "context", "open_files", "active_files", "files", "buffers", "selected_text", "selection", "tool_outputs", "terminal_output"):
+            value = container.get(key)
+            items = value if isinstance(value, list) else [value] if value else []
+            for item in items[:24]:
                 if isinstance(item, str):
-                    refs.append({"ref": key, "text": item[:1000]})
+                    refs.append({"ref": key, "text": item[:1200]})
                 elif isinstance(item, dict):
-                    text = first_string_at(item, [["text"], ["content"], ["summary"], ["path"], ["uri"]])
-                    ref = first_string_at(item, [["ref"], ["path"], ["uri"], ["name"]])
+                    text = first_string_at(item, [["text"], ["content"], ["summary"], ["snippet"], ["selected_text"], ["output"], ["path"], ["uri"]])
+                    ref = first_string_at(item, [["ref"], ["path"], ["uri"], ["url"], ["name"], ["file"], ["relative_path"]])
+                    kind = first_string_at(item, [["kind"], ["type"], ["mime_type"], ["language"]])
                     if text or ref:
-                        refs.append({"ref": ref or key, "text": text[:1000]})
-    return refs
+                        compact = {"ref": ref or key, "text": text[:1200]}
+                        if kind:
+                            compact["kind"] = kind
+                        refs.append(compact)
+                if len(refs) >= 24:
+                    return refs[:24]
+    return refs[:24]
+
+
+def agent_context_from_payload(payload: Json, *, agent: str, event: str, session_id_source: str, args: argparse.Namespace) -> Json:
+    workspace = first_string_at(
+        payload,
+        [
+            ["workspace_root"],
+            ["workspaceRoot"],
+            ["project_root"],
+            ["projectRoot"],
+            ["cwd"],
+            ["params", "cwd"],
+            ["metadata", "cwd"],
+        ],
+    )
+    current_url = first_string_at(payload, [["url"], ["current_url"], ["browser_url"], ["metadata", "url"]])
+    tool_name = first_string_at(payload, [["tool_name"], ["toolName"], ["tool", "name"], ["params", "tool_name"]])
+    tool_status = first_string_at(payload, [["tool_status"], ["status"], ["tool", "status"], ["params", "status"]])
+    return {
+        "agent": agent,
+        "event": event,
+        "session_id_source": session_id_source,
+        "workspace_root": workspace or str(args.repo_root),
+        "current_url": current_url,
+        "tool_name": tool_name,
+        "tool_status": tool_status,
+        "local_context": local_context_from_payload(payload),
+        "payload_keys": sorted(str(key) for key in payload.keys())[:80],
+    }
 
 
 def payload_resource_uri(payload: Json) -> str:
@@ -392,6 +433,7 @@ def main() -> int:
     if not text and not raw_uri and not should_commit(args.event):
         print(json.dumps({"status": "skipped", "reason": "empty hook payload", "agent": args.agent}))
         return 0
+    agent_context = agent_context_from_payload(payload, agent=args.agent, event=args.event, session_id_source=session_id_source, args=args)
 
     server = build_server(args)
     scope = scope_from_args(args)
@@ -414,6 +456,7 @@ def main() -> int:
         "agent": args.agent,
         "agent_event": args.event,
         "raw_hook_payload": payload,
+        "agent_context": agent_context,
         "session_id_source": session_id_source,
     }
 
@@ -470,7 +513,7 @@ def main() -> int:
             "query": args.query or text[:500],
             "max_context_tokens": args.max_context_tokens,
         }
-        local_context = local_context_from_payload(payload)
+        local_context = agent_context.get("local_context", [])
         if local_context:
             retrieve_args["local_context"] = local_context
         retrieve = call_tool(server, "matrixark_retrieve", retrieve_args)
@@ -510,6 +553,8 @@ def main() -> int:
                 "event": args.event,
                 "session_id": args.session_id,
                 "session_id_source": session_id_source,
+                "agent_context_refs": len(agent_context.get("local_context", [])),
+                "workspace_root": agent_context.get("workspace_root", ""),
                 "ingested": bool(ingest),
                 "feedbacked": bool(feedback),
                 "resource_uri": raw_uri,

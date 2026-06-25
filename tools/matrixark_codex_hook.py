@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -64,6 +64,7 @@ def parse_args() -> argparse.Namespace:
 
 def read_stdin_payload() -> Json:
     raw = sys.stdin.read()
+    raw = raw.lstrip("\ufeff")
     if not raw.strip():
         return {}
     try:
@@ -207,6 +208,98 @@ def payload_text(payload: Json) -> str:
     return json.dumps(payload, sort_keys=True)[:4000] if payload else ""
 
 
+def compact_payload_item(item: Any, *, max_text: int = 1200) -> Json:
+    if isinstance(item, str):
+        return {"text": item[:max_text]}
+    if not isinstance(item, dict):
+        return {"value": str(item)[:max_text]}
+    ref = first_string_at(item, [["ref"], ["path"], ["uri"], ["url"], ["name"], ["file"], ["relative_path"]])
+    text = first_string_at(item, [["text"], ["content"], ["summary"], ["snippet"], ["selected_text"], ["output"]])
+    kind = first_string_at(item, [["kind"], ["type"], ["mime_type"], ["language"]])
+    compact: Json = {}
+    if ref:
+        compact["ref"] = ref
+    if kind:
+        compact["kind"] = kind
+    if text:
+        compact["text"] = text[:max_text]
+    for key in ("line", "line_start", "line_end", "start", "end", "modified", "active", "focused"):
+        if key in item:
+            compact[key] = item[key]
+    return compact or {"keys": sorted(str(key) for key in item.keys())[:20]}
+
+
+def payload_list_items(payload: Json, keys: list[str], *, limit: int = 16) -> list[Json]:
+    found: list[Json] = []
+    containers = [payload]
+    for nested_key in ("params", "turn", "metadata", "context"):
+        nested = payload.get(nested_key)
+        if isinstance(nested, dict):
+            containers.append(nested)
+    for container in containers:
+        for key in keys:
+            value = container.get(key)
+            if isinstance(value, list):
+                found.extend(compact_payload_item(item) for item in value[:limit])
+            elif isinstance(value, dict):
+                found.append(compact_payload_item(value))
+            elif isinstance(value, str) and value.strip():
+                found.append({"ref": key, "text": value[:1200]})
+            if len(found) >= limit:
+                return found[:limit]
+    return found[:limit]
+
+
+def local_context_from_payload(payload: Json) -> list[Json]:
+    refs = payload_list_items(
+        payload,
+        [
+            "local_context",
+            "context",
+            "open_files",
+            "active_files",
+            "files",
+            "buffers",
+            "selected_text",
+            "selection",
+            "tool_outputs",
+            "terminal_output",
+        ],
+        limit=24,
+    )
+    return [ref for ref in refs if ref.get("text") or ref.get("ref")]
+
+
+def agent_context_from_payload(payload: Json, *, event: str, session_id_source: str, args: argparse.Namespace) -> Json:
+    workspace = first_string_at(
+        payload,
+        [
+            ["workspace_root"],
+            ["workspaceRoot"],
+            ["project_root"],
+            ["projectRoot"],
+            ["cwd"],
+            ["params", "cwd"],
+            ["metadata", "cwd"],
+        ],
+    )
+    current_url = first_string_at(payload, [["url"], ["current_url"], ["browser_url"], ["metadata", "url"]])
+    tool_name = first_string_at(payload, [["tool_name"], ["toolName"], ["tool", "name"], ["params", "tool_name"]])
+    tool_status = first_string_at(payload, [["tool_status"], ["status"], ["tool", "status"], ["params", "status"]])
+    return {
+        "agent": "codex",
+        "event": event,
+        "session_id_source": session_id_source,
+        "workspace_root": workspace or str(args.repo_root),
+        "current_url": current_url,
+        "tool_name": tool_name,
+        "tool_status": tool_status,
+        "local_context": local_context_from_payload(payload),
+        "files": payload_list_items(payload, ["files", "open_files", "active_files", "changed_files"], limit=24),
+        "payload_keys": sorted(str(key) for key in payload.keys())[:80],
+    }
+
+
 def role_for_event(event: str) -> str:
     if event in {"PostToolUse", "PreToolUse", "PermissionRequest"}:
         return "tool"
@@ -290,6 +383,7 @@ def main() -> int:
     if not text and args.event not in {"IdleTimeout", "SessionIdle"}:
         print(json.dumps({"status": "skipped", "reason": "empty hook payload"}))
         return 0
+    agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
 
     server = build_server(args)
     scope = scope_from_args(args)
@@ -308,6 +402,7 @@ def main() -> int:
                 "source": "codex_hook",
                 "codex_event": args.event,
                 "raw_hook_payload": payload,
+                "agent_context": agent_context,
                 "compacted_session_summary": args.event == "PostCompact",
                 "codex_session_id_source": session_id_source,
             },
@@ -366,6 +461,7 @@ def main() -> int:
                 **common,
                 "query": query,
                 "max_context_tokens": args.max_context_tokens,
+                **({"local_context": agent_context.get("local_context", [])} if agent_context.get("local_context") else {}),
             },
         )
 
@@ -376,6 +472,8 @@ def main() -> int:
                 "event": args.event,
                 "session_id": args.session_id,
                 "session_id_source": session_id_source,
+                "agent_context_refs": len(agent_context.get("local_context", [])),
+                "workspace_root": agent_context.get("workspace_root", ""),
                 "lifecycle_stage": {
                     "before_llm_retrieve": args.event == "UserPromptSubmit",
                     "after_llm_ingest_only": args.event in {"PostToolUse", "PreToolUse", "PermissionRequest"},
