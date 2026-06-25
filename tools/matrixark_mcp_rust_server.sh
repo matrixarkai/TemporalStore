@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${MATRIXARK_REPO_ROOT:-/root/src/github-services/TemporalStore}"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
@@ -45,6 +46,15 @@ if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_CLI" ]]; then
   TEMPORALSTORE_LIB_DIR="${TEMPORALSTORE_LIB_DIR:-$ROOT/output-ubuntu22/release/sdk/lib}" \
     cargo build --release --manifest-path "$ROOT/sdk/rust/temporalstore/Cargo.toml" --bin matrixark_record_log >&2
 fi
+
+bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
+  --backend rust \
+  --metaserver "$MATRIXARK_TEMPORALSTORE_METASERVER" \
+  --namespace "$MATRIXARK_TEMPORALSTORE_NAMESPACE" \
+  --table "$MATRIXARK_TEMPORALSTORE_TABLE" \
+  --prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
+  --rust-cli "$MATRIXARK_TEMPORALSTORE_RUST_CLI" \
+  --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2
 
 exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
   --backend temporalstore-rust \

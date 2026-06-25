@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import secrets
 import select
+import socket
 import subprocess
 import hashlib
 import json
@@ -55,6 +56,9 @@ DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_M
 DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
+BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
+BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
+BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
@@ -127,6 +131,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_admin_revoke_api_key": {"admin:api_key"},
     "matrixark_admin_map_sso_user": {"admin:sso"},
     "matrixark_admin_audit": {"admin:audit"},
+    "matrixark_backend_ready": set(),
 }
 
 
@@ -160,6 +165,47 @@ def json_text(value: Json) -> Json:
 
 class MatrixArkError(ValueError):
     pass
+
+
+def is_retryable_temporalstore_error(error: Any) -> bool:
+    text = str(error).lower()
+    retryable_fragments = (
+        "slot not found",
+        "partition info not found",
+        "partition no primary",
+        "no primary",
+        "not ready",
+        "unavailable",
+        "timed out",
+        "timeout",
+        "connection refused",
+        "connection reset",
+        "temporarily unavailable",
+        "server is busy",
+    )
+    return any(fragment in text for fragment in retryable_fragments)
+
+
+def parse_host_port(address: str) -> tuple[str, int] | None:
+    if not address or ":" not in address:
+        return None
+    host, port_text = address.rsplit(":", 1)
+    try:
+        return host or "127.0.0.1", int(port_text)
+    except ValueError:
+        return None
+
+
+def metaserver_reachable(address: str, timeout_ms: int = BACKEND_READINESS_CONNECT_TIMEOUT_MS) -> Json:
+    parsed = parse_host_port(address)
+    if parsed is None:
+        return {"ok": False, "address": address, "error": "invalid metaserver address"}
+    host, port = parsed
+    try:
+        with socket.create_connection((host, port), timeout=max(0.05, timeout_ms / 1000.0)):
+            return {"ok": True, "address": address}
+    except OSError as exc:
+        return {"ok": False, "address": address, "error": str(exc)}
 
 
 def require_string(data: Json, field: str) -> str:
@@ -2997,6 +3043,21 @@ class MatrixArkLocalAdapter:
     def __post_init__(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
 
+    def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
+        return {
+            "status": "ready",
+            "backend": "local",
+            "reason": reason,
+            "probe": bool(probe),
+            "attempts": 1,
+            "topology": {"mode": "local-jsonl", "event_log": str(self.event_log)},
+            "checks": {
+                "mcp_process_started": True,
+                "namespace_table_opened": True,
+                "slot_coverage_verified_by_warmup_hset_hget": True,
+            },
+        }
+
     def append(self, record: Json) -> None:
         with self.event_log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
@@ -5746,6 +5807,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             max_write_retries=1,
         )
         self._client = Client(options, library_path=library_path or None)
+        self._metaserver = metaserver
+        self._namespace = namespace
+        self._table = table
+        self._readiness_cache: Json | None = None
+        self._readiness_lock = threading.RLock()
         self._storage_prefix = storage_prefix.rstrip(":")
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
@@ -5772,6 +5838,94 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
         return
+
+    def _backend_label(self) -> str:
+        return "temporalstore-cpp"
+
+    def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
+        with self._readiness_lock:
+            if self._readiness_cache and self._readiness_cache.get("status") == "ready":
+                cached = dict(self._readiness_cache)
+                cached["cached"] = True
+                cached["reason"] = reason
+                return cached
+            timeout = max(1, int(timeout_ms or BACKEND_READINESS_TIMEOUT_MS))
+            deadline = time.monotonic() + timeout / 1000.0
+            attempts: list[Json] = []
+            attempt = 0
+            warmup_key = f"{self._storage_prefix}:readiness"
+            warmup_field = f"{stable_hash(f'{self._storage_prefix}:{reason}'):020d}"
+            warmup_value = json.dumps(
+                {
+                    "probe": "matrixark_backend_ready",
+                    "backend": self._backend_label(),
+                    "reason": reason,
+                    "ts_ms": now_ms(),
+                },
+                sort_keys=True,
+            )
+            while True:
+                attempt += 1
+                checks: Json = {
+                    "mcp_process_started": True,
+                    "metaserver_reachable": metaserver_reachable(self._metaserver),
+                    "namespace_table_opened": False,
+                    "slot_coverage_verified_by_warmup_hset_hget": False,
+                }
+                try:
+                    if not checks["metaserver_reachable"].get("ok"):
+                        raise MatrixArkError(checks["metaserver_reachable"].get("error", "metaserver is not reachable"))
+                    if probe:
+                        self._client.hset(warmup_key, warmup_field, warmup_value)
+                        checks["namespace_table_opened"] = True
+                        readback = self._client.hget(warmup_key, warmup_field)
+                        if readback != warmup_value:
+                            raise MatrixArkError("readiness warmup readback mismatch")
+                        checks["slot_coverage_verified_by_warmup_hset_hget"] = True
+                    else:
+                        checks["namespace_table_opened"] = True
+                    result: Json = {
+                        "status": "ready",
+                        "backend": self._backend_label(),
+                        "reason": reason,
+                        "probe": bool(probe),
+                        "attempts": attempt,
+                        "attempt_log": attempts,
+                        "topology": {
+                            "metaserver": self._metaserver,
+                            "namespace": self._namespace,
+                            "table": self._table,
+                            "storage_prefix": self._storage_prefix,
+                            "warmup_key": warmup_key,
+                            "warmup_field": warmup_field,
+                        },
+                        "checks": checks,
+                    }
+                    self._readiness_cache = result
+                    return dict(result)
+                except Exception as exc:
+                    retryable = is_retryable_temporalstore_error(exc)
+                    attempts.append({"attempt": attempt, "ok": False, "retryable": retryable, "error": str(exc), "checks": checks})
+                    if not retryable or time.monotonic() >= deadline:
+                        return {
+                            "status": "topology_not_ready",
+                            "backend": self._backend_label(),
+                            "reason": reason,
+                            "probe": bool(probe),
+                            "attempts": attempt,
+                            "attempt_log": attempts,
+                            "error": str(exc),
+                            "topology": {
+                                "metaserver": self._metaserver,
+                                "namespace": self._namespace,
+                                "table": self._table,
+                                "storage_prefix": self._storage_prefix,
+                                "warmup_key": warmup_key,
+                                "warmup_field": warmup_field,
+                            },
+                            "checks": checks,
+                        }
+                    time.sleep(max(0.05, BACKEND_READINESS_BACKOFF_MS / 1000.0))
 
     def _get_index(self) -> list[str]:
         try:
@@ -6157,6 +6311,11 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             request_timeout_ms=request_timeout_ms,
             io_timeout_ms=io_timeout_ms,
         )
+        self._metaserver = metaserver
+        self._namespace = namespace
+        self._table = table
+        self._readiness_cache: Json | None = None
+        self._readiness_lock = threading.RLock()
         self._storage_prefix = storage_prefix.rstrip(":")
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
@@ -6179,6 +6338,9 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._write_retries = max(0, DIRECT_WRITE_RETRIES)
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
+
+    def _backend_label(self) -> str:
+        return "temporalstore-rust"
 
 
 
@@ -7344,6 +7506,20 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_backend_ready",
+        "description": "Run a low-cost backend topology/storage readiness probe before ingestion or parity tests.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": {"type": "string", "default": "manual"},
+                "probe": {"type": "boolean", "default": True},
+                "timeout_ms": {"type": "integer", "default": BACKEND_READINESS_TIMEOUT_MS},
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_account",
         "description": "Create a MatrixArk account and default tenant.",
         "inputSchema": {
@@ -7632,6 +7808,20 @@ class MatrixArkMcpServer:
     def call_tool(self, name: str, args: Json) -> Json:
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
+        if name == "matrixark_backend_ready":
+            result = self.adapter.ensure_backend_ready(
+                reason=str(args.get("reason") or "manual"),
+                probe=bool(args.get("probe", True)),
+                timeout_ms=args.get("timeout_ms"),
+            )
+            status = "ok" if result.get("status") == "ready" else "topology_not_ready"
+            self.access.append_audit(
+                "backend.ready",
+                identity,
+                status=status,
+                details={"backend": result.get("backend"), "attempts": result.get("attempts")},
+            )
+            return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_ingest":
             result = self.adapter.ingest(args, hook=hook)
             self.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash")})

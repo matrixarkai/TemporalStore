@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="${MATRIXARK_REPO_ROOT:-/root/src/github-services/TemporalStore}"
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${MATRIXARK_REPO_ROOT:-${SCRIPT_ROOT}}"
 cd "$ROOT"
 
 export MATRIXARK_MCP_BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-direct}"
@@ -38,6 +39,15 @@ if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-direct" && "$MATRIXARK_MCP_AUTO
     BUILD_TYPE="${BUILD_TYPE:-Release}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
   fi
 fi
+
+bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \
+  --backend cpp \
+  --metaserver "$MATRIXARK_TEMPORALSTORE_METASERVER" \
+  --namespace "$MATRIXARK_TEMPORALSTORE_NAMESPACE" \
+  --table "$MATRIXARK_TEMPORALSTORE_TABLE" \
+  --prefix "$MATRIXARK_TEMPORALSTORE_PREFIX" \
+  --temporalstore-lib "$TEMPORALSTORE_LIB" \
+  --timeout-ms "${MATRIXARK_BACKEND_READINESS_TIMEOUT_MS:-30000}" >&2
 
 exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
   --backend temporalstore-direct \
