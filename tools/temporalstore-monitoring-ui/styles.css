@@ -2212,3 +2212,62 @@ a {
     grid-template-columns: 1fr;
   }
 }
+
+.dashboard-controls {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.dashboard-controls label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.dashboard-controls input,
+.dashboard-controls select {
+  width: 100%;
+  min-height: 34px;
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--text);
+}
+
+.dashboard-table-wrap {
+  max-height: 520px;
+}
+
+.dashboard-table-wrap table {
+  min-width: 980px;
+}
+
+.dashboard-table-wrap tbody tr {
+  cursor: pointer;
+}
+
+.dashboard-table-wrap tbody tr:hover,
+.dashboard-table-wrap tbody tr:focus {
+  background: var(--blue-soft);
+  outline: none;
+}
+
+.dashboard-summary {
+  margin-top: 12px;
+}
+
+@media (max-width: 980px) {
+  .dashboard-controls {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-controls {
+    grid-template-columns: 1fr;
+  }
+}

@@ -120,6 +120,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_session_commit": {"context:ingest"},
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
+    "matrixark_ingestion_dashboard": {"context:replay"},
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
     "matrixark_update_skill": {"skill:manage"},
@@ -3948,6 +3949,186 @@ class MatrixArkLocalAdapter:
             if skill_hash not in controls:
                 controls[skill_hash] = record
         return controls
+
+    def _dashboard_record_scope(self, record: Json) -> Json:
+        scope = record.get("scope", record.get("envelope", {}).get("scope", {}))
+        access_scope = candidate_access_scope(record)
+        if isinstance(scope, dict) and isinstance(access_scope, dict):
+            merged = {**scope, **access_scope}
+            if scope.get("agent_name") and not merged.get("agent_name"):
+                merged["agent_name"] = scope["agent_name"]
+            explicit = scope.get("_explicit_scope_keys")
+            if isinstance(explicit, list):
+                merged["_explicit_scope_keys"] = explicit
+            return merged
+        return access_scope
+
+    def _dashboard_message_rows(self, records: list[Json], scope: Json) -> list[Json]:
+        rows: list[Json] = []
+        for record in records:
+            if record.get("record_type") != "context_event":
+                continue
+            if not scope_matches(self._dashboard_record_scope(record), scope):
+                continue
+            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+            kind = str(envelope.get("kind") or "message")
+            if kind not in {"message", "feedback", "business_data"}:
+                continue
+            messages = envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []
+            for message in messages or [{"role": "unknown", "content": record.get("text", "")}]:
+                if not isinstance(message, dict):
+                    continue
+                rows.append(
+                    {
+                        "row_type": "message",
+                        "event_id_hash": record.get("event_id_hash", 0),
+                        "kind": kind,
+                        "role": message.get("role", ""),
+                        "name": message.get("name", ""),
+                        "content": message.get("content", ""),
+                        "summary_text": record.get("summary_text", ""),
+                        "classification": record.get("internal_extraction", {}).get("classification", ""),
+                        "event_type": record.get("internal_extraction", {}).get("event_type", ""),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": envelope.get("scope", record.get("scope", {})),
+                        "agent_name": envelope.get("scope", {}).get("agent_name", ""),
+                        "created_at_ms": message.get("created_at_ms") or envelope.get("ingestion_time_ms") or record.get("updated_at_ms", 0),
+                    }
+                )
+        return rows
+
+    def _dashboard_rows_for_table(self, records: list[Json], table: str, scope: Json) -> list[Json]:
+        rows: list[Json] = []
+        if table == "messages":
+            return self._dashboard_message_rows(records, scope)
+        for record in records:
+            record_type = str(record.get("record_type") or "")
+            if not scope_matches(self._dashboard_record_scope(record), scope):
+                continue
+            if table == "resources" and record_type in {"resource_import_task", "resource_manifest", "resource_chunk"}:
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "task_hash": record.get("task_hash", record.get("import_task_hash", 0)),
+                        "resource_hash": record.get("resource_hash", 0),
+                        "chunk_hash": record.get("chunk_hash", 0),
+                        "status": record.get("status", ""),
+                        "raw_uri": record.get("raw_uri", ""),
+                        "requested_raw_uri": record.get("requested_raw_uri", ""),
+                        "resource_type": record.get("resource_type", ""),
+                        "resource_version": record.get("resource_version", ""),
+                        "source_ref": record.get("source_ref", ""),
+                        "unit_kind": record.get("unit_kind", record.get("metadata", {}).get("unit_kind", "")),
+                        "token_estimate": record.get("token_estimate", 0),
+                        "chunk_count": record.get("chunk_count", 0),
+                        "parse_warnings": record.get("parse_warnings", []),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record.get("scope", {}),
+                        "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
+                    }
+                )
+            elif table == "skills" and record_type in {"skill_manifest", "skill_registry", "skill_section"}:
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "skill_hash": record.get("skill_hash", 0),
+                        "section_hash": record.get("section_hash", 0),
+                        "name": record.get("name", record.get("skill_name", "")),
+                        "heading": record.get("heading", ""),
+                        "status": record.get("status", ""),
+                        "version": record.get("version", ""),
+                        "triggers": record.get("triggers", []),
+                        "allowed_tools": record.get("allowed_tools", []),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record.get("scope", {}),
+                        "updated_at_ms": record.get("updated_at_ms", 0),
+                    }
+                )
+            elif table == "events" and record_type == "context_event":
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "event_id_hash": record.get("event_id_hash", 0),
+                        "text": record.get("text", ""),
+                        "summary_text": record.get("summary_text", ""),
+                        "classification": record.get("internal_extraction", {}).get("classification", ""),
+                        "event_type": record.get("event_type", record.get("internal_extraction", {}).get("event_type", "")),
+                        "source_chunk_hash": record.get("source_chunk_hash", 0),
+                        "source_ref": record.get("source_ref", ""),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record.get("envelope", {}).get("scope", record.get("scope", {})),
+                        "updated_at_ms": record.get("envelope", {}).get("ingestion_time_ms", record.get("updated_at_ms", 0)),
+                    }
+                )
+            elif table == "entities" and record_type == "context_entity":
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "entity_hash": record.get("entity_hash", 0),
+                        "entity_type": record.get("entity_type", ""),
+                        "entity_name": record.get("entity_name", ""),
+                        "value": record.get("value", record.get("text", "")),
+                        "status": record.get("status", ""),
+                        "source_event_hash": record.get("source_event_hash", 0),
+                        "source_chunk_hash": record.get("source_chunk_hash", 0),
+                        "node_hash": record.get("node_hash", 0),
+                        "node_path": record.get("node_path", []),
+                        "scope": record.get("scope", {}),
+                        "updated_at_ms": record.get("updated_at_ms", 0),
+                    }
+                )
+            elif table == "context_packs" and record_type == "context_pack_audit":
+                rows.append(
+                    {
+                        "row_type": record_type,
+                        "context_pack_id": record.get("context_pack_id", ""),
+                        "query": record.get("query", ""),
+                        "used_context_tokens": record.get("used_context_tokens", 0),
+                        "selected_ref_count": len(record.get("selected_refs", [])),
+                        "dropped_ref_count": len(record.get("dropped_refs", [])),
+                        "quality_warnings": record.get("quality_warnings", []),
+                        "scope": record.get("scope", {}),
+                        "created_at_ms": record.get("created_at_ms", 0),
+                    }
+                )
+        rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
+        return rows
+
+    def ingestion_dashboard(self, args: Json) -> Json:
+        scope = optional_object(args, "scope")
+        table = optional_string(args, "table", "messages")
+        allowed_tables = {"messages", "resources", "skills", "events", "entities", "context_packs"}
+        if table not in allowed_tables:
+            raise MatrixArkError(f"table must be one of {sorted(allowed_tables)}")
+        page_size = args.get("page_size", 25)
+        if not isinstance(page_size, int) or page_size <= 0 or page_size > 200:
+            raise MatrixArkError("page_size must be an integer between 1 and 200")
+        page_token = args.get("page_token", 0)
+        if isinstance(page_token, str) and page_token.isdigit():
+            page_token = int(page_token)
+        if not isinstance(page_token, int) or page_token < 0:
+            raise MatrixArkError("page_token must be a non-negative integer offset")
+        records = self.read_all()
+        totals = {name: len(self._dashboard_rows_for_table(records, name, scope)) for name in sorted(allowed_tables)}
+        rows = self._dashboard_rows_for_table(records, table, scope)
+        page = rows[page_token : page_token + page_size]
+        next_page_token = page_token + page_size if page_token + page_size < len(rows) else None
+        return {
+            "status": "ok",
+            "scope": scope,
+            "table": table,
+            "page_size": page_size,
+            "page_token": page_token,
+            "next_page_token": next_page_token,
+            "total": len(rows),
+            "totals": totals,
+            "rows": page,
+            "record_count": len(records),
+        }
 
     def list_resources(self, args: Json) -> Json:
         scope = optional_object(args, "scope")
@@ -8249,6 +8430,26 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_ingestion_dashboard",
+        "description": "Paged dashboard rows showing what MatrixArk ingested for an account, tenant, user, session, or agent.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+                "table": {
+                    "type": "string",
+                    "enum": ["messages", "resources", "skills", "events", "entities", "context_packs"],
+                    "default": "messages",
+                    "description": "Which dashboard table to page.",
+                },
+                "page_size": {"type": "integer", "default": 25, "minimum": 1, "maximum": 200},
+                "page_token": {"type": ["integer", "string"], "default": 0, "description": "Offset returned as next_page_token."},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_list_resources",
         "description": "List governed MatrixArk resources visible to the current account/tenant/user/session scope.",
         "inputSchema": {
@@ -8881,6 +9082,10 @@ class MatrixArkMcpServer:
         if name == "matrixark_retrieve":
             result = self.adapter.retrieve(args)
             self.access.append_audit("context.retrieve", identity, status="ok", details={"context_pack_id": result.get("context_pack_id")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_ingestion_dashboard":
+            result = self.adapter.ingestion_dashboard(args)
+            self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_list_resources":
             result = self.adapter.list_resources(args)

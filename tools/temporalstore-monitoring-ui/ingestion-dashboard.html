@@ -1,0 +1,73 @@
+﻿<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>MatrixArk Ingestion Dashboard</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="topbar">
+        <div><p class="eyebrow">MatrixArk</p><h1>Ingestion Dashboard</h1></div>
+        <div class="toolbar">
+          <a class="button-link" href="./index.html">Operations</a>
+          <a class="button-link" href="./access-management.html">Access</a>
+          <a class="button-link" href="./matrixark-api-reference.html">API</a>
+        </div>
+      </header>
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2>Scoped Context Inventory</h2><p>Browse what MatrixArk has ingested for an account, tenant, user, session, or agent.</p></div>
+          <span id="dashboard-status" class="status-pill"><span class="dot"></span>sample</span>
+        </div>
+        <div class="dashboard-controls" aria-label="Dashboard filters">
+          <label>Account <input id="scope-account" value="acct_local" /></label>
+          <label>Tenant <input id="scope-tenant" value="tenant_codex" /></label>
+          <label>User <input id="scope-user" value="deeproute" /></label>
+          <label>Session <input id="scope-session" placeholder="optional" /></label>
+          <label>Agent <input id="scope-agent" value="codex" /></label>
+          <label>Table <select id="dashboard-table"><option value="messages">Messages</option><option value="resources">Resources</option><option value="skills">Skills</option><option value="events">Events</option><option value="entities">Entities</option><option value="context_packs">Context Packs</option></select></label>
+          <label>Page size <input id="page-size" type="number" min="1" max="200" value="10" /></label>
+          <button id="load-sample" type="button">Load Sample</button>
+          <button id="copy-request" type="button">Copy MCP Request</button>
+        </div>
+      </section>
+      <section class="summary-grid dashboard-summary" aria-label="Ingestion totals">
+        <article><span>Messages</span><strong id="total-messages">-</strong><small>chat, tool, feedback</small></article>
+        <article><span>Resources</span><strong id="total-resources">-</strong><small>files, chunks, imports</small></article>
+        <article><span>Events / Entities</span><strong id="total-events-entities">-</strong><small>extracted memory</small></article>
+        <article><span>Context Packs</span><strong id="total-packs">-</strong><small>retrieval audits</small></article>
+      </section>
+      <section class="panel">
+        <div class="panel-head">
+          <div><h2 id="table-title">Messages</h2><p id="table-note">Paged rows from <code>matrixark_ingestion_dashboard</code>.</p></div>
+          <div class="toolbar"><button id="prev-page" type="button">Prev</button><span id="page-label" class="badge">page 1</span><button id="next-page" type="button">Next</button></div>
+        </div>
+        <div class="table-wrap dashboard-table-wrap"><table><thead id="dashboard-head"></thead><tbody id="dashboard-body"></tbody></table></div>
+      </section>
+      <section class="layout context-layout">
+        <article class="panel panel-wide"><div class="panel-head compact"><h2>Selected Row Details</h2></div><pre id="row-details">Select a row to inspect metadata.</pre></article>
+        <article class="panel"><div class="panel-head compact"><h2>MCP Request</h2></div><pre id="request-preview"></pre></article>
+      </section>
+    </main>
+    <script>
+      const sample = {status:'ok',table:'messages',page_size:10,page_token:0,next_page_token:null,total:4,record_count:42,scope:{account_id:'acct_local',tenant_id:'tenant_codex',user_id:'deeproute',agent_name:'codex'},totals:{messages:4,resources:5,skills:2,events:9,entities:6,context_packs:2},rows:[
+        {row_type:'message',kind:'message',role:'user',content:'Alice approved the GPU purchase.',classification:'NEW_EVENT',event_type:'approval_confirmation',node_path:['tenant:tenant_codex','user:deeproute','session:thread-1'],created_at_ms:1782410000000},
+        {row_type:'message',kind:'message',role:'assistant',content:'Approval recorded with finance evidence.',classification:'NEW_EVENT',event_type:'status_update',node_path:['tenant:tenant_codex','user:deeproute','session:thread-1'],created_at_ms:1782410002000},
+        {row_type:'message',kind:'feedback',role:'user',content:'Yes, that is correct.',classification:'CONFIRMATION',event_type:'confirmation',node_path:['tenant:tenant_codex','user:deeproute','session:thread-1'],created_at_ms:1782410010000},
+        {row_type:'message',kind:'business_data',role:'tool',content:'Budget is 42000 dollars.',classification:'NEW_EVENT',event_type:'budget_update',node_path:['tenant:tenant_codex','user:deeproute','session:thread-1'],created_at_ms:1782410020000}
+      ]};
+      const sampleTables={resources:[{row_type:'resource_import_task',status:'completed',raw_uri:'s3://matrixark/raw/gpu_policy.pdf',resource_type:'pdf',chunk_count:8,node_path:['tenant:tenant_codex','user:deeproute','resources','gpu_policy'],updated_at_ms:1782410040000},{row_type:'resource_manifest',raw_uri:'s3://matrixark/raw/gpu_policy.pdf',resource_type:'pdf',resource_version:'v3',chunk_count:8,parse_warnings:[],updated_at_ms:1782410041000},{row_type:'resource_chunk',chunk_hash:7101,source_ref:'gpu_policy.pdf#page=2',unit_kind:'pdf_page',token_estimate:142,updated_at_ms:1782410042000}],skills:[{row_type:'skill_manifest',name:'context-debugger',status:'active',version:'1',triggers:['context pack','replay'],allowed_tools:['matrixark_replay']},{row_type:'skill_section',name:'context-debugger',heading:'Replay Steps',status:'active'}],events:[{row_type:'context_event',event_type:'approval_confirmation',text:'Finance approved the GPU purchase.',source_ref:'',node_path:['tenant:tenant_codex','user:deeproute','session:thread-1']},{row_type:'context_event',event_type:'resource_deadline',text:'Deadline: July 15, 2026.',source_ref:'gpu_policy.pdf#page=2',node_path:['tenant:tenant_codex','user:deeproute','resources','gpu_policy']}],entities:[{row_type:'context_entity',entity_type:'owner',entity_name:'gpu_rollout',value:'Priya',status:'current'},{row_type:'context_entity',entity_type:'budget',entity_name:'gpu_purchase',value:'42000 dollars',status:'current'}],context_packs:[{row_type:'context_pack_audit',context_pack_id:'pack-123',query:'what GPU approval is current?',used_context_tokens:174,selected_ref_count:4,dropped_ref_count:2}]};
+      const columns={messages:['role','kind','content','classification','event_type','node_path','created_at_ms'],resources:['row_type','status','raw_uri','resource_type','resource_version','chunk_count','source_ref','unit_kind','token_estimate','updated_at_ms'],skills:['row_type','name','heading','status','version','triggers','allowed_tools'],events:['event_type','text','source_ref','node_path','updated_at_ms'],entities:['entity_type','entity_name','value','status','source_event_hash','updated_at_ms'],context_packs:['context_pack_id','query','used_context_tokens','selected_ref_count','dropped_ref_count','created_at_ms']};
+      let state=structuredClone(sample);let pageToken=0;
+      function valueText(v){return Array.isArray(v)?v.join(' / '):(v==null?'':String(v));}
+      function currentScope(){const scope={};[['account_id','scope-account'],['tenant_id','scope-tenant'],['user_id','scope-user'],['session_id','scope-session'],['agent_name','scope-agent']].forEach(([k,id])=>{const value=document.getElementById(id).value.trim();if(value)scope[k]=value;});return scope;}
+      function requestPayload(){return{tool:'matrixark_ingestion_dashboard',arguments:{scope:currentScope(),table:document.getElementById('dashboard-table').value,page_size:Number(document.getElementById('page-size').value)||10,page_token:pageToken}};}
+      function loadSample(){const table=document.getElementById('dashboard-table').value;state=structuredClone(sample);state.table=table;state.rows=table==='messages'?sample.rows:(sampleTables[table]||[]);state.total=state.rows.length;state.next_page_token=null;render();}
+      function render(){const table=state.table||document.getElementById('dashboard-table').value;document.getElementById('table-title').textContent=table.replace('_',' ').replace(/\b\w/g,c=>c.toUpperCase());document.getElementById('total-messages').textContent=state.totals.messages??'-';document.getElementById('total-resources').textContent=state.totals.resources??'-';document.getElementById('total-events-entities').textContent=`${state.totals.events??'-'} / ${state.totals.entities??'-'}`;document.getElementById('total-packs').textContent=state.totals.context_packs??'-';document.getElementById('page-label').textContent=`offset ${state.page_token||0} / ${state.total||0}`;document.getElementById('request-preview').textContent=JSON.stringify(requestPayload(),null,2);const head=document.getElementById('dashboard-head');const body=document.getElementById('dashboard-body');const cols=columns[table]||[];head.innerHTML=`<tr>${cols.map(c=>`<th>${c}</th>`).join('')}</tr>`;body.innerHTML='';(state.rows||[]).forEach(row=>{const tr=document.createElement('tr');tr.tabIndex=0;tr.innerHTML=cols.map(c=>`<td>${valueText(row[c]).slice(0,220)}</td>`).join('');tr.addEventListener('click',()=>{document.getElementById('row-details').textContent=JSON.stringify(row,null,2);});body.appendChild(tr);});document.getElementById('prev-page').disabled=(state.page_token||0)<=0;document.getElementById('next-page').disabled=state.next_page_token==null;}
+      document.getElementById('load-sample').addEventListener('click',()=>{pageToken=0;loadSample();});document.getElementById('dashboard-table').addEventListener('change',()=>{pageToken=0;loadSample();});document.getElementById('copy-request').addEventListener('click',async()=>{const text=JSON.stringify(requestPayload(),null,2);await navigator.clipboard?.writeText(text);document.getElementById('dashboard-status').lastChild.textContent='request copied';});document.getElementById('prev-page').addEventListener('click',()=>{pageToken=Math.max(0,pageToken-Number(document.getElementById('page-size').value||10));render();});document.getElementById('next-page').addEventListener('click',()=>{if(state.next_page_token!=null)pageToken=state.next_page_token;render();});render();
+    </script>
+  </body>
+</html>
+

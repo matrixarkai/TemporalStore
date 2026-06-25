@@ -109,6 +109,38 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("UI Production Readiness", parser.headings)
         self.assertIn("Replay Audit", parser.headings)
         self.assertIn("context-layout", parser.classes)
+        self.assertIn("ingestion-dashboard.html", (UI_DIR / "index.html").read_text(encoding="utf-8"))
+
+    def test_ingestion_dashboard_markup_contract(self) -> None:
+        parser = IdCollector()
+        parser.feed((UI_DIR / "ingestion-dashboard.html").read_text(encoding="utf-8"))
+        required_ids = {
+            "dashboard-status",
+            "scope-account",
+            "scope-tenant",
+            "scope-user",
+            "scope-session",
+            "scope-agent",
+            "dashboard-table",
+            "page-size",
+            "load-sample",
+            "copy-request",
+            "total-messages",
+            "total-resources",
+            "total-events-entities",
+            "total-packs",
+            "dashboard-head",
+            "dashboard-body",
+            "row-details",
+            "request-preview",
+        }
+        self.assertTrue(required_ids.issubset(parser.ids))
+        self.assertIn("Ingestion Dashboard", parser.headings)
+        self.assertIn("Scoped Context Inventory", parser.headings)
+        html = (UI_DIR / "ingestion-dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("matrixark_ingestion_dashboard", html)
+        self.assertIn("Context Packs", html)
+        self.assertIn("Resources", html)
 
     def test_context_sample_health_has_operable_pipeline(self) -> None:
         health = json.loads((UI_DIR / "health.json").read_text(encoding="utf-8"))
