@@ -6,7 +6,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use temporalstore::{Client, Options};
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct Command {
     op: String,
     key: Option<String>,
@@ -26,11 +26,345 @@ struct Command {
     io_timeout_ms: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct HashEntry {
     key: String,
     field: String,
     value: String,
+}
+
+#[derive(Clone, Debug, Default)]
+struct OpMetrics {
+    ok: u64,
+    failed: u64,
+    latency_ms_sum: u128,
+    latency_ms_max: u128,
+}
+
+#[derive(Clone, Debug)]
+struct MetricsSnapshot {
+    started_at_unix_ms: u128,
+    commands_total: u64,
+    commands_failed: u64,
+    records_written: u64,
+    records_read: u64,
+    bytes_written: u64,
+    bytes_read: u64,
+    clients_created: u64,
+    parse_errors: u64,
+    client_connect_errors: u64,
+    op: HashMap<String, OpMetrics>,
+}
+
+impl Default for MetricsSnapshot {
+    fn default() -> Self {
+        Self {
+            started_at_unix_ms: unix_ms(),
+            commands_total: 0,
+            commands_failed: 0,
+            records_written: 0,
+            records_read: 0,
+            bytes_written: 0,
+            bytes_read: 0,
+            clients_created: 0,
+            parse_errors: 0,
+            client_connect_errors: 0,
+            op: HashMap::new(),
+        }
+    }
+}
+
+impl MetricsSnapshot {
+    fn observe(&mut self, op: &str, ok: bool, elapsed_ms: u128, stats: CommandStats) {
+        self.commands_total += 1;
+        if !ok {
+            self.commands_failed += 1;
+        }
+        self.records_written += stats.records_written;
+        self.records_read += stats.records_read;
+        self.bytes_written += stats.bytes_written;
+        self.bytes_read += stats.bytes_read;
+        let entry = self.op.entry(op.to_string()).or_default();
+        if ok {
+            entry.ok += 1;
+        } else {
+            entry.failed += 1;
+        }
+        entry.latency_ms_sum += elapsed_ms;
+        entry.latency_ms_max = entry.latency_ms_max.max(elapsed_ms);
+    }
+
+    fn render_prometheus(&self) -> String {
+        let mut out = String::new();
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_process_start_time_ms",
+            "gauge",
+            "Unix millisecond timestamp when this Rust record-log process started.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_process_start_time_ms",
+            "",
+            self.started_at_unix_ms,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_commands_total",
+            "counter",
+            "Total MatrixArk Rust record-log commands by op and status.",
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_command_latency_ms_sum",
+            "counter",
+            "Total command latency in milliseconds by op.",
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_command_latency_ms_max",
+            "gauge",
+            "Maximum observed command latency in milliseconds by op.",
+        );
+        let mut ops: Vec<_> = self.op.iter().collect();
+        ops.sort_by(|a, b| a.0.cmp(b.0));
+        for (op, metrics) in ops {
+            let ok_labels = format!("{{op=\"{}\",status=\"ok\"}}", escape_label(op));
+            let fail_labels = format!("{{op=\"{}\",status=\"error\"}}", escape_label(op));
+            line(
+                &mut out,
+                "matrixark_rust_record_log_commands_total",
+                &ok_labels,
+                metrics.ok,
+            );
+            line(
+                &mut out,
+                "matrixark_rust_record_log_commands_total",
+                &fail_labels,
+                metrics.failed,
+            );
+            let op_labels = format!("{{op=\"{}\"}}", escape_label(op));
+            line(
+                &mut out,
+                "matrixark_rust_record_log_command_latency_ms_sum",
+                &op_labels,
+                metrics.latency_ms_sum,
+            );
+            line(
+                &mut out,
+                "matrixark_rust_record_log_command_latency_ms_max",
+                &op_labels,
+                metrics.latency_ms_max,
+            );
+        }
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_records_written_total",
+            "counter",
+            "Total MatrixArk records/hash entries written by the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_records_written_total",
+            "",
+            self.records_written,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_records_read_total",
+            "counter",
+            "Total MatrixArk records/hash entries read by the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_records_read_total",
+            "",
+            self.records_read,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_bytes_written_total",
+            "counter",
+            "Approximate payload bytes written by the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_bytes_written_total",
+            "",
+            self.bytes_written,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_bytes_read_total",
+            "counter",
+            "Approximate payload bytes read by the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_bytes_read_total",
+            "",
+            self.bytes_read,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_clients_created_total",
+            "counter",
+            "TemporalStore clients created by the long-lived Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_clients_created_total",
+            "",
+            self.clients_created,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_parse_errors_total",
+            "counter",
+            "Invalid JSON command lines received by the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_parse_errors_total",
+            "",
+            self.parse_errors,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_client_connect_errors_total",
+            "counter",
+            "TemporalStore client connection failures in the Rust record-log bridge.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_client_connect_errors_total",
+            "",
+            self.client_connect_errors,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_rust_record_log_commands_failed_total",
+            "counter",
+            "Total failed MatrixArk Rust record-log commands.",
+        );
+        line(
+            &mut out,
+            "matrixark_rust_record_log_commands_failed_total",
+            "",
+            self.commands_failed,
+        );
+        out
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct CommandStats {
+    records_written: u64,
+    records_read: u64,
+    bytes_written: u64,
+    bytes_read: u64,
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn metric_header(out: &mut String, name: &str, metric_type: &str, help: &str) {
+    out.push_str("# HELP ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(help);
+    out.push('\n');
+    out.push_str("# TYPE ");
+    out.push_str(name);
+    out.push(' ');
+    out.push_str(metric_type);
+    out.push('\n');
+}
+
+fn line<T: std::fmt::Display>(out: &mut String, name: &str, labels: &str, value: T) {
+    out.push_str(name);
+    out.push_str(labels);
+    out.push(' ');
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn command_stats(command: &Command, result: &Value) -> CommandStats {
+    let mut stats = CommandStats::default();
+    match command.op.as_str() {
+        "put_string" => {
+            stats.records_written = 1;
+            stats.bytes_written = command.value.as_ref().map(|v| v.len() as u64).unwrap_or(0);
+        }
+        "get_string" => {
+            stats.records_read = 1;
+            stats.bytes_read = result
+                .get("value")
+                .and_then(Value::as_str)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
+        }
+        "hset" => {
+            stats.records_written = 1;
+            stats.bytes_written = command.value.as_ref().map(|v| v.len() as u64).unwrap_or(0);
+        }
+        "batch_hset" => {
+            if let Some(entries) = &command.entries {
+                stats.records_written = entries.len() as u64;
+                stats.bytes_written = entries.iter().map(|entry| entry.value.len() as u64).sum();
+            }
+        }
+        "write_matrixark_record" => {
+            stats.records_written = 1;
+            stats.bytes_written = command
+                .record
+                .as_ref()
+                .map(|record| record.to_string().len() as u64)
+                .unwrap_or(0);
+        }
+        "write_matrixark_records" => {
+            if let Some(records) = &command.records {
+                stats.records_written = records.len() as u64;
+                stats.bytes_written = records
+                    .iter()
+                    .map(|record| record.to_string().len() as u64)
+                    .sum();
+            }
+        }
+        "read_matrixark_record" => {
+            stats.records_read = 1;
+            stats.bytes_read = result.to_string().len() as u64;
+        }
+        "read_matrixark_records" => {
+            stats.records_read = result
+                .get("read")
+                .and_then(Value::as_u64)
+                .or_else(|| command.record_ids.as_ref().map(|ids| ids.len() as u64))
+                .unwrap_or(0);
+            stats.bytes_read = result.to_string().len() as u64;
+        }
+        "hget" => {
+            stats.records_read = 1;
+            stats.bytes_read = result
+                .get("value")
+                .and_then(Value::as_str)
+                .map(|v| v.len() as u64)
+                .unwrap_or(0);
+        }
+        _ => {}
+    }
+    stats
 }
 
 fn required(value: Option<String>, name: &str) -> Result<String, String> {
@@ -310,10 +644,22 @@ fn print_result(result: Result<Value, String>, elapsed_ms: u128) -> bool {
     }
 }
 
+fn export_metrics_if_configured(metrics: &MetricsSnapshot) {
+    let Ok(path) = std::env::var("MATRIXARK_RUST_METRICS_PATH") else {
+        return;
+    };
+    if path.trim().is_empty() {
+        return;
+    }
+    let _ = std::fs::write(path, metrics.render_prometheus());
+}
+
 fn serve() -> i32 {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut clients: HashMap<String, Client> = HashMap::new();
+    let mut metrics = MetricsSnapshot::default();
+    export_metrics_if_configured(&metrics);
     for line in stdin.lock().lines() {
         let line = match line {
             Ok(value) => value,
@@ -329,30 +675,52 @@ fn serve() -> i32 {
         let command: Command = match serde_json::from_str(&line) {
             Ok(value) => value,
             Err(err) => {
+                metrics.parse_errors += 1;
+                export_metrics_if_configured(&metrics);
                 println!("{}", json!({"ok": false, "error": err.to_string()}));
                 let _ = stdout.flush();
                 continue;
             }
         };
+        if command.op == "metrics_prometheus" {
+            println!(
+                "{}",
+                json!({"ok": true, "prometheus": metrics.render_prometheus()})
+            );
+            let _ = stdout.flush();
+            continue;
+        }
         let key = config_key(&command);
         if !clients.contains_key(&key) {
             match connect(&command) {
                 Ok(client) => {
                     clients.insert(key.clone(), client);
+                    metrics.clients_created += 1;
+                    export_metrics_if_configured(&metrics);
                 }
                 Err(err) => {
+                    metrics.client_connect_errors += 1;
+                    export_metrics_if_configured(&metrics);
                     println!("{}", json!({"ok": false, "error": err}));
                     let _ = stdout.flush();
                     continue;
                 }
             }
         }
+        let op = command.op.clone();
         let started = Instant::now();
         let result = clients
             .get(&key)
             .ok_or_else(|| "missing cached TemporalStore client".to_string())
-            .and_then(|client| run_with_client(client, command));
-        print_result(result, started.elapsed().as_millis());
+            .and_then(|client| run_with_client(client, command.clone()));
+        let elapsed_ms = started.elapsed().as_millis();
+        let (ok, stats) = match &result {
+            Ok(value) => (true, command_stats(&command, value)),
+            Err(_) => (false, CommandStats::default()),
+        };
+        metrics.observe(&op, ok, elapsed_ms, stats);
+        export_metrics_if_configured(&metrics);
+        print_result(result, elapsed_ms);
         let _ = stdout.flush();
     }
     0
@@ -442,5 +810,48 @@ mod tests {
             "matrixark:record:context_pack_audit:77"
         );
         assert_eq!(matrixark_storage_field("query-1"), "query-1");
+    }
+
+    #[test]
+    fn metrics_render_prometheus_records_op_status_and_latency() {
+        let mut metrics = MetricsSnapshot::default();
+        metrics.observe(
+            "write_matrixark_record",
+            true,
+            12,
+            CommandStats {
+                records_written: 1,
+                bytes_written: 128,
+                ..CommandStats::default()
+            },
+        );
+        metrics.observe("write_matrixark_record", false, 30, CommandStats::default());
+        let text = metrics.render_prometheus();
+        assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"));
+        assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"));
+        assert!(text.contains(
+            "matrixark_rust_record_log_command_latency_ms_sum{op=\"write_matrixark_record\"} 42"
+        ));
+        assert!(text.contains(
+            "matrixark_rust_record_log_command_latency_ms_max{op=\"write_matrixark_record\"} 30"
+        ));
+        assert!(text.contains("matrixark_rust_record_log_records_written_total 1"));
+        assert!(text.contains("matrixark_rust_record_log_bytes_written_total 128"));
+        assert!(text.contains("matrixark_rust_record_log_commands_failed_total 1"));
+    }
+
+    #[test]
+    fn command_stats_counts_matrixark_batch_records() {
+        let command: Command = serde_json::from_value(json!({
+            "op": "write_matrixark_records",
+            "records": [
+                {"record_type": "context_event", "tenant_hash": 1, "event_id_hash": 10, "text": "a"},
+                {"record_type": "context_event", "tenant_hash": 1, "event_id_hash": 11, "text": "bb"}
+            ]
+        }))
+        .unwrap();
+        let stats = command_stats(&command, &json!({"ok": true, "written": 2}));
+        assert_eq!(stats.records_written, 2);
+        assert!(stats.bytes_written > 0);
     }
 }
