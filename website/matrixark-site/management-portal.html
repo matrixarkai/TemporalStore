@@ -117,6 +117,42 @@
       </section>
       <section class="layout context-layout">
         <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>Context Debugger</h2>
+              <p>Inspect what Codex exposed locally, what MatrixArk retrieved remotely, how tokens were spent, and why refs were selected or dropped.</p>
+            </div>
+            <span class="badge">debug</span>
+          </div>
+          <div class="portal-debug-kpis" id="portal-debug-kpis"></div>
+          <div class="portal-debug-grid">
+            <article>
+              <strong>Codex Local Context Visibility</strong>
+              <div class="metric-list" id="portal-context-visibility"></div>
+            </article>
+            <article>
+              <strong>ContextPack Token Accounting</strong>
+              <pre id="portal-pack-debug"></pre>
+            </article>
+            <article>
+              <strong>Pipeline Stage Timings</strong>
+              <div class="metric-list" id="portal-stage-debug"></div>
+            </article>
+            <article>
+              <strong>Selected And Dropped Refs</strong>
+              <pre id="portal-ref-debug"></pre>
+            </article>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Debug Commands</h2></div>
+          <pre id="portal-debug-request"></pre>
+          <div class="metric-list section-gap" id="portal-token-scenarios"></div>
+        </article>
+      </section>
+
+      <section class="layout context-layout">
+        <article class="panel panel-wide">
           <div class="panel-head"><div><h2>Agent Install Snippets</h2><p>Copy one command or an HTTP MCP config. Agents send what they know; MatrixArk resolves and enforces final identity.</p></div></div>
           <div class="portal-install-grid">
             <article><strong>One-liner installer</strong><pre id="portal-install-command"></pre></article>
@@ -167,6 +203,48 @@
       const samplePortal = {
         status: 'ok', account_id: 'acct_local', tenant_id: 'tenant_codex', cloud_api_url: 'https://api.matrixark.ai', local_api_url: 'http://127.0.0.1:8081',
         metrics: {message_count: 4, resource_count: 3, skill_count: 2, context_node_count: 7, context_summary_count: 9, context_embedding_count: 18, dirty_summary_count: 1, api_key_count: 2, user_count: 1, event_count: 6, entity_count: 4, context_pack_count: 2, audit_count: 5, used_context_tokens: 28437, selected_tokens: 21140, dropped_tokens: 7297, dropped_over_budget_tokens: 2910, prompt_budget_p95: 2048, retrieval_p95_ms: 287, ingest_qps: 42, retrieve_qps: 18, metadata_backend: {backend:'record_log', table:'matrixark_metadata_records', sql_compatible_with:'record_log'}},
+        debug: {
+          hook_visibility: {
+            visible_payload_fields: ['prompt', 'thread_id', 'workspace_root', 'tool_name', 'tool_status', 'current_url', 'files', 'local_context'],
+            hidden_codex_context: 'Codex internal prompt/window is not fully exposed to hooks unless Codex sends local_context refs.',
+            local_context_count: 2,
+            local_context_tokens: 312,
+            local_context_refs: [{ref:'open-buffer:management-portal.html', tokens:188}, {ref:'tool-output:git-status', tokens:124}]
+          },
+          context_pack: {
+            context_pack_id: 'pack-123',
+            max_context_tokens: 2048,
+            used_local_context_tokens: 312,
+            used_remote_context_tokens: 174,
+            total_prompt_context_tokens: 486,
+            selected_tokens: 174,
+            answer_bearing_tokens: 132,
+            density: '75.9%',
+            dropped_duplicate_tokens: 96,
+            dropped_stale_tokens: 34,
+            dropped_low_score_tokens: 210,
+            dropped_over_budget_tokens: 0,
+            dropped_summary_tokens: 48,
+            dropped_raw_l2_tokens: 512
+          },
+          selected_refs: [
+            {ref_type:'event', ref_hash:'evt_gpu_approval', tokens:42, score:0.91, reason:'current-state evidence matched event_type and entity_type indexes'},
+            {ref_type:'resource_chunk', ref_hash:'chunk_gpu_policy_p2', tokens:88, score:0.84, reason:'PDF page citation matched approval and budget keywords'},
+            {ref_type:'entity', ref_hash:'ent_gpu_request', tokens:44, score:0.79, reason:'latest entity state before raw timeline scan'}
+          ],
+          dropped_refs: [
+            {ref_type:'summary', ref_hash:'sum_old_budget', tokens:48, reason:'lower answer density than raw cited chunk'},
+            {ref_type:'event', ref_hash:'evt_superseded_budget', tokens:34, reason:'stale blocker retained in audit but excluded from answer pack'},
+            {ref_type:'resource_chunk', ref_hash:'chunk_duplicate_intro', tokens:96, reason:'duplicate content_hash'}
+          ],
+          stage_timings_ms: {query_understanding:18, scope_filter:2, tree_traversal:21, secondary_index_prefilter:7, vector_scoring:34, temporal_decay:4, pack_budgeting:5, audit_write:9, total:100},
+          token_scenarios: [
+            {mode:'full history baseline', tokens:11840, score:'reference only'},
+            {mode:'flat RAG top-k', tokens:2048, score:'more noisy evidence'},
+            {mode:'MatrixArk pack', tokens:486, score:'same query, answer-dense refs'},
+            {mode:'estimated token saved vs full history', tokens:11354, score:'95.9% fewer prompt tokens'}
+          ]
+        },
         users: [{user_id: 'deeproute', display_name: 'deeproute', external_subject: 'google:deeproute@gmail.com', status: 'active', role: 'owner', linked_providers: ['google','github'] }],
         api_keys: [{api_key_id: 'key_123', status: 'active', role: 'local_agent', scopes: ['context:ingest','context:retrieve','context:replay'], allowed_user_ids: ['deeproute'], created_at: '2026-06-25', last_used_at: '2026-06-25T10:25:00Z', token_count: 18420}, {api_key_id: 'key_old', status: 'revoked', role: 'agent_hook', scopes: ['context:ingest'], created_at: '2026-06-20', last_used_at: '2026-06-21T08:00:00Z', token_count: 2014}],
         audit_logs: [{action: 'admin.apply_api_key', status: 'ok', api_key_id: 'key_123', actor: 'deeproute'}, {action: 'context.ingest', status: 'ok', api_key_id: 'key_123', actor: 'codex'}, {action: 'context.retrieve', status: 'ok', api_key_id: 'key_123', actor: 'codex'}],
@@ -210,9 +288,10 @@
       function renderTopology(){document.getElementById('portal-topology').innerHTML=samplePortal.topology.nodes.map(node=>`<button type="button" class="portal-node depth-${Math.min(node.depth,5)}"><strong>${node.node_name}</strong><span>${node.node_path.join(' / ')}</span><small>${node.status}</small></button>`).join(''); document.querySelectorAll('.portal-node').forEach((node, i)=>node.addEventListener('click',()=>document.getElementById('portal-row-details').textContent=JSON.stringify(samplePortal.topology.nodes[i],null,2)));}
       function renderMetrics(){const m=samplePortal.metrics; const rows=[['Users',m.user_count],['Messages',m.message_count],['Resources',m.resource_count],['Skills',m.skill_count],['Events',m.event_count],['Entities',m.entity_count],['Context packs',m.context_pack_count],['Summaries',m.context_summary_count],['Embeddings',m.context_embedding_count],['Dirty summaries',m.dirty_summary_count],['Audit records',m.audit_count]]; document.getElementById('portal-metrics').innerHTML=rows.map(([k,v])=>`<div class="metric-row"><span>${k}</span><strong>${v}</strong></div>`).join('');}
       function renderTokenMetrics(){const m=samplePortal.metrics; const rows=[['Used context tokens',m.used_context_tokens],['Selected evidence tokens',m.selected_tokens],['Dropped tokens',m.dropped_tokens],['Dropped over budget',m.dropped_over_budget_tokens],['Prompt budget p95',m.prompt_budget_p95],['Retrieve p95',`${m.retrieval_p95_ms} ms`],['Ingest QPS',m.ingest_qps],['Retrieve QPS',m.retrieve_qps]]; document.getElementById('portal-token-metrics').innerHTML=rows.map(([k,v])=>`<article><span>${k}</span><strong>${v}</strong><small>${k.includes('Dropped')?'tracked in ContextPackAudit':'scoped to selected account/tenant/user'}</small></article>`).join('');}
+      function renderContextDebugger(){const d=samplePortal.debug; const pack=d.context_pack; const kpis=[['Remote tokens',pack.used_remote_context_tokens,'MatrixArk ContextPack'],['Local tokens',pack.used_local_context_tokens,'visible hook-provided context only'],['Total prompt context',pack.total_prompt_context_tokens,'local visible + remote pack'],['Answer density',pack.density,'answer-bearing / selected tokens']]; document.getElementById('portal-debug-kpis').innerHTML=kpis.map(([k,v,n])=>`<article><span>${k}</span><strong>${v}</strong><small>${n}</small></article>`).join(''); const visibility=[['Visible fields',d.hook_visibility.visible_payload_fields.join(', ')],['Hidden local context',d.hook_visibility.hidden_codex_context],['Visible local refs',d.hook_visibility.local_context_count],['Visible local tokens',d.hook_visibility.local_context_tokens],['Local refs',d.hook_visibility.local_context_refs.map(r=>`${r.ref} (${r.tokens})`).join(' | ')]]; document.getElementById('portal-context-visibility').innerHTML=visibility.map(([k,v])=>`<div class="metric-row"><span>${k}</span><strong>${v}</strong></div>`).join(''); document.getElementById('portal-pack-debug').textContent=JSON.stringify(pack,null,2); document.getElementById('portal-stage-debug').innerHTML=Object.entries(d.stage_timings_ms).map(([k,v])=>`<div class="metric-row"><span>${k.replaceAll('_',' ')}</span><strong>${v} ms</strong></div>`).join(''); document.getElementById('portal-ref-debug').textContent=JSON.stringify({selected_refs:d.selected_refs,dropped_refs:d.dropped_refs},null,2); document.getElementById('portal-token-scenarios').innerHTML=d.token_scenarios.map(row=>`<div class="metric-row"><span>${row.mode}</span><strong>${row.tokens}<small>${row.score}</small></strong></div>`).join(''); document.getElementById('portal-debug-request').textContent=JSON.stringify({inspect_pack:{tool:'matrixark_audit',arguments:{context_pack_id:pack.context_pack_id,scope:scope()}},replay:{tool:'matrixark_replay',arguments:{context_pack_id:pack.context_pack_id,scope:scope()}},retrieve_with_local_context:{tool:'matrixark_retrieve',arguments:{query:'what GPU approval is current?',scope:scope(),max_context_tokens:2048,local_context:d.hook_visibility.local_context_refs,local_context_tokens:d.hook_visibility.local_context_tokens}}},null,2);}
       function renderLimitPolicy(){const rows=[['Token budgets','per request max_context_tokens plus selected/dropped token audit'],['API usage','per-key call count, last used time, token count, error rate'],['Alerts','key abuse, token pressure, stale summary lag, retrieval timeout'],['Billing boundary','account_id first, tenant/user/session attribution second']]; document.getElementById('portal-limit-policy').innerHTML=rows.map(([k,v])=>`<div class="metric-row"><span>${k}</span><strong>${v}</strong></div>`).join('');}
       function renderIdentity(){const s=scope(); const rows=[['Caller can send', 'agent name, session id, local context refs, email/login claim'], ['MatrixArk resolves', `${s.account_id} / ${s.tenant_id} / ${s.user_id}`], ['Enforced before retrieval', 'API key scopes, allowed users, allowed sessions, account and tenant status'], ['Audit stores', 'who called, key id, action, selected refs, dropped refs']]; document.getElementById('portal-identity-policy').innerHTML=rows.map(([k,v])=>`<div class="metric-row"><span>${k}</span><strong>${v}</strong></div>`).join('');}
-      function render(){document.getElementById('portal-request').textContent=JSON.stringify(portalRequest(),null,2); const actions=actionPayloads(); document.getElementById('portal-register-payload').textContent=JSON.stringify(actions.register,null,2); document.getElementById('portal-key-payload').textContent=JSON.stringify(actions.key,null,2); document.getElementById('portal-sso-payload').textContent=JSON.stringify(actions.sso,null,2); document.getElementById('portal-link-payload').textContent=JSON.stringify(actions.link,null,2); document.getElementById('portal-key-management-payload').textContent=JSON.stringify(actions.manage,null,2); document.getElementById('portal-policy-decision').textContent=JSON.stringify(actions.policy,null,2); const snippets=installSnippets(); document.getElementById('portal-install-command').textContent=snippets.install; document.getElementById('portal-mcp-config').textContent=snippets.config; document.getElementById('portal-verify-command').textContent=snippets.verify; document.getElementById('portal-users').textContent=samplePortal.metrics.user_count; document.getElementById('portal-keys').textContent=samplePortal.metrics.api_key_count; document.getElementById('portal-nodes').textContent=samplePortal.metrics.context_node_count; document.getElementById('portal-items').textContent=samplePortal.metrics.message_count + samplePortal.metrics.resource_count + samplePortal.metrics.skill_count; renderTable(); renderTopology(); renderMetrics(); renderTokenMetrics(); renderLimitPolicy(); renderIdentity(); renderMetadataStore();}
+      function render(){document.getElementById('portal-request').textContent=JSON.stringify(portalRequest(),null,2); const actions=actionPayloads(); document.getElementById('portal-register-payload').textContent=JSON.stringify(actions.register,null,2); document.getElementById('portal-key-payload').textContent=JSON.stringify(actions.key,null,2); document.getElementById('portal-sso-payload').textContent=JSON.stringify(actions.sso,null,2); document.getElementById('portal-link-payload').textContent=JSON.stringify(actions.link,null,2); document.getElementById('portal-key-management-payload').textContent=JSON.stringify(actions.manage,null,2); document.getElementById('portal-policy-decision').textContent=JSON.stringify(actions.policy,null,2); const snippets=installSnippets(); document.getElementById('portal-install-command').textContent=snippets.install; document.getElementById('portal-mcp-config').textContent=snippets.config; document.getElementById('portal-verify-command').textContent=snippets.verify; document.getElementById('portal-users').textContent=samplePortal.metrics.user_count; document.getElementById('portal-keys').textContent=samplePortal.metrics.api_key_count; document.getElementById('portal-nodes').textContent=samplePortal.metrics.context_node_count; document.getElementById('portal-items').textContent=samplePortal.metrics.message_count + samplePortal.metrics.resource_count + samplePortal.metrics.skill_count; renderTable(); renderTopology(); renderMetrics(); renderTokenMetrics(); renderContextDebugger(); renderLimitPolicy(); renderIdentity(); renderMetadataStore();}
       document.querySelectorAll('.portal-tabs button').forEach(button=>button.addEventListener('click',()=>{selectedTable=button.dataset.table; renderTable();}));
       ['portal-account','portal-tenant','portal-user','portal-session','portal-agent','portal-provider','portal-email','portal-mode','portal-page-size','portal-metadata-backend'].forEach(id=>document.getElementById(id).addEventListener('input', render));
       document.getElementById('portal-refresh').addEventListener('click',render);
