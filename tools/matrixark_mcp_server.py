@@ -7575,6 +7575,201 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
 
 
+
+class MatrixArkMetadataStore:
+    """Admin/control-plane metadata boundary for MatrixArk.
+
+    Context records still live in TemporalStore. This store is for account,
+    tenant, user, SSO, API-key, usage, and admin audit metadata that a portal
+    needs to query transactionally. MySQL and ByteKV SQL share the same schema.
+    """
+
+    backend_name = "record_log"
+
+    def append(self, record: Json) -> None:
+        raise NotImplementedError
+
+    def read_all(self) -> list[Json]:
+        raise NotImplementedError
+
+    def backend_info(self) -> Json:
+        return {"backend": self.backend_name, "status": "ok"}
+
+
+class MatrixArkRecordLogMetadataStore(MatrixArkMetadataStore):
+    backend_name = "record_log"
+
+    def __init__(self, adapter: "MatrixArkLocalAdapter") -> None:
+        self.adapter = adapter
+
+    def append(self, record: Json) -> None:
+        self.adapter.append(record)
+
+    def read_all(self) -> list[Json]:
+        return [record for record in self.adapter.read_all() if str(record.get("record_type", "")).startswith("matrixark_")]
+
+
+class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
+    """Small SQL metadata store.
+
+    Supported backends:
+    - sqlite: local/dev smoke tests, no extra dependency.
+    - mysql: PyMySQL or mysql-connector-python DB-API connection.
+    - bytekv_sql: MySQL-compatible ByteKV SQL endpoint, same table shape.
+    """
+
+    TABLE = "matrixark_metadata_records"
+
+    def __init__(self, *, backend: str, dsn: str, auto_init: bool = True) -> None:
+        self.backend_name = backend
+        self.dsn = dsn
+        self.auto_init = auto_init
+        if auto_init:
+            self.ensure_schema()
+
+    def _connect(self):
+        if self.backend_name == "sqlite":
+            import sqlite3
+
+            path = self.dsn
+            if path.startswith("sqlite:///"):
+                path = path[len("sqlite:///") :]
+            conn = sqlite3.connect(path)
+            conn.row_factory = sqlite3.Row
+            return conn
+        if self.backend_name in {"mysql", "bytekv_sql"}:
+            from urllib.parse import urlparse, parse_qs, unquote
+
+            parsed = urlparse(self.dsn)
+            if parsed.scheme not in {"mysql", "bytekv", "bytekv+mysql"}:
+                raise MatrixArkError("MATRIXARK_METADATA_DSN must be mysql:// or bytekv+mysql:// for SQL metadata")
+            params = {
+                "host": parsed.hostname or "127.0.0.1",
+                "port": parsed.port or 3306,
+                "user": unquote(parsed.username or "root"),
+                "password": unquote(parsed.password or ""),
+                "database": parsed.path.lstrip("/") or os.environ.get("MATRIXARK_METADATA_DB", "matrixark"),
+                "charset": "utf8mb4",
+                "autocommit": True,
+            }
+            query = parse_qs(parsed.query)
+            if "ssl_disabled" in query:
+                params["ssl_disabled"] = query["ssl_disabled"][-1].lower() in {"1", "true", "yes"}
+            try:
+                import pymysql  # type: ignore
+
+                return pymysql.connect(**params)
+            except ModuleNotFoundError:
+                try:
+                    import mysql.connector  # type: ignore
+
+                    return mysql.connector.connect(**params)
+                except ModuleNotFoundError as exc:
+                    raise MatrixArkError("SQL metadata backend requires pymysql or mysql-connector-python") from exc
+        raise MatrixArkError(f"unsupported metadata backend: {self.backend_name}")
+
+    def ensure_schema(self) -> None:
+        if self.backend_name == "sqlite":
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {self.TABLE} (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              record_type TEXT NOT NULL,
+              account_id TEXT NOT NULL DEFAULT '',
+              tenant_id TEXT NOT NULL DEFAULT '',
+              user_id TEXT NOT NULL DEFAULT '',
+              api_key_id TEXT NOT NULL DEFAULT '',
+              created_at_ms INTEGER NOT NULL DEFAULT 0,
+              payload_json TEXT NOT NULL
+            )
+            """
+            index_ddls = [
+                f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_scope ON {self.TABLE}(account_id, tenant_id, user_id)",
+                f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_type_time ON {self.TABLE}(record_type, created_at_ms)",
+                f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_api_key ON {self.TABLE}(api_key_id)",
+            ]
+        else:
+            ddl = f"""
+            CREATE TABLE IF NOT EXISTS {self.TABLE} (
+              id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              record_type VARCHAR(96) NOT NULL,
+              account_id VARCHAR(128) NOT NULL DEFAULT '',
+              tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+              user_id VARCHAR(256) NOT NULL DEFAULT '',
+              api_key_id VARCHAR(128) NOT NULL DEFAULT '',
+              created_at_ms BIGINT NOT NULL DEFAULT 0,
+              payload_json LONGTEXT NOT NULL,
+              KEY idx_scope (account_id, tenant_id, user_id),
+              KEY idx_type_time (record_type, created_at_ms),
+              KEY idx_api_key (api_key_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            """
+            index_ddls = []
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(ddl)
+            for index_ddl in index_ddls:
+                cur.execute(index_ddl)
+            if self.backend_name == "sqlite":
+                conn.commit()
+
+    def append(self, record: Json) -> None:
+        payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+        row = (
+            str(record.get("record_type", "")),
+            str(record.get("account_id", "")),
+            str(record.get("tenant_id", "")),
+            str(record.get("user_id", "")),
+            str(record.get("api_key_id", "")),
+            int(record.get("created_at_ms") or record.get("updated_at_ms") or record.get("used_at_ms") or now_ms()),
+            payload,
+        )
+        sql = f"INSERT INTO {self.TABLE} (record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json) VALUES (%s, %s, %s, %s, %s, %s, %s)"
+        if self.backend_name == "sqlite":
+            sql = sql.replace("%s", "?")
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, row)
+            if self.backend_name == "sqlite":
+                conn.commit()
+
+    def read_all(self) -> list[Json]:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute(f"SELECT payload_json FROM {self.TABLE} ORDER BY id ASC")
+            rows = cur.fetchall()
+        records: list[Json] = []
+        for row in rows:
+            payload = row[0] if not isinstance(row, dict) else row.get("payload_json")
+            try:
+                records.append(json.loads(payload))
+            except Exception:
+                continue
+        return records
+
+    def backend_info(self) -> Json:
+        return {
+            "backend": self.backend_name,
+            "dsn_configured": bool(self.dsn),
+            "table": self.TABLE,
+            "auto_init": self.auto_init,
+            "sql_compatible_with": "mysql" if self.backend_name in {"mysql", "bytekv_sql"} else self.backend_name,
+        }
+
+
+def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixArkMetadataStore:
+    backend = os.environ.get("MATRIXARK_METADATA_BACKEND", "record_log").strip().lower()
+    if backend in {"", "record_log", "temporalstore", "adapter"}:
+        return MatrixArkRecordLogMetadataStore(adapter)
+    if backend in {"sqlite", "mysql", "bytekv_sql"}:
+        dsn = os.environ.get("MATRIXARK_METADATA_DSN", "").strip()
+        if backend == "sqlite" and not dsn:
+            dsn = "/tmp/matrixark_metadata.sqlite3"
+        if backend in {"mysql", "bytekv_sql"} and not dsn:
+            raise MatrixArkError("MATRIXARK_METADATA_DSN is required for mysql/bytekv_sql metadata backend")
+        auto_init = os.environ.get("MATRIXARK_METADATA_AUTO_INIT", "1").strip().lower() in {"1", "true", "yes"}
+        return MatrixArkSqlMetadataStore(backend=backend, dsn=dsn, auto_init=auto_init)
+    raise MatrixArkError("MATRIXARK_METADATA_BACKEND must be record_log, sqlite, mysql, or bytekv_sql")
+
 class MatrixArkAccessManager:
     """Small MatrixArk product access layer over the same storage adapter.
 
@@ -7586,6 +7781,7 @@ class MatrixArkAccessManager:
         if mode not in {"dev", "enforced"}:
             raise MatrixArkError("access mode must be dev or enforced")
         self.adapter = adapter
+        self.metadata = build_matrixark_metadata_store(adapter)
         self.mode = mode
 
     def authenticate(self, tool_name: str, args: Json) -> Json:
@@ -7675,7 +7871,7 @@ class MatrixArkAccessManager:
 
     def find_active_api_key(self, api_key: str) -> Json | None:
         hashed = secret_hash(api_key)
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") != "matrixark_api_key":
                 continue
             if record.get("api_key_hash") == hashed:
@@ -7688,13 +7884,13 @@ class MatrixArkAccessManager:
         return None
 
     def latest_account_record(self, account_id: str) -> Json | None:
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") == "matrixark_account" and record.get("account_id") == account_id:
                 return record
         return None
 
     def latest_tenant_record(self, account_id: str, tenant_id: str) -> Json | None:
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if (
                 record.get("record_type") == "matrixark_tenant"
                 and record.get("account_id") == account_id
@@ -7712,7 +7908,7 @@ class MatrixArkAccessManager:
             raise MatrixArkError("tenant is disabled")
 
     def latest_api_key_record(self, api_key_id: str) -> Json | None:
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") == "matrixark_api_key" and record.get("api_key_id") == api_key_id:
                 return record
         return None
@@ -7720,7 +7916,7 @@ class MatrixArkAccessManager:
     def latest_user_record(self, account_id: str, tenant_id: str, user_id: str) -> Json | None:
         if not user_id:
             return None
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if (
                 record.get("record_type") == "matrixark_user"
                 and record.get("account_id") == account_id
@@ -7736,7 +7932,7 @@ class MatrixArkAccessManager:
             raise MatrixArkError("scope.user_id is disabled")
 
     def append_audit(self, action: str, identity: Json, *, status: str, details: Json | None = None) -> None:
-        self.adapter.append(
+        self.metadata.append(
             {
                 "record_type": "matrixark_audit_log",
                 "audit_id_hash": stable_hash(f"{action}:{identity.get('api_key_id')}:{now_ms()}"),
@@ -7752,7 +7948,7 @@ class MatrixArkAccessManager:
         )
 
     def append_api_key_usage(self, action: str, identity: Json, scope: Json) -> None:
-        self.adapter.append(
+        self.metadata.append(
             {
                 "record_type": "matrixark_api_key_usage",
                 "usage_id_hash": stable_hash(
@@ -7784,7 +7980,7 @@ class MatrixArkAccessManager:
         self.ensure_identity_can_manage(identity, account_id, tenant_id)
         account_name = optional_string(args, "account_name", account_id)
         tenant_name = optional_string(args, "tenant_name", tenant_id)
-        self.adapter.append(
+        self.metadata.append(
             {
                 "record_type": "matrixark_account",
                 "account_id": account_id,
@@ -7794,7 +7990,7 @@ class MatrixArkAccessManager:
                 "created_at_ms": now_ms(),
             }
         )
-        self.adapter.append(
+        self.metadata.append(
             {
                 "record_type": "matrixark_tenant",
                 "account_id": account_id,
@@ -7846,8 +8042,8 @@ class MatrixArkAccessManager:
             "updated_by_api_key_id": identity.get("api_key_id", ""),
             "updated_at_ms": now_ms(),
         }
-        self.adapter.append(account_record)
-        self.adapter.append(tenant_record)
+        self.metadata.append(account_record)
+        self.metadata.append(tenant_record)
         self.append_audit(
             "admin.update_account",
             identity,
@@ -7874,7 +8070,7 @@ class MatrixArkAccessManager:
             requested_tenant = requested_tenant or identity["tenant_id"]
         latest_accounts: dict[str, Json] = {}
         latest_tenants: dict[tuple[str, str], Json] = {}
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") == "matrixark_account":
                 account_id = str(record.get("account_id", ""))
                 if not account_id or account_id in latest_accounts:
@@ -7937,7 +8133,7 @@ class MatrixArkAccessManager:
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
-        self.adapter.append(record)
+        self.metadata.append(record)
         self.append_audit("admin.create_user", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id})
         return {
             "status": "created",
@@ -7974,7 +8170,7 @@ class MatrixArkAccessManager:
             "updated_by_api_key_id": identity.get("api_key_id", ""),
             "updated_at_ms": now_ms(),
         }
-        self.adapter.append(record)
+        self.metadata.append(record)
         self.append_audit("admin.update_user", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "user_status": status})
         return {"status": "updated", "account_id": account_id, "tenant_id": tenant_id, "user_id": user_id, "user_status": status, "user_hash": record["user_hash"]}
 
@@ -7990,7 +8186,7 @@ class MatrixArkAccessManager:
         if status_filter and status_filter not in {"active", "disabled"}:
             raise MatrixArkError("status must be active or disabled")
         latest: dict[str, Json] = {}
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") != "matrixark_user":
                 continue
             if record.get("account_id") != account_id or record.get("tenant_id") != tenant_id:
@@ -8052,7 +8248,7 @@ class MatrixArkAccessManager:
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
-        self.adapter.append(record)
+        self.metadata.append(record)
         self.append_audit(
             "admin.create_api_key",
             identity,
@@ -8099,7 +8295,7 @@ class MatrixArkAccessManager:
 
         created_records: list[str] = []
         if self.latest_account_record(account_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_account",
                     "account_id": account_id,
@@ -8111,7 +8307,7 @@ class MatrixArkAccessManager:
             )
             created_records.append("account")
         if self.latest_tenant_record(account_id, tenant_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_tenant",
                     "account_id": account_id,
@@ -8126,7 +8322,7 @@ class MatrixArkAccessManager:
             )
             created_records.append("tenant")
         if user_id and self.latest_user_record(account_id, tenant_id, user_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_user",
                     "user_record_hash": stable_hash(f"{account_id}:{tenant_id}:user:{user_id}"),
@@ -8209,7 +8405,7 @@ class MatrixArkAccessManager:
             "revoked_by_api_key_id": identity.get("api_key_id", ""),
             "revoked_at_ms": now_ms(),
         }
-        self.adapter.append(revoked)
+        self.metadata.append(revoked)
         self.append_audit(action, identity, status="ok", details={"api_key_id": api_key_id})
         return {"status": "revoked", "api_key_id": api_key_id}
 
@@ -8246,7 +8442,7 @@ class MatrixArkAccessManager:
         self.ensure_identity_can_manage(identity, account_id, tenant_id)
         include_revoked = bool(args.get("include_revoked", False))
         latest: dict[str, Json] = {}
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if record.get("record_type") != "matrixark_api_key":
                 continue
             if record.get("account_id") != account_id or record.get("tenant_id") != tenant_id:
@@ -8278,7 +8474,7 @@ class MatrixArkAccessManager:
 
 
     def latest_sso_mapping(self, account_id: str, tenant_id: str, provider: str, external_user_id: str) -> Json | None:
-        for record in reversed(self.adapter.read_all()):
+        for record in reversed(self.metadata.read_all()):
             if (
                 record.get("record_type") == "matrixark_sso_user_mapping"
                 and record.get("account_id") == account_id
@@ -8319,7 +8515,7 @@ class MatrixArkAccessManager:
         external_subject = f"{provider}:{external_user_id}"
         created_records: list[str] = []
         if self.latest_account_record(account_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_account",
                     "account_id": account_id,
@@ -8331,7 +8527,7 @@ class MatrixArkAccessManager:
             )
             created_records.append("account")
         if self.latest_tenant_record(account_id, tenant_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_tenant",
                     "account_id": account_id,
@@ -8345,7 +8541,7 @@ class MatrixArkAccessManager:
             )
             created_records.append("tenant")
         if self.latest_user_record(account_id, tenant_id, matrixark_user_id) is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_user",
                     "user_record_hash": stable_hash(f"{account_id}:{tenant_id}:user:{matrixark_user_id}"),
@@ -8363,7 +8559,7 @@ class MatrixArkAccessManager:
             created_records.append("user")
         mapping_created = False
         if existing_mapping is None:
-            self.adapter.append(
+            self.metadata.append(
                 {
                     "record_type": "matrixark_sso_user_mapping",
                     "mapping_id_hash": stable_hash(f"{account_id}:{tenant_id}:{provider}:{external_user_id}"),
@@ -8435,7 +8631,7 @@ class MatrixArkAccessManager:
             "created_by_api_key_id": identity.get("api_key_id", ""),
             "created_at_ms": now_ms(),
         }
-        self.adapter.append(record)
+        self.metadata.append(record)
         self.append_audit("admin.map_sso_user", identity, status="ok", details={"provider": provider, "matrixark_user_id": matrixark_user_id})
         return {"status": "mapped", "matrixark_user_id": matrixark_user_id, "provider": provider, "external_user_id": external_user_id}
 
@@ -8450,7 +8646,7 @@ class MatrixArkAccessManager:
         if not isinstance(page_size, int) or page_size <= 0 or page_size > 50:
             raise MatrixArkError("page_size must be an integer between 1 and 50")
         include_revoked = bool(args.get("include_revoked", False))
-        records = self.adapter.read_all()
+        records = self.adapter.read_all() + self.metadata.read_all()
         tables = ["messages", "resources", "skills", "events", "entities", "context_packs"]
         dashboard = {}
         totals = {}
@@ -8504,6 +8700,7 @@ class MatrixArkAccessManager:
             "event_count": totals.get("events", 0),
             "entity_count": totals.get("entities", 0),
             "context_pack_count": totals.get("context_packs", 0),
+            "metadata_backend": self.metadata.backend_info(),
         }
         portal_actions = {
             "register_user": {
@@ -8553,6 +8750,7 @@ class MatrixArkAccessManager:
             "dashboard": dashboard,
             "topology": {"nodes": topology_nodes, "count": len(nodes)},
             "metrics": metrics,
+            "metadata_store": self.metadata.backend_info(),
             "portal_actions": portal_actions,
         }
 
@@ -8564,7 +8762,7 @@ class MatrixArkAccessManager:
         tenant_id = optional_string(args, "tenant_id", identity["tenant_id"])
         rows = [
             record
-            for record in reversed(self.adapter.read_all())
+            for record in reversed(self.metadata.read_all())
             if record.get("record_type") in {"matrixark_audit_log", "matrixark_api_key_usage"}
             and (not account_id or record.get("account_id") == account_id)
             and (not tenant_id or record.get("tenant_id") == tenant_id)
