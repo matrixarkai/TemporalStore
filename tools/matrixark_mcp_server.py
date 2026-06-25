@@ -1201,6 +1201,8 @@ QUERY_TYPE_LABELS: dict[str, str] = {
     "current_state": "question asks current latest now still status preference location role valid state",
     "why_emotion": "question asks why reason feeling emotion because",
     "evidence": "question asks quote exact message evidence what did someone say",
+    "procedure": "question asks procedure steps troubleshoot debug rollback runbook checklist how to fix",
+    "broad_exploration": "question asks overview summarize broad exploration topics inventory what is known",
     "multi_hop": "question requires combining multiple sessions people facts cross conversation reasoning",
     "fact": "question asks a direct factual answer",
 }
@@ -1995,6 +1997,10 @@ def infer_query_type(query: str) -> str:
         return "why_emotion"
     if re.search(r"\b(evidence|quote|exactly|what did .* say|conversation|dialogue|message)\b", lower):
         return "evidence"
+    if re.search(r"\b(overview|summarize|summary|explore|broad|what is in|what do we know|topics|map|inventory)\b", lower):
+        return "broad_exploration"
+    if re.search(r"\b(procedure|steps?|how to|troubleshoot|debug|rollback|runbook|playbook|checklist|fix|remediate|mitigate)\b", lower):
+        return "procedure"
     if re.search(r"\b(both|together|across|between|compare|combine|sessions|multi-hop|multi session|multi-session)\b", lower):
         return "multi_hop"
     return "fact"
@@ -2452,19 +2458,43 @@ def merge_ranked_paths(primary: list[Json], auxiliary: list[Json], *, total_limi
 
 def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     ref_type = str(candidate.get("ref_type", ""))
+    context_class = str(candidate.get("context_class") or ref_type)
     text = str(candidate.get("text", "")).lower()
     event_type = str(candidate.get("event_type") or candidate.get("entity_type") or candidate.get("topic") or "").lower()
+    has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
+    if question_type == "procedure":
+        if ref_type == "skill_section":
+            return 0.36
+        if context_class in {"resource_fact", "resource_entity_fact"} and re.search(r"\b(procedure|troubleshoot|debug|rollback|runbook|checklist|alert|fix|remediation|mitigation)\b", event_type + " " + text):
+            return 0.34
+        if ref_type == "resource_chunk" and re.search(r"\b(procedure|troubleshoot|debug|rollback|runbook|checklist|alert|fix|remediation|mitigation)\b", text):
+            return 0.30
+        return 0.0
+    if question_type == "broad_exploration":
+        if ref_type == "summary":
+            return 0.35
+        if ref_type in {"segment", "compression"}:
+            return 0.16
+        return 0.02 if ref_type in {"resource_chunk", "event", "entity"} else 0.0
     if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
         return 0.32 if source_count >= 2 else 0.18
     if question_type == "current_state":
         if ref_type == "entity":
+            return 0.30
+        if context_class == "resource_entity_fact":
             return 0.28
-        if "correction" in event_type or "confirmation" in event_type:
-            return 0.16
+        if context_class == "resource_fact" or "correction" in event_type or "confirmation" in event_type:
+            return 0.18
+        if ref_type == "resource_chunk" and has_citation:
+            return 0.10
         return 0.0
     if question_type == "evidence":
-        return 0.22 if ref_type == "event" else 0.05 if ref_type == "segment" else 0.0
+        if ref_type == "resource_chunk" and has_citation:
+            return 0.30
+        if ref_type == "event":
+            return 0.24
+        return 0.05 if ref_type == "segment" else 0.0
     if question_type == "date":
         if ref_type == "event" and re.search(r"\b(20\d{2}|19\d{2}|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday|before|after|on)\b", text):
             return 0.28
@@ -2474,7 +2504,13 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     if question_type == "why_emotion":
         return 0.18 if re.search(r"\b(because|reason|felt|feel|happy|sad|angry|worried|excited|concerned)\b", text) else 0.0
     if question_type == "fact":
-        return 0.14 if ref_type in {"entity", "event"} else 0.03
+        if context_class in {"resource_fact", "resource_entity_fact"}:
+            return 0.30
+        if ref_type in {"entity", "event"}:
+            return 0.18
+        if ref_type == "resource_chunk" and has_citation:
+            return 0.06
+        return 0.03
     return 0.0
 
 
@@ -2671,6 +2707,7 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
         "resource_entity_fact": 0,
         "resource_chunk": 0,
         "skill_section": 0,
+        "summary": 0,
     }
     for ref in refs:
         context_class = str(ref.get("context_class") or ref.get("ref_type") or "")
@@ -2714,6 +2751,7 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "source_start_ms",
         "source_end_ms",
         "source_event_ids",
+        "summary_type",
     ]
     metadata_keep_fields = [
         "unit_kind",
@@ -5084,6 +5122,60 @@ class MatrixArkLocalAdapter:
         )
         primary_matches = []
         auxiliary_matches = []
+        if question_type == "broad_exploration":
+            for record in reversed(records):
+                if record.get("record_type") != "context_summary":
+                    continue
+                if not access_scope_matches_before_scoring(record, scope):
+                    continue
+                if not selected_by_tree(record):
+                    continue
+                summary_type = str(record.get("summary_type") or "")
+                if summary_type not in {"node_l0", "node_l1", "resource_l0", "batch_l0", "session_l0"}:
+                    continue
+                index_terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+                if not passes_applicable_secondary_index_filters(index_terms, secondary_index_filter_groups, mode=secondary_index_filter_mode):
+                    secondary_index_dropped_count += 1
+                    continue
+                secondary_index_matched_count += 1
+                text = str(record.get("summary_text", ""))
+                if not text:
+                    continue
+                sparse_score = sparse_lexical_score(query_terms, text)
+                keyword_score = len(query_terms.intersection(tokens(text)))
+                embedding_score = cosine(query_embedding, embedding_for_text(" ".join(record.get("node_path", []) + [summary_type, text])))
+                node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
+                origin_score = min(1.0, 0.06 + hybrid_origin_score(query_terms, text, embedding_score, node_score))
+                if origin_score <= 0:
+                    continue
+                primary_matches.append(
+                    score_recall_candidate(
+                        {
+                            "ref_type": "summary",
+                            "ref_hash": record.get("summary_hash") or record.get("node_hash"),
+                            "node_hash": record.get("node_hash"),
+                            "node_path": record.get("node_path", []),
+                            "origin_score": origin_score,
+                            "keyword_score": keyword_score,
+                            "sparse_score": sparse_score,
+                            "embedding_score": embedding_score,
+                            "node_score": node_score,
+                            "matched_index_terms": sorted(index_terms),
+                            "selection_reason": "selected by tree path and L0/L1 summary relevance",
+                            "event_type": summary_type,
+                            "context_class": "summary",
+                            "summary_type": summary_type,
+                            "access_decision": "allowed_by_registry_scope_before_scoring",
+                            "access_scope": candidate_access_scope(record),
+                            "scope": record.get("scope", {}),
+                            "updated_at_ms": record.get("updated_at_ms", now_ms()),
+                            "text": clip_context_text(text),
+                            "recall_path": "primary_summary",
+                        },
+                        ranking,
+                        reference_time_ms=reference_time_ms,
+                    )
+                )
         for record in reversed(records):
             if record.get("record_type") != "context_event":
                 continue
