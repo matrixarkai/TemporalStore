@@ -12,14 +12,14 @@ export MATRIXARK_TEMPORALSTORE_TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_ta
 export MATRIXARK_TEMPORALSTORE_PREFIX="${MATRIXARK_TEMPORALSTORE_PREFIX:-matrixark:mcp:codex:rust}"
 export MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS:-60000}"
 export MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS="${MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS:-60000}"
-export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-1}"
+export MATRIXARK_MCP_AUTOSTART_CPP="${MATRIXARK_MCP_AUTOSTART_CPP:-0}"
 export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
 export MATRIXARK_TEMPORALSTORE_LOCAL_STORE="${MATRIXARK_TEMPORALSTORE_LOCAL_STORE:-/tmp/matrixark-mcp-temporalstore-local-rust.jsonl}"
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
   for candidate in \
-    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "$ROOT/target/release/matrixark_record_log" \
-    "$ROOT/target/debug/matrixark_record_log"; do
+    "$ROOT/target/debug/matrixark_record_log" \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log"; do
     if [[ -x "$candidate" ]]; then
       export MATRIXARK_TEMPORALSTORE_RUST_CLI="$candidate"
       break
@@ -37,10 +37,8 @@ export MATRIXARK_REQUIRE_OSS_UNDERSTANDING="${MATRIXARK_REQUIRE_OSS_UNDERSTANDIN
 export MATRIXARK_RETRIEVAL_TIMEOUT_MS="${MATRIXARK_RETRIEVAL_TIMEOUT_MS:-5000}"
 
 if [[ "$MATRIXARK_LOCAL_MODE" == "no-metaserver" || "$MATRIXARK_LOCAL_MODE" == "embedded" || "$MATRIXARK_LOCAL_MODE" == "1" ]]; then
-  exec python3 "$ROOT/tools/matrixark_mcp_server.py" \
-    --backend temporalstore-local \
-    --local-store "$MATRIXARK_TEMPORALSTORE_LOCAL_STORE" \
-    "$@"
+  export MATRIXARK_MCP_AUTOSTART_CPP=0
+  export MATRIXARK_TEMPORALSTORE_METASERVER="${MATRIXARK_TEMPORALSTORE_METASERVER:-local}"
 fi
 
 if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-rust" && "$MATRIXARK_MCP_AUTOSTART_CPP" == "1" ]]; then
@@ -54,8 +52,8 @@ fi
 
 if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_CLI" ]]; then
   echo "MatrixArk MCP Rust: building Rust record-log CLI at $MATRIXARK_TEMPORALSTORE_RUST_CLI" >&2
-  TEMPORALSTORE_LIB_DIR="${TEMPORALSTORE_LIB_DIR:-$ROOT/output-ubuntu22/release/sdk/lib}" \
-    cargo build --release --manifest-path "$ROOT/sdk/rust/temporalstore/Cargo.toml" --bin matrixark_record_log >&2
+  cargo build --release -p temporalstore-rust --bin matrixark_record_log >&2
+  export MATRIXARK_TEMPORALSTORE_RUST_CLI="$ROOT/target/release/matrixark_record_log"
 fi
 
 bash "$ROOT/tools/wait_temporalstore_topology_ready.sh" \

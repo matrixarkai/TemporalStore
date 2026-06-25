@@ -2,8 +2,9 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::env;
 use std::hash::{Hash, Hasher};
-use std::io::{self, Read};
+use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -26,6 +27,23 @@ struct RecordLogRequest {
     field: String,
     #[serde(default)]
     value: String,
+    #[serde(default)]
+    entries: Vec<HashEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct HashEntry {
+    key: String,
+    field: String,
+    #[serde(default)]
+    value: String,
+}
+
+#[derive(Debug, Serialize)]
+struct HashReadRecord {
+    key: String,
+    field: String,
+    value: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -35,12 +53,24 @@ struct RecordLogResponse {
     value: String,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     entries: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    records: Vec<HashReadRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     count: Option<usize>,
     #[serde(skip_serializing_if = "String::is_empty")]
     op: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     root: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    status: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    mode: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    prometheus: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cached_clients: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    elapsed_ms: Option<u128>,
     #[serde(skip_serializing_if = "String::is_empty")]
     error: String,
 }
@@ -49,37 +79,65 @@ struct RecordLogResponse {
 struct RecordLogOutput {
     value: String,
     entries: BTreeMap<String, String>,
+    records: Vec<HashReadRecord>,
     count: Option<usize>,
     root: PathBuf,
+    status: String,
+    mode: String,
+    prometheus: String,
+    cached_clients: Option<usize>,
 }
 
 fn main() {
-    let response = match run() {
-        Ok((op, output)) => RecordLogResponse {
-            ok: true,
-            value: output.value,
-            entries: output.entries,
-            count: output.count,
-            op,
-            root: output.root.display().to_string(),
-            error: String::new(),
-        },
-        Err((op, error)) => RecordLogResponse {
-            ok: false,
-            value: String::new(),
-            entries: BTreeMap::new(),
-            count: None,
-            op,
-            root: String::new(),
-            error,
-        },
-    };
+    if env::args().any(|arg| arg == "--serve") {
+        std::process::exit(serve());
+    }
+    let started = Instant::now();
+    let response = response_from_result(run(), started.elapsed().as_millis());
     println!(
         "{}",
         serde_json::to_string(&response).expect("record-log response should serialize")
     );
     if !response.ok {
         std::process::exit(1);
+    }
+}
+
+fn response_from_result(
+    result: Result<(String, RecordLogOutput), (String, String)>,
+    elapsed_ms: u128,
+) -> RecordLogResponse {
+    match result {
+        Ok((op, output)) => RecordLogResponse {
+            ok: true,
+            value: output.value,
+            entries: output.entries,
+            records: output.records,
+            count: output.count,
+            op,
+            root: output.root.display().to_string(),
+            status: output.status,
+            mode: output.mode,
+            prometheus: output.prometheus,
+            cached_clients: output.cached_clients,
+            elapsed_ms: Some(elapsed_ms),
+            error: String::new(),
+        },
+        Err((op, error)) => RecordLogResponse {
+            ok: false,
+            value: String::new(),
+            entries: BTreeMap::new(),
+            records: Vec::new(),
+            count: None,
+            op,
+            root: String::new(),
+            status: String::new(),
+            mode: String::new(),
+            prometheus: String::new(),
+            cached_clients: None,
+            elapsed_ms: Some(elapsed_ms),
+            error,
+        },
     }
 }
 
@@ -97,16 +155,183 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
             format!("invalid JSON request: {error}"),
         )
     })?;
+    run_request(request)
+}
+
+fn serve() -> i32 {
+    let stdin = io::stdin();
+    let mut stdout = io::stdout();
+    let started_at_ms = unix_ms();
+    let mut command_count: u64 = 0;
+    let mut failed_count: u64 = 0;
+    let mut records_written: u64 = 0;
+    let mut records_read: u64 = 0;
+    for line in stdin.lock().lines() {
+        let line = match line {
+            Ok(value) => value,
+            Err(error) => {
+                failed_count += 1;
+                let response = response_from_result(
+                    Err(("unknown".to_string(), format!("failed to read request: {error}"))),
+                    0,
+                );
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    serde_json::to_string(&response).expect("record-log response should serialize")
+                );
+                let _ = stdout.flush();
+                continue;
+            }
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let started = Instant::now();
+        let request: Result<RecordLogRequest, _> = serde_json::from_str(&line);
+        let result = match request {
+            Ok(request) if request.op == "shutdown" => {
+                let output = RecordLogOutput {
+                    status: "shutting_down".to_string(),
+                    mode: "long_lived_stdio_gateway".to_string(),
+                    cached_clients: Some(0),
+                    ..empty_output(PathBuf::new())
+                };
+                let response = response_from_result(
+                    Ok(("shutdown".to_string(), output)),
+                    started.elapsed().as_millis(),
+                );
+                let _ = writeln!(
+                    stdout,
+                    "{}",
+                    serde_json::to_string(&response).expect("record-log response should serialize")
+                );
+                let _ = stdout.flush();
+                return 0;
+            }
+            Ok(request) if request.op == "metrics_prometheus" => {
+                let output = RecordLogOutput {
+                    prometheus: render_prometheus_metrics(
+                        started_at_ms,
+                        command_count,
+                        failed_count,
+                        records_written,
+                        records_read,
+                    ),
+                    mode: "long_lived_stdio_gateway".to_string(),
+                    cached_clients: Some(0),
+                    ..empty_output(PathBuf::new())
+                };
+                Ok(("metrics_prometheus".to_string(), output))
+            }
+            Ok(request) => run_request(request),
+            Err(error) => Err(("unknown".to_string(), format!("invalid JSON request: {error}"))),
+        };
+        let elapsed_ms = started.elapsed().as_millis();
+        let response = response_from_result(result, elapsed_ms);
+        command_count += 1;
+        if !response.ok {
+            failed_count += 1;
+        }
+        records_written += match response.op.as_str() {
+            "put_string" | "hset" => 1,
+            "batch_hset" => response.count.unwrap_or(0) as u64,
+            _ => 0,
+        };
+        records_read += match response.op.as_str() {
+            "get_string" | "hget" => 1,
+            "batch_hget" | "hgetall" | "scan_hash" => response.count.unwrap_or(0) as u64,
+            _ => 0,
+        };
+        let _ = writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string(&response).expect("record-log response should serialize")
+        );
+        let _ = stdout.flush();
+    }
+    0
+}
+
+fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (String, String)> {
     let op = request.op.clone();
     validate_request(&request).map_err(|error| (op.clone(), error))?;
+    if matches!(request.op.as_str(), "health" | "readiness" | "preflight") {
+        return Ok((
+            op,
+            RecordLogOutput {
+                value: "ready".to_string(),
+                count: Some(0),
+                root: record_log_root(&request),
+                status: "ready".to_string(),
+                mode: "long_lived_stdio_gateway".to_string(),
+                cached_clients: Some(0),
+                ..empty_output(PathBuf::new())
+            },
+        ));
+    }
     let root = record_log_root(&request);
     let engine = open_engine(&request).map_err(|error| (op.clone(), error))?;
+    let output = execute_record_log_request(&engine, request, root).map_err(|error| (op.clone(), error))?;
+    Ok((op, output))
+}
+
+fn render_prometheus_metrics(
+    started_at_ms: u128,
+    command_count: u64,
+    failed_count: u64,
+    records_written: u64,
+    records_read: u64,
+) -> String {
+    format!(
+        concat!(
+            "# HELP matrixark_rust_record_log_process_start_time_ms Unix millisecond timestamp when this Rust record-log process started.\n",
+            "# TYPE matrixark_rust_record_log_process_start_time_ms gauge\n",
+            "matrixark_rust_record_log_process_start_time_ms {}\n",
+            "# HELP matrixark_rust_record_log_commands_total Total MatrixArk Rust record-log commands.\n",
+            "# TYPE matrixark_rust_record_log_commands_total counter\n",
+            "matrixark_rust_record_log_commands_total {}\n",
+            "# HELP matrixark_rust_record_log_commands_failed_total Total failed MatrixArk Rust record-log commands.\n",
+            "# TYPE matrixark_rust_record_log_commands_failed_total counter\n",
+            "matrixark_rust_record_log_commands_failed_total {}\n",
+            "# HELP matrixark_rust_record_log_records_written_total Total MatrixArk records/hash entries written by the Rust record-log bridge.\n",
+            "# TYPE matrixark_rust_record_log_records_written_total counter\n",
+            "matrixark_rust_record_log_records_written_total {}\n",
+            "# HELP matrixark_rust_record_log_records_read_total Total MatrixArk records/hash entries read by the Rust record-log bridge.\n",
+            "# TYPE matrixark_rust_record_log_records_read_total counter\n",
+            "matrixark_rust_record_log_records_read_total {}\n"
+        ),
+        started_at_ms,
+        command_count,
+        failed_count,
+        records_written,
+        records_read
+    )
+}
+
+fn unix_ms() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or(0)
+}
+
+fn execute_record_log_request(
+    engine: &TemporalEngine,
+    request: RecordLogRequest,
+    root: PathBuf,
+) -> Result<RecordLogOutput, String> {
     let output = match request.op.as_str() {
         "health" | "preflight" => RecordLogOutput {
             value: "ready".to_string(),
             entries: BTreeMap::new(),
+            records: Vec::new(),
             count: Some(0),
             root,
+            status: "ready".to_string(),
+            mode: "single_shot".to_string(),
+            prometheus: String::new(),
+            cached_clients: None,
         },
         "put_string" => {
             execute_empty(
@@ -116,17 +341,17 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
                     value: request.value.into_bytes(),
                 },
             )
-            .map_err(|error| (op.clone(), error))?;
+            ?;
             empty_output(root)
         }
         "get_string" => value_output(
             read_bytes(&engine, Command::StringGet { key: request.key })
-                .map_err(|error| (op.clone(), error))?,
+                ?,
             root,
         ),
         "delete" | "del" => {
             execute_empty(&engine, Command::CommonDelete { key: request.key })
-                .map_err(|error| (op.clone(), error))?;
+                ?;
             empty_output(root)
         }
         "hset" => {
@@ -138,8 +363,47 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
                     value: request.value.into_bytes(),
                 },
             )
-            .map_err(|error| (op.clone(), error))?;
+            ?;
             empty_output(root)
+        }
+        "batch_hset" => {
+            let count = request.entries.len();
+            for entry in request.entries {
+                execute_empty(
+                    &engine,
+                    Command::HashSet {
+                        key: entry.key,
+                        field: entry.field,
+                        value: entry.value.into_bytes(),
+                    },
+                )?;
+            }
+            RecordLogOutput {
+                count: Some(count),
+                ..empty_output(root)
+            }
+        }
+        "batch_hget" => {
+            let mut records = Vec::with_capacity(request.entries.len());
+            for entry in request.entries {
+                let value = read_bytes(
+                    &engine,
+                    Command::HashGet {
+                        key: entry.key.clone(),
+                        field: entry.field.clone(),
+                    },
+                )?;
+                records.push(HashReadRecord {
+                    key: entry.key,
+                    field: entry.field,
+                    value,
+                });
+            }
+            RecordLogOutput {
+                count: Some(records.len()),
+                records,
+                ..empty_output(root)
+            }
         }
         "hget" => value_output(
             read_bytes(
@@ -149,7 +413,7 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
                     field: request.field,
                 },
             )
-            .map_err(|error| (op.clone(), error))?,
+            ?,
             root,
         ),
         "hdel" => {
@@ -160,15 +424,15 @@ fn run() -> Result<(String, RecordLogOutput), (String, String)> {
                     field: request.field,
                 },
             )
-            .map_err(|error| (op.clone(), error))?;
+            ?;
             empty_output(root)
         }
         "hgetall" | "scan_hash" => {
-            hash_entries_output(&engine, request.key, root).map_err(|error| (op.clone(), error))?
+            hash_entries_output(&engine, request.key, root)?
         }
-        other => return Err((op, format!("unsupported op {other:?}"))),
+        other => return Err(format!("unsupported op {other:?}")),
     };
-    Ok((op, output))
+    Ok(output)
 }
 
 fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
@@ -176,13 +440,23 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         return Err("missing op".to_string());
     }
     match request.op.as_str() {
-        "health" | "preflight" => Ok(()),
+        "health" | "readiness" | "preflight" | "metrics_prometheus" | "shutdown" => Ok(()),
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
             require_non_empty("key", &request.key)
         }
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
             require_non_empty("field", &request.field)
+        }
+        "batch_hset" | "batch_hget" => {
+            if request.entries.is_empty() {
+                return Err("missing entries".to_string());
+            }
+            for entry in &request.entries {
+                require_non_empty("key", &entry.key)?;
+                require_non_empty("field", &entry.field)?;
+            }
+            Ok(())
         }
         other => Err(format!("unsupported op {other:?}")),
     }
@@ -200,8 +474,13 @@ fn empty_output(root: PathBuf) -> RecordLogOutput {
     RecordLogOutput {
         value: String::new(),
         entries: BTreeMap::new(),
+        records: Vec::new(),
         count: None,
         root,
+        status: String::new(),
+        mode: String::new(),
+        prometheus: String::new(),
+        cached_clients: None,
     }
 }
 
@@ -209,8 +488,13 @@ fn value_output(value: String, root: PathBuf) -> RecordLogOutput {
     RecordLogOutput {
         value,
         entries: BTreeMap::new(),
+        records: Vec::new(),
         count: None,
         root,
+        status: String::new(),
+        mode: String::new(),
+        prometheus: String::new(),
+        cached_clients: None,
     }
 }
 
@@ -242,7 +526,12 @@ fn hash_entries_output(
                     .map_err(|error| format!("failed to serialize hash entries: {error}"))?,
                 count: Some(decoded.len()),
                 entries: decoded,
+                records: Vec::new(),
                 root,
+                status: String::new(),
+                mode: String::new(),
+                prometheus: String::new(),
+                cached_clients: None,
             })
         }
         other => Err(format!("unexpected response for hgetall: {other:?}")),
@@ -375,7 +664,13 @@ fn _request_shape_for_docs() -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use tempfile::tempdir;
+
+    fn env_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock")
+    }
 
     fn request(op: &str) -> RecordLogRequest {
         RecordLogRequest {
@@ -386,12 +681,14 @@ mod tests {
             key: String::new(),
             field: String::new(),
             value: String::new(),
+            entries: Vec::new(),
         }
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
     #[test]
     fn record_log_root_is_stable_and_partitioned() {
+        let _guard = env_guard();
         env::remove_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT");
         let first = request("get_string");
         let mut second = request("get_string");
@@ -410,6 +707,7 @@ mod tests {
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
     #[test]
     fn rust_record_log_persists_string_and_hash_records() {
+        let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
 
@@ -467,6 +765,7 @@ mod tests {
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
     #[test]
     fn rust_record_log_supports_health_validation_and_hash_scan_output() {
+        let _guard = env_guard();
         let dir = tempdir().expect("tempdir");
         env::set_var("MATRIXARK_TEMPORALSTORE_RUST_ROOT", dir.path());
 
