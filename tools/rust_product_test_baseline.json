@@ -490,8 +490,6 @@
     "crates/temporalstore-rust/src/rebalance.rs::cpp_partition_set_topology_tracks_members_versions_and_addresses",
     "crates/temporalstore-rust/src/rebalance.rs::raft_persisted_scheduler_state_validates_task_retry_state_against_partition_set",
     "crates/temporalstore-rust/src/redis.rs::resp_parser_reads_array_command",
-    "crates/temporalstore-rust/src/redis.rs::redis_string_hash_set_and_feature_commands_use_engine",
-    "crates/temporalstore-rust/src/redis.rs::redis_feature_query_filterstr_uses_cpp_filter_syntax",
     "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_installs_pages_index_logs_and_oplog_with_cursor_resume",
     "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_can_pull_streams_over_http",
     "crates/temporalstore-rust/src/sdk.rs::generated_sdk_bindings_cover_required_client_surface",

@@ -5670,6 +5670,7 @@ mod tests {
         );
     }
 
+    // shared-corpus: redis_engine_product_command_flow;
     #[test]
     fn redis_feature_query_filterstr_uses_cpp_filter_syntax() {
         let engine = TemporalEngine::default();

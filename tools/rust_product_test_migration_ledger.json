@@ -9,16 +9,16 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 510,
+    "grandfathered_tests": 508,
     "by_classification": {
-      "move_to_shared": 503,
+      "move_to_shared": 501,
       "rust_internal": 7
     },
     "by_family": {
       "Feature": 12,
       "IPS": 4,
       "Raft": 140,
-      "Redis/admin": 34,
+      "Redis/admin": 32,
       "Risk": 8,
       "Sequence": 4,
       "context": 7,
@@ -4447,24 +4447,6 @@
       "test_id": "crates/temporalstore-rust/src/redis.rs::resp_parser_reads_array_command",
       "file": "crates/temporalstore-rust/src/redis.rs",
       "test_name": "resp_parser_reads_array_command",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/redis.rs::redis_string_hash_set_and_feature_commands_use_engine",
-      "file": "crates/temporalstore-rust/src/redis.rs",
-      "test_name": "redis_string_hash_set_and_feature_commands_use_engine",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/redis.rs::redis_feature_query_filterstr_uses_cpp_filter_syntax",
-      "file": "crates/temporalstore-rust/src/redis.rs",
-      "test_name": "redis_feature_query_filterstr_uses_cpp_filter_syntax",
       "family": "Redis/admin",
       "classification": "move_to_shared",
       "next_migration_target": "Redis/admin/API shared command-response corpus",
