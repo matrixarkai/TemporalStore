@@ -25,10 +25,10 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from tools.matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
+    from tools.matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, normalize_parse_warnings, parse_resource, summarize_resource_chunks
     from tools.matrixark_skill_parser import parse_skill
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, parse_resource, summarize_resource_chunks
+    from matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, normalize_parse_warnings, parse_resource, summarize_resource_chunks
     from matrixark_skill_parser import parse_skill
 
 
@@ -1531,6 +1531,31 @@ def ordered_unique(values: list[str]) -> list[str]:
         seen.add(value)
         out.append(value)
     return out
+
+
+RAW_BYTE_METADATA_FIELDS = {"raw_bytes", "file_bytes", "bytes", "binary", "payload_bytes", "data_url", "base64"}
+
+
+def sanitize_resource_metadata(metadata: Json) -> Json:
+    sanitized = {
+        key: value
+        for key, value in metadata.items()
+        if key not in RAW_BYTE_METADATA_FIELDS
+    }
+    sanitized["parse_warnings"] = normalize_parse_warnings(sanitized)
+    sanitized["raw_storage_policy"] = "raw_uri_only"
+    sanitized["raw_bytes_stored"] = False
+    return sanitized
+
+
+def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:
+    warnings: list[str] = []
+    for chunk in chunks:
+        metadata = getattr(chunk, "metadata", {}) or {}
+        for warning in normalize_parse_warnings(metadata):
+            if warning not in warnings:
+                warnings.append(warning)
+    return warnings
 
 
 def normalized_index_value(value: Any) -> str:
@@ -3110,6 +3135,10 @@ class MatrixArkLocalAdapter:
                 "original_chunk_count": record.get("original_chunk_count", record.get("chunk_count", 0)),
                 "deduped_chunk_count": record.get("deduped_chunk_count", 0),
                 "superseded_chunk_count": record.get("superseded_chunk_count", 0),
+                "raw_storage_policy": record.get("raw_storage_policy", "raw_uri_only"),
+                "raw_bytes_stored": bool(record.get("raw_bytes_stored", False)),
+                "parse_warnings": record.get("parse_warnings", []),
+                "parse_warning_count": record.get("parse_warning_count", 0),
                 "async_parent_summary_required": bool(record.get("async_parent_summary_required", False)),
                 "import_task_hash": record.get("import_task_hash", 0),
                 "token_estimate": record.get("token_estimate", 0),
@@ -3294,6 +3323,8 @@ class MatrixArkLocalAdapter:
                         "kind": envelope["kind"],
                         "raw_uri": raw_uri,
                         "resource_type": resource_type,
+                        "raw_storage_policy": "raw_uri_only",
+                        "raw_bytes_stored": False,
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": envelope["scope"],
@@ -3326,6 +3357,8 @@ class MatrixArkLocalAdapter:
                         "background_started": True,
                         "raw_uri": raw_uri,
                         "resource_type": resource_type,
+                        "raw_storage_policy": "raw_uri_only",
+                        "raw_bytes_stored": False,
                     },
                     "node_materialization": node_materialization,
                 }
@@ -3338,6 +3371,8 @@ class MatrixArkLocalAdapter:
                     "kind": envelope["kind"],
                     "raw_uri": raw_uri,
                     "resource_type": resource_type,
+                    "raw_storage_policy": "raw_uri_only",
+                    "raw_bytes_stored": False,
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "scope": envelope["scope"],
@@ -3418,6 +3453,8 @@ class MatrixArkLocalAdapter:
                         "kind": envelope["kind"],
                         "raw_uri": raw_uri,
                         "resource_type": resource_type,
+                        "raw_storage_policy": "raw_uri_only",
+                        "raw_bytes_stored": False,
                         "error": resource_parse_error or "resource ingestion produced no chunks",
                         "node_hash": node_hash,
                         "node_path": node_path,
@@ -3444,6 +3481,7 @@ class MatrixArkLocalAdapter:
             resource_version_value = str(parsed_chunks[0].metadata.get("resource_version") or "")
             resource_content_hash = content_hash("\n".join(str(chunk.metadata.get("content_hash") or content_hash(chunk.text)) for chunk in parsed_chunks))
             superseded_chunk_count = sum(1 for chunk in parsed_chunks if chunk.metadata.get("supersedes_chunk_hash"))
+            parse_warnings = aggregate_parse_warnings_from_chunks(parsed_chunks)
             chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
             resource_kind = "skill" if skill_hash is not None else "resource"
             resource_l0_text = summarize_text(
@@ -3532,6 +3570,10 @@ class MatrixArkLocalAdapter:
                         "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                         "resource_version": resource_version_value,
                         "content_hash": resource_content_hash,
+                        "raw_storage_policy": "raw_uri_only",
+                        "raw_bytes_stored": False,
+                        "parse_warnings": parse_warnings[:100],
+                        "parse_warning_count": len(parse_warnings),
                         "chunk_count": len(parsed_chunks),
                         "original_chunk_count": original_chunk_count,
                         "deduped_chunk_count": deduped_chunk_count,
@@ -3546,6 +3588,7 @@ class MatrixArkLocalAdapter:
                 )
             for chunk, vector in zip(parsed_chunks, chunk_vectors):
                 resource_chunk_hashes.append(chunk.chunk_hash)
+                chunk_metadata = sanitize_resource_metadata(chunk.metadata)
                 if skill_hash is not None:
                     self.append(
                         {
@@ -3556,10 +3599,10 @@ class MatrixArkLocalAdapter:
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "source_ref": chunk.source_ref,
-                            "heading": chunk.metadata.get("heading", ""),
+                            "heading": chunk_metadata.get("heading", ""),
                             "text": chunk.text,
                             "token_estimate": chunk.token_estimate,
-                            "metadata": chunk.metadata,
+                            "metadata": chunk_metadata,
                             "scope": envelope["scope"],
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
@@ -3572,11 +3615,11 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "raw_uri": raw_uri,
-                        "resource_type": chunk.metadata.get("resource_type") or resource_type,
+                        "resource_type": chunk_metadata.get("resource_type") or resource_type,
                         "source_ref": chunk.source_ref,
                         "text": chunk.text,
                         "token_estimate": chunk.token_estimate,
-                        "metadata": chunk.metadata,
+                        "metadata": chunk_metadata,
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -3599,9 +3642,9 @@ class MatrixArkLocalAdapter:
                 chunk_index_terms = ordered_unique(
                     [
                         context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
-                        context_index_name("resource_type", chunk.metadata.get("resource_type") or resource_type),
+                        context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
                     ]
-                    + metadata_index_terms(chunk.metadata)
+                    + metadata_index_terms(chunk_metadata)
                 )
                 for index_name in chunk_index_terms:
                     self.append(
@@ -3622,6 +3665,7 @@ class MatrixArkLocalAdapter:
             resource_fact_records: list[Json] = []
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:32]
             for chunk in fact_chunks:
+                chunk_metadata = sanitize_resource_metadata(chunk.metadata)
                 fact_event_type = resource_fact_type(chunk.text, chunk.metadata)
                 fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
                 resource_fact_event_hashes.append(fact_event_hash)
@@ -3668,7 +3712,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
-                entity_name = str(chunk.metadata.get("heading") or chunk.metadata.get("relative_path") or chunk.metadata.get("source_ref") or raw_uri)[:120]
+                entity_name = str(chunk_metadata.get("heading") or chunk_metadata.get("relative_path") or chunk_metadata.get("source_ref") or raw_uri)[:120]
                 entity_hash = stable_hash(f"{node_hash}:resource_fact:{entity_name}:{chunk.chunk_hash}")
                 resource_fact_entity_hashes.append(entity_hash)
                 entity_state = summarize_text(chunk.text, limit=320)
@@ -3712,8 +3756,8 @@ class MatrixArkLocalAdapter:
                     context_index_name("source_type", "resource_fact"),
                     context_index_name("event_type", fact_event_type),
                     context_index_name("entity_type", "resource_fact"),
-                    context_index_name("resource_type", chunk.metadata.get("resource_type") or resource_type),
-                ] + metadata_index_terms(chunk.metadata)):
+                    context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
+                ] + metadata_index_terms(chunk_metadata)):
                     resource_fact_records.append(
                         {
                             "record_type": "context_index",
@@ -3739,7 +3783,10 @@ class MatrixArkLocalAdapter:
                 "embedding_count": len(chunk_vectors) + 1 + len(resource_fact_event_hashes) + len(resource_fact_entity_hashes),
                 "resource_fact_count": len(resource_fact_event_hashes),
                 "resource_entity_count": len(resource_fact_entity_hashes),
-                "parse_warning_count": sum(1 for chunk in parsed_chunks if chunk.metadata.get("parse_warnings")),
+                "parse_warning_count": len(parse_warnings),
+                "parse_warnings": parse_warnings[:100],
+                "raw_storage_policy": "raw_uri_only",
+                "raw_bytes_stored": False,
                 "summary_dirty_count": len(resource_dirty_hashes),
             }
             resource_import_task_status = "completed"
@@ -3753,6 +3800,10 @@ class MatrixArkLocalAdapter:
                     "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                     "resource_version": resource_version_value,
                     "content_hash": resource_content_hash,
+                    "raw_storage_policy": "raw_uri_only",
+                    "raw_bytes_stored": False,
+                    "parse_warnings": parse_warnings[:100],
+                    "parse_warning_count": len(parse_warnings),
                     "chunk_count": len(parsed_chunks),
                     "original_chunk_count": original_chunk_count,
                     "deduped_chunk_count": deduped_chunk_count,
@@ -3909,6 +3960,8 @@ class MatrixArkLocalAdapter:
                 "status": resource_import_task_status,
                 "wait": resource_import_wait,
                 "metrics": resource_import_metrics,
+                "raw_storage_policy": "raw_uri_only" if resource_import_task_hash else "",
+                "raw_bytes_stored": False if resource_import_task_hash else None,
             },
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
@@ -3918,6 +3971,10 @@ class MatrixArkLocalAdapter:
             "resource_deduped_source_refs": deduped_source_refs[:20] if envelope["kind"] in {"resource", "skill"} else [],
             "resource_version": resource_version_value if envelope["kind"] in {"resource", "skill"} else "",
             "resource_content_hash": resource_content_hash if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_parse_warnings": parse_warnings if envelope["kind"] in {"resource", "skill"} else [],
+            "resource_parse_warning_count": len(parse_warnings) if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_raw_storage_policy": "raw_uri_only" if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_raw_bytes_stored": False if envelope["kind"] in {"resource", "skill"} else None,
             "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
             "resource_fact_events": resource_fact_event_hashes,
             "resource_fact_event_count": len(resource_fact_event_hashes),
