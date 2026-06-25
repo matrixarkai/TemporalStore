@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import secrets
 import select
+import shutil
 import socket
 import subprocess
 import hashlib
@@ -19,6 +20,7 @@ import math
 import os
 import re
 import sys
+import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -1672,7 +1674,7 @@ def sanitize_resource_metadata(metadata: Json) -> Json:
         if key not in RAW_BYTE_METADATA_FIELDS
     }
     sanitized["parse_warnings"] = normalize_parse_warnings(sanitized)
-    sanitized["raw_storage_policy"] = "raw_uri_only"
+    sanitized["raw_storage_policy"] = str(sanitized.get("raw_storage_policy") or "raw_uri_only")
     sanitized["raw_bytes_stored"] = False
     return sanitized
 
@@ -1699,6 +1701,262 @@ def deployment_scope_from_args(args: Json, envelope: Json) -> str:
         or "local"
     ).strip().lower()
     return value if value in {"local", "global", "cloud", "on_prem", "hybrid"} else "local"
+
+
+def resource_storage_mode_from_args(args: Json, envelope: Json, deployment_scope: str) -> str:
+    value = str(
+        args.get("raw_storage_mode")
+        or envelope.get("metadata", {}).get("raw_storage_mode")
+        or os.environ.get("MATRIXARK_RESOURCE_STORAGE_MODE")
+        or ("cloud" if deployment_scope == "cloud" else "local")
+    ).strip().lower()
+    if value in {"s3", "remote"}:
+        value = "cloud"
+    if value not in {"local", "cloud"}:
+        raise MatrixArkError("raw_storage_mode must be local or cloud")
+    return value
+
+
+def is_s3_uri(value: str) -> bool:
+    return value.startswith("s3://")
+
+
+def parse_s3_uri(uri: str) -> tuple[str, str]:
+    if not is_s3_uri(uri):
+        raise MatrixArkError(f"not an s3 uri: {uri}")
+    rest = uri[len("s3://") :]
+    bucket, sep, key = rest.partition("/")
+    if not bucket or not sep or not key:
+        raise MatrixArkError(f"invalid s3 uri: {uri}")
+    return bucket, key
+
+
+def _cloud_resource_bucket(args: Json, envelope: Json) -> str:
+    bucket = str(
+        args.get("s3_bucket")
+        or envelope.get("metadata", {}).get("s3_bucket")
+        or os.environ.get("MATRIXARK_RESOURCE_S3_BUCKET")
+        or os.environ.get("MATRIXARK_S3_BUCKET")
+        or ""
+    ).strip()
+    if not bucket:
+        raise MatrixArkError("cloud raw resource storage requires s3_bucket or MATRIXARK_RESOURCE_S3_BUCKET")
+    return bucket
+
+
+def _cloud_resource_prefix(args: Json, envelope: Json) -> str:
+    prefix = str(
+        args.get("s3_prefix")
+        or envelope.get("metadata", {}).get("s3_prefix")
+        or os.environ.get("MATRIXARK_RESOURCE_S3_PREFIX")
+        or "matrixark/raw"
+    ).strip().strip("/")
+    scope = envelope.get("scope", {}) if isinstance(envelope.get("scope", {}), dict) else {}
+    parts = [
+        prefix,
+        safe_identifier(str(scope.get("account_id") or "acct"), default="acct"),
+        safe_identifier(str(scope.get("tenant_id") or "tenant"), default="tenant"),
+        safe_identifier(str(scope.get("user_id") or "user"), default="user"),
+    ]
+    session_id = str(scope.get("session_id") or "")
+    if session_id:
+        parts.append(safe_identifier(session_id, default="session"))
+    return "/".join(part for part in parts if part)
+
+
+def _s3_client() -> Any:
+    try:
+        import boto3  # type: ignore
+
+        kwargs: Json = {}
+        endpoint_url = os.environ.get("MATRIXARK_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
+        if endpoint_url:
+            kwargs["endpoint_url"] = endpoint_url
+        region_name = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+        if region_name:
+            kwargs["region_name"] = region_name
+        return boto3.client("s3", **kwargs)
+    except Exception:
+        return None
+
+
+def _aws_cli_s3_cp(source: str, target: str) -> None:
+    command = ["aws"]
+    profile = os.environ.get("AWS_PROFILE")
+    region = os.environ.get("AWS_REGION") or os.environ.get("AWS_DEFAULT_REGION")
+    if profile:
+        command.extend(["--profile", profile])
+    if region:
+        command.extend(["--region", region])
+    endpoint_url = os.environ.get("MATRIXARK_S3_ENDPOINT_URL") or os.environ.get("AWS_ENDPOINT_URL_S3")
+    if endpoint_url:
+        command.extend(["--endpoint-url", endpoint_url])
+    command.extend(["s3", "cp", source, target])
+    completed = subprocess.run(command, text=True, capture_output=True, check=False)
+    if completed.returncode != 0:
+        raise MatrixArkError(compact_ws(completed.stderr or completed.stdout or f"aws s3 cp failed: {source} -> {target}"))
+
+
+def upload_file_to_s3(path: Path, *, bucket: str, key: str) -> str:
+    client = _s3_client()
+    if client is not None:
+        try:
+            client.upload_file(str(path), bucket, key)
+            return f"s3://{bucket}/{key}"
+        except Exception as exc:
+            raise MatrixArkError(f"S3 upload failed for {path}: {exc}") from exc
+    target = f"s3://{bucket}/{key}"
+    _aws_cli_s3_cp(str(path), target)
+    return target
+
+
+def download_s3_to_file(uri: str, target: Path) -> Path:
+    bucket, key = parse_s3_uri(uri)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    client = _s3_client()
+    if client is not None:
+        try:
+            client.download_file(bucket, key, str(target))
+            return target
+        except Exception as exc:
+            raise MatrixArkError(f"S3 download failed for {uri}: {exc}") from exc
+    _aws_cli_s3_cp(uri, str(target))
+    return target
+
+
+def _resource_object_key(prefix: str, raw_uri: str, source_path: Path | None, resource_type: str) -> str:
+    suffix = Path(raw_uri).name if raw_uri and raw_uri != "inline-resource" else ""
+    if source_path is not None:
+        suffix = source_path.name
+    suffix = safe_identifier(suffix or f"resource.{resource_type or 'txt'}", default="resource")
+    digest = hashlib.sha256()
+    digest.update(raw_uri.encode("utf-8", errors="ignore"))
+    if source_path is not None and source_path.exists() and source_path.is_file():
+        try:
+            with source_path.open("rb") as fh:
+                for block in iter(lambda: fh.read(1024 * 1024), b""):
+                    digest.update(block)
+        except OSError:
+            pass
+    return f"{prefix}/{digest.hexdigest()[:16]}-{suffix}"
+
+
+def _archive_directory_for_upload(path: Path) -> Path:
+    temp_dir = Path(tempfile.mkdtemp(prefix="matrixark-resource-dir-"))
+    archive_base = temp_dir / safe_identifier(path.name or "resource-dir", default="resource-dir")
+    archive_path = shutil.make_archive(str(archive_base), "gztar", root_dir=str(path))
+    return Path(archive_path)
+
+
+def resolve_raw_resource_for_ingest(args: Json, envelope: Json, raw_uri: str, resource_type: str, deployment_scope: str, resource_text: str) -> Json:
+    """Resolve local/cloud raw storage and parser source for resource/skill ingest."""
+    mode = resource_storage_mode_from_args(args, envelope, deployment_scope)
+    raw_uri = raw_uri or "inline-resource"
+    result: Json = {
+        "storage_mode": mode,
+        "original_raw_uri": raw_uri,
+        "stored_raw_uri": raw_uri,
+        "parse_uri": raw_uri,
+        "parse_text": resource_text,
+        "raw_storage_policy": "local_raw_uri_only" if mode == "local" else "s3_raw_uri_only",
+        "raw_bytes_stored": False,
+        "upload_status": "not_required",
+        "temp_paths": [],
+        "cloud_bucket": "",
+        "cloud_key": "",
+    }
+    local_path = Path(raw_uri) if raw_uri != "inline-resource" and not is_s3_uri(raw_uri) else None
+    if mode == "local":
+        if local_path is not None and local_path.exists():
+            result["parse_text"] = None
+        return result
+
+    bucket = _cloud_resource_bucket(args, envelope)
+    prefix = _cloud_resource_prefix(args, envelope)
+    result["cloud_bucket"] = bucket
+
+    if is_s3_uri(raw_uri):
+        stored_uri = raw_uri
+    else:
+        upload_path: Path
+        if local_path is not None and local_path.exists():
+            upload_path = _archive_directory_for_upload(local_path) if local_path.is_dir() else local_path
+            if local_path.is_dir():
+                result["temp_paths"].append(str(upload_path.parent))
+                result["parse_uri"] = str(local_path)
+                result["parse_text"] = None
+        else:
+            suffix = infer_resource_suffix(resource_type, raw_uri)
+            temp_file = Path(tempfile.mkdtemp(prefix="matrixark-inline-resource-")) / f"inline.{suffix}"
+            temp_file.write_text(resource_text, encoding="utf-8")
+            result["temp_paths"].append(str(temp_file.parent))
+            upload_path = temp_file
+        key = _resource_object_key(prefix, raw_uri, upload_path, resource_type)
+        stored_uri = upload_file_to_s3(upload_path, bucket=bucket, key=key)
+        result["upload_status"] = "uploaded"
+        result["cloud_key"] = key
+
+    result["stored_raw_uri"] = stored_uri
+    if result.get("parse_uri") == raw_uri or is_s3_uri(raw_uri):
+        suffix = infer_resource_suffix(resource_type, stored_uri)
+        temp_file = Path(tempfile.mkdtemp(prefix="matrixark-s3-resource-")) / f"downloaded.{suffix}"
+        result["temp_paths"].append(str(temp_file.parent))
+        download_s3_to_file(stored_uri, temp_file)
+        result["parse_uri"] = str(temp_file)
+        result["parse_text"] = None
+    return result
+
+
+def infer_resource_suffix(resource_type: str, raw_uri: str) -> str:
+    suffix = (resource_type or "").lower().lstrip(".")
+    if not suffix and raw_uri and raw_uri != "inline-resource":
+        suffix = Path(raw_uri).suffix.lower().lstrip(".")
+    return suffix or "txt"
+
+
+def rewrite_chunk_uris(chunks: list[Any], *, parse_uri: str, stored_raw_uri: str) -> list[Any]:
+    if not stored_raw_uri or stored_raw_uri == parse_uri:
+        return chunks
+    rewritten: list[Any] = []
+    for chunk in chunks:
+        metadata = dict(getattr(chunk, "metadata", {}) or {})
+        old_source_ref = str(getattr(chunk, "source_ref", ""))
+        fragment = old_source_ref.partition("#")[2]
+        relative_path = str(metadata.get("relative_path") or "").strip()
+        if relative_path and fragment:
+            new_source_ref = f"{stored_raw_uri}#path={relative_path}&{fragment}"
+        elif fragment:
+            new_source_ref = f"{stored_raw_uri}#{fragment}"
+        else:
+            new_source_ref = stored_raw_uri
+        metadata["raw_uri"] = stored_raw_uri
+        metadata["citation"] = new_source_ref
+        metadata["source_ref"] = new_source_ref
+        metadata["raw_storage_policy"] = "s3_raw_uri_only" if is_s3_uri(stored_raw_uri) else metadata.get("raw_storage_policy", "raw_uri_only")
+        metadata["raw_bytes_stored"] = False
+        piece_hash = str(metadata.get("content_hash") or content_hash(str(getattr(chunk, "text", ""))))
+        version = str(metadata.get("resource_version") or "")
+        chunk_hash = stable_hash(f"resource_chunk:{new_source_ref}:{version}:{piece_hash}")
+        rewritten.append(
+            chunk.__class__(
+                chunk_hash=chunk_hash,
+                source_ref=new_source_ref,
+                text=getattr(chunk, "text", ""),
+                token_estimate=int(getattr(chunk, "token_estimate", 1)),
+                metadata=metadata,
+            )
+        )
+    return rewritten
+
+
+def cleanup_temp_paths(paths: list[str]) -> None:
+    for path_text in paths:
+        try:
+            path = Path(path_text)
+            if path.exists() and path.is_dir() and path.name.startswith("matrixark-"):
+                shutil.rmtree(path, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def aggregate_parse_warnings_from_chunks(chunks: list[Any]) -> list[str]:
@@ -3701,6 +3959,7 @@ class MatrixArkLocalAdapter:
             resources[resource_hash] = {
                 "resource_hash": resource_hash,
                 "raw_uri": record.get("raw_uri", ""),
+                "requested_raw_uri": record.get("requested_raw_uri", record.get("raw_uri", "")),
                 "resource_type": record.get("resource_type", ""),
                 "resource_version": record.get("resource_version", ""),
                 "content_hash": record.get("content_hash", ""),
@@ -3710,6 +3969,10 @@ class MatrixArkLocalAdapter:
                 "superseded_chunk_count": record.get("superseded_chunk_count", 0),
                 "superseded_chunk_hashes": record.get("superseded_chunk_hashes", []),
                 "raw_storage_policy": record.get("raw_storage_policy", "raw_uri_only"),
+                "raw_storage_mode": record.get("raw_storage_mode", "local"),
+                "upload_status": record.get("upload_status", "not_required"),
+                "cloud_bucket": record.get("cloud_bucket", ""),
+                "cloud_key": record.get("cloud_key", ""),
                 "raw_bytes_stored": bool(record.get("raw_bytes_stored", False)),
                 "parse_warnings": record.get("parse_warnings", []),
                 "parse_warning_count": record.get("parse_warning_count", 0),
@@ -3752,6 +4015,13 @@ class MatrixArkLocalAdapter:
                 "name": record.get("name", ""),
                 "description": record.get("description", ""),
                 "raw_uri": record.get("raw_uri", ""),
+                "requested_raw_uri": record.get("requested_raw_uri", record.get("raw_uri", "")),
+                "raw_storage_policy": record.get("raw_storage_policy", "raw_uri_only"),
+                "raw_storage_mode": record.get("raw_storage_mode", "local"),
+                "upload_status": record.get("upload_status", "not_required"),
+                "cloud_bucket": record.get("cloud_bucket", ""),
+                "cloud_key": record.get("cloud_key", ""),
+                "raw_bytes_stored": bool(record.get("raw_bytes_stored", False)),
                 "owner_scope": control.get("owner_scope", record.get("owner_scope", "user")),
                 "version": control.get("version", record.get("version", "1")),
                 "status": status,
@@ -3888,7 +4158,7 @@ class MatrixArkLocalAdapter:
         resource_fact_entity_hashes: list[int] = []
         skill_hash = None
         if envelope["kind"] in {"resource", "skill"}:
-            raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
+            requested_raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
             resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
             resource_import_wait = bool(args.get("wait", True))
             resource_import_background = bool(args.get("_background_resource_import", False))
@@ -3898,9 +4168,22 @@ class MatrixArkLocalAdapter:
             resource_import_task_hash = (
                 int(provided_task_hash)
                 if isinstance(provided_task_hash, int) and provided_task_hash > 0
-                else stable_hash(f"resource_import_task:{envelope['kind']}:{raw_uri}:{node_hash}:{envelope['ingestion_time_ms']}")
+                else stable_hash(f"resource_import_task:{envelope['kind']}:{requested_raw_uri}:{node_hash}:{envelope['ingestion_time_ms']}")
             )
             import_started_perf = time.perf_counter()
+            raw_uri = requested_raw_uri
+            raw_storage_policy = "raw_uri_only"
+            storage_resolution: Json = {
+                "storage_mode": resource_storage_mode_from_args(args, envelope, deployment_scope),
+                "original_raw_uri": requested_raw_uri,
+                "stored_raw_uri": requested_raw_uri,
+                "parse_uri": requested_raw_uri,
+                "parse_text": None,
+                "raw_storage_policy": raw_storage_policy,
+                "raw_bytes_stored": False,
+                "upload_status": "not_started",
+                "temp_paths": [],
+            }
             if not resource_import_background:
                 self.append(
                     {
@@ -3908,9 +4191,11 @@ class MatrixArkLocalAdapter:
                         "task_hash": resource_import_task_hash,
                         "status": "queued",
                         "kind": envelope["kind"],
-                        "raw_uri": raw_uri,
+                        "raw_uri": requested_raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
                         "resource_type": resource_type,
-                        "raw_storage_policy": "raw_uri_only",
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
                         "node_hash": node_hash,
                         "node_path": node_path,
@@ -3942,14 +4227,51 @@ class MatrixArkLocalAdapter:
                         "status": "queued",
                         "wait": False,
                         "background_started": True,
-                        "raw_uri": raw_uri,
+                        "raw_uri": requested_raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
                         "resource_type": resource_type,
-                        "raw_storage_policy": "raw_uri_only",
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
                     },
                     "node_materialization": node_materialization,
                 }
             resource_import_task_status = "running"
+            resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
+            try:
+                storage_resolution = resolve_raw_resource_for_ingest(
+                    args,
+                    envelope,
+                    requested_raw_uri,
+                    resource_type,
+                    deployment_scope,
+                    resource_text,
+                )
+            except MatrixArkError as exc:
+                self.append(
+                    {
+                        "record_type": "resource_import_task",
+                        "task_hash": resource_import_task_hash,
+                        "status": "failed",
+                        "kind": envelope["kind"],
+                        "raw_uri": requested_raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
+                        "resource_type": resource_type,
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": storage_resolution["raw_storage_policy"],
+                        "raw_bytes_stored": False,
+                        "error": str(exc),
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": now_ms(),
+                    }
+                )
+                raise
+            raw_uri = str(storage_resolution["stored_raw_uri"])
+            parse_uri = str(storage_resolution.get("parse_uri") or raw_uri)
+            parse_text = storage_resolution.get("parse_text")
+            raw_storage_policy = str(storage_resolution.get("raw_storage_policy") or "raw_uri_only")
             self.append(
                 {
                     "record_type": "resource_import_task",
@@ -3957,35 +4279,43 @@ class MatrixArkLocalAdapter:
                     "status": "running",
                     "kind": envelope["kind"],
                     "raw_uri": raw_uri,
+                    "requested_raw_uri": requested_raw_uri,
                     "resource_type": resource_type,
-                    "raw_storage_policy": "raw_uri_only",
+                    "raw_storage_mode": storage_resolution["storage_mode"],
+                    "raw_storage_policy": raw_storage_policy,
                     "raw_bytes_stored": False,
+                    "upload_status": storage_resolution.get("upload_status", "not_required"),
+                    "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                    "cloud_key": storage_resolution.get("cloud_key", ""),
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "scope": envelope["scope"],
                     "updated_at_ms": now_ms(),
                 }
             )
-            resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
-            parse_text = resource_text
-            if raw_uri != "inline-resource" and Path(raw_uri).exists():
-                parse_text = None
             try:
                 if envelope["kind"] == "skill" or (resource_type or "").lower() == "skill":
                     parsed_skill = parse_skill(
-                        raw_uri,
+                        parse_uri,
                         text=parse_text,
                         chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
                     )
-                    skill_hash = parsed_skill.skill_hash
+                    parsed_skill_chunks = rewrite_chunk_uris(parsed_skill.chunks, parse_uri=parse_uri, stored_raw_uri=raw_uri)
+                    skill_hash = stable_hash(f"skill:{raw_uri}:{parsed_skill.name}:{parsed_skill.metadata.get('version', '1')}")
                     self.append(
                         {
                             "record_type": "skill_manifest",
-                            "skill_hash": parsed_skill.skill_hash,
+                            "skill_hash": skill_hash,
                             "import_task_hash": resource_import_task_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "raw_uri": raw_uri,
+                            "requested_raw_uri": requested_raw_uri,
+                            "raw_storage_mode": storage_resolution["storage_mode"],
+                            "raw_storage_policy": raw_storage_policy,
+                            "upload_status": storage_resolution.get("upload_status", "not_required"),
+                            "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                            "cloud_key": storage_resolution.get("cloud_key", ""),
                             "name": parsed_skill.name,
                             "description": parsed_skill.description,
                             "owner_scope": parsed_skill.metadata.get("owner_scope", "user"),
@@ -4010,10 +4340,16 @@ class MatrixArkLocalAdapter:
                     self.append(
                         {
                             "record_type": "skill_registry",
-                            "registry_hash": stable_hash(f"skill_registry:{parsed_skill.skill_hash}:{deployment_scope}"),
-                            "skill_hash": parsed_skill.skill_hash,
+                            "registry_hash": stable_hash(f"skill_registry:{skill_hash}:{deployment_scope}"),
+                            "skill_hash": skill_hash,
                             "import_task_hash": resource_import_task_hash,
                             "raw_uri": raw_uri,
+                            "requested_raw_uri": requested_raw_uri,
+                            "raw_storage_mode": storage_resolution["storage_mode"],
+                            "raw_storage_policy": raw_storage_policy,
+                            "upload_status": storage_resolution.get("upload_status", "not_required"),
+                            "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                            "cloud_key": storage_resolution.get("cloud_key", ""),
                             "name": parsed_skill.name,
                             "description": parsed_skill.description,
                             "owner_scope": parsed_skill.metadata.get("owner_scope", "user"),
@@ -4040,7 +4376,7 @@ class MatrixArkLocalAdapter:
                             "record_type": "context_embedding",
                             "embedding_type": "skill_summary",
                             "ref_type": "skill",
-                            "ref_hash": parsed_skill.skill_hash,
+                            "ref_hash": skill_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "dim": len(skill_vector),
@@ -4050,19 +4386,22 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    parsed_chunks = parsed_skill.chunks
+                    parsed_chunks = parsed_skill_chunks
                 else:
                     parsed_chunks = parse_resource(
-                        raw_uri,
+                        parse_uri,
                         resource_type=resource_type or None,
                         text=parse_text,
                         chunk_hash_base=args.get("chunk_hash_base") if isinstance(args.get("chunk_hash_base"), int) else None,
                         resource_version=args.get("resource_version") if isinstance(args.get("resource_version"), str) else None,
                         supersedes_chunk_hashes=args.get("supersedes_chunk_hashes") if isinstance(args.get("supersedes_chunk_hashes"), dict) else None,
                     )
+                    parsed_chunks = rewrite_chunk_uris(parsed_chunks, parse_uri=parse_uri, stored_raw_uri=raw_uri)
             except ResourceParserError as exc:
                 resource_parse_error = str(exc)
                 parsed_chunks = []
+            finally:
+                cleanup_temp_paths([str(path) for path in storage_resolution.get("temp_paths", []) if isinstance(path, str)])
             if not parsed_chunks:
                 resource_import_task_status = "failed"
                 self.append(
@@ -4072,9 +4411,12 @@ class MatrixArkLocalAdapter:
                         "status": "failed",
                         "kind": envelope["kind"],
                         "raw_uri": raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
                         "resource_type": resource_type,
-                        "raw_storage_policy": "raw_uri_only",
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
+                        "upload_status": storage_resolution.get("upload_status", "not_required"),
                         "error": resource_parse_error or "resource ingestion produced no chunks",
                         "node_hash": node_hash,
                         "node_path": node_path,
@@ -4192,11 +4534,16 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "raw_uri": raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
                         "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                         "resource_version": resource_version_value,
                         "content_hash": resource_content_hash,
-                        "raw_storage_policy": "raw_uri_only",
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
+                        "upload_status": storage_resolution.get("upload_status", "not_required"),
+                        "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                        "cloud_key": storage_resolution.get("cloud_key", ""),
                         "parse_warnings": parse_warnings[:100],
                         "parse_warning_count": len(parse_warnings),
                         "chunk_count": len(parsed_chunks),
@@ -4221,11 +4568,17 @@ class MatrixArkLocalAdapter:
                         "resource_hash": manifest_hash,
                         "import_task_hash": resource_import_task_hash,
                         "raw_uri": raw_uri,
+                        "requested_raw_uri": requested_raw_uri,
                         "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                         "resource_version": resource_version_value,
                         "content_hash": resource_content_hash,
                         "chunk_count": len(parsed_chunks),
                         "superseded_chunk_hashes": superseded_chunk_hashes[:200],
+                        "raw_storage_mode": storage_resolution["storage_mode"],
+                        "raw_storage_policy": raw_storage_policy,
+                        "upload_status": storage_resolution.get("upload_status", "not_required"),
+                        "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                        "cloud_key": storage_resolution.get("cloud_key", ""),
                         "access_scope": access_scope,
                         "deployment_scope": deployment_scope,
                         "node_hash": node_hash,
@@ -4462,8 +4815,12 @@ class MatrixArkLocalAdapter:
                 "resource_entity_count": len(resource_fact_entity_hashes),
                 "parse_warning_count": len(parse_warnings),
                 "parse_warnings": parse_warnings[:100],
-                "raw_storage_policy": "raw_uri_only",
+                "raw_storage_mode": storage_resolution["storage_mode"],
+                "raw_storage_policy": raw_storage_policy,
                 "raw_bytes_stored": False,
+                "upload_status": storage_resolution.get("upload_status", "not_required"),
+                "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                "cloud_key": storage_resolution.get("cloud_key", ""),
                 "summary_dirty_count": len(resource_dirty_hashes),
             }
             resource_import_task_status = "completed"
@@ -4474,11 +4831,16 @@ class MatrixArkLocalAdapter:
                     "status": "completed",
                     "kind": envelope["kind"],
                     "raw_uri": raw_uri,
+                    "requested_raw_uri": requested_raw_uri,
                     "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                     "resource_version": resource_version_value,
                     "content_hash": resource_content_hash,
-                    "raw_storage_policy": "raw_uri_only",
+                    "raw_storage_mode": storage_resolution["storage_mode"],
+                    "raw_storage_policy": raw_storage_policy,
                     "raw_bytes_stored": False,
+                    "upload_status": storage_resolution.get("upload_status", "not_required"),
+                    "cloud_bucket": storage_resolution.get("cloud_bucket", ""),
+                    "cloud_key": storage_resolution.get("cloud_key", ""),
                     "parse_warnings": parse_warnings[:100],
                     "parse_warning_count": len(parse_warnings),
                     "chunk_count": len(parsed_chunks),
@@ -4641,8 +5003,14 @@ class MatrixArkLocalAdapter:
                 "status": resource_import_task_status,
                 "wait": resource_import_wait,
                 "metrics": resource_import_metrics,
-                "raw_storage_policy": "raw_uri_only" if resource_import_task_hash else "",
+                "raw_uri": raw_uri if resource_import_task_hash else "",
+                "requested_raw_uri": requested_raw_uri if resource_import_task_hash else "",
+                "raw_storage_mode": storage_resolution.get("storage_mode", "") if resource_import_task_hash else "",
+                "raw_storage_policy": raw_storage_policy if resource_import_task_hash else "",
                 "raw_bytes_stored": False if resource_import_task_hash else None,
+                "upload_status": storage_resolution.get("upload_status", "") if resource_import_task_hash else "",
+                "cloud_bucket": storage_resolution.get("cloud_bucket", "") if resource_import_task_hash else "",
+                "cloud_key": storage_resolution.get("cloud_key", "") if resource_import_task_hash else "",
             },
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
@@ -4654,7 +5022,10 @@ class MatrixArkLocalAdapter:
             "resource_content_hash": resource_content_hash if envelope["kind"] in {"resource", "skill"} else "",
             "resource_parse_warnings": parse_warnings if envelope["kind"] in {"resource", "skill"} else [],
             "resource_parse_warning_count": len(parse_warnings) if envelope["kind"] in {"resource", "skill"} else 0,
-            "resource_raw_storage_policy": "raw_uri_only" if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_raw_uri": raw_uri if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_requested_raw_uri": requested_raw_uri if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_raw_storage_mode": storage_resolution.get("storage_mode", "") if envelope["kind"] in {"resource", "skill"} else "",
+            "resource_raw_storage_policy": raw_storage_policy if envelope["kind"] in {"resource", "skill"} else "",
             "resource_raw_bytes_stored": False if envelope["kind"] in {"resource", "skill"} else None,
             "backend_readiness": backend_readiness or {},
             "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
@@ -7818,6 +8189,19 @@ TOOLS: list[Json] = [
                     "type": "string",
                     "enum": ["local", "global", "cloud", "on_prem", "hybrid"],
                     "description": "Optional deployment visibility marker for resource/skill registry records. Defaults to local.",
+                },
+                "raw_storage_mode": {
+                    "type": "string",
+                    "enum": ["local", "cloud", "s3", "remote"],
+                    "description": "Resource/skill raw-file handling. local stores the local URI/path. cloud uploads to S3 first, stores the s3:// URI, and parses from the uploaded object.",
+                },
+                "s3_bucket": {
+                    "type": "string",
+                    "description": "Optional cloud-mode bucket. Defaults to MATRIXARK_RESOURCE_S3_BUCKET or MATRIXARK_S3_BUCKET.",
+                },
+                "s3_prefix": {
+                    "type": "string",
+                    "description": "Optional cloud-mode object prefix. Defaults to MATRIXARK_RESOURCE_S3_PREFIX or matrixark/raw.",
                 },
                 "auto_batch_extract": {
                     "type": "boolean",

@@ -4,6 +4,51 @@ This document explains how MatrixArk ingests resources and skills, parses them i
 
 The important product boundary is simple: callers send a `raw_uri`, optional `resource_type`, `scope`, and `metadata.node_path`. MatrixArk owns parsing, chunking, extraction, indexing, summaries, embeddings, and ContextPack assembly.
 
+## Raw File Storage Modes
+
+MatrixArk MCP supports both local and cloud handling for resource and skill files.
+
+```mermaid
+flowchart TD
+  A["matrixark_ingest(kind=resource|skill, raw_uri, raw_storage_mode)"]
+  B{"raw_storage_mode"}
+  C["local: keep local file URI/path"]
+  D["cloud: upload local file or inline text to S3"]
+  E["download/read S3 object for parser input"]
+  F["parse chunks, summaries, embeddings, indexes"]
+  G["TemporalStore records store raw_uri only, never raw bytes"]
+
+  A --> B
+  B --> C --> F
+  B --> D --> E --> F
+  F --> G
+```
+
+Local mode:
+
+- Set `raw_storage_mode=local`, or omit it when `deployment_scope` is not `cloud`.
+- MatrixArk stores the caller-provided `raw_uri`, such as `/repo/runbooks/gpu.md`.
+- The parser reads the local path directly.
+- TemporalStore stores parsed serving data and the local URI, not raw bytes.
+
+Cloud mode:
+
+- Set `raw_storage_mode=cloud`, or set `deployment_scope=cloud`.
+- MatrixArk uploads a local file or inline resource text to S3 before parsing.
+- Existing `s3://...` URIs are accepted and downloaded to a temporary parser file.
+- TemporalStore stores the resolved `s3://bucket/key` as `raw_uri`.
+- The original caller value is preserved as `requested_raw_uri`.
+- Parser citations and chunk `source_ref` values are rewritten to the S3 URI.
+
+Cloud configuration:
+
+- `s3_bucket` or `MATRIXARK_RESOURCE_S3_BUCKET`
+- `s3_prefix` or `MATRIXARK_RESOURCE_S3_PREFIX` (defaults to `matrixark/raw`)
+- optional `MATRIXARK_S3_ENDPOINT_URL` or `AWS_ENDPOINT_URL_S3` for S3-compatible storage
+- standard AWS credentials/profile/region environment variables when using AWS S3
+
+The records expose `raw_storage_mode`, `raw_storage_policy`, `upload_status`, `cloud_bucket`, and `cloud_key` for import tasks, manifests, registries, and list APIs.
+
 ## Current Resource Flow
 
 ```mermaid

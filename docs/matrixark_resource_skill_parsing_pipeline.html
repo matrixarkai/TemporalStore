@@ -37,6 +37,36 @@
 </header>
 <main>
   <section>
+    <h2>Raw File Storage Modes</h2>
+    <div class="mermaid">
+flowchart TD
+  A["matrixark_ingest(kind=resource|skill, raw_uri, raw_storage_mode)"]
+  B{"raw_storage_mode"}
+  C["local: keep local file URI/path"]
+  D["cloud: upload local file or inline text to S3"]
+  E["download/read S3 object for parser input"]
+  F["parse chunks, summaries, embeddings, indexes"]
+  G["TemporalStore records store raw_uri only, never raw bytes"]
+  A --> B
+  B --> C --> F
+  B --> D --> E --> F
+  F --> G
+    </div>
+    <div class="grid">
+      <div class="card">
+        <h3>Local Mode</h3>
+        <p>Set <code>raw_storage_mode=local</code>, or omit it when <code>deployment_scope</code> is not <code>cloud</code>. MatrixArk stores the caller-provided <code>raw_uri</code>, reads the local path directly, and keeps raw bytes out of TemporalStore.</p>
+      </div>
+      <div class="card">
+        <h3>Cloud Mode</h3>
+        <p>Set <code>raw_storage_mode=cloud</code>, or set <code>deployment_scope=cloud</code>. MatrixArk uploads local files or inline text to S3, stores the resolved <code>s3://bucket/key</code> URI, downloads the object for parser input, and rewrites citations to the S3 URI.</p>
+      </div>
+    </div>
+    <p>Cloud imports use <code>s3_bucket</code> or <code>MATRIXARK_RESOURCE_S3_BUCKET</code>, plus optional <code>s3_prefix</code> or <code>MATRIXARK_RESOURCE_S3_PREFIX</code>. S3-compatible deployments can set <code>MATRIXARK_S3_ENDPOINT_URL</code> or <code>AWS_ENDPOINT_URL_S3</code>.</p>
+    <p>Import tasks, manifests, registries, chunks, and list APIs expose <code>requested_raw_uri</code>, <code>raw_storage_mode</code>, <code>raw_storage_policy</code>, <code>upload_status</code>, <code>cloud_bucket</code>, and <code>cloud_key</code>.</p>
+  </section>
+
+  <section>
     <h2>Current Resource Flow</h2>
     <div class="mermaid">
 flowchart TD
