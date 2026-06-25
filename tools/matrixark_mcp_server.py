@@ -6326,6 +6326,19 @@ class MatrixArkRustCliClient:
         self.request_timeout_ms = request_timeout_ms
         self.io_timeout_ms = io_timeout_ms
         self._lock = threading.Lock()
+        self._semaphore = threading.BoundedSemaphore(1)
+        self._backpressure_timeout_s = max(
+            0.05,
+            int(os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))) / 1000.0,
+        )
+        self._metrics_lock = threading.Lock()
+        self._commands_total = 0
+        self._commands_failed_total = 0
+        self._records_written_total = 0
+        self._records_read_total = 0
+        self._backpressure_rejections_total = 0
+        self._last_latency_ms = 0.0
+        self._max_observed_latency_ms = 0.0
         self._proc: subprocess.Popen[str] | None = None
 
     def close(self) -> None:
@@ -6398,19 +6411,84 @@ class MatrixArkRustCliClient:
             **kwargs,
         }
         payload = json.dumps(command, separators=(",", ":")) + "\n"
-        with self._lock:
-            proc = self._ensure_proc()
-            assert proc.stdin is not None
-            try:
-                proc.stdin.write(payload)
-                proc.stdin.flush()
-            except BrokenPipeError as exc:
-                self.close()
-                raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
-            response = self._read_json_line(proc, op)
+        started = time.perf_counter()
+        acquired = self._semaphore.acquire(timeout=self._backpressure_timeout_s)
+        if not acquired:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True)
+            raise MatrixArkError(
+                f"Rust TemporalStore {op} rejected by gateway backpressure after "
+                f"{self._backpressure_timeout_s:.3f}s"
+            )
+        try:
+            with self._lock:
+                proc = self._ensure_proc()
+                assert proc.stdin is not None
+                try:
+                    proc.stdin.write(payload)
+                    proc.stdin.flush()
+                except BrokenPipeError as exc:
+                    self.close()
+                    raise MatrixArkError(f"Rust TemporalStore {op} pipe closed") from exc
+                response = self._read_json_line(proc, op)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True)
+            raise
+        finally:
+            self._semaphore.release()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
+            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
+        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False)
         return response
+
+    def _record_call_metrics(
+        self,
+        op: str,
+        kwargs: Json,
+        response: Json | None,
+        elapsed_ms: float,
+        *,
+        failed: bool,
+        backpressure: bool = False,
+    ) -> None:
+        with self._metrics_lock:
+            self._commands_total += 1
+            if failed:
+                self._commands_failed_total += 1
+            if backpressure:
+                self._backpressure_rejections_total += 1
+            self._last_latency_ms = elapsed_ms
+            self._max_observed_latency_ms = max(self._max_observed_latency_ms, elapsed_ms)
+            if response and response.get("ok"):
+                count = int(response.get("count") or 0)
+                if op in {"put_string", "hset"}:
+                    self._records_written_total += 1
+                elif op == "batch_hset":
+                    self._records_written_total += count or len(kwargs.get("entries") or [])
+                elif op in {"get_string", "hget"}:
+                    self._records_read_total += 1
+                elif op in {"batch_hget", "hgetall", "scan_hash"}:
+                    self._records_read_total += count
+
+    def metrics_snapshot(self) -> Json:
+        with self._metrics_lock:
+            return {
+                "gateway_mode": "long_lived_stdio_gateway",
+                "transport": "stdio",
+                "cli_path": self.cli_path,
+                "max_inflight": 1,
+                "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
+                "commands_total": self._commands_total,
+                "commands_failed_total": self._commands_failed_total,
+                "records_written_total": self._records_written_total,
+                "records_read_total": self._records_read_total,
+                "backpressure_rejections_total": self._backpressure_rejections_total,
+                "last_latency_ms": round(self._last_latency_ms, 3),
+                "max_observed_latency_ms": round(self._max_observed_latency_ms, 3),
+            }
 
     def _call(self, op: str, **kwargs: Any) -> str:
         response = self._call_json(op, **kwargs)
@@ -6543,6 +6621,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "audit_mode": self._audit_mode,
                 "audit_buffered_records": len(self._audit_buffer),
                 "audit_flush_failures": self._audit_flush_failures,
+                "rust_client": self._client.metrics_snapshot(),
             },
         }
 

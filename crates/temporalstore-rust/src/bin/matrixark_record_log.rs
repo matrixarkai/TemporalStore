@@ -4,6 +4,7 @@ use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
 use std::path::PathBuf;
+use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -89,8 +90,17 @@ struct RecordLogOutput {
 }
 
 fn main() {
-    if env::args().any(|arg| arg == "--serve") {
+    let args: Vec<String> = env::args().collect();
+    if args.iter().any(|arg| arg == "--serve") {
         std::process::exit(serve());
+    }
+    if !single_shot_debug_enabled(&args) {
+        eprintln!(
+            "matrixark_record_log single-shot mode is debug-only. Use --serve for MatrixArk \
+             production and benchmark workloads, or set MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG=1 \
+             / pass --debug-single-shot for diagnostics."
+        );
+        std::process::exit(64);
     }
     let started = Instant::now();
     let response = response_from_result(run(), started.elapsed().as_millis());
@@ -101,6 +111,13 @@ fn main() {
     if !response.ok {
         std::process::exit(1);
     }
+}
+
+fn single_shot_debug_enabled(args: &[String]) -> bool {
+    args.iter().any(|arg| arg == "--debug-single-shot")
+        || env::var("MATRIXARK_RUST_RECORD_LOG_SINGLE_SHOT_DEBUG")
+            .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false)
 }
 
 fn response_from_result(
@@ -172,7 +189,10 @@ fn serve() -> i32 {
             Err(error) => {
                 failed_count += 1;
                 let response = response_from_result(
-                    Err(("unknown".to_string(), format!("failed to read request: {error}"))),
+                    Err((
+                        "unknown".to_string(),
+                        format!("failed to read request: {error}"),
+                    )),
                     0,
                 );
                 let _ = writeln!(
@@ -225,7 +245,10 @@ fn serve() -> i32 {
                 Ok(("metrics_prometheus".to_string(), output))
             }
             Ok(request) => run_request(request),
-            Err(error) => Err(("unknown".to_string(), format!("invalid JSON request: {error}"))),
+            Err(error) => Err((
+                "unknown".to_string(),
+                format!("invalid JSON request: {error}"),
+            )),
         };
         let elapsed_ms = started.elapsed().as_millis();
         let response = response_from_result(result, elapsed_ms);
@@ -265,14 +288,16 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
                 root: record_log_root(&request),
                 status: "ready".to_string(),
                 mode: "long_lived_stdio_gateway".to_string(),
-                cached_clients: Some(0),
+                cached_clients: Some(cached_engine_count()),
                 ..empty_output(PathBuf::new())
             },
         ));
     }
     let root = record_log_root(&request);
     let engine = open_engine(&request).map_err(|error| (op.clone(), error))?;
-    let output = execute_record_log_request(&engine, request, root).map_err(|error| (op.clone(), error))?;
+    let mut output =
+        execute_record_log_request(&engine, request, root).map_err(|error| (op.clone(), error))?;
+    output.cached_clients = Some(cached_engine_count());
     Ok((op, output))
 }
 
@@ -340,18 +365,15 @@ fn execute_record_log_request(
                     key: request.key,
                     value: request.value.into_bytes(),
                 },
-            )
-            ?;
+            )?;
             empty_output(root)
         }
         "get_string" => value_output(
-            read_bytes(&engine, Command::StringGet { key: request.key })
-                ?,
+            read_bytes(&engine, Command::StringGet { key: request.key })?,
             root,
         ),
         "delete" | "del" => {
-            execute_empty(&engine, Command::CommonDelete { key: request.key })
-                ?;
+            execute_empty(&engine, Command::CommonDelete { key: request.key })?;
             empty_output(root)
         }
         "hset" => {
@@ -362,8 +384,7 @@ fn execute_record_log_request(
                     field: request.field,
                     value: request.value.into_bytes(),
                 },
-            )
-            ?;
+            )?;
             empty_output(root)
         }
         "batch_hset" => {
@@ -412,8 +433,7 @@ fn execute_record_log_request(
                     key: request.key,
                     field: request.field,
                 },
-            )
-            ?,
+            )?,
             root,
         ),
         "hdel" => {
@@ -423,13 +443,10 @@ fn execute_record_log_request(
                     key: request.key,
                     field: request.field,
                 },
-            )
-            ?;
+            )?;
             empty_output(root)
         }
-        "hgetall" | "scan_hash" => {
-            hash_entries_output(&engine, request.key, root)?
-        }
+        "hgetall" | "scan_hash" => hash_entries_output(&engine, request.key, root)?,
         other => return Err(format!("unsupported op {other:?}")),
     };
     Ok(output)
@@ -538,6 +555,15 @@ fn hash_entries_output(
     }
 }
 
+fn engine_cache() -> &'static Mutex<BTreeMap<PathBuf, TemporalEngine>> {
+    static ENGINE_CACHE: OnceLock<Mutex<BTreeMap<PathBuf, TemporalEngine>>> = OnceLock::new();
+    ENGINE_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn cached_engine_count() -> usize {
+    engine_cache().lock().map(|cache| cache.len()).unwrap_or(0)
+}
+
 fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
     let root = record_log_root(request);
     std::fs::create_dir_all(&root).map_err(|error| {
@@ -546,6 +572,14 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             root.display()
         )
     })?;
+    {
+        let cache = engine_cache()
+            .lock()
+            .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
+        if let Some(engine) = cache.get(&root) {
+            return Ok(engine.clone());
+        }
+    }
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         root.join("cache"),
@@ -553,6 +587,10 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         root.join("indexes"),
     );
     engine.load_shard(DEFAULT_SHARD_ID);
+    let mut cache = engine_cache()
+        .lock()
+        .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
+    cache.insert(root, engine.clone());
     Ok(engine)
 }
 
@@ -669,7 +707,9 @@ mod tests {
 
     fn env_guard() -> MutexGuard<'static, ()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(())).lock().expect("env lock")
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("env lock")
     }
 
     fn request(op: &str) -> RecordLogRequest {
