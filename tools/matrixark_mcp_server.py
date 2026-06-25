@@ -122,6 +122,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_retrieve": {"context:retrieve"},
     "matrixark_ingestion_dashboard": {"context:replay"},
     "matrixark_management_portal": {"context:replay", "resource:read", "skill:read", "admin:account", "admin:user", "admin:api_key", "admin:audit"},
+    "matrixark_auth_sso_login": set(),
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
     "matrixark_update_skill": {"skill:manage"},
@@ -8226,6 +8227,144 @@ class MatrixArkAccessManager:
                 break
         return {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "api_keys": list(latest.values()), "count": len(latest)}
 
+
+    def latest_sso_mapping(self, account_id: str, tenant_id: str, provider: str, external_user_id: str) -> Json | None:
+        for record in reversed(self.adapter.read_all()):
+            if (
+                record.get("record_type") == "matrixark_sso_user_mapping"
+                and record.get("account_id") == account_id
+                and record.get("tenant_id") == tenant_id
+                and record.get("provider") == provider
+                and record.get("external_user_id") == external_user_id
+            ):
+                return record
+        return None
+
+    def sso_login(self, args: Json, identity: Json) -> Json:
+        """Map a verified external login into a MatrixArk user scope.
+
+        MatrixArk does not act as the OAuth provider in this MVP. A product
+        gateway, hosted portal, or enterprise IdP verifies Google/Okta/Azure AD
+        first, then passes the verified subject here for MatrixArk account/user
+        mapping and context-scope creation.
+        """
+
+        provider = safe_identifier(require_string(args, "provider"), default="sso")
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        external_user_id = optional_string(args, "external_user_id") or optional_string(args, "email")
+        if not external_user_id:
+            raise MatrixArkError("external_user_id or email is required")
+        email = optional_string(args, "email", external_user_id if "@" in external_user_id else "")
+        id_token_verified = bool(args.get("id_token_verified", False))
+        trusted_gateway = bool(args.get("trusted_gateway", False))
+        if self.mode == "enforced" and not (id_token_verified or trusted_gateway):
+            raise MatrixArkError("SSO login requires verified OAuth/OIDC claims in enforced mode")
+        self.ensure_account_tenant_active(account_id, tenant_id)
+        existing_mapping = self.latest_sso_mapping(account_id, tenant_id, provider, external_user_id)
+        matrixark_user_id = optional_string(args, "matrixark_user_id") or str(
+            (existing_mapping or {}).get("matrixark_user_id") or f"mu_{stable_hash(f'{account_id}:{tenant_id}:{provider}:{external_user_id}') }"
+        )
+        display_name = optional_string(args, "display_name", email or matrixark_user_id)
+        external_subject = f"{provider}:{external_user_id}"
+        created_records: list[str] = []
+        if self.latest_account_record(account_id) is None:
+            self.adapter.append(
+                {
+                    "record_type": "matrixark_account",
+                    "account_id": account_id,
+                    "account_name": optional_string(args, "account_name", account_id),
+                    "status": "active",
+                    "created_by_api_key_id": identity.get("api_key_id", "sso_login"),
+                    "created_at_ms": now_ms(),
+                }
+            )
+            created_records.append("account")
+        if self.latest_tenant_record(account_id, tenant_id) is None:
+            self.adapter.append(
+                {
+                    "record_type": "matrixark_tenant",
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "tenant_name": optional_string(args, "tenant_name", tenant_id),
+                    **identity_hashes(account_id, tenant_id),
+                    "status": "active",
+                    "created_by_api_key_id": identity.get("api_key_id", "sso_login"),
+                    "created_at_ms": now_ms(),
+                }
+            )
+            created_records.append("tenant")
+        if self.latest_user_record(account_id, tenant_id, matrixark_user_id) is None:
+            self.adapter.append(
+                {
+                    "record_type": "matrixark_user",
+                    "user_record_hash": stable_hash(f"{account_id}:{tenant_id}:user:{matrixark_user_id}"),
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "user_id": matrixark_user_id,
+                    "display_name": display_name,
+                    "external_subject": external_subject,
+                    **identity_hashes(account_id, tenant_id, matrixark_user_id),
+                    "status": "active",
+                    "created_by_api_key_id": identity.get("api_key_id", "sso_login"),
+                    "created_at_ms": now_ms(),
+                }
+            )
+            created_records.append("user")
+        mapping_created = False
+        if existing_mapping is None:
+            self.adapter.append(
+                {
+                    "record_type": "matrixark_sso_user_mapping",
+                    "mapping_id_hash": stable_hash(f"{account_id}:{tenant_id}:{provider}:{external_user_id}"),
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "provider": provider,
+                    "external_user_id": external_user_id,
+                    "email": email,
+                    "matrixark_user_id": matrixark_user_id,
+                    **identity_hashes(account_id, tenant_id, matrixark_user_id),
+                    "status": "active",
+                    "created_by_api_key_id": identity.get("api_key_id", "sso_login"),
+                    "created_at_ms": now_ms(),
+                }
+            )
+            mapping_created = True
+            created_records.append("sso_mapping")
+        login_scope = enrich_scope_with_identity(
+            {**scope, "account_id": account_id, "tenant_id": tenant_id, "user_id": matrixark_user_id},
+            {"account_id": account_id, "tenant_id": tenant_id, "user_id": matrixark_user_id, "session_id": str(scope.get("session_id") or "")},
+        )
+        self.append_audit(
+            "auth.sso_login",
+            {**identity, "account_id": account_id, "tenant_id": tenant_id, "user_id": matrixark_user_id},
+            status="ok",
+            details={"provider": provider, "external_user_id": external_user_id, "mapping_created": mapping_created},
+        )
+        return {
+            "status": "logged_in",
+            "provider": provider,
+            "external_user_id": external_user_id,
+            "email": email,
+            "matrixark_user_id": matrixark_user_id,
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "scope": login_scope,
+            "created_records": created_records,
+            "mapping_created": mapping_created,
+            "next_actions": {
+                "apply_api_key": {
+                    "tool": "matrixark_admin_apply_api_key",
+                    "arguments": {"account_id": account_id, "tenant_id": tenant_id, "user_id": matrixark_user_id},
+                },
+                "open_portal": {
+                    "tool": "matrixark_management_portal",
+                    "arguments": {"scope": login_scope, "include_revoked": True},
+                },
+            },
+        }
+
     def map_sso_user(self, args: Json, identity: Json) -> Json:
         provider = require_string(args, "provider")
         external_user_id = require_string(args, "external_user_id")
@@ -8336,6 +8475,16 @@ class MatrixArkAccessManager:
                     "agent_name": effective_scope.get("agent_name", "local_agent"),
                     "user_id": effective_scope.get("user_id", ""),
                     "scopes": ["context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read"],
+                },
+            },
+            "sso_login": {
+                "tool": "matrixark_auth_sso_login",
+                "arguments": {
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "provider": "google",
+                    "email": str(effective_scope.get("user_id", "user")) + "@example.com",
+                    "id_token_verified": False,
                 },
             },
             "open_ingestion_history": {
@@ -8859,6 +9008,28 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_auth_sso_login",
+        "description": "Map verified Google/Okta/Azure AD/OIDC login claims into a MatrixArk user scope. In enforced mode the gateway must pass id_token_verified=true or trusted_gateway=true.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["provider"],
+            "properties": {
+                "provider": {"type": "string", "description": "google, okta, azure_ad, github, or another trusted IdP."},
+                "external_user_id": {"type": "string", "description": "Stable IdP subject. For Google this is the OIDC sub claim when available."},
+                "email": {"type": "string", "description": "Email claim, e.g. a Gmail or Google Workspace address."},
+                "matrixark_user_id": {"type": "string", "description": "Optional explicit MatrixArk user id; otherwise derived from provider subject."},
+                "display_name": {"type": "string"},
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "id_token_verified": {"type": "boolean", "default": False, "description": "Set by the trusted portal/gateway after OAuth/OIDC token validation."},
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_management_portal",
         "description": "Return one backend portal payload for registration, API-key management, ingestion history, topology, metrics, and audit.",
         "inputSchema": {
@@ -9210,6 +9381,9 @@ class MatrixArkMcpServer:
         if name == "matrixark_ingestion_dashboard":
             result = self.adapter.ingestion_dashboard(args)
             self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_auth_sso_login":
+            result = self.access.sso_login(args, identity)
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_management_portal":
             result = self.access.management_portal(args, identity)
