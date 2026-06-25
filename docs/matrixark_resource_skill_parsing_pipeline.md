@@ -250,6 +250,14 @@ Callers do not manually create `ContextNode` records. MatrixArk materializes the
 
 Resource, skill, event, entity, and summary records attach to the leaf `node_hash`. Summary generation writes L0/L1 summaries and embeddings for tree-first traversal. Parent summaries are refreshed asynchronously through dirty markers, so ingestion remains lightweight.
 
+Default summary refresh policy:
+
+- Event/resource/skill writes mark dirty node prefixes and return without regenerating parent summaries inline.
+- The MCP summary refresher wakes every `MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS`, default `1000` ms, and refreshes up to `MATRIXARK_SUMMARY_REFRESH_LIMIT`, default `64`, dirty nodes per tick.
+- The worker writes versioned `ContextSummary(node_l0)` and `ContextEmbedding(node_l0)` for every refreshed node.
+- It writes `ContextSummary(node_l1)` and `ContextEmbedding(node_l1)` when the node has enough accumulated content, child summaries, or event volume to need a richer overview.
+- Session/resource boundaries may still call `matrixark_refresh_summaries` immediately when the caller needs freshness before retrieval.
+
 The serving rule is important: summaries are an optimization, not a correctness dependency. If a node summary is missing or stale, retrieval falls back to event, entity, chunk, and recent raw embeddings.
 
 ## Retrieval

@@ -58,6 +58,8 @@ DIRECT_WRITE_THROTTLE_MS = int(os.environ.get("MATRIXARK_DIRECT_WRITE_THROTTLE_M
 DIRECT_AUDIT_MODE = os.environ.get("MATRIXARK_DIRECT_AUDIT_MODE", "buffered").strip().lower()
 DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUFFER_MAX_RECORDS", "128"))
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
+SUMMARY_REFRESH_INTERVAL_MS = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_INTERVAL_MS", "1000"))
+SUMMARY_REFRESH_LIMIT = int(os.environ.get("MATRIXARK_SUMMARY_REFRESH_LIMIT", "64"))
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
 BACKEND_LATENCY_BUCKETS_MS = (1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000)
@@ -9342,6 +9344,40 @@ class MatrixArkMcpServer:
         self.adapter = adapter
         self.line_json = line_json
         self.access = MatrixArkAccessManager(adapter, mode=access_mode)
+        self._summary_worker_started = False
+        self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
+        self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
+        self._ensure_summary_worker()
+
+    def _ensure_summary_worker(self) -> None:
+        if self._summary_worker_started or self._summary_refresh_interval_s <= 0:
+            return
+        self._summary_worker_started = True
+        thread = threading.Thread(target=self._summary_refresh_loop, name="matrixark-summary-refresher", daemon=True)
+        thread.start()
+        _mcp_debug_log(
+            f"matrixark summary refresher started interval_ms={SUMMARY_REFRESH_INTERVAL_MS} limit={self._summary_refresh_limit}"
+        )
+
+    def _summary_refresh_loop(self) -> None:
+        while True:
+            time.sleep(self._summary_refresh_interval_s)
+            try:
+                result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
+                refreshed_count = int(result.get("refreshed_count") or 0)
+                if refreshed_count:
+                    self.access.append_audit(
+                        "context.refresh_summaries.background",
+                        {"account_id": "system", "tenant_id": "system", "user_id": "summary_worker"},
+                        status="ok",
+                        details={
+                            "refreshed_count": refreshed_count,
+                            "interval_ms": SUMMARY_REFRESH_INTERVAL_MS,
+                            "limit": self._summary_refresh_limit,
+                        },
+                    )
+            except Exception as exc:
+                _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
 
     def handle(self, request: Json) -> Json | None:
         method = request.get("method")
