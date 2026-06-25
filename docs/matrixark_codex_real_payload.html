@@ -93,4 +93,9 @@ Account and tenant stay in `scope` for access control and isolation, not as auto
 ## MCP Difference
 
 If Codex calls MatrixArk through MCP tools, then Codex/the agent explicitly calls a tool such as `matrixark_ingest` or `matrixark_retrieve` with that tool&#x27;s schema. MCP calls are explicit. They do not automatically fire for every message unless Codex is instructed or hooked to call them.
+
+
+## Rich Agent Context Envelope
+
+For the full product contract across Codex, Claude, Cursor, and other agents, open: matrixark_agent_context_envelope.html. The rule is: the agent sends what it knows, while MatrixArk resolves and enforces final identity, access scopes, roles, audit, SSO mapping, and per-user/session isolation.
 </pre>
