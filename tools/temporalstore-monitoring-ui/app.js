@@ -1745,6 +1745,18 @@ function countMatches(items, needle) {
 function defaultResourceSkillOps() {
   return {
     status: "watch",
+    metrics: [
+      { label: "Import duration", value: "-", unit: "ms", status: "watch", detail: "ResourceImportTask end-to-end duration" },
+      { label: "Parser duration by type", value: "-", unit: "ms", status: "watch", detail: "parser p95 grouped by resource type" },
+      { label: "Chunk count", value: "-", unit: "chunks", status: "watch", detail: "chunks written for current import window" },
+      { label: "Dedupe count", value: "-", unit: "chunks", status: "watch", detail: "content_hash duplicates skipped" },
+      { label: "Embedding duration", value: "-", unit: "ms", status: "watch", detail: "chunk and summary embedding latency" },
+      { label: "Extraction duration", value: "-", unit: "ms", status: "watch", detail: "resource fact/entity extraction latency" },
+      { label: "Summary dirty lag", value: "-", unit: "ms", status: "watch", detail: "oldest dirty resource parent node" },
+      { label: "Resource retrieval hit rate", value: "-", unit: "%", status: "watch", detail: "accepted selected resource refs" },
+      { label: "Skill retrieval hit rate", value: "-", unit: "%", status: "watch", detail: "accepted selected skill sections" },
+      { label: "Parse failure count", value: "-", unit: "failures", status: "watch", detail: "failed parser tasks" },
+    ],
     import_tasks: [],
     parse_warnings: [],
     resource_tree: [],
@@ -1766,6 +1778,7 @@ function renderResourceSkillOps(data) {
     statusEl.className = `status-pill ${statusClass(ops.status)}`;
     statusEl.innerHTML = `<span class="dot"></span>${escapeHtml(ops.status)}`;
   }
+  renderResourceSkillMetrics(ops.metrics);
   renderCardStack("resource-import-tasks", ops.import_tasks, [
     ["task_id", "task"],
     ["raw_uri", "raw uri"],
@@ -1828,6 +1841,33 @@ function renderResourceSkillOps(data) {
     ["audit_ref", "audit"],
     ["reason", "reason"],
   ]);
+}
+
+function renderResourceSkillMetrics(metrics) {
+  const el = byId("resource-skill-metrics");
+  if (!el) {
+    return;
+  }
+  const rows = asArray(metrics);
+  if (!rows.length) {
+    el.innerHTML = `<p class="empty-records">No metrics yet.</p>`;
+    return;
+  }
+  el.innerHTML = rows
+    .map(
+      (metric) => `
+        <article class="resource-metric-card">
+          <div>
+            <span>${escapeHtml(metric.label)}</span>
+            ${badge(metric.status || "watch")}
+          </div>
+          <strong>${escapeHtml(metric.value)}</strong>
+          <small>${escapeHtml(metric.unit || "")}</small>
+          <p>${escapeHtml(metric.detail || "")}</p>
+        </article>
+      `,
+    )
+    .join("");
 }
 
 function renderCardStack(id, records, fields) {

@@ -2075,6 +2075,61 @@ a {
   background: var(--panel-soft);
 }
 
+.resource-skill-metrics-card {
+  grid-column: 1 / -1;
+}
+
+.resource-skill-metrics {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.resource-metric-card {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.resource-metric-card > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 22px;
+}
+
+.resource-metric-card span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.resource-metric-card strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 20px;
+  line-height: 1.1;
+  overflow-wrap: anywhere;
+}
+
+.resource-metric-card small {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.resource-metric-card p {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
 .ops-card-stack,
 .resource-tree-view,
 .chunk-preview-list,
@@ -2142,10 +2197,18 @@ a {
   .resource-skill-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .resource-skill-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 720px) {
   .resource-skill-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .resource-skill-metrics {
     grid-template-columns: 1fr;
   }
 }

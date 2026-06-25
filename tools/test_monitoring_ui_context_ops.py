@@ -53,6 +53,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "health-source-banner",
             "context-runtime-status",
             "resource-skill-status",
+            "resource-skill-metrics",
             "resource-import-tasks",
             "resource-parse-warnings",
             "resource-tree-view",
@@ -161,6 +162,23 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertTrue(any(row["label"] == "Feedback memory" for row in context["audit"]))
         resource_skill = context["resource_skill_ops"]
         self.assertEqual("ready", resource_skill["status"])
+        metric_labels = {metric["label"] for metric in resource_skill["metrics"]}
+        self.assertTrue(
+            {
+                "Import duration",
+                "Parser duration by type",
+                "Chunk count",
+                "Dedupe count",
+                "Embedding duration",
+                "Extraction duration",
+                "Summary dirty lag",
+                "Resource retrieval hit rate",
+                "Skill retrieval hit rate",
+                "Parse failure count",
+            }.issubset(metric_labels)
+        )
+        self.assertTrue(any(metric["value"] == "92%" for metric in resource_skill["metrics"]))
+        self.assertTrue(any(metric["label"] == "Parse failure count" and metric["value"] == "0" for metric in resource_skill["metrics"]))
         self.assertTrue(any(task["status"] == "completed" for task in resource_skill["import_tasks"]))
         self.assertTrue(any(warning["value"] == "warning" for warning in resource_skill["parse_warnings"]))
         self.assertTrue(any(row["path"] == "/resources/runbooks/gpu.md" for row in resource_skill["resource_tree"]))
@@ -211,8 +229,13 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "function renderOpsWorkspace",
             "renderOpsWorkspace(data)",
             "function renderResourceSkillOps",
+            "function renderResourceSkillMetrics",
             "defaultResourceSkillOps",
             "resource_skill_ops",
+            "resource-skill-metrics",
+            "Resource retrieval hit rate",
+            "Skill retrieval hit rate",
+            "Parse failure count",
             "resource-import-tasks",
             "resource-parse-warnings",
             "resource-tree-view",
@@ -328,6 +351,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             ".ui-readiness-summary-grid",
             ".ui-readiness-grid",
             ".ui-readiness-card",
+            ".resource-skill-metrics",
+            ".resource-metric-card",
             ".tree-node",
             ".topology-map",
             ".topology-node",
@@ -387,13 +412,16 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("health-source-banner", parser.ids)
         self.assertIn("context-ui-readiness-summary", parser.ids)
         self.assertIn("context-ui-readiness", parser.ids)
+        self.assertIn("resource-skill-metrics", parser.ids)
         self.assertIn("renderContextOps", app_js)
+        self.assertIn("renderResourceSkillMetrics", app_js)
         self.assertIn("function fetchHealthJson", app_js)
         self.assertIn("Promise.race([request, timeout])", app_js)
         self.assertIn("controller ? { signal: controller.signal }", app_js)
         self.assertIn(".context-tree-pack", styles)
         self.assertIn(".ops-workspace-card", styles)
         self.assertIn(".data-plane-card", styles)
+        self.assertIn(".resource-metric-card", styles)
         self.assertIn(".topology-node", styles)
         self.assertIn(".topology-metadata", styles)
         self.assertIn(".filesystem-explorer", styles)
@@ -473,6 +501,7 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
                 queryWorkbench: elements["context-query-workbench"].innerHTML,
                 contextConfig: elements["context-config"].innerHTML,
                 modelRegistry: elements["context-model-registry"].innerHTML,
+                resourceMetrics: elements["resource-skill-metrics"].innerHTML,
                 contextTree: elements["context-tree"].innerHTML,
                 contextPack: elements["context-pack"].innerHTML,
                 filesystemExplorer: elements["context-filesystem-explorer"].innerHTML,
@@ -532,6 +561,16 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
                 required.modelRegistry.includes("Draft Model Config") && required.modelRegistry.includes("Provider"),
                 required.modelRegistry.includes("OpenAI compatible") && required.modelRegistry.includes("agent supplied"),
                 required.modelRegistry.includes('data-model-role="Extraction LLM"'),
+                required.resourceMetrics.includes("Import duration") && required.resourceMetrics.includes("1.8"),
+                required.resourceMetrics.includes("Parser duration by type") && required.resourceMetrics.includes("pdf 820ms"),
+                required.resourceMetrics.includes("Chunk count") && required.resourceMetrics.includes("8"),
+                required.resourceMetrics.includes("Dedupe count") && required.resourceMetrics.includes("1"),
+                required.resourceMetrics.includes("Embedding duration") && required.resourceMetrics.includes("310"),
+                required.resourceMetrics.includes("Extraction duration") && required.resourceMetrics.includes("540"),
+                required.resourceMetrics.includes("Summary dirty lag") && required.resourceMetrics.includes("1.8"),
+                required.resourceMetrics.includes("Resource retrieval hit rate") && required.resourceMetrics.includes("92%"),
+                required.resourceMetrics.includes("Skill retrieval hit rate") && required.resourceMetrics.includes("88%"),
+                required.resourceMetrics.includes("Parse failure count") && required.resourceMetrics.includes("0"),
                 required.contextTree.includes("Node Topology") && required.contextTree.includes("child refs"),
                 required.contextTree.includes("incident_77_postmortem") && required.contextTree.includes("deduped child ref"),
                 required.contextTree.includes("1001300") && required.contextTree.includes("children"),
