@@ -3196,6 +3196,31 @@ class MatrixArkLocalAdapter:
         self.append(update)
         return {"status": "updated", **update}
 
+    def _run_background_resource_import(self, args: Json, hook: Json | None) -> None:
+        task_hash = args.get("_resource_import_task_hash", 0)
+        try:
+            self.ingest(args, hook=hook)
+        except Exception as exc:  # pragma: no cover - background failure path is validated via records.
+            scope = optional_object(args, "scope")
+            metadata = optional_object(args, "metadata")
+            node_hint = metadata.get("node_path") or self.default_session_node_path(scope)
+            node_path = [str(part) for part in node_hint if str(part)]
+            self.append(
+                {
+                    "record_type": "resource_import_task",
+                    "task_hash": task_hash,
+                    "status": "failed",
+                    "kind": str(args.get("kind") or "resource"),
+                    "raw_uri": str(args.get("raw_uri") or metadata.get("raw_uri") or "inline-resource"),
+                    "resource_type": str(args.get("resource_type") or metadata.get("resource_type") or ""),
+                    "error": str(exc),
+                    "node_hash": stable_hash("/".join(node_path)),
+                    "node_path": node_path,
+                    "scope": normalize_scope(scope),
+                    "updated_at_ms": now_ms(),
+                }
+            )
+
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
         hook = validate_hook(hook)
@@ -3252,25 +3277,44 @@ class MatrixArkLocalAdapter:
             raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
             resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
             resource_import_wait = bool(args.get("wait", True))
-            resource_import_task_hash = stable_hash(f"resource_import_task:{envelope['kind']}:{raw_uri}:{node_hash}:{envelope['ingestion_time_ms']}")
-            import_started_perf = time.perf_counter()
-            self.append(
-                {
-                    "record_type": "resource_import_task",
-                    "task_hash": resource_import_task_hash,
-                    "status": "queued",
-                    "kind": envelope["kind"],
-                    "raw_uri": raw_uri,
-                    "resource_type": resource_type,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": envelope["scope"],
-                    "wait": resource_import_wait,
-                    "created_at_ms": envelope["ingestion_time_ms"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+            resource_import_background = bool(args.get("_background_resource_import", False))
+            provided_task_hash = args.get("_resource_import_task_hash")
+            resource_import_task_hash = (
+                int(provided_task_hash)
+                if isinstance(provided_task_hash, int) and provided_task_hash > 0
+                else stable_hash(f"resource_import_task:{envelope['kind']}:{raw_uri}:{node_hash}:{envelope['ingestion_time_ms']}")
             )
+            import_started_perf = time.perf_counter()
+            if not resource_import_background:
+                self.append(
+                    {
+                        "record_type": "resource_import_task",
+                        "task_hash": resource_import_task_hash,
+                        "status": "queued",
+                        "kind": envelope["kind"],
+                        "raw_uri": raw_uri,
+                        "resource_type": resource_type,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "wait": resource_import_wait,
+                        "created_at_ms": envelope["ingestion_time_ms"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
             if not resource_import_wait:
+                background_args = {
+                    **args,
+                    "wait": True,
+                    "_background_resource_import": True,
+                    "_resource_import_task_hash": resource_import_task_hash,
+                }
+                thread = threading.Thread(
+                    target=self._run_background_resource_import,
+                    args=(background_args, hook),
+                    daemon=True,
+                )
+                thread.start()
                 return {
                     "status": "queued",
                     "event_id_hash": event_id_hash,
@@ -3279,6 +3323,7 @@ class MatrixArkLocalAdapter:
                         "task_hash": resource_import_task_hash,
                         "status": "queued",
                         "wait": False,
+                        "background_started": True,
                         "raw_uri": raw_uri,
                         "resource_type": resource_type,
                     },
