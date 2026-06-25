@@ -277,10 +277,13 @@ Strict mode is expected to fail until durable real-process OpenRaft rollout, ato
 snapshot/storage persistence, and external distributed fault blockers are closed. Local-model harness
 success is validation evidence only; it does not satisfy the production Raft readiness gate.
 
-Storage keeps local/shared-store correctness separate from broad release evidence. The local
-Rust-native storage harness evidence covers dump/load, cache pressure, restart recovery,
-shared-store replay, and Raft movement. The broader Docker/AWS deployment-scale SLO report is
-tracked by `scale_slo_report.storage_deployment_scale_slo_ready` and covers metaserver, proxy,
-client, data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload
-replay, p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag,
-failover count, and scale events.
+Storage keeps local/shared-store correctness separate from broad release evidence. Storage/cache
+readiness is strong for Rust-native local/shared-store paths: the local Rust-native storage harness
+evidence covers dump/load, cache pressure, restart recovery, shared-store replay, and Raft movement.
+The broader Docker/AWS deployment-scale SLO report is tracked separately by
+`scale_slo_report.storage_deployment_scale_slo_ready` and covers metaserver, proxy, client,
+data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay,
+p50/p95/p99, throughput, error budget, CPU/memory/disk/network collectors, replica lag, failover
+count, and scale events. Live external object-store evidence, including ByteStore/S3 follower-cursor
+and Raft-snapshot manifest retention, is also scoped separately unless that backend is explicitly
+enabled for a release target.
