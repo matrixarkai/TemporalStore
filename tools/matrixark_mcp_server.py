@@ -1553,6 +1553,34 @@ def metadata_index_terms(metadata: Json) -> list[str]:
     return ordered_unique(terms)
 
 
+RESOURCE_FACT_KEYWORDS = re.compile(
+    r"\b(decision|decided|owner|owns|deadline|due|cost|budget|approval|approved|risk|policy|must|should|required|requires|api|endpoint|contract|runbook|rollback|incident|troubleshoot|alert|sla|p95|p99|procedure|checklist)\b",
+    flags=re.IGNORECASE,
+)
+
+
+def should_extract_resource_fact(text: str, metadata: Json) -> bool:
+    if RESOURCE_FACT_KEYWORDS.search(text):
+        return True
+    unit_kind = str(metadata.get("unit_kind", ""))
+    return unit_kind in {"table_row", "table_row_group", "xlsx_row", "xlsx_row_group", "json_document", "json_record", "json_record_group"}
+
+
+def resource_fact_type(text: str, metadata: Json) -> str:
+    lower = text.lower()
+    if any(term in lower for term in ["approval", "approved", "budget", "cost", "purchase"]):
+        return "resource_approval_fact"
+    if any(term in lower for term in ["deadline", "due", "owner", "owns", "reviewer"]):
+        return "resource_task_fact"
+    if any(term in lower for term in ["api", "endpoint", "contract", "schema"]):
+        return "resource_api_contract"
+    if any(term in lower for term in ["runbook", "rollback", "incident", "alert", "troubleshoot"]):
+        return "resource_runbook_step"
+    if any(term in lower for term in ["policy", "must", "required", "requires", "risk"]):
+        return "resource_policy_fact"
+    return "resource_fact"
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     messages = require_messages(args)
     scope = optional_object(args, "scope")
@@ -1791,10 +1819,15 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
     if re.search(r"\b(approval|approved|approve|confirmed|confirmation|budget|purchase|cost|gpu)\b", lower):
         add_group(
             context_index_name("event_type", "confirmation"),
+            context_index_name("event_type", "resource_approval_fact"),
             context_index_name("entity_type", "approval_state"),
             context_index_name("entity_type", "confirmation"),
+            context_index_name("entity_type", "resource_fact"),
             context_index_name("classification", "confirmation"),
+            context_index_name("classification", "resource_fact"),
             context_index_name("segment_topic", "approval_budget"),
+            context_index_name("source_type", "resource"),
+            context_index_name("source_type", "resource_fact"),
         )
     if re.search(r"\b(correction|corrected|wrong|instead|updated|changed)\b", lower):
         add_group(
@@ -2330,6 +2363,11 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "raw_uri",
         "source_ref",
         "resource_type",
+        "resource_version",
+        "access_decision",
+        "version_state",
+        "stale_or_superseded",
+        "citation",
         "operator",
         "source_start_ms",
         "source_end_ms",
@@ -2351,6 +2389,11 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "record_end",
         "page",
         "page_section",
+        "slide_number",
+        "sheet_name",
+        "row_count",
+        "supersedes_chunk_hash",
+        "parse_warnings",
     ]
     for ref in refs:
         item = {field: ref[field] for field in keep_fields if field in ref}
@@ -3061,7 +3104,14 @@ class MatrixArkLocalAdapter:
                 "resource_hash": resource_hash,
                 "raw_uri": record.get("raw_uri", ""),
                 "resource_type": record.get("resource_type", ""),
+                "resource_version": record.get("resource_version", ""),
+                "content_hash": record.get("content_hash", ""),
                 "chunk_count": record.get("chunk_count", 0),
+                "original_chunk_count": record.get("original_chunk_count", record.get("chunk_count", 0)),
+                "deduped_chunk_count": record.get("deduped_chunk_count", 0),
+                "superseded_chunk_count": record.get("superseded_chunk_count", 0),
+                "async_parent_summary_required": bool(record.get("async_parent_summary_required", False)),
+                "import_task_hash": record.get("import_task_hash", 0),
                 "token_estimate": record.get("token_estimate", 0),
                 "node_hash": record.get("node_hash", 0),
                 "node_path": record.get("node_path", []),
@@ -3191,10 +3241,64 @@ class MatrixArkLocalAdapter:
         resource_chunk_hashes: list[int] = []
         resource_dirty_hashes: list[int] = []
         resource_parse_error = ""
+        resource_import_task_hash = 0
+        resource_import_task_status = "not_applicable"
+        resource_import_wait = True
+        resource_import_metrics: Json = {}
+        resource_fact_event_hashes: list[int] = []
+        resource_fact_entity_hashes: list[int] = []
         skill_hash = None
         if envelope["kind"] in {"resource", "skill"}:
             raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
             resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
+            resource_import_wait = bool(args.get("wait", True))
+            resource_import_task_hash = stable_hash(f"resource_import_task:{envelope['kind']}:{raw_uri}:{node_hash}:{envelope['ingestion_time_ms']}")
+            import_started_perf = time.perf_counter()
+            self.append(
+                {
+                    "record_type": "resource_import_task",
+                    "task_hash": resource_import_task_hash,
+                    "status": "queued",
+                    "kind": envelope["kind"],
+                    "raw_uri": raw_uri,
+                    "resource_type": resource_type,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": envelope["scope"],
+                    "wait": resource_import_wait,
+                    "created_at_ms": envelope["ingestion_time_ms"],
+                    "updated_at_ms": envelope["ingestion_time_ms"],
+                }
+            )
+            if not resource_import_wait:
+                return {
+                    "status": "queued",
+                    "event_id_hash": event_id_hash,
+                    "node_hash": node_hash,
+                    "resource_import_task": {
+                        "task_hash": resource_import_task_hash,
+                        "status": "queued",
+                        "wait": False,
+                        "raw_uri": raw_uri,
+                        "resource_type": resource_type,
+                    },
+                    "node_materialization": node_materialization,
+                }
+            resource_import_task_status = "running"
+            self.append(
+                {
+                    "record_type": "resource_import_task",
+                    "task_hash": resource_import_task_hash,
+                    "status": "running",
+                    "kind": envelope["kind"],
+                    "raw_uri": raw_uri,
+                    "resource_type": resource_type,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": envelope["scope"],
+                    "updated_at_ms": now_ms(),
+                }
+            )
             resource_text = "\n\n".join(str(message["content"]) for message in envelope["messages"])
             parse_text = resource_text
             if raw_uri != "inline-resource" and Path(raw_uri).exists():
@@ -3211,6 +3315,7 @@ class MatrixArkLocalAdapter:
                         {
                             "record_type": "skill_manifest",
                             "skill_hash": parsed_skill.skill_hash,
+                            "import_task_hash": resource_import_task_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "raw_uri": raw_uri,
@@ -3259,6 +3364,22 @@ class MatrixArkLocalAdapter:
                 resource_parse_error = str(exc)
                 parsed_chunks = []
             if not parsed_chunks:
+                resource_import_task_status = "failed"
+                self.append(
+                    {
+                        "record_type": "resource_import_task",
+                        "task_hash": resource_import_task_hash,
+                        "status": "failed",
+                        "kind": envelope["kind"],
+                        "raw_uri": raw_uri,
+                        "resource_type": resource_type,
+                        "error": resource_parse_error or "resource ingestion produced no chunks",
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": now_ms(),
+                    }
+                )
                 raise MatrixArkError(resource_parse_error or "resource ingestion produced no chunks")
             original_chunk_count = len(parsed_chunks)
             deduped_source_refs: list[str] = []
@@ -3291,6 +3412,7 @@ class MatrixArkLocalAdapter:
                     "record_type": "context_summary",
                     "summary_type": f"{resource_kind}_l0",
                     "summary_hash": resource_summary_hash,
+                    "import_task_hash": resource_import_task_hash,
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "raw_uri": raw_uri,
@@ -3358,6 +3480,7 @@ class MatrixArkLocalAdapter:
                     {
                         "record_type": "resource_manifest",
                         "resource_hash": manifest_hash,
+                        "import_task_hash": resource_import_task_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "raw_uri": raw_uri,
@@ -3382,6 +3505,7 @@ class MatrixArkLocalAdapter:
                     self.append(
                         {
                             "record_type": "skill_section",
+                            "import_task_hash": resource_import_task_hash,
                             "skill_hash": skill_hash,
                             "section_hash": chunk.chunk_hash,
                             "node_hash": node_hash,
@@ -3398,6 +3522,7 @@ class MatrixArkLocalAdapter:
                 self.append(
                     {
                         "record_type": "resource_chunk",
+                        "import_task_hash": resource_import_task_hash,
                         "chunk_hash": chunk.chunk_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
@@ -3449,6 +3574,167 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
+            resource_fact_records: list[Json] = []
+            fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:32]
+            for chunk in fact_chunks:
+                fact_event_type = resource_fact_type(chunk.text, chunk.metadata)
+                fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
+                resource_fact_event_hashes.append(fact_event_hash)
+                fact_summary = summarize_text(chunk.text, limit=320)
+                fact_extraction = {
+                    "mode": "matrixark_resource_fact_extraction",
+                    "classification": "RESOURCE_FACT",
+                    "event_type": fact_event_type,
+                    "status": "observed",
+                    "source_chunk_hash": chunk.chunk_hash,
+                    "source_ref": chunk.source_ref,
+                    "resource_version": resource_version_value,
+                }
+                resource_fact_records.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": fact_event_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": chunk.text,
+                        "summary_text": fact_summary,
+                        "envelope": {**envelope, "kind": "resource_fact"},
+                        "internal_extraction": fact_extraction,
+                        "source_chunk_hash": chunk.chunk_hash,
+                        "source_ref": chunk.source_ref,
+                        "resource_version": resource_version_value,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                fact_vector = embedding_for_text(fact_event_type + " " + chunk.text)
+                resource_fact_records.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "event_text",
+                        "ref_type": "event",
+                        "ref_hash": fact_event_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(fact_vector),
+                        "model": embedding_model_name(),
+                        "vector": fact_vector,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                entity_name = str(chunk.metadata.get("heading") or chunk.metadata.get("relative_path") or chunk.metadata.get("source_ref") or raw_uri)[:120]
+                entity_hash = stable_hash(f"{node_hash}:resource_fact:{entity_name}:{chunk.chunk_hash}")
+                resource_fact_entity_hashes.append(entity_hash)
+                entity_state = summarize_text(chunk.text, limit=320)
+                resource_fact_records.append(
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": entity_hash,
+                        "batch_id_hash": resource_import_task_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "entity_type": "resource_fact",
+                        "entity_name": entity_name,
+                        "state": entity_state,
+                        "confidence": 0.72,
+                        "operator": "LATEST",
+                        "source_refs": [chunk.source_ref],
+                        "source_event_ids": [fact_event_hash],
+                        "source_chunk_hash": chunk.chunk_hash,
+                        "resource_version": resource_version_value,
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                entity_vector = embedding_for_text("resource_fact " + entity_name + " " + entity_state)
+                resource_fact_records.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "entity_state",
+                        "ref_type": "entity",
+                        "ref_hash": entity_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(entity_vector),
+                        "model": embedding_model_name(),
+                        "vector": entity_vector,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                for index_name in ordered_unique([
+                    context_index_name("source_type", "resource_fact"),
+                    context_index_name("event_type", fact_event_type),
+                    context_index_name("entity_type", "resource_fact"),
+                    context_index_name("resource_type", chunk.metadata.get("resource_type") or resource_type),
+                ] + metadata_index_terms(chunk.metadata)):
+                    resource_fact_records.append(
+                        {
+                            "record_type": "context_index",
+                            "index_name": index_name,
+                            "index_hash": stable_hash(f"{index_name}:{fact_event_hash}"),
+                            "batch_id_hash": resource_import_task_hash,
+                            "ref_type": "resource_fact",
+                            "ref_hash": fact_event_hash,
+                            "chunk_hash": chunk.chunk_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
+            if resource_fact_records:
+                self.append_many(resource_fact_records)
+            resource_import_metrics = {
+                "duration_ms": round((time.perf_counter() - import_started_perf) * 1000.0, 3),
+                "parser_chunk_count": original_chunk_count,
+                "chunk_count": len(parsed_chunks),
+                "dedupe_count": deduped_chunk_count,
+                "embedding_count": len(chunk_vectors) + 1 + len(resource_fact_event_hashes) + len(resource_fact_entity_hashes),
+                "resource_fact_count": len(resource_fact_event_hashes),
+                "resource_entity_count": len(resource_fact_entity_hashes),
+                "parse_warning_count": sum(1 for chunk in parsed_chunks if chunk.metadata.get("parse_warnings")),
+                "summary_dirty_count": len(resource_dirty_hashes),
+            }
+            resource_import_task_status = "completed"
+            self.append(
+                {
+                    "record_type": "resource_import_task",
+                    "task_hash": resource_import_task_hash,
+                    "status": "completed",
+                    "kind": envelope["kind"],
+                    "raw_uri": raw_uri,
+                    "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                    "resource_version": resource_version_value,
+                    "content_hash": resource_content_hash,
+                    "chunk_count": len(parsed_chunks),
+                    "original_chunk_count": original_chunk_count,
+                    "deduped_chunk_count": deduped_chunk_count,
+                    "superseded_chunk_count": superseded_chunk_count,
+                    "resource_fact_count": len(resource_fact_event_hashes),
+                    "resource_entity_count": len(resource_fact_entity_hashes),
+                    "summary_dirty_hashes": resource_dirty_hashes,
+                    "metrics": resource_import_metrics,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": envelope["scope"],
+                    "updated_at_ms": now_ms(),
+                }
+            )
+            self.append(
+                {
+                    "record_type": "matrixark_metric",
+                    "metric_name": "resource_import",
+                    "task_hash": resource_import_task_hash,
+                    "kind": envelope["kind"],
+                    "raw_uri": raw_uri,
+                    "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
+                    "metrics": resource_import_metrics,
+                    "scope": envelope["scope"],
+                    "created_at_ms": now_ms(),
+                }
+            )
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
@@ -3573,6 +3859,12 @@ class MatrixArkLocalAdapter:
                 "refresh_result": None,
                 "async_required": bool(resource_dirty_hashes),
             },
+            "resource_import_task": {
+                "task_hash": resource_import_task_hash,
+                "status": resource_import_task_status,
+                "wait": resource_import_wait,
+                "metrics": resource_import_metrics,
+            },
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
             "resource_chunk_count": len(resource_chunk_hashes),
@@ -3582,6 +3874,10 @@ class MatrixArkLocalAdapter:
             "resource_version": resource_version_value if envelope["kind"] in {"resource", "skill"} else "",
             "resource_content_hash": resource_content_hash if envelope["kind"] in {"resource", "skill"} else "",
             "resource_superseded_chunk_count": superseded_chunk_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_fact_events": resource_fact_event_hashes,
+            "resource_fact_event_count": len(resource_fact_event_hashes),
+            "resource_fact_entities": resource_fact_entity_hashes,
+            "resource_fact_entity_count": len(resource_fact_entity_hashes),
             "skill_hash": skill_hash,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
@@ -4132,6 +4428,17 @@ class MatrixArkLocalAdapter:
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         records = self.read_all()
         skill_controls = self.latest_skill_controls(records)
+        include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
+        latest_resource_version_by_uri: dict[str, str] = {}
+        for manifest in reversed(records):
+            if manifest.get("record_type") != "resource_manifest":
+                continue
+            if not scope_matches(manifest.get("scope", {}), scope):
+                continue
+            raw_uri_key = str(manifest.get("raw_uri") or "")
+            resource_version_key = str(manifest.get("resource_version") or "")
+            if raw_uri_key and resource_version_key and raw_uri_key not in latest_resource_version_by_uri:
+                latest_resource_version_by_uri[raw_uri_key] = resource_version_key
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -4498,10 +4805,21 @@ class MatrixArkLocalAdapter:
             else:
                 ref_type = "resource_chunk"
                 ref_hash = int(record.get("chunk_hash") or 0)
-                text = f"resource {record.get('raw_uri', '')} {record.get('source_ref', '')}: {record.get('text', '')}"
+                metadata = record.get("metadata", {})
+                raw_uri_value = str(record.get("raw_uri") or "")
+                resource_version_value = str(metadata.get("resource_version") or record.get("resource_version") or "")
+                latest_version = latest_resource_version_by_uri.get(raw_uri_value, resource_version_value)
+                is_superseded_version = bool(
+                    resource_version_value
+                    and latest_version
+                    and resource_version_value != latest_version
+                ) or bool(metadata.get("supersedes_chunk_hash"))
+                if is_superseded_version and not include_superseded_resources:
+                    secondary_index_dropped_count += 1
+                    continue
+                text = f"resource {raw_uri_value} {record.get('source_ref', '')}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = str(record.get("resource_type") or "resource")
-                metadata = record.get("metadata", {})
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             node_score = node_scores.get(record.get("node_hash"), {}).get("score", 0.0)
@@ -4530,6 +4848,11 @@ class MatrixArkLocalAdapter:
                         "raw_uri": record.get("raw_uri", ""),
                         "source_ref": record.get("source_ref", ""),
                         "resource_type": record.get("resource_type", ""),
+                        "resource_version": metadata.get("resource_version", ""),
+                        "version_state": "historical" if ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", "")) else "current",
+                        "stale_or_superseded": bool(ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", ""))),
+                        "access_decision": "allowed_by_scope",
+                        "citation": record.get("source_ref", ""),
                         "metadata": metadata,
                         "scope": record.get("scope", {}),
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
@@ -6049,6 +6372,9 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "raw_uri": {"type": "string", "description": "Optional resource URI/path when kind=resource."},
                 "resource_type": {"type": "string", "description": "Optional resource type such as md, txt, pdf, url."},
+                "wait": {"type": "boolean", "default": True, "description": "For resource/skill imports, wait for parsing and record writes in the local runtime. wait=false records a queued ResourceImportTask."},
+                "resource_version": {"type": "string", "description": "Optional caller-supplied resource version. Defaults to parser content version."},
+                "supersedes_chunk_hashes": {"type": "object", "description": "Optional map from source_ref or content_hash to the older chunk hash this import supersedes."},
                 "auto_batch_extract": {
                     "type": "boolean",
                     "default": False,
@@ -6184,6 +6510,11 @@ TOOLS: list[Json] = [
                     "type": "integer",
                     "default": 2048,
                     "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to 2048.",
+                },
+                "include_superseded_resources": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, retrieval may include older resource versions for historical replay.",
                 },
                 "local_context": {
                     "type": "array",
