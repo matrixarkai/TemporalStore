@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
@@ -21,9 +21,10 @@ def load_matrixark(root: Path):
         MatrixArkLocalAdapter,
         MatrixArkMcpServer,
         MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustAdapter,
     )
 
-    return MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter
+    return MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter
 
 
 def parse_args() -> argparse.Namespace:
@@ -31,7 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
     parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_CODEX_EVENT_LOG", "/tmp/matrixark-codex-hook.jsonl")))
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct"], default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"))
+    parser.add_argument("--backend", choices=["local", "temporalstore-direct", "temporalstore-rust"], default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"))
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
@@ -51,6 +52,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
+    parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
     parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "60000")))
@@ -347,13 +349,34 @@ def call_tool(server: Any, name: str, arguments: Json) -> Json:
 
 
 def build_server(args: argparse.Namespace):
-    MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter = load_matrixark(args.repo_root)
+    MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter = load_matrixark(args.repo_root)
     if args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
             namespace=args.namespace,
             table=args.table,
             library_path=args.temporalstore_lib or None,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    elif args.backend == "temporalstore-rust":
+        rust_cli = args.rust_cli
+        if not rust_cli:
+            for candidate in [
+                args.repo_root / "target" / "release" / "matrixark_record_log",
+                args.repo_root / "target" / "debug" / "matrixark_record_log",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_record_log",
+            ]:
+                if candidate.exists() and os.access(candidate, os.X_OK):
+                    rust_cli = str(candidate)
+                    break
+        adapter = MatrixArkTemporalStoreRustAdapter(
+            rust_cli=rust_cli,
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
             storage_prefix=args.storage_prefix,
             request_timeout_ms=args.request_timeout_ms,
             io_timeout_ms=args.io_timeout_ms,
