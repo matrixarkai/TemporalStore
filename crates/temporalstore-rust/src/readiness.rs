@@ -1843,6 +1843,26 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         {
             "raft_rollout.multi_process_log_store_validated"
         }
+        "raft_replication"
+            if capability.contains("multi-process log-store validation evidence") =>
+        {
+            "raft_rollout.multi_process_log_store_validated"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("data-node multi-process rollout evidence") =>
+        {
+            "raft_rollout.openraft_data_node_process_rollout_ready"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("metaserver multi-process rollout evidence") =>
+        {
+            "raft_rollout.openraft_metaserver_process_rollout_ready"
+        }
+        "data_node_distributed_raft"
+            if capability.contains("multi-process log-store validation evidence") =>
+        {
+            "raft_rollout.multi_process_log_store_validated"
+        }
         "data_node_distributed_raft" if capability.contains("membership") => {
             "meta_owned_data_raft_membership.data_node_membership_results_ready"
         }
