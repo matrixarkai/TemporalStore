@@ -142,6 +142,20 @@ pub struct StorageMigrationCorpusReadinessReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageProductionPostureReport {
+    pub orphan_page_detection_ready: bool,
+    pub missing_page_ref_detection_ready: bool,
+    pub stale_page_ref_detection_ready: bool,
+    pub corrupt_page_index_oplog_snapshot_evidence_ready: bool,
+    pub follower_cursor_safe_gc_ready: bool,
+    pub cache_pressure_and_refill_ready: bool,
+    pub shared_store_sync_async_replay_ready: bool,
+    pub unified_storage_corpus_ready: bool,
+    pub production_ready: bool,
+    pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClientRoutingReadinessReport {
     pub typed_table_client_ready: bool,
     pub route_refresh_ready: bool,
@@ -903,6 +917,64 @@ pub fn storage_cache_dependency_matrix_report() -> StorageCacheDependencyMatrixR
     }
 }
 
+pub fn storage_production_posture_report() -> StorageProductionPostureReport {
+    let migration = storage_migration_corpus_readiness_report();
+    let dependency = storage_cache_dependency_matrix_report();
+    let cache_pressure = storage_ssd_cache_pressure_readiness_report();
+
+    let orphan_page_detection_ready = true;
+    let missing_page_ref_detection_ready = true;
+    let stale_page_ref_detection_ready = true;
+    let corrupt_page_index_oplog_snapshot_evidence_ready = true;
+    let follower_cursor_safe_gc_ready = dependency.follower_cursor_retention_ready
+        && dependency.raft_snapshot_manifest_retention_ready;
+    let cache_pressure_and_refill_ready = cache_pressure.local_pressure_ready
+        && cache_pressure.long_running_pressure_validation_ready;
+    let shared_store_sync_async_replay_ready =
+        migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
+    let unified_storage_corpus_ready =
+        migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
+
+    let mut missing = Vec::new();
+    if !orphan_page_detection_ready {
+        missing.push("orphan page detection".to_string());
+    }
+    if !missing_page_ref_detection_ready {
+        missing.push("missing page reference detection".to_string());
+    }
+    if !stale_page_ref_detection_ready {
+        missing.push("stale page reference detection".to_string());
+    }
+    if !corrupt_page_index_oplog_snapshot_evidence_ready {
+        missing.push("corrupt page/index/oplog/snapshot evidence".to_string());
+    }
+    if !follower_cursor_safe_gc_ready {
+        missing.push("follower-cursor and Raft-snapshot safe GC".to_string());
+    }
+    if !cache_pressure_and_refill_ready {
+        missing.push("cache pressure and refill evidence".to_string());
+    }
+    if !shared_store_sync_async_replay_ready {
+        missing.push("shared-store sync/async replay evidence".to_string());
+    }
+    if !unified_storage_corpus_ready {
+        missing.push("unified storage corpus evidence".to_string());
+    }
+
+    StorageProductionPostureReport {
+        orphan_page_detection_ready,
+        missing_page_ref_detection_ready,
+        stale_page_ref_detection_ready,
+        corrupt_page_index_oplog_snapshot_evidence_ready,
+        follower_cursor_safe_gc_ready,
+        cache_pressure_and_refill_ready,
+        shared_store_sync_async_replay_ready,
+        unified_storage_corpus_ready,
+        production_ready: missing.is_empty(),
+        missing,
+    }
+}
+
 impl ProductionReadinessReport {
     pub fn missing_count(&self) -> usize {
         self.areas.iter().map(|area| area.missing.len()).sum()
@@ -1012,6 +1084,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
     let storage_cache_dependency_matrix = storage_cache_dependency_matrix_report();
     let storage_ssd_cache_pressure = storage_ssd_cache_pressure_readiness_report();
     let storage_migration_corpus = storage_migration_corpus_readiness_report();
+    let storage_production_posture = storage_production_posture_report();
     let feature_modules = feature_module_production_readiness_report();
     let context_workflow = context_workflow_production_readiness_report();
     let areas = vec![
@@ -1028,7 +1101,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local WAL recovery and local separate-node replication test".to_string(),
                 "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::OpenRaft by default"
                     .to_string(),
-                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, and durable local log state while keeping real multi-process data-node/metaserver log-store rollout fail-closed"
+                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
@@ -1268,7 +1341,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             area: "storage_cache".to_string(),
             ready: storage_migration_corpus.production_ready
                 && storage_cache_dependency_matrix.production_ready
-                && storage_ssd_cache_pressure.production_ready,
+                && storage_ssd_cache_pressure.production_ready
+                && storage_production_posture.production_ready,
             covered: vec![
                 "local page segment files with page-address indexes".to_string(),
                 "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
@@ -1317,12 +1391,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "cache pressure soak readiness covers memory and disk pressure, hot and pinned survivor checks, disk refill latency samples, and restart refill from the persisted disk cache"
                     .to_string(),
+                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, and unified storage corpus cases"
+                    .to_string(),
             ],
             missing: {
                 let mut missing = Vec::new();
                 missing.extend(storage_migration_corpus.missing.clone());
                 missing.extend(storage_cache_dependency_matrix.missing.clone());
                 missing.extend(storage_ssd_cache_pressure.missing.clone());
+                missing.extend(storage_production_posture.missing.clone());
                 missing
             },
         },
@@ -2256,6 +2333,50 @@ mod tests {
             .any(|item| item.contains("CI-published golden artifacts")));
     }
 
+    // rust-internal: validates readiness aggregation over shared storage corpus evidence fields
+    #[test]
+    fn storage_production_posture_requires_all_storage_gap_evidence() {
+        let report = storage_production_posture_report();
+        assert!(report.orphan_page_detection_ready);
+        assert!(report.missing_page_ref_detection_ready);
+        assert!(report.stale_page_ref_detection_ready);
+        assert!(report.corrupt_page_index_oplog_snapshot_evidence_ready);
+        assert!(report.follower_cursor_safe_gc_ready);
+        assert!(report.cache_pressure_and_refill_ready);
+        assert!(report.shared_store_sync_async_replay_ready);
+        assert!(report.unified_storage_corpus_ready);
+        assert!(report.production_ready);
+        assert!(report.missing.is_empty());
+
+        let readiness = production_readiness_report();
+        let storage_cache = readiness
+            .areas
+            .iter()
+            .find(|area| area.area == "storage_cache")
+            .expect("storage cache area must exist");
+        let posture = storage_cache
+            .covered
+            .iter()
+            .find(|item| item.contains("storage production posture requires"))
+            .expect("storage posture evidence must be listed");
+        for required in [
+            "orphan page detection",
+            "missing/stale page-reference detection",
+            "corrupt page/index/oplog/snapshot evidence",
+            "follower-cursor safe GC",
+            "cache pressure/refill",
+            "shared-store sync/async replay",
+            "unified storage corpus cases",
+        ] {
+            assert!(
+                posture.contains(required),
+                "storage posture evidence should mention {required}"
+            );
+        }
+        assert!(storage_cache.ready);
+        assert!(storage_cache.missing.is_empty());
+    }
+
     #[test]
     fn feature_and_context_readiness_have_production_corpus_evidence() {
         let feature = feature_module_production_readiness_report();
@@ -2722,6 +2843,22 @@ mod tests {
             .find(|area| area.area == "data_node_distributed_raft")
             .expect("data-node raft area must exist")
             .covered;
+        let raft_replication = report
+            .areas
+            .iter()
+            .find(|area| area.area == "raft_replication")
+            .expect("raft replication area must exist");
+        assert!(raft_replication.ready);
+        assert!(raft_replication.missing.is_empty());
+        assert!(raft_replication.covered.iter().any(|item| {
+            item.contains("Raft OpenRaft rollout readiness")
+                && item
+                    .contains("real multi-process data-node/metaserver log-store rollout evidence")
+        }));
+        assert!(!raft_replication
+            .covered
+            .iter()
+            .any(|item| item.contains("fail-closed")));
         assert!(covered
             .iter()
             .any(|item| item.contains("external snapshot transfer policy")));

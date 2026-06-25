@@ -993,7 +993,7 @@ mod tests {
     use temporalstore_snapshot::object_store::{FileObjectStore, ObjectStore, ObjectStoreError};
 
     use super::*;
-    use crate::types::{CommandResponse, FeaturePoint};
+    use crate::types::CommandResponse;
 
     const TEST_CLUSTER_ID: &str = "cluster-a";
     const TEST_CACHE_BYTES: usize = 1024;
@@ -1500,14 +1500,5 @@ mod tests {
         fn uri(&self, key: &str) -> String {
             self.inner.uri(key)
         }
-    }
-
-    fn large_timestamped_points() -> Vec<FeaturePoint> {
-        (0..10)
-            .map(|offset| FeaturePoint {
-                timestamp_ms: 1_000 + offset,
-                value: vec![b'a' + offset as u8; 10 * 1024],
-            })
-            .collect()
     }
 }
