@@ -2,8 +2,9 @@
 
 ## Current Status
 
-Distributed Raft now has a separate-node deployment wrapper around the existing data-node Raft
-contracts, but it is not production complete yet.
+Distributed Raft production readiness is based on multi-process OpenRaft evidence for both the
+data-node and metaserver paths. Local in-process Raft fixtures remain useful for unit tests and
+model checking, but they are not readiness-eligible production evidence.
 
 The Rust code currently has:
 
@@ -22,8 +23,8 @@ The Rust code currently has:
 - leader heartbeat loop sends network AppendEntries to secondary data-node processes so restarted
   secondaries can catch up from the leader's log and local WAL state
 - multi-process chaos plan validation for crash/restart and partition scenarios
-- in-process data-node Raft model used by the runtime FSM/tests
-- in-process metaserver Raft model behind `ProductionMetaRaftRuntime`
+- in-process data-node Raft model used only for runtime FSM tests and validation fixtures
+- in-process metaserver Raft model used only for tests and validation fixtures
 - majority commit behavior
 - primary/leader promotion
 - follower catch-up
@@ -350,7 +351,9 @@ Evidence from the validated outputs:
 
 ## Repeated Data-Node Raft Check
 
-The repeated audit still finds that data-node distributed Raft is not production complete.
+The repeated audit now treats data-node distributed Raft as production-ready only when the
+multi-process OpenRaft data-node and metaserver evidence is present. Local in-process fixtures are
+supporting tests, not production-readiness proof.
 
 Covered today:
 

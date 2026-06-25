@@ -4,6 +4,24 @@ Goal: make Rust storage production-ready and scalable enough for the current Rus
 while matching the important C++ TemporalStore storage lifecycle behavior. legacy C++ wire, S3, and
 ByteStore integration remain out of scope for this plan.
 
+## Current Production Posture Gate
+
+`storage_production_posture_report()` is the single readiness summary for the storage concerns that
+must stay production-ready:
+
+- orphan page detection
+- missing page-reference detection
+- stale page-reference detection
+- corrupt page, index-log, oplog, and snapshot evidence
+- follower-cursor and Raft-snapshot safe GC
+- cache pressure and memory/disk/page-store refill evidence
+- shared-store sync and async replay
+- unified storage corpus coverage
+
+`storage_cache` readiness depends on this posture report in addition to the storage migration
+corpus, local/shared-store dependency matrix, and SSD cache pressure report. If any listed pillar
+regresses, the service readiness report must fail closed with the missing evidence field.
+
 ## 25-Cycle Backlog
 
 1. Storage production readiness gate across recovery, lifecycle, cache, and page-store health. Done.

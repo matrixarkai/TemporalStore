@@ -13718,7 +13718,7 @@ mod tests {
         cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
     };
     use crate::page_store::PageStoreZoneState;
-    use crate::types::{parse_cpp_feature_filters, ContextAuditRef};
+    use crate::types::ContextAuditRef;
 
     fn wait_for_fresh_admission_second() {
         loop {

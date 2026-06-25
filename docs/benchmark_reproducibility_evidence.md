@@ -18,6 +18,18 @@ full-dataset gate evidence from a real LongMemEval_s artifact. This page does no
 parity for the live OSS reader path because open-source reader calls have not passed the
 full-dataset thresholds in this evidence set.
 
+## Strict Claim Labels
+
+Every benchmark result in this repository must use one of these labels:
+
+| Label | Allowed evidence | Not allowed to claim |
+| --- | --- | --- |
+| Deterministic engineering evidence | Rust TemporalStore-backed ingestion, extraction, retrieval, and deterministic reader/scorer output. | VikingMem paper parity or live-reader quality. |
+| Live-reader evidence | Rust TemporalStore-backed replay plus a real OpenAI-compatible reader endpoint with `reader_open_source_calls > 0` and no deterministic fallback. | Paper comparability unless full-dataset thresholds and archive fields also pass. |
+| Paper-comparable evidence | Full dataset, full Rust replay, live reader calls, archived provider/model/prompt metadata, thresholds passed, and `paper_comparable_claim_ready=true`. | Fixture-only, bounded-replay, fallback-reader, or Python-only diagnostic results. |
+
+Any result missing one of those labels should be treated as diagnostic-only until relabeled.
+
 Current VikingMem/OpenViking-comparable status:
 
 | Status item | Result | Evidence |
@@ -253,8 +265,8 @@ Fail-closed OSS runner status:
 }
 ```
 
-Claim label: these are Rust TemporalStore-backed deterministic full-dataset gate passes plus
-paper-comparable archive files. The full reader/scoring path is still deterministic Python; the
+Claim label: these are Rust TemporalStore-backed deterministic full-dataset gate passes emitted in
+the standard benchmark archive schema. The full reader/scoring path is still deterministic Python; the
 benchmark report now fails closed when the Rust TemporalStore backend is required and the Rust
 `TemporalEngine` context harness cannot ingest/retrieve converted benchmark cases, or when Rust
 case count, Hit@K, mean reciprocal rank, or zero-hit query count is not on par with Python on the
