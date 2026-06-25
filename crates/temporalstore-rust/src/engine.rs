@@ -17372,61 +17372,6 @@ mod tests {
         );
     }
 
-    // shared-corpus: sequence_cpp_feature_rows sequence_batch_filter_groups
-    #[test]
-    fn sequence_query_filters_typed_rows() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SequenceAdd {
-                key: "seq".to_string(),
-                rows: vec![
-                    SequenceFeatureRow {
-                        timestamp_ms: 1,
-                        gid: 10,
-                        action_type: 1,
-                        duration: 30,
-                        author_id: 7,
-                    },
-                    SequenceFeatureRow {
-                        timestamp_ms: 2,
-                        gid: 11,
-                        action_type: 3,
-                        duration: 120,
-                        author_id: 8,
-                    },
-                ],
-            },
-        });
-        let response = engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::SequenceQuery {
-                key: "seq".to_string(),
-                start_ms: 0,
-                end_ms: 10,
-                count: 10,
-                filters: vec![FeatureFilter {
-                    field: "action_type".to_string(),
-                    op: FeatureFilterOp::Equal,
-                    value: 3,
-                }],
-            },
-        });
-        assert_eq!(
-            response.response,
-            CommandResponse::SequenceRows {
-                rows: vec![SequenceFeatureRow {
-                    timestamp_ms: 2,
-                    gid: 11,
-                    action_type: 3,
-                    duration: 120,
-                    author_id: 8,
-                }]
-            }
-        );
-    }
-
     #[test]
     fn long_sequence_query_keeps_timestamp_order_and_applies_random_filters() {
         let engine = TemporalEngine::default();
@@ -18223,79 +18168,6 @@ mod tests {
         );
     }
 
-    // shared-corpus: ips_options_range ips_snapshot_stat_filter_batch
-    #[test]
-    fn ips_range_and_batch_queries_match_cpp_style_read_shapes() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        for (key, timestamp_ms) in [
-            ("ips-a", 10),
-            ("ips-a", 20),
-            ("ips-a", 30),
-            ("ips-b", 15),
-            ("ips-b", 25),
-        ] {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::IpsAdd {
-                    key: key.to_string(),
-                    timestamp_ms,
-                    instance: format!("{key}-{timestamp_ms}").into_bytes(),
-                },
-            });
-        }
-
-        assert_eq!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::IpsQueryRange {
-                        key: "ips-a".to_string(),
-                        start_ms: 15,
-                        end_ms: 35,
-                        count: Some(1),
-                    },
-                })
-                .response,
-            CommandResponse::FeaturePoints {
-                points: vec![FeaturePoint {
-                    timestamp_ms: 20,
-                    value: b"ips-a-20".to_vec(),
-                }]
-            }
-        );
-
-        assert_eq!(
-            engine
-                .execute(ExecuteRequest {
-                    shard_id: 1,
-                    command: Command::IpsBatchQueryLast {
-                        keys: vec!["ips-a".to_string(), "ips-b".to_string()],
-                        count: 1,
-                    },
-                })
-                .response,
-            CommandResponse::FeaturePointGroups {
-                groups: vec![
-                    (
-                        "ips-a".to_string(),
-                        vec![FeaturePoint {
-                            timestamp_ms: 30,
-                            value: b"ips-a-30".to_vec(),
-                        }],
-                    ),
-                    (
-                        "ips-b".to_string(),
-                        vec![FeaturePoint {
-                            timestamp_ms: 25,
-                            value: b"ips-b-25".to_vec(),
-                        }],
-                    ),
-                ],
-            }
-        );
-    }
-
     #[test]
     fn ips_pages_store_timestamp_keys_with_values() {
         let engine = TemporalEngine::default();
@@ -18704,39 +18576,6 @@ mod tests {
                 },
             ]
         );
-    }
-
-    // shared-corpus: risk_counter_window risk_family_query_and_delete risk_manager_debug_fol
-    #[test]
-    fn risk_query_supports_sum_min_max_and_event_count() {
-        let engine = TemporalEngine::default();
-        engine.load_shard(1);
-        for (timestamp_ms, amount) in [(10, 5), (20, -2), (30, 7)] {
-            engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::RiskIncrement {
-                    key: "risk".to_string(),
-                    timestamp_ms,
-                    amount,
-                },
-            });
-        }
-        for (aggregator, expected) in [("sum", 10), ("min", -2), ("max", 7), ("events", 3)] {
-            assert_eq!(
-                engine
-                    .execute(ExecuteRequest {
-                        shard_id: 1,
-                        command: Command::RiskQuery {
-                            key: "risk".to_string(),
-                            start_ms: 0,
-                            end_ms: 40,
-                            aggregator: aggregator.to_string(),
-                        },
-                    })
-                    .response,
-                CommandResponse::Integer { value: expected }
-            );
-        }
     }
 
     #[test]
