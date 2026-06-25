@@ -58,6 +58,9 @@ DIRECT_AUDIT_BUFFER_MAX_RECORDS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_BUF
 DIRECT_AUDIT_FLUSH_INTERVAL_MS = int(os.environ.get("MATRIXARK_DIRECT_AUDIT_FLUSH_INTERVAL_MS", "1000"))
 BACKEND_READINESS_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_TIMEOUT_MS", "30000"))
 BACKEND_READINESS_BACKOFF_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_BACKOFF_MS", "200"))
+MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().lower()
+MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
+MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
@@ -8303,6 +8306,25 @@ class MatrixArkMcpServer:
                 self.write_response(response)
 
 
+def production_profile_enabled() -> bool:
+    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
+
+
+def backend_ready_required(backend: str) -> bool:
+    if MATRIXARK_REQUIRE_BACKEND_READY:
+        return MATRIXARK_REQUIRE_BACKEND_READY in {"1", "true", "yes"}
+    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"}
+
+
+def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
+    local_backends = {"local", "temporalstore-local"}
+    if production_profile_enabled() and args.backend in local_backends and not MATRIXARK_ALLOW_LOCAL_BACKEND:
+        raise MatrixArkError(
+            "MatrixArk MCP production/benchmark profile requires --backend temporalstore-direct "
+            "or --backend temporalstore-rust. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -8378,6 +8400,7 @@ def main() -> int:
     )
     args = parser.parse_args()
     _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
+    validate_mcp_backend_policy(args)
     if args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
@@ -8402,6 +8425,10 @@ def main() -> int:
         adapter = MatrixArkLocalAdapter(args.local_store)
     else:
         adapter = MatrixArkLocalAdapter(args.event_log)
+    if backend_ready_required(args.backend):
+        readiness = adapter.ensure_backend_ready(reason="mcp_startup", probe=True)
+        if readiness.get("status") != "ready":
+            raise MatrixArkError(f"MatrixArk MCP backend not ready at startup: {json.dumps(readiness, sort_keys=True)}")
     _mcp_debug_log("main: adapter ready; serving")
     MatrixArkMcpServer(adapter, line_json=args.line_json, access_mode=args.access_mode).serve()
     _mcp_debug_log("main: serve returned")
