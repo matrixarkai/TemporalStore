@@ -1,8 +1,15 @@
 # Build outputs
 build/
 build-*/
+build-ubuntu22/
+output/
 output-*/
 cmake-build-*/
+target/
+target-rust-bench/
+benchmark_reports/
+
+# Compiled artifacts
 *.o
 *.obj
 *.a
@@ -11,32 +18,45 @@ cmake-build-*/
 *.exe
 *.lib
 *.pdb
+*.jar
+*.class
+
+# Logs and local reports
+crash.log
+*.log
+*.err.log
+*.out.log
+last-*.txt
+ssm-*.json
+terraform-output*.json
 
 # Local dependency drops and vendored/private dependency sandboxes
 dependencies/
 thirdparty/
 local_build/
+bytestorelab-master/
+abase2_images/
+bytestore_images/
 
 # Terraform/runtime state
 .terraform/
 *.tfstate
+*.tfstate.*
 *.tfstate.backup
-terraform-output*.json
-last-*.txt
-ssm-*.json
+
+# Language build outputs and caches
+__pycache__/
+*.pyc
+node_modules/
+dist/
+out/
+crates/*/shard-*.index.json
 
 # OS/editor noise
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
-
-# Language build outputs
-target/
-*.jar
-*.class
-__pycache__/
-*.pyc
-node_modules/
-dist/
-out/
+.codex/
+.local/
+*.png

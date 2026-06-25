@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the external TemporalStoreTestCorpus dependency wiring."""
+"""Validate the external TemporalStoreTestCorpus dependency."""
 
 from __future__ import annotations
 
@@ -8,19 +8,26 @@ import hashlib
 import json
 from pathlib import Path
 
-try:
-    from tools.resolve_temporalstore_test_corpus import CANDIDATES, resolve
-except ModuleNotFoundError:
-    from resolve_temporalstore_test_corpus import CANDIDATES, resolve
+
+ROOT = Path(__file__).resolve().parents[1]
+LOCAL_FALLBACK = ROOT / "compat" / "unified_temporalstore_cases.json"
+DEFAULT_EXTERNAL_CANDIDATES = [
+    ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+    ROOT.parent / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+]
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def validate(path: Path) -> dict:
+def load(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
-        data = json.load(handle)
+        return json.load(handle)
+
+
+def validate(path: Path) -> dict:
+    data = load(path)
     if data.get("schema_version") != 1:
         raise SystemExit(f"{path}: schema_version must be 1")
     cases = data.get("cases")
@@ -28,38 +35,63 @@ def validate(path: Path) -> dict:
         raise SystemExit(f"{path}: cases must be a non-empty list")
     names = [case.get("name") for case in cases]
     if any(not isinstance(name, str) or not name for name in names):
-        raise SystemExit(f"{path}: every case needs a non-empty name")
-    duplicates = sorted({name for name in names if names.count(name) > 1})
-    if duplicates:
-        raise SystemExit(f"{path}: duplicate case names: {duplicates}")
+        raise SystemExit(f"{path}: every case must have a name")
+    if len(set(names)) != len(names):
+        raise SystemExit(f"{path}: duplicate case names")
     return {
-        "name": data.get("name"),
         "case_count": len(cases),
         "step_count": sum(len(case.get("steps", [])) for case in cases),
         "sha256": sha256(path),
-        "path": str(path),
     }
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+def resolve_external(explicit: Path | None) -> Path | None:
+    if explicit:
+        return explicit
+    for candidate in DEFAULT_EXTERNAL_CANDIDATES:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
     parser.add_argument("--external-corpus", type=Path)
-    parser.add_argument("--require-external", action="store_true", help="kept for compatibility; external corpus is always required")
-    parser.add_argument("--allow-drift", action="store_true", help="kept for compatibility after local fallback removal")
+    parser.add_argument("--require-external", action="store_true")
+    parser.add_argument("--allow-drift", action="store_true")
     args = parser.parse_args()
 
-    try:
-        corpus = resolve(str(args.external_corpus) if args.external_corpus else None)
-    except SystemExit as exc:
-        checked = "\n".join(str(path) for path in CANDIDATES)
-        raise SystemExit(f"external TemporalStoreTestCorpus not found. Checked:\n{checked}") from exc
-    report = validate(corpus)
+    local = validate(LOCAL_FALLBACK) if LOCAL_FALLBACK.exists() else None
+
+    external_path = resolve_external(args.external_corpus)
+    if external_path is None:
+        if args.require_external:
+            candidates = "\n".join(str(path) for path in DEFAULT_EXTERNAL_CANDIDATES)
+            raise SystemExit(f"external TemporalStoreTestCorpus not found. Checked:\n{candidates}")
+        if local is None:
+            raise SystemExit(f"missing local fallback corpus: {LOCAL_FALLBACK}")
+        print(
+            "external TemporalStoreTestCorpus not found; "
+            f"local fallback cases={local['case_count']} sha256={local['sha256']}"
+        )
+        return
+
+    if not external_path.exists():
+        raise SystemExit(f"external corpus not found: {external_path}")
+    external = validate(external_path)
+    if local is not None and external["sha256"] != local["sha256"] and not args.allow_drift:
+        raise SystemExit(
+            "external TemporalStoreTestCorpus differs from local fallback during transition:\n"
+            f"external={external_path} sha256={external['sha256']}\n"
+            f"local={LOCAL_FALLBACK} sha256={local['sha256']}"
+        )
+
     print(
-        "validated external TemporalStoreTestCorpus "
-        f"path={report['path']} cases={report['case_count']} steps={report['step_count']} sha256={report['sha256']}"
+        "validated TemporalStoreTestCorpus dependency "
+        f"external={external_path} cases={external['case_count']} "
+        f"steps={external['step_count']} sha256={external['sha256']}"
     )
-    return 0
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

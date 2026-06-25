@@ -1,0 +1,41 @@
+{
+  "all_pipelines_use_rust_temporalstore": true,
+  "batch_count": 10,
+  "batch_replay_used": true,
+  "benchmark_hit_at_k": 0.953307392996109,
+  "benchmark_retrieval_p95_ms": 46.16009804303758,
+  "benchmark_threshold_passed": true,
+  "benchmark_token_reduction_percent": 83.98441915737831,
+  "case_count": 1542,
+  "dataset": "LOCOMO",
+  "input": "/tmp/locomo10.json",
+  "notes": "Full Rust TemporalStore replay preserves all source text via packed benchmark source documents; rank/MRR deltas are reported but not readiness-enforced when source packing is enabled.",
+  "python_only_diagnostic": false,
+  "reader_hit_rate": 0.8839169909208819,
+  "rust_backend_elapsed_ms": 501133.61457304563,
+  "rust_temporalstore_backend_ready": true,
+  "rust_temporalstore_full_replay_ready": true,
+  "rust_vs_python_subset_score": {
+    "case_count_on_par": true,
+    "hit_at_k_delta": 0.0,
+    "on_par": true,
+    "python_hit_at_k": 0.9993514915693904,
+    "python_zero_hit_queries": 1,
+    "rank_parity_enforced": false,
+    "rust_hit_at_k": 0.9993514915693904,
+    "rust_zero_hit_queries": 1,
+    "zero_hit_queries_on_par": true
+  },
+  "schema": "matrixark_vikingmem_context_benchmark_archive_summary_v1",
+  "source_packing": {
+    "case_count": 1542,
+    "enabled": true,
+    "max_original_sources_per_case": 1113,
+    "max_packed_sources_per_case": 35,
+    "original_source_count": 1475584,
+    "pack_size": 32,
+    "packed_source_count": 46782,
+    "preserves_all_source_text": true,
+    "source_count_reduction": 1428802
+  }
+}

@@ -1,0 +1,179 @@
+groups:
+  - name: temporalstore-production-readiness
+    rules:
+      - alert: TemporalStoreProductionReadinessBlocked
+        expr: temporalstore_production_readiness_ready == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore production readiness gate is blocked
+          description: "The readiness gate reports {{ $value }} for production readiness. Check temporalstore_production_readiness_blockers by area and follow docs/ops/temporalstore-fault-runbook.md."
+
+      - alert: TemporalStoreProductionReadinessBlockersHigh
+        expr: temporalstore_production_readiness_blockers > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore has production readiness blockers
+          description: "{{ $value }} production readiness blockers remain. Inspect per-area temporalstore_production_readiness_blockers labels."
+
+  - name: temporalstore-raft-faults
+    rules:
+      - alert: TemporalStoreRaftMajorityLost
+        expr: temporalstore_raft_cluster_has_majority == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore Raft group lost majority
+          description: "Raft group {{ $labels.kind }} lost voting majority. Stop writes, inspect node liveness, and follow the split-brain section of docs/ops/temporalstore-fault-runbook.md."
+
+      - alert: TemporalStoreRaftSplitBrainRisk
+        expr: count by (kind) (temporalstore_raft_node_commit_index{role="leader"}) > 1
+        for: 30s
+        labels:
+          severity: critical
+        annotations:
+          summary: Multiple TemporalStore Raft leaders observed
+          description: "More than one leader is visible for {{ $labels.kind }}. Freeze writes through proxy admission, isolate stale leaders, and compare terms/commit indexes."
+
+      - alert: TemporalStoreRaftSlowFollower
+        expr: temporalstore_raft_node_lag > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore Raft follower is lagging
+          description: "Node {{ $labels.node_id }} in {{ $labels.kind }} has commit lag {{ $value }}. Check network, WAL fsync latency, snapshot transfer, and disk pressure."
+
+      - alert: TemporalStoreRaftApplyStuck
+        expr: temporalstore_raft_node_apply_lag > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore Raft apply loop is lagging
+          description: "Node {{ $labels.node_id }} in {{ $labels.kind }} has apply lag {{ $value }}. Inspect queue saturation and storage/page-store errors."
+
+  - name: temporalstore-storage-pressure
+    rules:
+      - alert: TemporalStoreStorageCacheBlockers
+        expr: temporalstore_production_readiness_blockers{area="storage_cache"} > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore storage/cache readiness blockers remain
+          description: "storage_cache has {{ $value }} blocker(s). Inspect storage readiness reports for dirty-slot, stale-zone, unreadable-page, owner-mismatch, and cache pressure details."
+
+      - alert: TemporalStoreDataNodeReadinessBlocked
+        expr: temporalstore_production_readiness_service_ready{service="data_node"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore data-node readiness blocked
+          description: "Data-node readiness is blocked. Inspect temporalstore_production_readiness_service_blockers and per-shard storage readiness reports."
+
+  - name: temporalstore-ops-scale
+    rules:
+      - alert: TemporalStoreSchedulerBacklogHigh
+        expr: temporalstore_meta_scheduler_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore metaserver scheduler backlog is high
+          description: "Scheduler backlog is {{ $value }}. Check autoscale/rebalance tasks, cooldowns, safe mode, and data-node lifecycle tokens."
+
+      - alert: TemporalStoreSchedulerRetriesHigh
+        expr: increase(temporalstore_meta_scheduler_executions_total{result=~"retry_later|failed"}[10m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore metaserver scheduler retries are high
+          description: "Scheduler retries or failures are increasing. Inspect membership workflow tokens, stale heartbeats, cooldowns, and safe-mode state."
+
+      - alert: TemporalStoreProxyRouteQuarantineHigh
+        expr: temporalstore_proxy_backend_events_total{kind="continuous_backend_failure"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore proxy has quarantined or repeatedly failing backends
+          description: "Proxy continuous backend failures are non-zero. Inspect topology-version invalidation, route refresh, and backend recovery probing."
+
+      - alert: TemporalStoreProxyNotServing
+        expr: temporalstore_proxy_serving_mode{mode=~"degraded|not_serving"} > 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore proxy is degraded or not serving
+          description: "Proxy serving policy is {{ $labels.mode }}. Inspect metaserver desired config version, admission policy, and backend health."
+
+      - alert: TemporalStoreDataNodeRuntimeQueueHigh
+        expr: temporalstore_data_node_runtime_queue_depth > 1000 or temporalstore_data_node_runtime_background_queue_depth > 1000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore data-node runtime queue is high
+          description: "Data-node foreground or background queue depth is high. Inspect lifecycle load/reload/unload work, storage pressure, and Raft apply lag."
+
+      - alert: TemporalStoreLifecycleSnapshotFailures
+        expr: increase(temporalstore_data_node_lifecycle_snapshot_events_total{kind=~"save_failed|restore_failed|stale_or_incompatible"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore lifecycle snapshot persistence failure
+          description: "Lifecycle snapshot persistence or restore failed. Inspect the data-node lifecycle snapshot path before allowing restart or scale actions."
+
+      - alert: TemporalStorePageStoreReadErrors
+        expr: increase(temporalstore_page_store_operations_total{kind=~"read_error|checksum_error|corrupt"}[10m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: TemporalStore page-store read or corruption errors
+          description: "Page-store errors are visible in Prometheus. Run storage recovery/fault matrix validation and check shard/page/slot recovery reports."
+
+      - alert: TemporalStoreCacheMissPressure
+        expr: increase(temporalstore_cache_operations_total{kind="miss"}[5m]) > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore cache miss pressure is high
+          description: "Cache miss pressure is high. Inspect cache admission/eviction settings, tiny-cache pressure tests, and page-store refill latency."
+
+      - alert: TemporalStoreReplicaReplayFailures
+        expr: temporalstore_replica_replay_loop_consecutive_failures > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore secondary replica replay is failing
+          description: "Secondary replay has consecutive failures. Inspect shared-store cursor state, oplog retention, and replica catch-up lag."
+
+      - alert: TemporalStoreScaleSloRegression
+        expr: temporalstore_scale_write_p99_us > 50000 or temporalstore_scale_read_p99_us > 50000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore scale SLO regression
+          description: "Scale harness p99 exceeded the local readiness threshold. Re-run tools/run_ops_scale_readiness.sh --run-local-scale and inspect the SLO report."
+
+      - alert: TemporalStoreIngestionDeadLetters
+        expr: temporalstore_ingestion_dead_letters > 0 or temporalstore_ingestion_records_total{outcome="dead_letter"} > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TemporalStore ingestion dead letters detected
+          description: "Dead-letter count is {{ $value }}. Inspect Kafka/Flink checkpoint state, replay idempotence, and dead-letter export."

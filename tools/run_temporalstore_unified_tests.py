@@ -29,11 +29,12 @@ def default_corpus_path() -> Path:
     candidates = [
         ROOT / "third_party" / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
         ROOT.parent / "TemporalStoreTestCorpus" / "cases" / "unified_temporalstore_cases.json",
+        ROOT / "compat" / "unified_temporalstore_cases.json",
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    return candidates[0]
+    return candidates[-1]
 
 
 DEFAULT_CORPUS = default_corpus_path()
@@ -157,7 +158,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${CORPUS}" ]]; then
-  CORPUS="$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")"
+  CORPUS="${ROOT}/compat/unified_temporalstore_cases.json"
 fi
 if [[ ! -f "${CORPUS}" ]]; then
   echo "unified TemporalStore corpus not found: ${CORPUS}" >&2
@@ -171,7 +172,7 @@ Set it to the C++ TemporalStore corpus executor. The command may use a
 {corpus} placeholder. Example:
 
   TS_CPP_UNIFIED_NATIVE_CMD='bazel run //temporalstore:corpus_runner -- {corpus}' \
-    tools/run_temporalstore_unified_tests.sh --corpus /path/to/TemporalStoreTestCorpus/cases/unified_temporalstore_cases.json
+    tools/run_temporalstore_unified_tests.sh --corpus /path/to/compat/unified_temporalstore_cases.json
 MSG
   exit 2
 fi
@@ -210,9 +211,9 @@ def validate_corpus(path: Path) -> dict:
         ("required_command_kinds", required_command_kinds),
         ("required_response_kinds", required_response_kinds),
     ]:
-        if not isinstance(values, list) or not all(isinstance(value, str) and value for value in values):
-            raise SystemExit(f"{path}: coverage.{field_name} must be a string list")
-        if field_name not in {"required_raft_case_names", "required_response_kinds"} and not values:
+        if not isinstance(values, list) or not values or not all(
+            isinstance(value, str) and value for value in values
+        ):
             raise SystemExit(f"{path}: coverage.{field_name} must be a non-empty string list")
 
     seen_case_names = set()
@@ -294,8 +295,6 @@ def validate_cpp_adapter_coverage(
     seen_static_cpp_suites: set[str],
 ) -> None:
     adapter_coverage = coverage.get("cpp_adapter_coverage")
-    if adapter_coverage is None and not seen_cpp_suites and not seen_static_cpp_suites:
-        return
     if not isinstance(adapter_coverage, list) or not adapter_coverage:
         raise SystemExit(f"{path}: coverage.cpp_adapter_coverage must be a non-empty list")
     mapped_suites: set[str] = set()
