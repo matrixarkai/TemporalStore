@@ -2527,6 +2527,23 @@ def select_token_budgeted_refs(
     return selected, used_tokens, dropped
 
 
+def selected_context_class_counts(refs: list[Json]) -> Json:
+    counts: Json = {
+        "event": 0,
+        "entity": 0,
+        "segment": 0,
+        "compression": 0,
+        "resource_fact": 0,
+        "resource_entity_fact": 0,
+        "resource_chunk": 0,
+        "skill_section": 0,
+    }
+    for ref in refs:
+        context_class = str(ref.get("context_class") or ref.get("ref_type") or "")
+        counts[context_class] = int(counts.get(context_class, 0)) + 1
+    return counts
+
+
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
     compact: list[Json] = []
     keep_fields = [
@@ -2551,7 +2568,11 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "source_ref",
         "resource_type",
         "resource_version",
+        "context_class",
+        "source_chunk_hash",
         "access_decision",
+        "access_scope",
+        "deployment_scope",
         "version_state",
         "stale_or_superseded",
         "citation",
@@ -2728,6 +2749,21 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
         if record_scope.get(key) != value:
             return False
     return True
+
+
+def candidate_access_scope(record: Json) -> Json:
+    access_scope = record.get("access_scope")
+    if isinstance(access_scope, dict):
+        return access_scope
+    metadata = record.get("metadata")
+    if isinstance(metadata, dict) and isinstance(metadata.get("access_scope"), dict):
+        return metadata["access_scope"]
+    return record.get("scope", record.get("envelope", {}).get("scope", {}))
+
+
+def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool:
+    """Gate candidate eligibility before semantic scoring."""
+    return scope_matches(candidate_access_scope(record), query_scope)
 
 
 @dataclass
@@ -3837,6 +3873,8 @@ class MatrixArkLocalAdapter:
                             "text": chunk.text,
                             "token_estimate": chunk.token_estimate,
                             "metadata": chunk_metadata,
+                            "access_scope": access_scope,
+                            "deployment_scope": deployment_scope,
                             "scope": envelope["scope"],
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
@@ -3854,6 +3892,8 @@ class MatrixArkLocalAdapter:
                         "text": chunk.text,
                         "token_estimate": chunk.token_estimate,
                         "metadata": chunk_metadata,
+                        "access_scope": access_scope,
+                        "deployment_scope": deployment_scope,
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -4908,7 +4948,7 @@ class MatrixArkLocalAdapter:
                 continue
             envelope = record.get("envelope", {})
             record_scope = envelope.get("scope", {})
-            if not scope_matches(record_scope, scope):
+            if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4936,6 +4976,9 @@ class MatrixArkLocalAdapter:
                 "embedding_score": embedding_score,
                 "node_score": node_score,
                 "event_type": event_type,
+                "context_class": "resource_fact" if record.get("source_chunk_hash") else "event",
+                "source_chunk_hash": record.get("source_chunk_hash"),
+                "source_ref": record.get("source_ref", ""),
                 "metadata": envelope.get("metadata", {}),
                 "scope": record_scope,
                 "updated_at_ms": envelope.get("ingestion_time_ms", now_ms()),
@@ -4973,7 +5016,7 @@ class MatrixArkLocalAdapter:
         for record in reversed(records):
             if record.get("record_type") != "context_entity":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -5000,6 +5043,9 @@ class MatrixArkLocalAdapter:
                 "node_score": node_score,
                 "entity_type": record.get("entity_type", ""),
                 "entity_name": record.get("entity_name", ""),
+                "context_class": "resource_entity_fact" if record.get("source_chunk_hash") else "entity",
+                "source_chunk_hash": record.get("source_chunk_hash"),
+                "source_ref": record.get("source_ref", ""),
                 "metadata": record.get("metadata", {}),
                 "scope": record.get("scope", {}),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
@@ -5036,7 +5082,7 @@ class MatrixArkLocalAdapter:
         for record in reversed(records):
             if record.get("record_type") != "context_segment":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -5102,9 +5148,9 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_segment_scan",
             )
         for record in reversed(records):
-            if record.get("record_type") not in {"resource_chunk", "skill_manifest", "skill_section"}:
+            if record.get("record_type") not in {"resource_chunk", "skill_section"}:
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -5115,23 +5161,7 @@ class MatrixArkLocalAdapter:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
-            if record.get("record_type") == "skill_manifest":
-                ref_type = "skill"
-                ref_hash = int(record.get("skill_hash") or 0)
-                control = skill_controls.get(ref_hash, {})
-                if str(control.get("status") or record.get("status") or "active") != "active":
-                    continue
-                text = " ".join(
-                    [
-                        f"skill {record.get('name', '')}: {record.get('description', '')}",
-                        "triggers " + " ".join(str(item) for item in control.get("triggers", record.get("triggers", []))[:8]),
-                        "tools " + " ".join(str(item) for item in control.get("allowed_tools", record.get("allowed_tools", []))[:8]),
-                    ]
-                )
-                embedding_score = cosine(query_embedding, skill_embedding_vectors.get(ref_hash, embedding_for_text(text)))
-                business_type = "skill"
-                metadata = {**record.get("metadata", {}), "skill_registry": control}
-            elif record.get("record_type") == "skill_section":
+            if record.get("record_type") == "skill_section":
                 ref_type = "skill_section"
                 ref_hash = int(record.get("section_hash") or 0)
                 parent_skill_hash = int(record.get("skill_hash") or 0)
@@ -5185,6 +5215,7 @@ class MatrixArkLocalAdapter:
                             else "selected by tree path and resource/skill hybrid score"
                         ),
                         "event_type": business_type,
+                        "context_class": ref_type,
                         "raw_uri": record.get("raw_uri", ""),
                         "source_ref": record.get("source_ref", ""),
                         "resource_type": record.get("resource_type", ""),
@@ -5192,7 +5223,9 @@ class MatrixArkLocalAdapter:
                         "supersedes_chunk_hash": metadata.get("supersedes_chunk_hash"),
                         "version_state": "historical" if ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", "")) else "current",
                         "stale_or_superseded": bool(ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", ""))),
-                        "access_decision": "allowed_by_scope",
+                        "access_decision": "allowed_by_registry_scope_before_scoring",
+                        "access_scope": candidate_access_scope(record),
+                        "deployment_scope": record.get("deployment_scope", "local"),
                         "citation": record.get("source_ref", ""),
                         "metadata": metadata,
                         "scope": record.get("scope", {}),
@@ -5208,7 +5241,7 @@ class MatrixArkLocalAdapter:
         for record in reversed(records):
             if record.get("record_type") != "context_compression_event":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -5283,9 +5316,16 @@ class MatrixArkLocalAdapter:
             " ".join(str(item.get("text", "")) for item in selected),
             limit=512,
         )
+        selected_context_counts = selected_context_class_counts(selected)
         pack = {
             "context_pack_id": str(context_pack_id),
             "selected_refs": selected,
+            "selected_ref_counts": selected_context_counts,
+            "context_assembly_policy": {
+                "access_scope_before_scoring": True,
+                "skill_selection": "skill_section_only",
+                "resource_selection": "resource_facts_entities_and_chunks_are_ranked_separately",
+            },
             "layer_scores": layer_scores[:24],
             "question_type": question_type,
             "packing_policy": f"question_type_aware:{question_type}",
@@ -5349,6 +5389,8 @@ class MatrixArkLocalAdapter:
                 "scope": scope,
                 "summary_text": pack_summary,
                 "selected_refs": compact_refs_for_audit(selected),
+                "selected_ref_counts": selected_context_counts,
+                "context_assembly_policy": pack["context_assembly_policy"],
                 "dropped_refs": dropped_over_budget,
                 "layer_scores": layer_scores[:24],
                 "tree_traversal": pack["recall_policy"]["tree_traversal"],
