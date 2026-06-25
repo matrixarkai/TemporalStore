@@ -3242,6 +3242,40 @@ def summarize_text(text: str, *, limit: int = 220) -> str:
     return compact[: limit - 3] + "..."
 
 
+def estimated_context_tokens(text: str) -> int:
+    """Cheap token estimate used for summary policy decisions."""
+    compact = " ".join(str(text).split())
+    if not compact:
+        return 0
+    return max(1, (len(compact) + 3) // 4)
+
+
+def node_l1_generation_policy(
+    *,
+    source_text: str,
+    event_count: int,
+    child_summary_count: int,
+) -> Json:
+    """Decide when a node needs a richer L1 overview.
+
+    L0 is mandatory for traversal. L1 is useful once a node has enough local
+    content or child summaries that a short abstract would lose routing detail.
+    """
+    token_estimate = estimated_context_tokens(source_text)
+    base = {
+        "token_estimate": token_estimate,
+        "event_count": event_count,
+        "child_summary_count": child_summary_count,
+    }
+    if child_summary_count > 0:
+        return {**base, "generate_l1": True, "reason": "has_child_summaries"}
+    if event_count >= 3:
+        return {**base, "generate_l1": True, "reason": "event_count_threshold"}
+    if token_estimate >= 180:
+        return {**base, "generate_l1": True, "reason": "token_threshold"}
+    return {**base, "generate_l1": False, "reason": "l0_sufficient"}
+
+
 def normalized_node_path(envelope: Json, node_hint: list[Any]) -> list[str]:
     return [str(part) for part in node_hint if str(part)]
 
@@ -3820,24 +3854,29 @@ class MatrixArkLocalAdapter:
                 source_text = " ".join(node_path)
             prefix_label = " / ".join(node_path)
             l0_summary = summarize_text(f"{prefix_label} :: {source_text}", limit=220)
-            l1_summary = summarize_text(
-                f"Context node {prefix_label}. Overview: {source_text}. "
-                f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall.",
-                limit=1200,
-            )
             source_event_ids = [int(record["event_id_hash"]) for record in events if record.get("event_id_hash") is not None]
             source_summary_hashes = [
                 int(record.get("summary_hash") or record.get("node_hash"))
                 for record in child_summaries
                 if record.get("summary_hash") is not None or record.get("node_hash") is not None
             ]
-            version_hash = stable_hash(
-                f"summary_version:{node_hash}:{dirty.get('dirty_hash')}:{source_event_ids}:{source_summary_hashes}:{refreshed_at_ms}"
+            l1_policy = node_l1_generation_policy(
+                source_text=source_text,
+                event_count=len(source_event_ids),
+                child_summary_count=len(source_summary_hashes),
             )
-            for level, summary_text, embedding_type in [
-                ("node_l0", l0_summary, "node_l0"),
-                ("node_l1", l1_summary, "node_l1"),
-            ]:
+            summary_specs = [("node_l0", l0_summary, "node_l0")]
+            if l1_policy["generate_l1"]:
+                l1_summary = summarize_text(
+                    f"Context node {prefix_label}. Rich overview: {source_text}. "
+                    f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall.",
+                    limit=1200,
+                )
+                summary_specs.append(("node_l1", l1_summary, "node_l1"))
+            version_hash = stable_hash(
+                f"summary_version:{node_hash}:{dirty.get('dirty_hash')}:{source_event_ids}:{source_summary_hashes}:{refreshed_at_ms}:{l1_policy}"
+            )
+            for level, summary_text, embedding_type in summary_specs:
                 self.append(
                     {
                         "record_type": "context_summary",
@@ -3849,6 +3888,7 @@ class MatrixArkLocalAdapter:
                         "summary_text": summary_text,
                         "source_event_ids": source_event_ids,
                         "source_summary_hashes": source_summary_hashes,
+                        "summary_generation_policy": l1_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
                         "updated_at_ms": refreshed_at_ms,
@@ -3867,6 +3907,7 @@ class MatrixArkLocalAdapter:
                         "model": embedding_model_name(),
                         "vector": embedding_for_text(summary_text),
                         "summary_version_hash": version_hash,
+                        "summary_generation_policy": l1_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
                         "updated_at_ms": refreshed_at_ms,
@@ -3881,6 +3922,10 @@ class MatrixArkLocalAdapter:
                     "summary_version_hash": version_hash,
                     "source_event_ids": source_event_ids,
                     "source_summary_hashes": source_summary_hashes,
+                    "source_event_count": len(source_event_ids),
+                    "source_summary_count": len(source_summary_hashes),
+                    "generated_summary_types": [spec[0] for spec in summary_specs],
+                    "summary_generation_policy": l1_policy,
                     "status": "refreshed",
                     "worker": "matrixark-local-async-summary-worker",
                     "refreshed_at_ms": refreshed_at_ms,
@@ -3895,6 +3940,8 @@ class MatrixArkLocalAdapter:
                     "summary_version_hash": version_hash,
                     "source_event_count": len(source_event_ids),
                     "source_summary_count": len(source_summary_hashes),
+                    "generated_summary_types": [spec[0] for spec in summary_specs],
+                    "summary_generation_policy": l1_policy,
                 }
             )
         return {

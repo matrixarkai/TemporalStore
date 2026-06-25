@@ -258,6 +258,16 @@ def write_outputs(
         }
         for record in by_type["context_embedding"]
     ]
+    summary_policy_rows = [
+        {
+            "node_path": record.get("node_path", []),
+            "generated_summary_types": record.get("generated_summary_types", []),
+            "l1_policy": record.get("summary_generation_policy", {}),
+            "source_event_count": record.get("source_event_count", 0),
+            "source_summary_count": record.get("source_summary_count", 0),
+        }
+        for record in by_type["context_summary_refresh_audit"]
+    ]
 
     exported = {
         "trace": trace,
@@ -266,6 +276,7 @@ def write_outputs(
         "replay_result": replay_result,
         "records_by_type": by_type,
         "embeddings": embeddings,
+        "summary_generation_policy": summary_policy_rows,
         "event_log": str(event_log),
     }
     json_path.write_text(json.dumps(exported, indent=2, sort_keys=True), encoding="utf-8")
@@ -320,7 +331,11 @@ def write_outputs(
         "",
         "## Summaries",
         "",
-        markdown_table(by_type["context_summary"], ["summary_type", "summary_hash", "node_path", "summary_text", "source_chunk_hashes"], limit=80),
+        markdown_table(by_type["context_summary"], ["summary_type", "summary_hash", "node_path", "summary_generation_policy.reason", "summary_text", "source_chunk_hashes"], limit=80),
+        "",
+        "## Node L0/L1 Generation Policy",
+        "",
+        markdown_table(summary_policy_rows, ["node_path", "generated_summary_types", "l1_policy.generate_l1", "l1_policy.reason", "l1_policy.token_estimate", "source_event_count", "source_summary_count"], limit=80),
         "",
         "## Embeddings",
         "",
@@ -413,7 +428,8 @@ def write_outputs(
     <section class="section"><h2>Resource Chunks</h2>{records_table(by_type['resource_chunk'], ['chunk_hash', 'raw_uri', 'source_ref', 'token_estimate', 'metadata.unit_kind', 'metadata.content_hash', 'text'])}</section>
     <section class="section"><h2>Extracted Events</h2>{records_table(by_type['context_event'], ['event_id_hash', 'node_path', 'internal_extraction.event_type', 'internal_extraction.entity_type', 'summary_text', 'source_ref'])}</section>
     <section class="section"><h2>Extracted Entities</h2>{records_table(by_type['context_entity'], ['entity_hash', 'node_path', 'entity_type', 'entity_name', 'operator', 'state', 'source_ref'])}</section>
-    <section class="section"><h2>Summaries</h2>{records_table(by_type['context_summary'], ['summary_type', 'summary_hash', 'node_path', 'summary_text', 'source_chunk_hashes'])}</section>
+    <section class="section"><h2>Summaries</h2>{records_table(by_type['context_summary'], ['summary_type', 'summary_hash', 'node_path', 'summary_generation_policy.reason', 'summary_text', 'source_chunk_hashes'])}</section>
+    <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
     <section class="section"><h2>Embeddings</h2>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'model', 'dim', 'preview'])}</section>
     <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['index_name', 'ref_type', 'ref_hash', 'chunk_hash', 'node_path'])}</section>
     <section class="section"><h2>Retrieval Scan And ContextPack</h2><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
