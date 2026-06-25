@@ -1703,6 +1703,47 @@ def resource_fact_entity_name(schema: Json, value: str, chunk_metadata: Json, ra
     return f"{prefix}:{anchor}"
 
 
+def resource_extraction_mode(envelope: Json) -> str:
+    provider = understanding_provider(envelope)
+    if provider == "oss_encoder":
+        return "matrixark_resource_schema_oss_encoder"
+    if provider in {"openai", "openai_compatible", "openai-compatible"}:
+        return "matrixark_resource_schema_openai_compatible"
+    return "matrixark_resource_schema"
+
+
+def extract_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, raw_uri: str, resource_version: str) -> list[Json]:
+    """Extract cited resource facts through the same provider-shaped contract as messages.
+
+    The local implementation is deterministic for CI. OSS/OpenAI-compatible
+    providers should emit the same fields so storage, indexes, and replay stay
+    unchanged.
+    """
+    mode = resource_extraction_mode(envelope)
+    facts: list[Json] = []
+    for fact_schema in matched_resource_fact_schemas(chunk.text, chunk.metadata):
+        fact_event_type = str(fact_schema["fact_type"])
+        fact_entity_type = str(fact_schema["entity_type"])
+        fact_value = extract_resource_fact_value(chunk.text, fact_event_type)
+        facts.append(
+            {
+                "mode": mode,
+                "classification": "RESOURCE_FACT",
+                "event_type": fact_event_type,
+                "entity_type": fact_entity_type,
+                "status": "observed",
+                "value": fact_value,
+                "entity_name": resource_fact_entity_name(fact_schema, fact_value, chunk_metadata, raw_uri),
+                "confidence": 0.82 if fact_event_type != "resource_fact" else 0.68,
+                "source_chunk_hash": chunk.chunk_hash,
+                "source_ref": chunk.source_ref,
+                "resource_version": resource_version,
+                "extraction_provider": understanding_provider(envelope),
+            }
+        )
+    return facts
+
+
 def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     messages = require_messages(args)
     scope = optional_object(args, "scope")
@@ -3280,6 +3321,10 @@ class MatrixArkLocalAdapter:
                 "precedence": control.get("precedence", record.get("precedence", "normal")),
                 "triggers": control.get("triggers", record.get("triggers", [])),
                 "allowed_tools": control.get("allowed_tools", record.get("allowed_tools", [])),
+                "examples": record.get("examples", record.get("metadata", {}).get("examples", [])),
+                "permissions": record.get("permissions", record.get("metadata", {}).get("permissions", [])),
+                "inputs": record.get("inputs", record.get("metadata", {}).get("inputs", [])),
+                "outputs": record.get("outputs", record.get("metadata", {}).get("outputs", [])),
                 "node_hash": record.get("node_hash", 0),
                 "node_path": record.get("node_path", []),
                 "scope": record.get("scope", {}),
@@ -3505,6 +3550,10 @@ class MatrixArkLocalAdapter:
                             "precedence": parsed_skill.metadata.get("precedence", "normal"),
                             "triggers": parsed_skill.metadata.get("triggers", []),
                             "allowed_tools": parsed_skill.metadata.get("allowed_tools", []),
+                            "examples": parsed_skill.metadata.get("examples", []),
+                            "permissions": parsed_skill.metadata.get("permissions", []),
+                            "inputs": parsed_skill.metadata.get("inputs", []),
+                            "outputs": parsed_skill.metadata.get("outputs", []),
                             "text": parsed_skill.text,
                             "token_estimate": parsed_skill.token_estimate,
                             "metadata": parsed_skill.metadata,
@@ -3770,24 +3819,19 @@ class MatrixArkLocalAdapter:
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:32]
             for chunk in fact_chunks:
                 chunk_metadata = sanitize_resource_metadata(chunk.metadata)
-                for fact_schema in matched_resource_fact_schemas(chunk.text, chunk.metadata):
-                    fact_event_type = str(fact_schema["fact_type"])
-                    fact_entity_type = str(fact_schema["entity_type"])
-                    fact_value = extract_resource_fact_value(chunk.text, fact_event_type)
+                for fact_extraction in extract_resource_facts(
+                    chunk,
+                    chunk_metadata=chunk_metadata,
+                    envelope=envelope,
+                    raw_uri=raw_uri,
+                    resource_version=resource_version_value,
+                ):
+                    fact_event_type = str(fact_extraction["event_type"])
+                    fact_entity_type = str(fact_extraction["entity_type"])
+                    fact_value = str(fact_extraction.get("value", ""))
                     fact_event_hash = stable_hash(f"resource_fact:{chunk.chunk_hash}:{fact_event_type}:{resource_version_value}")
                     resource_fact_event_hashes.append(fact_event_hash)
                     fact_summary = summarize_text(f"{fact_event_type}: {fact_value}", limit=320)
-                    fact_extraction = {
-                        "mode": "matrixark_resource_fact_extraction",
-                        "classification": "RESOURCE_FACT",
-                        "event_type": fact_event_type,
-                        "entity_type": fact_entity_type,
-                        "status": "observed",
-                        "value": fact_value,
-                        "source_chunk_hash": chunk.chunk_hash,
-                        "source_ref": chunk.source_ref,
-                        "resource_version": resource_version_value,
-                    }
                     resource_fact_records.append(
                         {
                             "record_type": "context_event",
@@ -3821,7 +3865,7 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    entity_name = resource_fact_entity_name(fact_schema, fact_value, chunk_metadata, raw_uri)
+                    entity_name = str(fact_extraction.get("entity_name") or fact_entity_type)
                     entity_hash = stable_hash(f"{node_hash}:{fact_entity_type}:{entity_name}:{chunk.chunk_hash}")
                     resource_fact_entity_hashes.append(entity_hash)
                     entity_state = summarize_text(f"{fact_event_type}: {fact_value}. Source: {chunk.text}", limit=360)
@@ -3836,7 +3880,7 @@ class MatrixArkLocalAdapter:
                             "entity_type": fact_entity_type,
                             "entity_name": entity_name,
                             "state": entity_state,
-                            "confidence": 0.78,
+                            "confidence": fact_extraction.get("confidence", 0.78),
                             "operator": "LATEST",
                             "source_refs": [chunk.source_ref],
                             "source_event_ids": [fact_event_hash],
