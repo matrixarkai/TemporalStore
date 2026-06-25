@@ -121,6 +121,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
     "matrixark_ingestion_dashboard": {"context:replay"},
+    "matrixark_management_portal": {"context:replay", "resource:read", "skill:read", "admin:account", "admin:user", "admin:api_key", "admin:audit"},
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
     "matrixark_update_skill": {"skill:manage"},
@@ -8250,6 +8251,113 @@ class MatrixArkAccessManager:
         self.append_audit("admin.map_sso_user", identity, status="ok", details={"provider": provider, "matrixark_user_id": matrixark_user_id})
         return {"status": "mapped", "matrixark_user_id": matrixark_user_id, "provider": provider, "external_user_id": external_user_id}
 
+
+    def management_portal(self, args: Json, identity: Json) -> Json:
+        scope = optional_object(args, "scope")
+        account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
+        tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        effective_scope = enrich_scope_with_identity({**scope, "account_id": account_id, "tenant_id": tenant_id}, identity)
+        page_size = args.get("page_size", 10)
+        if not isinstance(page_size, int) or page_size <= 0 or page_size > 50:
+            raise MatrixArkError("page_size must be an integer between 1 and 50")
+        include_revoked = bool(args.get("include_revoked", False))
+        records = self.adapter.read_all()
+        tables = ["messages", "resources", "skills", "events", "entities", "context_packs"]
+        dashboard = {}
+        totals = {}
+        for table in tables:
+            rows = self.adapter._dashboard_rows_for_table(records, table, effective_scope)
+            totals[table] = len(rows)
+            dashboard[table] = {
+                "total": len(rows),
+                "rows": rows[:page_size],
+                "next_page_token": page_size if len(rows) > page_size else None,
+            }
+        account_rows = self.list_accounts({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        user_rows = self.list_users({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        api_key_rows = self.list_api_keys(
+            {"account_id": account_id, "tenant_id": tenant_id, "limit": 50, "include_revoked": include_revoked},
+            identity,
+        )
+        audit_rows = self.audit({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        scoped_records = [record for record in records if scope_matches(self.adapter._dashboard_record_scope(record), effective_scope)]
+        nodes = [record for record in scoped_records if record.get("record_type") == "context_node"]
+        summaries = [record for record in scoped_records if record.get("record_type") == "context_summary"]
+        embeddings = [record for record in scoped_records if record.get("record_type") == "context_embedding"]
+        dirty = [record for record in scoped_records if record.get("record_type") == "context_summary_dirty"]
+        topology_nodes = sorted(
+            [
+                {
+                    "node_hash": record.get("node_hash", 0),
+                    "parent_hash": record.get("parent_hash", 0),
+                    "node_name": record.get("node_name", ""),
+                    "node_path": record.get("node_path", []),
+                    "depth": record.get("depth", 0),
+                    "status": record.get("status", ""),
+                    "updated_at_ms": record.get("updated_at_ms", 0),
+                }
+                for record in nodes
+            ],
+            key=lambda row: (int(row.get("depth") or 0), str(row.get("node_path"))),
+        )[:100]
+        metrics = {
+            "record_count": len(records),
+            "scoped_record_count": len(scoped_records),
+            "context_node_count": len(nodes),
+            "context_summary_count": len(summaries),
+            "context_embedding_count": len(embeddings),
+            "dirty_summary_count": len(dirty),
+            "api_key_count": api_key_rows.get("count", 0),
+            "user_count": user_rows.get("count", 0),
+            "message_count": totals.get("messages", 0),
+            "resource_count": totals.get("resources", 0),
+            "skill_count": totals.get("skills", 0),
+            "event_count": totals.get("events", 0),
+            "entity_count": totals.get("entities", 0),
+            "context_pack_count": totals.get("context_packs", 0),
+        }
+        portal_actions = {
+            "register_user": {
+                "tool": "matrixark_admin_create_user",
+                "arguments": {
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "user_id": effective_scope.get("user_id", "new_user"),
+                    "display_name": effective_scope.get("user_id", "New User"),
+                    "external_subject": "local:" + str(effective_scope.get("user_id", "new_user")),
+                },
+            },
+            "apply_api_key": {
+                "tool": "matrixark_admin_apply_api_key",
+                "arguments": {
+                    "account_id": account_id,
+                    "tenant_id": tenant_id,
+                    "agent_name": effective_scope.get("agent_name", "local_agent"),
+                    "user_id": effective_scope.get("user_id", ""),
+                    "scopes": ["context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read"],
+                },
+            },
+            "open_ingestion_history": {
+                "tool": "matrixark_ingestion_dashboard",
+                "arguments": {"scope": effective_scope, "table": "messages", "page_size": page_size},
+            },
+        }
+        return {
+            "status": "ok",
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "scope": effective_scope,
+            "accounts": account_rows.get("accounts", []),
+            "users": user_rows.get("users", []),
+            "api_keys": api_key_rows.get("api_keys", []),
+            "audit_logs": audit_rows.get("audit_logs", []),
+            "dashboard": dashboard,
+            "topology": {"nodes": topology_nodes, "count": len(nodes)},
+            "metrics": metrics,
+            "portal_actions": portal_actions,
+        }
+
     def audit(self, args: Json, identity: Json) -> Json:
         limit = args.get("limit", 100)
         if not isinstance(limit, int) or limit <= 0:
@@ -8751,6 +8859,22 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_management_portal",
+        "description": "Return one backend portal payload for registration, API-key management, ingestion history, topology, metrics, and audit.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "scope": SCOPE_SCHEMA,
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "page_size": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                "include_revoked": {"type": "boolean", "default": False},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_admin_create_account",
         "description": "Create a MatrixArk account and default tenant.",
         "inputSchema": {
@@ -9086,6 +9210,10 @@ class MatrixArkMcpServer:
         if name == "matrixark_ingestion_dashboard":
             result = self.adapter.ingestion_dashboard(args)
             self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_management_portal":
+            result = self.access.management_portal(args, identity)
+            self.access.append_audit("admin.management_portal", identity, status="ok", details={"account_id": result.get("account_id"), "tenant_id": result.get("tenant_id")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_list_resources":
             result = self.adapter.list_resources(args)
