@@ -16,6 +16,7 @@ from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 UI_DIR = ROOT / "tools" / "temporalstore-monitoring-ui"
+SITE_DIR = ROOT / "website" / "matrixark-site"
 
 
 class IdCollector(HTMLParser):
@@ -145,8 +146,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
 
 
     def test_management_portal_markup_contract(self) -> None:
+        html = (UI_DIR / "management-portal.html").read_text(encoding="utf-8")
         parser = IdCollector()
-        parser.feed((UI_DIR / "management-portal.html").read_text(encoding="utf-8"))
+        parser.feed(html)
+
         required_ids = {
             "portal-status",
             "portal-account",
@@ -156,18 +159,27 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-agent",
             "portal-provider",
             "portal-email",
+            "portal-mode",
             "portal-page-size",
             "portal-refresh",
             "portal-copy",
-            "portal-messages",
-            "portal-resources",
+            "portal-users",
+            "portal-items",
             "portal-nodes",
             "portal-keys",
             "portal-register-payload",
             "portal-key-payload",
             "portal-sso-payload",
+            "portal-link-payload",
             "portal-key-management-payload",
+            "portal-policy-decision",
             "portal-request",
+            "portal-install-command",
+            "portal-mcp-config",
+            "portal-verify-command",
+            "portal-identity-policy",
+            "portal-token-metrics",
+            "portal-limit-policy",
             "portal-table-head",
             "portal-table-body",
             "portal-row-details",
@@ -175,20 +187,53 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-metrics",
         }
         self.assertTrue(required_ids.issubset(parser.ids))
-        self.assertIn("Management Portal", parser.headings)
-        self.assertIn("User Backend Portal", parser.headings)
-        self.assertIn("Registration And API Keys", parser.headings)
-        self.assertIn("Ingestion History", parser.headings)
-        self.assertIn("Context Topology", parser.headings)
-        self.assertIn("Metrics And Audit", parser.headings)
-        html = (UI_DIR / "management-portal.html").read_text(encoding="utf-8")
+        for heading in [
+            "Management Portal",
+            "User Backend Portal",
+            "Quick Start",
+            "Registration, SSO, And API Keys",
+            "Token And Usage Monitoring",
+            "Agent Install Snippets",
+            "Identity Resolution",
+            "Ingestion And Access History",
+            "Context Topology",
+            "Metrics And Audit",
+        ]:
+            self.assertIn(heading, parser.headings)
+
         self.assertIn("matrixark_management_portal", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
         self.assertIn("matrixark_auth_sso_login", html)
+        self.assertIn("matrixark_admin_map_sso_user", html)
+        self.assertIn("matrixark_admin_rotate_api_key", html)
+        self.assertIn("matrixark_admin_revoke_api_key", html)
         self.assertIn("Google / Gmail", html)
-        self.assertIn("matrixark_admin_create_user", html)
-        self.assertIn("matrixark_ingestion_dashboard", html)
-        self.assertIn("Context Packs", html)
+        self.assertIn("GitHub", html)
+        self.assertIn("Used context tokens", html)
+        self.assertIn("mcpServers", html)
+
+    def test_matrixark_site_has_management_portal(self) -> None:
+        html = (SITE_DIR / "management-portal.html").read_text(encoding="utf-8")
+        css = (SITE_DIR / "management-portal.css").read_text(encoding="utf-8")
+
+        self.assertIn("MatrixArk Management Portal", html)
+        self.assertIn("./management-portal.css", html)
+        self.assertIn("matrixark_auth_sso_login", html)
+        self.assertIn("matrixark_admin_apply_api_key", html)
+        self.assertIn("mcpServers", html)
+        self.assertIn(".portal-token-grid", css)
+
+        for page_name in [
+            "index.html",
+            "registration.html",
+            "blogs.html",
+            "temporalstore.html",
+            "matrixdb.html",
+            "matrixkv.html",
+            "blog-temporalstore-serving-engine.html",
+        ]:
+            page = (SITE_DIR / page_name).read_text(encoding="utf-8-sig")
+            self.assertIn("management-portal.html", page, page_name)
 
     def test_context_sample_health_has_operable_pipeline(self) -> None:
         health = json.loads((UI_DIR / "health.json").read_text(encoding="utf-8"))
