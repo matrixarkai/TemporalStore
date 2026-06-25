@@ -1705,6 +1705,78 @@
     ],
     "resource_skill_ops": {
       "status": "ready",
+      "metrics": [
+        {
+          "label": "Import duration",
+          "value": "1.8",
+          "unit": "s p95",
+          "status": "ok",
+          "detail": "ResourceImportTask validate -> parse -> write -> dirty marker"
+        },
+        {
+          "label": "Parser duration by type",
+          "value": "md 42ms / pdf 820ms",
+          "unit": "p95",
+          "status": "watch",
+          "detail": "PDF includes page extraction and OCR/VLM fallback warning path"
+        },
+        {
+          "label": "Chunk count",
+          "value": "8",
+          "unit": "chunks",
+          "status": "ok",
+          "detail": "Runbook, policy PDF, and skill sections"
+        },
+        {
+          "label": "Dedupe count",
+          "value": "1",
+          "unit": "chunk",
+          "status": "ok",
+          "detail": "content_hash duplicate skipped during refresh"
+        },
+        {
+          "label": "Embedding duration",
+          "value": "310",
+          "unit": "ms p95",
+          "status": "ok",
+          "detail": "chunk + L0/L1 summary embeddings"
+        },
+        {
+          "label": "Extraction duration",
+          "value": "540",
+          "unit": "ms p95",
+          "status": "ok",
+          "detail": "resource-specific fact/entity extraction after chunking"
+        },
+        {
+          "label": "Summary dirty lag",
+          "value": "1.8",
+          "unit": "s max",
+          "status": "watch",
+          "detail": "oldest queued resource parent summary refresh"
+        },
+        {
+          "label": "Resource retrieval hit rate",
+          "value": "92%",
+          "unit": "last 50",
+          "status": "ok",
+          "detail": "selected resource chunks with accepted replay refs"
+        },
+        {
+          "label": "Skill retrieval hit rate",
+          "value": "88%",
+          "unit": "last 25",
+          "status": "ok",
+          "detail": "selected skill sections used in ContextPacks"
+        },
+        {
+          "label": "Parse failure count",
+          "value": "0",
+          "unit": "failures",
+          "status": "ok",
+          "detail": "unsupported binaries emit warnings instead of silent success"
+        }
+      ],
       "import_tasks": [
         {
           "task_id": "task_gpu_runbook",
