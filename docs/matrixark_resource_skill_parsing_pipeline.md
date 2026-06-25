@@ -242,6 +242,24 @@ Packing policy prefers answer-dense evidence:
 - current state: entity state plus source chunk/event
 - broad exploration: L0/L1 node/resource summaries first
 
+## Injection Completeness Gate
+
+The resource/skill parity runner now fails unless the complete serving model is injected. A passing run proves all of these records exist and are replayable:
+
+| Area | Required records |
+| --- | --- |
+| Tree | `ContextNode`, `ContextChildRef`, `ContextSummary`, `ContextSummaryDirty` |
+| Resource lifecycle | `ResourceImportTask`, `ResourceManifest`, `ResourceRegistry`, `ResourceChunk`, `MatrixArkMetric` |
+| Skill lifecycle | `SkillManifest`, `SkillRegistry`, `SkillSection`, skill-backed `ResourceChunk` |
+| Facts and state | resource-derived `ContextEvent`, resource-derived `ContextEntity` |
+| Serving indexes | `ContextEmbedding`, `ContextIndex` for resource type, skill trigger/tool, keyword, heading, unit kind, event type, and entity type |
+| Replay and governance | `ContextPackAudit`, access-management audit rows for list/update/retrieve/replay |
+
+Important product boundary:
+
+- Resource files are fact sources. MatrixArk extracts resource decisions, policies, owners, costs, approvals, troubleshooting steps, and API contracts into `ContextEvent` / `ContextEntity` records with `source_chunk_hash` and `source_ref`.
+- Skill files are instruction sources. MatrixArk stores them as `SkillManifest`, `SkillRegistry`, `SkillSection`, skill summaries, embeddings, and indexes. It does not convert skill instructions into business facts by default; retrieval selects only relevant skill sections into the ContextPack.
+
 ## Test Commands
 
 Run local resource/skill parity:

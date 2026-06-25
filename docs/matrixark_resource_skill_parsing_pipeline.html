@@ -188,6 +188,26 @@ flowchart TD
   </section>
 
   <section>
+    <h2>Injection Completeness Gate</h2>
+    <p>The resource/skill parity runner now fails unless the complete serving model is injected and replayable.</p>
+    <table>
+      <thead><tr><th>Area</th><th>Required records</th></tr></thead>
+      <tbody>
+        <tr><td>Tree</td><td><code>ContextNode</code>, <code>ContextChildRef</code>, <code>ContextSummary</code>, <code>ContextSummaryDirty</code></td></tr>
+        <tr><td>Resource lifecycle</td><td><code>ResourceImportTask</code>, <code>ResourceManifest</code>, <code>ResourceRegistry</code>, <code>ResourceChunk</code>, <code>MatrixArkMetric</code></td></tr>
+        <tr><td>Skill lifecycle</td><td><code>SkillManifest</code>, <code>SkillRegistry</code>, <code>SkillSection</code>, skill-backed <code>ResourceChunk</code></td></tr>
+        <tr><td>Facts and state</td><td>resource-derived <code>ContextEvent</code>, resource-derived <code>ContextEntity</code></td></tr>
+        <tr><td>Serving indexes</td><td><code>ContextEmbedding</code>, <code>ContextIndex</code> for resource type, skill trigger/tool, keyword, heading, unit kind, event type, and entity type</td></tr>
+        <tr><td>Replay and governance</td><td><code>ContextPackAudit</code>, access-management audit rows for list/update/retrieve/replay</td></tr>
+      </tbody>
+    </table>
+    <div class="note">
+      <p><strong>Product boundary:</strong> resource files are fact sources, so MatrixArk extracts decisions, policies, owners, costs, approvals, troubleshooting steps, and API contracts into <code>ContextEvent</code> / <code>ContextEntity</code> records with source citations.</p>
+      <p>Skill files are instruction sources. MatrixArk stores them as manifests, registries, sections, summaries, embeddings, and indexes. It does not convert skill instructions into business facts by default; retrieval selects only relevant skill sections into the ContextPack.</p>
+    </div>
+  </section>
+
+  <section>
     <h2>Test Commands</h2>
     <pre><code>cd /root/src/github-services/TemporalStore
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends local
