@@ -245,6 +245,27 @@ pub struct PageStoreZoneSummary {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StreamBackedZoneRuntimeReport {
+    pub runtime_ready: bool,
+    pub zone_count: u64,
+    pub active_zones: u64,
+    pub sealed_zones: u64,
+    pub delayed_destroy_zones: u64,
+    pub purged_zones: u64,
+    pub stream_segment_count: u64,
+    pub physical_bytes: u64,
+    pub logical_bytes: u64,
+    pub logical_stream_read_ready: bool,
+    pub append_roll_ready: bool,
+    pub zone_manifest_ready: bool,
+    pub envelope_checksum_ready: bool,
+    pub compression_stream_ready: bool,
+    pub delayed_destroy_ready: bool,
+    pub blockers: Vec<String>,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageStoreSegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
@@ -998,6 +1019,100 @@ impl LocalPageStore {
 
     pub fn zone_summary(&self) -> PageStoreZoneSummary {
         summarize_zones(&self.inner.lock().expect("page store lock poisoned").zones)
+    }
+
+    pub fn stream_backed_zone_runtime_report(
+        &self,
+    ) -> Result<StreamBackedZoneRuntimeReport, PageStoreError> {
+        let inner = self.inner.lock().expect("page store lock poisoned");
+        let zones = inner.zones.clone();
+        let root = inner.root.clone();
+        let options = inner.options;
+        drop(inner);
+
+        let summary = summarize_zones(&zones);
+        let segment_reports = {
+            let mut reports = Vec::new();
+            for id in segment_ids_at(&root)? {
+                reports.push(inspect_segment(&fs::read(segment_path(&root, id))?, id));
+            }
+            reports
+        };
+        let stream_segment_count = segment_reports
+            .iter()
+            .filter(|report| report.page_count > 0 || report.physical_bytes > 0)
+            .count() as u64;
+        let physical_bytes = segment_reports
+            .iter()
+            .map(|report| report.physical_bytes)
+            .sum::<u64>();
+        let logical_bytes = segment_reports
+            .iter()
+            .map(|report| report.logical_bytes)
+            .sum::<u64>();
+        let logical_stream_read_ready = segment_reports.iter().any(|report| report.page_count > 0);
+        let append_roll_ready = summary.active_zones == 1
+            && summary
+                .sealed_zones
+                .saturating_add(summary.delayed_destroy_zones)
+                > 0;
+        let zone_manifest_ready = zone_manifest_path(&root).exists()
+            && !zones.is_empty()
+            && zones
+                .values()
+                .all(|zone| zone.zone_id == zone_id_for_segment(zone.page_segment_id));
+        let envelope_checksum_ready = segment_reports
+            .iter()
+            .filter(|report| report.page_count > 0)
+            .all(|report| !report.has_corruption && report.logical_bytes > 0);
+        let compression_stream_ready = options.compression_enabled
+            && segment_reports
+                .iter()
+                .any(|report| report.compressed_records > 0);
+        let delayed_destroy_ready = summary.delayed_destroy_zones > 0 || summary.purged_zones > 0;
+
+        let mut blockers = Vec::new();
+        if !logical_stream_read_ready {
+            blockers.push("no readable page stream records found".to_string());
+        }
+        if !append_roll_ready {
+            blockers.push(
+                "append/roll zone lifecycle has not produced active plus sealed zones".to_string(),
+            );
+        }
+        if !zone_manifest_ready {
+            blockers.push("zone manifest is missing or inconsistent".to_string());
+        }
+        if !envelope_checksum_ready {
+            blockers.push("stream record envelope/checksum inspection is not clean".to_string());
+        }
+
+        let runtime_ready = blockers.is_empty();
+        Ok(StreamBackedZoneRuntimeReport {
+            runtime_ready,
+            zone_count: zones.len() as u64,
+            active_zones: summary.active_zones,
+            sealed_zones: summary.sealed_zones,
+            delayed_destroy_zones: summary.delayed_destroy_zones,
+            purged_zones: summary.purged_zones,
+            stream_segment_count,
+            physical_bytes,
+            logical_bytes,
+            logical_stream_read_ready,
+            append_roll_ready,
+            zone_manifest_ready,
+            envelope_checksum_ready,
+            compression_stream_ready,
+            delayed_destroy_ready,
+            blockers,
+            evidence: vec![
+                "page records are appended as self-describing stream envelopes".to_string(),
+                "logical stream reads span records while skipping envelopes and decompression"
+                    .to_string(),
+                "segment roll seals the previous zone and opens a new active zone".to_string(),
+                "zone manifest persists active/sealed/delayed-destroy/purged state".to_string(),
+            ],
+        })
     }
 
     pub fn segment_reports(&self) -> Result<Vec<PageStoreSegmentReport>, PageStoreError> {
@@ -1829,6 +1944,70 @@ mod tests {
         assert!(stats.compression_bytes_saved > 0);
         assert!(stats.bytes_written < stats.logical_bytes_written);
         assert!(stats.logical_bytes_read >= stats.bytes_read);
+    }
+
+    // shared-corpus: storage_stream_backed_zone_runtime;
+    #[test]
+    fn stream_backed_zone_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let first_payload = b"zone-stream-first-".repeat(96);
+        let second_payload = b"zone-stream-second-".repeat(96);
+        let first = store
+            .append_with_page_metadata(&first_payload, Some(11), Some(7))
+            .unwrap();
+        let second = store
+            .append_with_page_metadata(&second_payload, Some(12), Some(7))
+            .unwrap();
+        assert_eq!(first.page_segment_id, second.page_segment_id);
+
+        let logical_offset = first_payload.len() as u64 - 8;
+        let logical = store
+            .read_logical_range(first.page_segment_id, logical_offset, 16)
+            .unwrap();
+        let mut expected = Vec::new();
+        expected.extend_from_slice(&first_payload[first_payload.len() - 8..]);
+        expected.extend_from_slice(&second_payload[..8]);
+        assert_eq!(logical, expected);
+
+        let roll = store.roll_segment().unwrap();
+        let third_payload = b"zone-stream-third-".repeat(96);
+        let third = store
+            .append_with_page_metadata(&third_payload, Some(13), Some(8))
+            .unwrap();
+        assert_eq!(third.page_segment_id, roll.new_page_segment_id);
+
+        let delayed = store
+            .gc_segments_before_with_live_refs_delayed_destroy(
+                roll.new_page_segment_id,
+                [roll.new_page_segment_id],
+            )
+            .unwrap();
+        assert_eq!(
+            delayed.delayed_destroy_page_segment_ids,
+            vec![roll.previous_page_segment_id]
+        );
+
+        let reopened = LocalPageStore::new(dir.path());
+        assert_eq!(reopened.read(&third).unwrap(), third_payload);
+        let report = reopened.stream_backed_zone_runtime_report().unwrap();
+        assert!(report.runtime_ready, "{report:?}");
+        assert_eq!(report.active_zones, 1);
+        assert_eq!(report.delayed_destroy_zones, 1);
+        assert!(report.zone_count >= 2);
+        assert!(report.stream_segment_count >= 1);
+        assert!(report.logical_stream_read_ready);
+        assert!(report.append_roll_ready);
+        assert!(report.zone_manifest_ready);
+        assert!(report.envelope_checksum_ready);
+        assert!(report.compression_stream_ready);
+        assert!(report.delayed_destroy_ready);
+        assert!(report.logical_bytes >= third_payload.len() as u64);
+        assert!(report.blockers.is_empty());
+        assert!(report
+            .evidence
+            .iter()
+            .any(|item| item.contains("logical stream reads span records")));
     }
 
     #[test]
