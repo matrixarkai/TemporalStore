@@ -110,6 +110,18 @@ pub struct ShardCompactionModelLayoutReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardCompactionModelLayoutReport {
+    pub kind: String,
+    pub object_count: usize,
+    pub index_refs: usize,
+    pub unique_page_refs: usize,
+    pub packed_timestamped_pages: usize,
+    pub legacy_value_pages: usize,
+    pub stale_page_estimate: u64,
+    pub live_ref_density_basis_points: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionUtilityReport {
     pub live_page_segment_count: usize,
     pub total_page_count: u64,
