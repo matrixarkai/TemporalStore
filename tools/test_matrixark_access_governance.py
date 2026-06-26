@@ -115,6 +115,89 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertTrue(any(row.get("status") == "denied" and row.get("api_key_hash_prefix") for row in audits))
         self.assertTrue(all("api_key" not in row for row in audits))
 
+    def test_signup_sso_callback_and_redacted_key_usage_inventory(self) -> None:
+        server = self.make_server()
+        signup = server.call_tool(
+            "matrixark_auth_signup",
+            {
+                "trusted_gateway": True,
+                "provider": "google",
+                "email": "alice@example.com",
+                "external_user_id": "google-sub-123",
+                "account_id": "acct_signup",
+                "tenant_id": "tenant_signup",
+                "user_id": "alice",
+                "display_name": "Alice",
+                "allowed_user_ids": ["alice"],
+                "first_key_scopes": [
+                    "admin:account",
+                    "admin:user",
+                    "admin:api_key",
+                    "admin:sso",
+                    "admin:audit",
+                    "portal:read",
+                    "context:ingest",
+                    "context:retrieve",
+                    "context:replay",
+                    "resource:read",
+                    "skill:read",
+                ],
+            },
+        )
+        self.assertEqual("signed_up", signup["status"])
+        self.assertEqual("account_tenant_user_first_scoped_key", signup["signup_contract"])
+        self.assertTrue(signup["key_inventory_redacted"])
+        first_key = signup["api_key"]
+        self.assertTrue(first_key.startswith("mk_live_"))
+
+        server.call_tool(
+            "matrixark_retrieve",
+            {
+                "api_key": first_key,
+                "scope": {"account_id": "acct_signup", "tenant_id": "tenant_signup", "user_id": "alice"},
+                "query": "what does Alice know?",
+            },
+        )
+        inventory = server.call_tool(
+            "matrixark_admin_list_api_keys",
+            {"api_key": first_key, "account_id": "acct_signup", "tenant_id": "tenant_signup", "include_revoked": True},
+        )
+        self.assertEqual(1, inventory["count"])
+        row = inventory["api_keys"][0]
+        self.assertTrue(row["redacted"])
+        self.assertGreaterEqual(row["usage_count"], 1)
+        self.assertGreater(row["last_used_at_ms"], 0)
+        self.assertIn(row["last_used_action"], {"matrixark_retrieve", "matrixark_admin_list_api_keys"})
+        self.assertNotIn("api_key", row)
+        self.assertNotIn("api_key_hash", row)
+
+        callback = server.call_tool(
+            "matrixark_auth_sso_callback",
+            {
+                "trusted_gateway": True,
+                "id_token_verified": True,
+                "provider": "github",
+                "email": "alice@users.noreply.github.com",
+                "external_user_id": "github-456",
+                "account_id": "acct_signup",
+                "tenant_id": "tenant_signup",
+                "matrixark_user_id": "alice",
+            },
+        )
+        self.assertEqual("sso_callback_mapped", callback["status"])
+        self.assertFalse(callback["stored_oauth_tokens"])
+        self.assertEqual("trusted_gateway_oidc_oauth_callback", callback["callback_contract"])
+        records = server.adapter.read_all()
+        record_dump = str(records)
+        self.assertNotIn("id_token", record_dump)
+        self.assertNotIn("access_token", record_dump)
+        self.assertNotIn(first_key, record_dump)
+        audits = server.call_tool("matrixark_admin_audit", {"api_key": first_key, "account_id": "acct_signup", "tenant_id": "tenant_signup"})["audit_logs"]
+        actions = [row.get("action") for row in audits]
+        self.assertIn("auth.signup", actions)
+        self.assertIn("auth.sso_callback", actions)
+
+
 
 if __name__ == "__main__":
     unittest.main()
