@@ -15,13 +15,25 @@ from __future__ import annotations
 
 try:
     from tools.matrixark_mcp_core import *
-    from tools.matrixark_mcp_core import _mcp_debug_log
+    from tools.matrixark_mcp_core import (
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _mcp_debug_log,
+    )
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
     from tools.matrixark_mcp_schemas import TOOLS
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
-    from matrixark_mcp_core import _mcp_debug_log
+    from matrixark_mcp_core import (
+        _DIRECT_RECORD_CACHE,
+        _DIRECT_RECORD_CACHE_LOCK,
+        _DIRECT_RECORD_CACHE_MAX_PREFIXES,
+        _DIRECT_RECORD_LOAD_LOCKS,
+        _mcp_debug_log,
+    )
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
     from matrixark_mcp_schemas import TOOLS

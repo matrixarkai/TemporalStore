@@ -81,9 +81,73 @@ def validate_case(case: dict, cpp_repo: Path | None) -> list[tuple[str, str]]:
     return commands
 
 
+def expand_cargo_test_command(command: str) -> list[str]:
+    """Split shared-case cargo test commands that list multiple TESTNAME filters.
+
+    Cargo accepts only one positional TESTNAME before ``--``. Some shared
+    control-plane cases intentionally bundle closely related Rust tests in one
+    corpus step; expand those into one cargo invocation per filter so the
+    shared case remains a single product contract while execution stays valid.
+    """
+
+    tokens = shlex.split(command)
+    if len(tokens) < 3 or tokens[:2] != ["cargo", "test"]:
+        return [command]
+    try:
+        separator = tokens.index("--")
+    except ValueError:
+        separator = len(tokens)
+
+    before = tokens[:separator]
+    after = tokens[separator:]
+    options_with_values = {
+        "-p",
+        "--package",
+        "--bin",
+        "--test",
+        "--example",
+        "--bench",
+        "--target",
+        "--manifest-path",
+        "--features",
+        "--color",
+        "--message-format",
+        "--profile",
+        "--config",
+        "-Z",
+        "-j",
+    }
+    test_filters: list[str] = []
+    filter_indexes: set[int] = set()
+    index = 2
+    while index < len(before):
+        token = before[index]
+        if token in options_with_values:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        test_filters.append(token)
+        filter_indexes.add(index)
+        index += 1
+
+    if len(test_filters) <= 1:
+        return [command]
+
+    base = [token for index, token in enumerate(before) if index not in filter_indexes]
+    return [
+        shlex.join([*base, test_filter, *after]) for test_filter in test_filters
+    ]
+
+
 def run_command(command: str, cwd: Path) -> None:
-    print(f"+ {command}", flush=True)
-    subprocess.run(command, cwd=cwd, shell=True, check=True)
+    expanded = expand_cargo_test_command(command)
+    if len(expanded) > 1:
+        print(f"# expanded multi-filter cargo test into {len(expanded)} commands", flush=True)
+    for command in expanded:
+        print(f"+ {command}", flush=True)
+        subprocess.run(command, cwd=cwd, shell=True, check=True)
 
 
 def render_cpp_native_command(template: str, corpus: Path, case: str, cpp_repo: Path | None) -> str:

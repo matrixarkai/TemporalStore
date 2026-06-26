@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/temporalstore-snapshot", "crates/temporalstore-rust"]
+exclude = ["sdk/rust/temporalstore"]
 resolver = "2"
 
 [workspace.package]
