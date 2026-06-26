@@ -9,6 +9,9 @@ RUNNER="${CORPUS_REPO}/runners/cpp/run_cpp_unified_context_contract.sh"
 if [[ ! -x "${RUNNER}" ]]; then
   RUNNER="${ROOT}/third_party/TemporalStoreTestCorpus/runners/cpp/run_cpp_unified_context_contract.sh"
 fi
+if [[ ! -x "${RUNNER}" ]]; then
+  RUNNER="${ROOT}/../TemporalStoreTestCorpus/runners/cpp/run_cpp_unified_context_contract.sh"
+fi
 
 if [[ ! -x "${RUNNER}" ]]; then
   echo "missing shared C++ context runner: ${RUNNER}" >&2
