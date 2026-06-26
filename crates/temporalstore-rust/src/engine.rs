@@ -3950,7 +3950,7 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
-        for entry in collect_live_page_entries(shard) {
+        for entry in collect_live_page_entries_from_model_maps(shard) {
             let routing_slot = entry
                 .address
                 .routing_slot
@@ -5009,7 +5009,7 @@ impl TemporalEngine {
         shard: &ShardState,
     ) -> StoragePageOwnershipValidation {
         let mut validation = StoragePageOwnershipValidation::default();
-        for entry in collect_live_page_entries(shard) {
+        for entry in collect_live_page_entries_from_model_maps(shard) {
             let expected_object_id = expected_live_page_object_id(shard_id, &entry);
             let expected_routing_slot = self.routing_slot_for_key(shard_id, &entry.object_key);
             let object_mismatch = entry
@@ -5042,6 +5042,13 @@ impl TemporalEngine {
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("shard info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
@@ -5058,6 +5065,9 @@ impl TemporalEngine {
         }
         let before_segments = collect_live_page_segment_ids(shard);
         let before = compaction_utility_report(&self.page_store, shard);
+        let tombstoned_object_ids_before =
+            storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
+        let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
         let roll = self
             .page_store
             .roll_segment()
@@ -5238,6 +5248,9 @@ impl TemporalEngine {
         refresh_slot_runtime_flags(shard);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
+        rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+        let tombstoned_object_ids_after =
+            storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let stale_page_segment_ids = before_segments
             .difference(&after_segments)
             .copied()
@@ -5247,6 +5260,7 @@ impl TemporalEngine {
         self.persist_index_bytes(shard_id, &index_bytes)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+        let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
         Ok(ShardCompactionReport {
             shard_id,
             previous_page_segment_id: roll.previous_page_segment_id,
@@ -5260,6 +5274,10 @@ impl TemporalEngine {
                 .sum(),
             stale_page_segment_ids,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
+            rewritten_object_pages,
+            tombstoned_object_ids_before,
+            tombstoned_object_ids_after,
+            model_layouts: model_layouts_before,
             before,
             after,
         })
@@ -9843,7 +9861,7 @@ fn storage_object_lifecycle_report_for_slots(
     selected_slots: &BTreeSet<u32>,
     routing_slot_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    let entries = collect_live_page_entries(shard)
+    let entries = collect_live_page_entries_from_model_maps(shard)
         .into_iter()
         .filter(|entry| {
             let routing_slot = entry
@@ -10892,6 +10910,199 @@ fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &Pa
             address.routing_slot,
         ))
         .is_some()
+}
+
+fn compaction_model_layout_reports(
+    page_store: &LocalPageStore,
+    shard: &ShardState,
+) -> Vec<ShardCompactionModelLayoutReport> {
+    let segment_page_counts = page_store
+        .segment_reports()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|report| (report.page_segment_id, report.page_count))
+        .collect::<BTreeMap<_, _>>();
+    let mut reports = Vec::new();
+    reports.push(compaction_layout_from_addresses(
+        "string",
+        shard.strings.len(),
+        shard.strings.values().cloned(),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "hash",
+        shard.hashes.len(),
+        shard
+            .hashes
+            .values()
+            .flat_map(|fields| fields.values().cloned()),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "set",
+        shard.sets.len(),
+        shard
+            .sets
+            .values()
+            .flat_map(|members| members.values().cloned()),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "feature",
+        &shard.features,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "sequence",
+        &shard.sequences,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "ips",
+        &shard.ips,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "context_node",
+        shard.context_nodes.len(),
+        shard.context_nodes.values().cloned(),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_event",
+        &shard.context_events,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_index",
+        &shard.context_indexes,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_audit",
+        &shard.context_audits,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_dirty",
+        &shard.context_dirty,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "context_entity",
+        shard.context_entities.len(),
+        shard.context_entities.values().cloned(),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_child",
+        &shard.context_children,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_layout_from_addresses(
+        "context_embedding",
+        shard.context_embeddings.len(),
+        shard.context_embeddings.values().cloned(),
+        &segment_page_counts,
+        None,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_summary",
+        &shard.context_summaries,
+        &segment_page_counts,
+    ));
+    reports.push(compaction_timestamped_layout(
+        "context_compression",
+        &shard.context_compressions,
+        &segment_page_counts,
+    ));
+    reports.retain(|report| report.object_count > 0 || report.index_refs > 0);
+    reports
+}
+
+fn compaction_timestamped_layout(
+    kind: &str,
+    timelines: &HashMap<String, BTreeMap<u64, PageAddress>>,
+    segment_page_counts: &BTreeMap<u64, u64>,
+) -> ShardCompactionModelLayoutReport {
+    let mut ref_counts = HashMap::<PageAddress, usize>::new();
+    for address in timelines
+        .values()
+        .flat_map(|series| series.values().cloned())
+    {
+        *ref_counts.entry(address).or_default() += 1;
+    }
+    let packed_pages = ref_counts.values().filter(|count| **count > 1).count();
+    compaction_layout_from_addresses(
+        kind,
+        timelines.len(),
+        ref_counts.keys().cloned(),
+        segment_page_counts,
+        Some(packed_pages),
+    )
+    .with_index_refs(ref_counts.values().sum())
+}
+
+fn compaction_layout_from_addresses(
+    kind: &str,
+    object_count: usize,
+    addresses: impl IntoIterator<Item = PageAddress>,
+    segment_page_counts: &BTreeMap<u64, u64>,
+    packed_pages: Option<usize>,
+) -> ShardCompactionModelLayoutReport {
+    let addresses = addresses.into_iter().collect::<Vec<_>>();
+    let unique_addresses = addresses
+        .iter()
+        .cloned()
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let live_segment_ids = unique_addresses
+        .iter()
+        .map(|address| address.page_segment_id)
+        .collect::<BTreeSet<_>>();
+    let total_pages_in_live_segments = live_segment_ids
+        .iter()
+        .map(|segment_id| {
+            segment_page_counts
+                .get(segment_id)
+                .copied()
+                .unwrap_or_default()
+        })
+        .sum::<u64>();
+    let unique_page_refs = unique_addresses.len();
+    let packed_timestamped_pages = packed_pages.unwrap_or_default();
+    let live_ref_density_basis_points = if total_pages_in_live_segments == 0 {
+        0
+    } else {
+        (unique_page_refs as u64).saturating_mul(10_000) / total_pages_in_live_segments
+    };
+    ShardCompactionModelLayoutReport {
+        kind: kind.to_string(),
+        object_count,
+        index_refs: addresses.len(),
+        unique_page_refs,
+        packed_timestamped_pages,
+        legacy_value_pages: unique_page_refs.saturating_sub(packed_timestamped_pages),
+        stale_page_estimate: total_pages_in_live_segments.saturating_sub(unique_page_refs as u64),
+        live_ref_density_basis_points,
+    }
+}
+
+trait CompactionLayoutIndexRefs {
+    fn with_index_refs(self, index_refs: usize) -> Self;
+}
+
+impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
+    fn with_index_refs(mut self, index_refs: usize) -> Self {
+        self.index_refs = index_refs;
+        self
+    }
 }
 
 fn compact_page_addresses<'a>(

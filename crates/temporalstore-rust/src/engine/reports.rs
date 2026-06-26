@@ -18,11 +18,31 @@ pub struct ShardCompactionReport {
     pub object_page_pack_group_count: usize,
     pub stale_page_segment_ids: Vec<u64>,
     #[serde(default)]
+    pub rewritten_object_pages: usize,
+    #[serde(default)]
+    pub tombstoned_object_ids_before: u64,
+    #[serde(default)]
+    pub tombstoned_object_ids_after: u64,
+    #[serde(default)]
+    pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
+    #[serde(default)]
     pub before: ShardCompactionUtilityReport,
     #[serde(default)]
     pub after: ShardCompactionUtilityReport,
     #[serde(default)]
     pub model_rewrite_policies: Vec<ModelCompactionRewriteReport>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardCompactionModelLayoutReport {
+    pub kind: String,
+    pub object_count: usize,
+    pub index_refs: usize,
+    pub unique_page_refs: usize,
+    pub packed_timestamped_pages: usize,
+    pub legacy_value_pages: usize,
+    pub stale_page_estimate: u64,
+    pub live_ref_density_basis_points: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

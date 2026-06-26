@@ -1115,6 +1115,137 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
 }
 
 #[test]
+// shared-corpus: storage_dump_load_recovery storage_cache_refill;
+fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    for command in [
+        Command::StringSet {
+            key: "compact-string".to_string(),
+            value: b"old".to_vec(),
+        },
+        Command::StringSet {
+            key: "compact-string".to_string(),
+            value: b"new".to_vec(),
+        },
+        Command::HashSet {
+            key: "compact-hash".to_string(),
+            field: "field".to_string(),
+            value: b"hash-value".to_vec(),
+        },
+        Command::SetAdd {
+            key: "compact-set".to_string(),
+            member: b"member".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "compact-feature".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"ten".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"twenty".to_vec(),
+                },
+            ],
+        },
+        Command::IpsLoad {
+            key: "compact-ips-layout".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 30,
+                    value: b"thirty".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 40,
+                    value: b"forty".to_vec(),
+                },
+            ],
+        },
+        Command::ContextWriteEvent {
+            tenant_hash: 7,
+            node_hash: 9,
+            event: ContextEvent {
+                event_id_hash: 50,
+                event_time_ms: 50,
+                ingestion_time_ms: 50,
+                kind: 0,
+                event_type: 1,
+                actor_hash: 0,
+                status: 0,
+                valid_until_ms: 0,
+                confidence: 1.0,
+                importance: 0.5,
+                text: "context event".to_string(),
+                source_ref: String::new(),
+                related_node_hashes: Vec::new(),
+                compact_attrs: Vec::new(),
+            },
+            first_write_only: false,
+        },
+        Command::CommonDelete {
+            key: "compact-set".to_string(),
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+
+    let before = engine.storage_recovery_report(1);
+    assert!(before.object_lifecycle.tombstoned_object_ids >= 1);
+    assert!(before.object_lifecycle.stale_object_ids >= 1);
+
+    let report = engine.compact_shard_pages(1).unwrap();
+    assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
+    assert!(report.rewritten_object_pages >= 5);
+    assert!(report.before.stale_page_estimate >= 1);
+    assert_eq!(report.after.stale_page_estimate, 0);
+    assert!(
+        report.before.live_ref_density_basis_points < report.after.live_ref_density_basis_points
+    );
+    assert_eq!(
+        report.tombstoned_object_ids_before,
+        report.tombstoned_object_ids_after
+    );
+    assert!(report.tombstoned_object_ids_after >= 1);
+
+    let layout = |kind: &str| {
+        report
+            .model_layouts
+            .iter()
+            .find(|layout| layout.kind == kind)
+            .unwrap_or_else(|| panic!("missing layout for {kind}: {:?}", report.model_layouts))
+    };
+    assert_eq!(layout("string").unique_page_refs, 1);
+    assert_eq!(layout("hash").unique_page_refs, 1);
+    assert_eq!(layout("feature").index_refs, 2);
+    assert_eq!(layout("feature").unique_page_refs, 1);
+    assert_eq!(layout("feature").packed_timestamped_pages, 1);
+    assert_eq!(layout("ips").index_refs, 2);
+    assert_eq!(layout("ips").unique_page_refs, 1);
+    assert_eq!(layout("context_event").index_refs, 1);
+
+    let after = engine.storage_recovery_report(1);
+    assert_eq!(after.object_lifecycle.owner_mismatch_page_refs, 0);
+    assert_eq!(after.object_lifecycle.missing_owner_page_refs, 0);
+    assert_eq!(after.object_lifecycle.reused_object_id_conflicts, 0);
+    assert_eq!(
+        after.object_lifecycle.live_page_refs,
+        report.after.live_page_refs
+    );
+    assert!(after
+        .object_lifecycle
+        .tombstoned_object_keys
+        .iter()
+        .any(|key| key == "compact-set"));
+}
+
+#[test]
 fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
