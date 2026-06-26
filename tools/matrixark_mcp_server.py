@@ -358,12 +358,15 @@ class MatrixArkLocalAdapter:
                 pass
 
     def append(self, record: Json) -> None:
-        if self._queue_batched_records([record]):
+        records = materialize_serving_records(record)
+        if self._queue_batched_records(records):
             return
         with self.event_log.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, sort_keys=True) + "\n")
+            for item in records:
+                handle.write(json.dumps(item, sort_keys=True) + "\n")
 
     def append_many(self, records: list[Json]) -> None:
+        records = materialize_serving_record_batch(records)
         if not records:
             return
         if self._queue_batched_records(records):
@@ -443,7 +446,7 @@ class MatrixArkLocalAdapter:
                 dropped_type += 1
                 continue
             if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
-                if not scope_matches(record.get("scope", {}), scope):
+                if not scope_matches(candidate_access_scope(record), scope):
                     dropped_scope += 1
                     continue
             elif not access_scope_matches_before_scoring(record, scope):
@@ -484,15 +487,31 @@ class MatrixArkLocalAdapter:
                         committed.add(int(ref))
                     except (TypeError, ValueError):
                         continue
-        events: list[Json] = []
+        pending_ids: list[int] = []
         for record in records:
-            if record.get("record_type") == "context_event" and session_buffer_key(record.get("envelope", {})) == key:
-                try:
-                    event_hash = int(record.get("event_id_hash"))
-                except (TypeError, ValueError):
-                    continue
-                if event_hash not in committed:
-                    events.append(record)
+            if record.get("record_type") != "session_buffer_event" or tuple(record.get("buffer_key", [])) != key:
+                continue
+            try:
+                event_hash = int(record.get("event_id_hash"))
+            except (TypeError, ValueError):
+                continue
+            if event_hash not in committed:
+                pending_ids.append(event_hash)
+        event_by_id: dict[int, Json] = {}
+        fallback_events: list[Json] = []
+        for record in records:
+            if record.get("record_type") != "context_event":
+                continue
+            try:
+                event_hash = int(record.get("event_id_hash"))
+            except (TypeError, ValueError):
+                continue
+            event_by_id[event_hash] = record
+            if not pending_ids and session_buffer_key(record.get("envelope", {})) == key and event_hash not in committed:
+                fallback_events.append(record)
+        events = [event_by_id[event_hash] for event_hash in pending_ids if event_hash in event_by_id]
+        if not events:
+            events = fallback_events
         if limit is not None:
             return events[:limit]
         return events
@@ -808,7 +827,7 @@ class MatrixArkLocalAdapter:
         for record in records:
             if record.get("record_type") != "context_summary_dirty":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not scope_matches(candidate_access_scope(record), scope):
                 continue
             try:
                 dirty_hash = int(record.get("dirty_hash"))
@@ -988,7 +1007,7 @@ class MatrixArkLocalAdapter:
         return controls
 
     def _dashboard_record_scope(self, record: Json) -> Json:
-        scope = record.get("scope", record.get("envelope", {}).get("scope", {}))
+        scope = candidate_access_scope(record)
         access_scope = candidate_access_scope(record)
         if isinstance(scope, dict) and isinstance(access_scope, dict):
             merged = {**scope, **access_scope}
@@ -1177,7 +1196,7 @@ class MatrixArkLocalAdapter:
         for record in reversed(self.read_all()):
             if record.get("record_type") != "resource_manifest":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not scope_matches(candidate_access_scope(record), scope):
                 continue
             if resource_type_filter and record.get("resource_type") != resource_type_filter:
                 continue
@@ -1229,7 +1248,7 @@ class MatrixArkLocalAdapter:
         for record in reversed(self.read_all()):
             if record.get("record_type") != "skill_manifest":
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not scope_matches(candidate_access_scope(record), scope):
                 continue
             skill_hash = int(record.get("skill_hash") or 0)
             if skill_hash in skills:
@@ -2154,7 +2173,7 @@ class MatrixArkLocalAdapter:
                         context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
                     ]
-                    + metadata_index_terms(chunk_metadata)
+                    + metadata_index_terms(chunk.metadata)
                     + (
                         [context_index_name("skill_name", parsed_skill.name)]
                         + [context_index_name("skill_trigger", trigger) for trigger in parsed_skill.metadata.get("triggers", [])]
@@ -2283,7 +2302,7 @@ class MatrixArkLocalAdapter:
                         context_index_name("entity_type", fact_entity_type),
                         context_index_name("entity_type", "resource_fact"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
-                    ] + metadata_index_terms(chunk_metadata)
+                    ] + metadata_index_terms(chunk.metadata)
                     index_candidate_count += len([term for term in raw_fact_index_terms if term])
                     fact_index_terms = limited_index_terms(raw_fact_index_terms, limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT)
                     index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_fact_index_terms if term])) - len(fact_index_terms))
@@ -2983,7 +3002,7 @@ class MatrixArkLocalAdapter:
                 continue
             if node_hashes and int(record.get("node_hash") or 0) not in node_hashes:
                 continue
-            if not scope_matches(record.get("scope", {}), scope):
+            if not scope_matches(candidate_access_scope(record), scope):
                 continue
             if int(record.get("source_end_ms") or 0) >= start_time_ms and int(record.get("source_start_ms") or 0) <= end_time_ms:
                 matches.append(record)
@@ -3008,7 +3027,7 @@ class MatrixArkLocalAdapter:
         remote_budget = max(0, max_context_tokens - int(local_budget.get("token_estimate", 0)))
         for record in reversed(records):
             record_type = record.get("record_type")
-            record_scope = record.get("scope", record.get("envelope", {}).get("scope", {}))
+            record_scope = candidate_access_scope(record)
             if record_type not in {"context_summary", "context_entity", "context_event", "context_segment"}:
                 continue
             if not scope_matches(record_scope, scope):
@@ -3238,7 +3257,7 @@ class MatrixArkLocalAdapter:
         node_summary_text_by_hash: dict[int, str] = {}
         for record in records:
             record_type = record.get("record_type")
-            if record_type == "context_index" and scope_matches(record.get("scope", {}), scope):
+            if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
                 index_name = str(record.get("index_name", ""))
                 if index_name:
                     index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
@@ -3247,7 +3266,7 @@ class MatrixArkLocalAdapter:
                         index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                     else:
                         index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
-            if record_type == "context_summary" and scope_matches(record.get("scope", {}), scope):
+            if record_type == "context_summary" and scope_matches(candidate_access_scope(record), scope):
                 summary_type = str(record.get("summary_type", ""))
                 if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
                     try:
@@ -3260,7 +3279,7 @@ class MatrixArkLocalAdapter:
                         node_summary_text_by_hash[node_hash_for_summary] = summary_text
         for record in records:
             record_type = record.get("record_type")
-            if record_type == "context_embedding" and not scope_matches(record.get("scope", {}), scope):
+            if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
                 continue
             if record_type == "context_embedding" and record.get("embedding_type") in {"node_l0", "node_l1"}:
                 dense_score = cosine(query_embedding, record.get("vector", []))
@@ -3419,8 +3438,8 @@ class MatrixArkLocalAdapter:
         for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_event":
                 continue
-            envelope = record.get("envelope", {})
-            record_scope = envelope.get("scope", {})
+            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
+            record_scope = candidate_access_scope(record)
             if not access_scope_matches_before_scoring(record, scope):
                 continue
             if not selected_by_tree(record):
@@ -3438,8 +3457,8 @@ class MatrixArkLocalAdapter:
             embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-            extraction = record.get("internal_extraction", {})
-            event_type = str(extraction.get("event_type") or extraction.get("classification") or "")
+            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else {}
+            event_type = str(record.get("event_type") or extraction.get("event_type") or record.get("classification") or extraction.get("classification") or "")
             candidate = {
                 "ref_type": "event",
                 "ref_hash": record["event_id_hash"],
@@ -3462,7 +3481,7 @@ class MatrixArkLocalAdapter:
                 "source_ref": record.get("source_ref", ""),
                 "metadata": envelope.get("metadata", {}),
                 "scope": record_scope,
-                "updated_at_ms": envelope.get("ingestion_time_ms", now_ms()),
+                "updated_at_ms": record.get("updated_at_ms") or envelope.get("ingestion_time_ms", now_ms()),
                 "text": clip_context_text(text),
             }
             if origin_score > 0:
@@ -4275,11 +4294,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
-        if self._queue_batched_records([record]):
+        records = materialize_serving_records(record)
+        if self._queue_batched_records(records):
             return
-        self.append_many([record])
+        self._append_many_materialized(records)
 
     def append_many(self, records: list[Json]) -> None:
+        records = materialize_serving_record_batch(records)
+        self._append_many_materialized(records)
+
+    def _append_many_materialized(self, records: list[Json]) -> None:
         if not records:
             return
         if self._queue_batched_records(records):
