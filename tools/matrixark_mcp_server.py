@@ -6890,13 +6890,23 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 self._audit_buffer = self._audit_buffer[-max_pending:]
                 _mcp_debug_log(f"matrixark audit buffer dropped {dropped} oldest records after flush lag")
 
-    def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
+    def ensure_backend_ready(
+        self,
+        *,
+        reason: str = "matrixark",
+        probe: bool = True,
+        timeout_ms: int | None = None,
+    ) -> Json:
         with self._backend_readiness_lock:
             if self._backend_ready and self._backend_ready_result is not None:
-                return dict(self._backend_ready_result)
-            result = self._run_backend_readiness_gate(reason=reason)
-            self._backend_ready = True
-            self._backend_ready_result = dict(result)
+                cached = dict(self._backend_ready_result)
+                cached["cached"] = True
+                cached["reason"] = reason
+                return cached
+            result = self._run_backend_readiness_gate(reason=reason, probe=probe, timeout_ms=timeout_ms)
+            if result.get("status") == "ready":
+                self._backend_ready = True
+                self._backend_ready_result = dict(result)
             return result
 
     def _backend_metaserver(self) -> str:
@@ -6905,52 +6915,127 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-direct"
 
-    def _run_backend_readiness_gate(self, *, reason: str) -> Json:
-        timeout_s = max(0.1, BACKEND_READINESS_TIMEOUT_MS / 1000.0)
+    def _readiness_failure_result(
+        self,
+        *,
+        reason: str,
+        probe: bool,
+        attempts: int,
+        attempt_log: list[Json],
+        error: str,
+        checks: Json,
+        metaserver: str,
+        warmup_key: str,
+        warmup_field: str,
+    ) -> Json:
+        return {
+            "status": "topology_not_ready",
+            "backend": self._backend_label(),
+            "reason": reason,
+            "probe": bool(probe),
+            "attempts": attempts,
+            "attempt_log": attempt_log,
+            "error": error,
+            "topology": {
+                "metaserver": metaserver,
+                "namespace": self._namespace,
+                "table": self._table,
+                "storage_prefix": self._storage_prefix,
+                "warmup_key": warmup_key,
+                "warmup_field": warmup_field,
+            },
+            "checks": checks,
+        }
+
+    def _run_backend_readiness_gate(
+        self,
+        *,
+        reason: str,
+        probe: bool = True,
+        timeout_ms: int | None = None,
+    ) -> Json:
+        timeout = max(1, int(timeout_ms or BACKEND_READINESS_TIMEOUT_MS))
+        timeout_s = max(0.1, timeout / 1000.0)
         backoff_s = max(0.01, BACKEND_READINESS_BACKOFF_MS / 1000.0)
         deadline = time.monotonic() + timeout_s
         attempts = 0
-        last_error = ""
         metaserver = self._backend_metaserver()
         key = f"{self._storage_prefix}:readiness"
         field = f"{os.getpid()}:{int(time.time() * 1000)}:{stable_hash(reason)}"
         value = json.dumps({"reason": reason, "pid": os.getpid(), "created_at_ms": now_ms()}, sort_keys=True, separators=(",", ":"))
+        attempt_log: list[Json] = []
         while True:
             attempts += 1
+            checks: Json = {
+                "mcp_process_started": True,
+                "metaserver_reachable": {"ok": False, "address": metaserver, "error": "not checked"},
+                "namespace_table_opened": False,
+                "slot_coverage_verified_by_warmup_hset_hget": False,
+            }
             if metaserver:
-                ok, message = metaserver_reachable(metaserver)
-                if not ok:
-                    last_error = f"metaserver unreachable: {message}"
+                meta_check = metaserver_reachable(metaserver)
+                checks["metaserver_reachable"] = meta_check
+                if not bool(meta_check.get("ok")):
+                    last_error = f"metaserver unreachable: {meta_check.get('error', 'unknown')}"
+                    attempt_log.append({"attempt": attempts, "ok": False, "retryable": True, "error": last_error, "checks": checks})
                     if time.monotonic() >= deadline:
-                        raise MatrixArkError(f"TemporalStore backend readiness failed after {attempts} attempt(s): {last_error}")
+                        return self._readiness_failure_result(
+                            reason=reason,
+                            probe=probe,
+                            attempts=attempts,
+                            attempt_log=attempt_log,
+                            error=last_error,
+                            checks=checks,
+                            metaserver=metaserver,
+                            warmup_key=key,
+                            warmup_field=field,
+                        )
                     time.sleep(min(backoff_s * attempts, 2.0))
                     continue
             try:
-                self._client.hset(key, field, value)
-                readback = self._client.hget(key, field)
-                if readback != value:
-                    raise MatrixArkError("readiness hget readback mismatch")
+                checks["namespace_table_opened"] = True
+                if probe:
+                    self._client.hset(key, field, value)
+                    readback = self._client.hget(key, field)
+                    if readback != value:
+                        raise MatrixArkError("readiness hget readback mismatch")
+                    checks["slot_coverage_verified_by_warmup_hset_hget"] = True
                 return {
                     "status": "ready",
                     "backend": self._backend_label(),
                     "reason": reason,
+                    "probe": bool(probe),
                     "metaserver": metaserver,
                     "storage_prefix": self._storage_prefix,
                     "warmup_key": key,
                     "attempts": attempts,
-                    "checks": {
-                        "mcp_process_started": True,
-                        "metaserver_reachable": bool(metaserver),
-                        "namespace_table_opened": True,
-                        "slot_coverage_verified_by_warmup_hset_hget": True,
+                    "attempt_log": attempt_log,
+                    "topology": {
+                        "metaserver": metaserver,
+                        "namespace": self._namespace,
+                        "table": self._table,
+                        "storage_prefix": self._storage_prefix,
+                        "warmup_key": key,
+                        "warmup_field": field,
                     },
+                    "checks": checks,
                 }
             except Exception as exc:
                 last_error = str(exc)
-                if time.monotonic() >= deadline or not is_retryable_temporalstore_error(exc):
-                    raise MatrixArkError(
-                        f"TemporalStore backend readiness failed after {attempts} attempt(s): {last_error}"
-                    ) from exc
+                retryable = is_retryable_temporalstore_error(exc)
+                attempt_log.append({"attempt": attempts, "ok": False, "retryable": retryable, "error": last_error, "checks": checks})
+                if time.monotonic() >= deadline or not retryable:
+                    return self._readiness_failure_result(
+                        reason=reason,
+                        probe=probe,
+                        attempts=attempts,
+                        attempt_log=attempt_log,
+                        error=last_error,
+                        checks=checks,
+                        metaserver=metaserver,
+                        warmup_key=key,
+                        warmup_field=field,
+                    )
                 time.sleep(min(backoff_s * attempts, 2.0))
 
     def _hset_with_backoff(self, key: str, field: str, value: str) -> None:
