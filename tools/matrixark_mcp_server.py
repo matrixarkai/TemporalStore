@@ -364,6 +364,29 @@ class MatrixArkLocalAdapter:
     def flush_audits(self) -> None:
         return
 
+    def find_idempotency_record(self, key_hash: int) -> Json | None:
+        for record in reversed(self.read_all()):
+            if record.get("record_type") == "matrixark_idempotency" and record.get("key_hash") == key_hash:
+                return record
+        return None
+
+    def append_idempotency_record(self, *, key_hash: int, tool_name: str, raw_key: str, identity: Json, response: Json) -> None:
+        self.append(
+            {
+                "record_type": "matrixark_idempotency",
+                "key_hash": key_hash,
+                "tool_name": tool_name,
+                "raw_key_hash": stable_hash(raw_key),
+                "scope_key": identity.get("scope_key", ""),
+                "account_id": identity.get("account_id", ""),
+                "tenant_id": identity.get("tenant_id", ""),
+                "user_id": identity.get("user_id", ""),
+                "session_id": identity.get("session_id", ""),
+                "response": response,
+                "created_at_ms": now_ms(),
+            }
+        )
+
     def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
         return {"status": "ready", "backend": "local", "reason": reason}
 
@@ -1407,6 +1430,94 @@ class MatrixArkLocalAdapter:
                 },
                 hook=hook,
             )
+        lightweight_async_accept = envelope["kind"] in {"message", "business_data", "feedback"} and (
+            bool(args.get("async_processing", False)) or args.get("wait") is False
+        )
+        if lightweight_async_accept:
+            text = text_from_messages(envelope["messages"])
+            event_id_hash = stable_hash(
+                f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
+            )
+            node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
+            node_path = normalized_node_path(envelope, node_hint)
+            node_hash = stable_hash("/".join(node_path))
+            node_materialization = self.ensure_context_node_path(
+                node_path=node_path,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+            )
+            with self.write_batch("message_ingest_sync_accept"):
+                summary_dirty_hashes = self.mark_node_summary_dirty(
+                    node_path=node_path,
+                    scope=envelope["scope"],
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                    source_ref_type="event",
+                    source_hash_field="source_event_hash",
+                    source_hash=event_id_hash,
+                    dirty_reason="new_event",
+                )
+                self.append(
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "text": text,
+                        "summary_text": summarize_text(text),
+                        "envelope": envelope,
+                        "internal_extraction": {
+                            "mode": "async_pending",
+                            "classification": "PENDING_ASYNC_EXTRACTION",
+                            "event_type": "pending_async",
+                            "status": "pending",
+                        },
+                        "agent_hook": hook,
+                        "storage_options": envelope.get("storage_options", {}),
+                        "async_processing": True,
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+                self.append(
+                    {
+                        "record_type": "matrixark_async_pipeline_task",
+                        "task_hash": stable_hash(f"async_pipeline:{event_id_hash}"),
+                        "event_id_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "status": "pending",
+                        "stages": ["extraction", "summary", "compression", "embedding"],
+                        "reason": "sync_accept_async_processing",
+                        "created_at_ms": envelope["ingestion_time_ms"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+            pending_event_count = len(self.pending_session_events(envelope["scope"]))
+            return {
+                "status": "accepted",
+                "sync_write_mode": "lightweight_event",
+                "async_processing": True,
+                "async_pipeline_status": "pending",
+                "event_id_hash": event_id_hash,
+                "node_hash": node_hash,
+                "hook_captured": hook is not None,
+                "extraction_mode": "async_pending",
+                "summary_refresh": {
+                    "status": "dirty_marked",
+                    "dirty_hashes": summary_dirty_hashes,
+                    "async_required": True,
+                },
+                "node_materialization": node_materialization,
+                "session_buffer": {
+                    "buffer_key": list(session_buffer_key(envelope)),
+                    "pending_event_count": pending_event_count,
+                    "threshold_messages": args.get("session_buffer_threshold", 20),
+                    "auto_batch_extract": bool(args.get("auto_batch_extract", False)),
+                },
+                "idle_commit_result": idle_commit_result,
+                "quality_warnings": ["async_processing_pending:extraction,summary,compression,embedding"],
+            }
         prior_records = [] if args.get("skip_prior_context") else self.read_all()
         prior_context = (
             {"level": "", "refs": [], "messages": [], "summaries": [], "char_count": 0, "limit": MAX_PRIOR_MESSAGES}
@@ -5008,6 +5119,25 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
 
 class MatrixArkMcpServer:
+    IDEMPOTENT_WRITE_TOOLS = {
+        "matrixark_ingest",
+        "matrixark_batch_extract",
+        "matrixark_session_commit",
+        "matrixark_refresh_summaries",
+        "matrixark_feedback",
+        "matrixark_update_skill",
+        "matrixark_admin_create_account",
+        "matrixark_admin_update_account",
+        "matrixark_admin_create_user",
+        "matrixark_admin_update_user",
+        "matrixark_admin_create_api_key",
+        "matrixark_admin_apply_api_key",
+        "matrixark_admin_rotate_api_key",
+        "matrixark_admin_revoke_api_key",
+        "matrixark_admin_map_sso_user",
+        "matrixark_auth_signup",
+        "matrixark_auth_sso_callback",
+    }
     SERVER_NAME = "matrixark-context"
     SERVER_VERSION = "0.2.0"
     DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -5186,6 +5316,72 @@ class MatrixArkMcpServer:
             _mcp_debug_log(f"handle: internal error for method={method!r}: {exc}")
             return self.error_response(request_id, -32603, "internal MatrixArk MCP server error", data={"error_type": exc.__class__.__name__})
 
+    def _raw_idempotency_key(self, args: Json, hook: Json | None) -> str:
+        key = args.get("idempotency_key")
+        if not key and isinstance(hook, dict):
+            key = hook.get("idempotency_key")
+        if key is None:
+            return ""
+        if not isinstance(key, str) or not key.strip():
+            raise MatrixArkError("idempotency_key must be a non-empty string when supplied")
+        return key.strip()
+
+    def _idempotency_key_hash(self, name: str, raw_key: str, identity: Json) -> int:
+        scope_parts = [
+            str(identity.get("account_id") or ""),
+            str(identity.get("tenant_id") or ""),
+            str(identity.get("user_id") or ""),
+            str(identity.get("session_id") or ""),
+            str(identity.get("scope_key") or ""),
+        ]
+        return stable_hash("idempotency:" + name + ":" + ":".join(scope_parts) + ":" + raw_key)
+
+    def _idempotent_replay_response(self, name: str, args: Json, identity: Json, hook: Json | None) -> Json | None:
+        if name not in self.IDEMPOTENT_WRITE_TOOLS:
+            return None
+        raw_key = self._raw_idempotency_key(args, hook)
+        if not raw_key:
+            return None
+        key_hash = self._idempotency_key_hash(name, raw_key, identity)
+        record = self.adapter.find_idempotency_record(key_hash)
+        if not record:
+            return None
+        response = dict(record.get("response") or {})
+        response["idempotent_replay"] = True
+        response["idempotency_key_hash"] = key_hash
+        response["access"] = args.get("_matrixark_auth", {})
+        self.access.append_audit(
+            "idempotency.replay",
+            identity,
+            status="ok",
+            details={"tool_name": name, "idempotency_key_hash": key_hash},
+        )
+        return response
+
+    def _finalize_write_response(self, name: str, args: Json, identity: Json, hook: Json | None, response: Json) -> Json:
+        if name not in self.IDEMPOTENT_WRITE_TOOLS:
+            return response
+        raw_key = self._raw_idempotency_key(args, hook)
+        if not raw_key:
+            return response
+        key_hash = self._idempotency_key_hash(name, raw_key, identity)
+        if not self.adapter.find_idempotency_record(key_hash):
+            stored_response = {key: value for key, value in response.items() if key != "access"}
+            for secret_key in ("api_key", "new_api_key", "raw_key", "secret"):
+                if secret_key in stored_response:
+                    stored_response.pop(secret_key, None)
+                    stored_response[f"{secret_key}_redacted"] = True
+            self.adapter.append_idempotency_record(
+                key_hash=key_hash,
+                tool_name=name,
+                raw_key=raw_key,
+                identity=identity,
+                response=stored_response,
+            )
+        response["idempotent_replay"] = False
+        response["idempotency_key_hash"] = key_hash
+        return response
+
     def _request_deadline_ms(self, name: str, args: Json) -> int:
         raw_value = args.get("request_deadline_ms", args.get("timeout_ms", self.DEFAULT_REQUEST_DEADLINES_MS.get(name, 0)))
         try:
@@ -5229,6 +5425,9 @@ class MatrixArkMcpServer:
         request_deadline_ms = self._request_deadline_ms(name, args)
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
+        idempotent_replay = self._idempotent_replay_response(name, args, identity, hook)
+        if idempotent_replay is not None:
+            return idempotent_replay
         if name == "matrixark_backend_ready":
             started_perf = time.perf_counter()
             try:
@@ -5279,7 +5478,8 @@ class MatrixArkMcpServer:
             self._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
             self.metrics.observe_ingest_result(result)
             self.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
-            return {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
+            response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_batch_extract":
             started_perf = time.perf_counter()
             try:
@@ -5289,11 +5489,13 @@ class MatrixArkMcpServer:
                 raise
             self.metrics.observe_operation("batch_extract", "ok", (time.perf_counter() - started_perf) * 1000.0)
             self.access.append_audit("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")})
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_session_commit":
             result = self.adapter.session_commit(args, hook=hook)
             self.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_refresh_summaries":
             started_perf = time.perf_counter()
             try:
@@ -5303,7 +5505,8 @@ class MatrixArkMcpServer:
                 raise
             self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
             self.access.append_audit("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")})
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_retrieve":
             started_perf = time.perf_counter()
             effective_retrieve_deadline_ms = int(args.get("deadline_ms") or request_deadline_ms or 0)
@@ -5344,13 +5547,15 @@ class MatrixArkMcpServer:
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_auth_signup":
             result = self.access.signup(args, identity)
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_auth_sso_login":
             result = self.access.sso_login(args, identity)
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_auth_sso_callback":
             result = self.access.sso_callback(args, identity)
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_management_portal":
             result = self.access.management_portal(args, identity)
             self.access.append_audit("admin.management_portal", identity, status="ok", details={"account_id": result.get("account_id"), "tenant_id": result.get("tenant_id")})
@@ -5366,7 +5571,8 @@ class MatrixArkMcpServer:
         if name == "matrixark_update_skill":
             result = self.adapter.update_skill(args)
             self.access.append_audit("skill.update", identity, status="ok", details={"skill_hash": result.get("skill_hash"), "skill_status": result.get("status")})
-            return {**result, "access": args.get("_matrixark_auth", {})}
+            response = {**result, "access": args.get("_matrixark_auth", {})}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_feedback":
             started_perf = time.perf_counter()
             try:
@@ -5378,7 +5584,8 @@ class MatrixArkMcpServer:
             self.metrics.observe_operation("feedback", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
             self._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
             self.access.append_audit("context.feedback", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
-            return {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
+            response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_replay":
             started_perf = time.perf_counter()
             try:
@@ -5392,29 +5599,38 @@ class MatrixArkMcpServer:
             self.access.append_audit("context.replay", identity, status="ok", details={"context_pack_id": args.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
             return {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
         if name == "matrixark_admin_create_account":
-            return self.access.create_account(args, identity)
+            response = self.access.create_account(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_update_account":
-            return self.access.update_account(args, identity)
+            response = self.access.update_account(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_list_accounts":
             return self.access.list_accounts(args, identity)
         if name == "matrixark_admin_create_user":
-            return self.access.create_user(args, identity)
+            response = self.access.create_user(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_update_user":
-            return self.access.update_user(args, identity)
+            response = self.access.update_user(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_list_users":
             return self.access.list_users(args, identity)
         if name == "matrixark_admin_create_api_key":
-            return self.access.create_api_key(args, identity)
+            response = self.access.create_api_key(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_apply_api_key":
-            return self.access.apply_api_key(args, identity)
+            response = self.access.apply_api_key(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_list_api_keys":
             return self.access.list_api_keys(args, identity)
         if name == "matrixark_admin_rotate_api_key":
-            return self.access.rotate_api_key(args, identity)
+            response = self.access.rotate_api_key(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_revoke_api_key":
-            return self.access.revoke_api_key(args, identity)
+            response = self.access.revoke_api_key(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_map_sso_user":
-            return self.access.map_sso_user(args, identity)
+            response = self.access.map_sso_user(args, identity)
+            return self._finalize_write_response(name, args, identity, hook, response)
         if name == "matrixark_admin_audit":
             return self.access.audit(args, identity)
         raise MatrixArkError(f"unsupported tool {name!r}")

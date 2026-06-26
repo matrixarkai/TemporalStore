@@ -132,8 +132,14 @@ API_KEY_SCHEMA: Json = {
     "description": "Optional MatrixArk API key. Required when access mode is enforced; dev mode allows omitted keys for local testing.",
 }
 
+IDEMPOTENCY_KEY_SCHEMA: Json = {
+    "type": "string",
+    "description": "Optional caller-generated idempotency key for write APIs. Retries with the same key in the same account/tenant/user/session scope return the original response instead of writing duplicates.",
+}
+
 ADMIN_ACCOUNT_PROPERTIES: Json = {
     "api_key": API_KEY_SCHEMA,
+    "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
     "account_id": {"type": "string", "description": "MatrixArk account/customer id. Generated or defaulted when omitted in dev mode."},
     "account_name": {"type": "string"},
     "tenant_id": {"type": "string", "description": "MatrixArk tenant/workspace id. Defaults to tenant_default for account creation."},
@@ -171,6 +177,12 @@ TOOLS: list[Json] = [
                 "temporalstore_raft_mode": {"type": "boolean", "description": "Convenience alias for storage_options.raft_mode."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
+                "async_processing": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "For message/business_data/feedback ingest, return after auth and lightweight ContextEvent/session-buffer write; extraction, summaries, compression, and embeddings run through async/session commit paths.",
+                },
                 "raw_uri": {"type": "string", "description": "Optional resource URI/path when kind=resource."},
                 "resource_type": {"type": "string", "description": "Optional resource type such as md, txt, pdf, url."},
                 "wait": {"type": "boolean", "default": True, "description": "For resource/skill imports, wait for parsing and record writes in the local runtime. wait=false records a queued ResourceImportTask."},
@@ -269,6 +281,7 @@ TOOLS: list[Json] = [
             "required": ["skill_hash"],
             "properties": {
                 "api_key": API_KEY_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
                 "skill_hash": {"type": "integer"},
                 "status": {"type": "string", "enum": ["active", "disabled"]},
                 "precedence": {"type": "string", "enum": ["low", "normal", "high", "critical"]},
@@ -291,6 +304,7 @@ TOOLS: list[Json] = [
                 "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
                 "threshold_messages": {
                     "type": "integer",
                     "default": 20,
@@ -327,6 +341,7 @@ TOOLS: list[Json] = [
             "properties": {
                 "scope": SCOPE_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
                 "limit": {"type": "integer", "default": 64},
                 "refreshed_at_ms": {
                     "type": "integer",
@@ -430,6 +445,7 @@ TOOLS: list[Json] = [
                 "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
                 "threshold_messages": {
                     "type": "integer",
                     "default": 20,
@@ -500,6 +516,12 @@ TOOLS: list[Json] = [
                     "description": "Optional refs the user/agent rejected from the prior ContextPack.",
                 },
                 "agent_hook": AGENT_HOOK_SCHEMA,
+                "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
+                "async_processing": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "For feedback ingest, return after lightweight feedback ContextEvent write and defer extraction/summaries/embeddings.",
+                },
             },
             "additionalProperties": True,
         },
