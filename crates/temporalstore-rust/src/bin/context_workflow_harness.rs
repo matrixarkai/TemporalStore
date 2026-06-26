@@ -12,15 +12,18 @@ use serde::Serialize;
 use serde_json::Value;
 use temporalstore_rust::{
     context_pipeline_manage_report, context_pipeline_parity_evidence,
-    context_workflow_state_report, extract_context, ingest_extract_context, inject_context,
-    retrieve_context, run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
-    Command, CommandResponse, ContextEvent, ContextExtractRequest, ContextIndexRef,
-    ContextIngestExtractRequest, ContextInjectRequest, ContextModelProviderConfig, ContextNode,
-    ContextPipelineBenchmarkRequest, ContextPipelineBenchmarkSweepProfile,
-    ContextPipelineBenchmarkSweepRequest, ContextPipelineBenchmarkThresholds,
-    ContextPipelineParityEvidence, ContextRetrieveRequest, ContextSourceKind,
-    ContextSummaryDirtyMarker, ContextTier, ExecuteRequest, RaftCluster, RaftConfig,
-    SharedStoreReplicator, SharedStoreStorageMode, TemporalEngine,
+    context_workflow_state_report, extract_context, ingest_extract_context,
+    ingest_resource_skill_context, inject_context, retrieve_context,
+    run_context_pipeline_benchmark, run_context_pipeline_benchmark_sweep,
+    validate_resource_skill_secondary_indexes, Command, CommandResponse, ContextEvent,
+    ContextExtractRequest, ContextIndexRef, ContextIngestExtractRequest, ContextInjectRequest,
+    ContextModelProviderConfig, ContextNode, ContextPipelineBenchmarkRequest,
+    ContextPipelineBenchmarkSweepProfile, ContextPipelineBenchmarkSweepRequest,
+    ContextPipelineBenchmarkThresholds, ContextPipelineParityEvidence, ContextResourceParseRequest,
+    ContextResourceSkillIngestRequest, ContextResourceSkillSecondaryIndexValidationRequest,
+    ContextRetrieveRequest, ContextSkillIngestInput, ContextSourceKind, ContextSummaryDirtyMarker,
+    ContextTier, ExecuteRequest, RaftCluster, RaftConfig, SharedStoreReplicator,
+    SharedStoreStorageMode, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -49,6 +52,7 @@ struct ContextWorkflowHarnessSummary {
     management_ready: bool,
     ingest_extract_ready: bool,
     retrieve_pipeline_ready: bool,
+    resource_skill_scale: ResourceSkillConversationScaleSummary,
     ingest_extract_accepted: usize,
     ingest_extract_failed: usize,
     ingest_extract_source_count: usize,
@@ -145,6 +149,51 @@ struct ContextWorkflowHarnessSummary {
     external_benchmark_retrieved_source_sets: usize,
     external_benchmark_total_retrieved_blocks: usize,
     parity_evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ResourceSkillConversationScaleSummary {
+    ready: bool,
+    resource_count: usize,
+    skill_count: usize,
+    conversation_source_count: usize,
+    total_source_count: usize,
+    accepted_sources: usize,
+    failed_sources: usize,
+    retrieved_block_count: usize,
+    retrieved_event_count: usize,
+    selected_skill_count: usize,
+    resource_lifecycle_watched_count: usize,
+    skill_registry_enabled_count: usize,
+    skill_registry_disabled_count: usize,
+    embedding_ref_count: usize,
+    embedding_requested_vectors: usize,
+    embedding_generated_vectors: usize,
+    embedding_live_call_count: usize,
+    embedding_mock_generation_count: usize,
+    embedding_production_evidence_ready: bool,
+    fanout_node_count: usize,
+    fanout_event_count: usize,
+    fanout_segment_count: usize,
+    fanout_entity_count: usize,
+    fanout_child_ref_count: usize,
+    fanout_embedding_count: usize,
+    fanout_summary_count: usize,
+    fanout_compression_count: usize,
+    fanout_dirty_marker_count: usize,
+    fanout_secondary_index_count: usize,
+    fanout_ready: bool,
+    secondary_index_ready: bool,
+    secondary_index_checked_refs: usize,
+    secondary_index_found_refs: usize,
+    secondary_index_missing_refs: usize,
+    summary_embedding_candidate_count: usize,
+    summary_embedding_selected_count: usize,
+    verbose_filter_group_count: usize,
+    selected_ref_count: usize,
+    ingest_ms: u128,
+    retrieve_ms: u128,
+    secondary_index_validation_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -527,7 +576,7 @@ fn main() {
                 },
             ],
             provider: ContextModelProviderConfig::default(),
-            thresholds: ContextPipelineBenchmarkThresholds::default(),
+            thresholds: local_context_harness_sweep_thresholds(),
         },
     );
     let benchmark_sweep_ready = benchmark_sweep.status.ok
@@ -547,6 +596,7 @@ fn main() {
         && benchmark_sweep.all_thresholds_passed
         && benchmark_sweep.threshold_violations.is_empty();
     let external_benchmark = run_external_context_benchmark(&engine);
+    let resource_skill_scale = run_resource_skill_conversation_scale(&engine);
     let external_benchmark_report_only =
         std::env::var("TEMPORALSTORE_CONTEXT_BENCHMARK_REPORT_ONLY")
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
@@ -560,12 +610,13 @@ fn main() {
         && management_ready
         && ingest_extract_ready
         && retrieve_pipeline_ready
+        && resource_skill_scale.ready
         && benchmark_ready
         && benchmark_sweep_ready
         && (external_benchmark.ready || external_benchmark_report_only);
     assert!(
         context_pipeline_ready,
-        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={} sweep_status={} sweep_message={} sweep_min_hit_at_k={} sweep_min_mrr={} sweep_min_evidence_retention={} sweep_min_token_reduction={} sweep_max_selected_tokens={} sweep_violations={:?}",
+        "context pipeline readiness failed: parity={} restart={} sync={} async={} raft={} corpus={} management={} ingest_extract={} retrieve={} resource_skill_scale={} benchmark={} sweep={} external_benchmark={} retrieve_events={} retrieve_blocks={} sweep_status={} sweep_message={} sweep_min_hit_at_k={} sweep_min_mrr={} sweep_min_evidence_retention={} sweep_min_token_reduction={} sweep_max_selected_tokens={} sweep_violations={:?}",
         parity.pipeline_ready,
         restart_replay_ready,
         shared_store_sync_ready,
@@ -575,6 +626,7 @@ fn main() {
         management_ready,
         ingest_extract_ready,
         retrieve_pipeline_ready,
+        resource_skill_scale.ready,
         benchmark_ready,
         benchmark_sweep_ready,
         external_benchmark.ready,
@@ -619,6 +671,7 @@ fn main() {
             ingest_extract_unique_nodes: ingest_extract.summary.unique_node_count,
             ingest_extract_source_kind_counts: ingest_extract.summary.source_kind_counts,
             ingest_extract_provider_counts: ingest_extract.summary.provider_counts,
+            resource_skill_scale,
             managed_routes: manage.supported_routes,
             pipeline_stage_ready_count: manage
                 .stage_reports
@@ -737,6 +790,316 @@ fn main() {
         })
         .expect("context workflow summary should serialize")
     );
+}
+
+fn run_resource_skill_conversation_scale(
+    engine: &TemporalEngine,
+) -> ResourceSkillConversationScaleSummary {
+    let shard_id = 1;
+    let tenant_hash = 20260625;
+    let start_time_ms = 10_000;
+    let end_time_ms = 100_000;
+    let resource_requests = vec![
+        ContextResourceParseRequest {
+            raw_uri: "viking://resources/payments/checkout-runbook.md".to_string(),
+            resource_type: Some("md".to_string()),
+            text: "# Checkout Incident Runbook\n\nPayment dependency timeouts raise checkout latency and risk score. Roll back the payment gateway canary, verify p95 latency, and notify the payments owner.\n\n## Evidence\n\nUse summary embeddings to retrieve the most recent incident context before paging support.".to_string(),
+            max_chunk_chars: 260,
+            overlap_chars: 40,
+            chunk_hash_base: Some(20_260_625),
+            owner_scope: "team:payments".to_string(),
+            version: "v1".to_string(),
+            watch_interval_minutes: 15,
+            parser_name: "context-scale-harness".to_string(),
+        },
+        ContextResourceParseRequest {
+            raw_uri: "https://docs.example.com/context/openviking-debug".to_string(),
+            resource_type: Some("url".to_string()),
+            text: "# OpenViking Query Debug\n\nResource parsing must preserve source refs, parser provenance, selected refs, filter groups, and injection ordering. Stale memory should be invalidated after refresh.".to_string(),
+            max_chunk_chars: 240,
+            overlap_chars: 32,
+            chunk_hash_base: Some(20_260_626),
+            owner_scope: "team:context".to_string(),
+            version: "v2".to_string(),
+            watch_interval_minutes: 30,
+            parser_name: "context-scale-harness".to_string(),
+        },
+        ContextResourceParseRequest {
+            raw_uri: "git://github.com/matrixarkai/TemporalStore/docs/context".to_string(),
+            resource_type: Some("git".to_string()),
+            text: "# Context Repository Notes\n\nContextEvent, ContextSegment, ContextEntity, ContextSummary, ContextEmbedding, and secondary index rows must survive restart and shared-store replay.".to_string(),
+            max_chunk_chars: 240,
+            overlap_chars: 32,
+            chunk_hash_base: Some(20_260_627),
+            owner_scope: "team:platform".to_string(),
+            version: "rev-42".to_string(),
+            watch_interval_minutes: 60,
+            parser_name: "context-scale-harness".to_string(),
+        },
+        ContextResourceParseRequest {
+            raw_uri: "viking://resources/audits/locomo-scale.pdf".to_string(),
+            resource_type: Some("pdf".to_string()),
+            text: "LOCOMO scale audit: multi-hop and temporal questions need compact evidence diversity, anchored dates, and answer synthesis without dropping token reduction below eighty percent.".to_string(),
+            max_chunk_chars: 220,
+            overlap_chars: 24,
+            chunk_hash_base: Some(20_260_628),
+            owner_scope: "team:benchmarks".to_string(),
+            version: "2026-06-25".to_string(),
+            watch_interval_minutes: 0,
+            parser_name: "context-scale-harness".to_string(),
+        },
+    ];
+    let skill_inputs = vec![
+        ContextSkillIngestInput {
+            raw_uri: "skills/payments-incident/SKILL.md".to_string(),
+            text: "---\nname: payments-incident\ndescription: Diagnose checkout latency and payment risk incidents.\nprecedence: critical\nowner_scope: team:payments\nversion: v3\nallowed_tools: [context_workflow_harness]\ntriggers: [checkout, latency, payment, rollback]\n---\n\n# Payments Incident\n\nUse this skill when checkout latency, payment dependency timeout, or risk-score escalation appears in retrieved context.\n".to_string(),
+        },
+        ContextSkillIngestInput {
+            raw_uri: "skills/context-debug/SKILL.md".to_string(),
+            text: "---\nname: context-debug\ndescription: Inspect resource parsing, summary retrieval, and injection trace ordering.\nprecedence: high\nowner_scope: team:context\nversion: v2\nallowed_tools: [context_workflow_harness]\ntriggers: [context, resource, summary, injection]\n---\n\n# Context Debug\n\nUse when validating selected refs, filter groups, embeddings, summaries, and secondary indexes.\n".to_string(),
+        },
+        ContextSkillIngestInput {
+            raw_uri: "skills/benchmark-reader/SKILL.md".to_string(),
+            text: "---\nname: benchmark-reader\ndescription: Improve LOCOMO and LongMemEval evidence selection and answer synthesis.\nprecedence: normal\nowner_scope: team:benchmarks\nversion: v1\nallowed_tools: [context_workflow_harness]\ntriggers: [locomo, longmemeval, temporal, multihop]\n---\n\n# Benchmark Reader\n\nUse for temporal ordering, list synthesis, insufficient-info detection, and multi-session aggregation.\n".to_string(),
+        },
+    ];
+
+    let ingest_started = Instant::now();
+    let resource_skill_report = ingest_resource_skill_context(
+        engine,
+        ContextResourceSkillIngestRequest {
+            shard_id,
+            tenant_hash,
+            resources: resource_requests,
+            skills: skill_inputs,
+            query: "checkout latency rollback p95 context summary injection".to_string(),
+            start_time_ms,
+            end_time_ms,
+            max_events: 24,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let ingest_ms = ingest_started.elapsed().as_millis();
+
+    let conversation_sources = (0..24)
+        .map(|index| {
+            let (title, body, kind) = match index % 6 {
+                0 => (
+                    format!("Checkout incident turn {index}"),
+                    "The checkout p95 latency moved above target after a payment dependency timeout, and the team prepared a canary rollback.",
+                    ContextSourceKind::Chat,
+                ),
+                1 => (
+                    format!("Context debug turn {index}"),
+                    "The query debug trace should show filter groups, summary embedding traversal, selected refs, and injection ordering.",
+                    ContextSourceKind::Document,
+                ),
+                2 => (
+                    format!("LOCOMO temporal turn {index}"),
+                    "Maya visited the museum before the cardiology appointment moved, so temporal ordering needs anchored evidence.",
+                    ContextSourceKind::UserEvent,
+                ),
+                3 => (
+                    format!("LongMemEval aggregation turn {index}"),
+                    "The assistant recorded three invoices, two refunds, and one open support follow-up across separate sessions.",
+                    ContextSourceKind::Ticket,
+                ),
+                4 => (
+                    format!("Secondary index turn {index}"),
+                    "Resource refs, skill refs, entity refs, source refs, and summary refs must remain queryable after restart.",
+                    ContextSourceKind::Document,
+                ),
+                _ => (
+                    format!("Replication health turn {index}"),
+                    "Secondary replication lag should stay bounded while resource, skill, and conversation retrieval continue serving.",
+                    ContextSourceKind::Incident,
+                ),
+            };
+            ContextExtractRequest {
+                shard_id,
+                tenant_hash,
+                source_kind: kind,
+                source_id: format!("scale-conversation-{index}"),
+                title,
+                body: body.to_string(),
+                timestamp_ms: start_time_ms + 1_000 + index,
+                provider: ContextModelProviderConfig::default(),
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let conversation_report = ingest_extract_context(
+        engine,
+        ContextIngestExtractRequest {
+            shard_id,
+            tenant_hash,
+            sources: conversation_sources,
+            query: "checkout latency context debug summary embedding".to_string(),
+            start_time_ms,
+            end_time_ms,
+            max_events: 24,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+
+    let mut node_hashes = resource_skill_report.ingest.node_hashes.clone();
+    node_hashes.extend(conversation_report.node_hashes.iter().copied());
+    node_hashes.sort_unstable();
+    node_hashes.dedup();
+
+    let retrieve_started = Instant::now();
+    let combined_retrieve = retrieve_context(
+        engine,
+        ContextRetrieveRequest {
+            shard_id,
+            tenant_hash,
+            node_hashes,
+            query: "Which skill and resource explain checkout rollback, p95 latency, summary traversal, and context injection?".to_string(),
+            start_time_ms,
+            end_time_ms,
+            max_events: 32,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let retrieve_ms = retrieve_started.elapsed().as_millis();
+
+    let validation_started = Instant::now();
+    let secondary_validation = validate_resource_skill_secondary_indexes(
+        engine,
+        ContextResourceSkillSecondaryIndexValidationRequest {
+            shard_id,
+            tenant_hash,
+            start_time_ms,
+            end_time_ms,
+            secondary_indexes: resource_skill_report.secondary_indexes.clone(),
+        },
+    );
+    let secondary_index_validation_ms = validation_started.elapsed().as_millis();
+
+    let accepted_sources = resource_skill_report
+        .ingest
+        .accepted
+        .saturating_add(conversation_report.accepted);
+    let failed_sources = resource_skill_report
+        .ingest
+        .failed
+        .saturating_add(conversation_report.failed);
+    let total_source_count = resource_skill_report
+        .ingest
+        .summary
+        .source_count
+        .saturating_add(conversation_report.summary.source_count);
+    let fanout_ready = resource_skill_report.fanout.query_back_ok
+        && resource_skill_report.fanout.missing_models.is_empty()
+        && resource_skill_report.fanout.node_count == resource_skill_report.ingest.accepted
+        && resource_skill_report.fanout.entity_count == resource_skill_report.ingest.accepted
+        && resource_skill_report.fanout.summary_count >= resource_skill_report.ingest.accepted * 2
+        && resource_skill_report.fanout.embedding_count
+            >= resource_skill_report.ingest.accepted * 3
+        && resource_skill_report.fanout.secondary_index_count > 0;
+    let secondary_index_ready = resource_skill_report.secondary_indexes.query_back_ok
+        && secondary_validation.status.ok
+        && secondary_validation.query_back_ok
+        && secondary_validation.checked_ref_count > 0
+        && secondary_validation.checked_ref_count == secondary_validation.found_ref_count;
+    let summary_embedding_candidate_count = combined_retrieve
+        .query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_candidate_count;
+    let summary_embedding_selected_count = combined_retrieve
+        .query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_selected_count;
+    let ready = resource_skill_report.status.ok
+        && conversation_report.status.ok
+        && combined_retrieve.status.ok
+        && failed_sources == 0
+        && accepted_sources == total_source_count
+        && accepted_sources >= 30
+        && combined_retrieve.blocks.len() >= 8
+        && fanout_ready
+        && secondary_index_ready
+        && resource_skill_report.skill_selection.selected.len() >= 2
+        && summary_embedding_candidate_count > 0
+        && summary_embedding_selected_count > 0
+        && !combined_retrieve
+            .query_understanding_debug
+            .verbose_filter_groups
+            .is_empty()
+        && !combined_retrieve
+            .query_understanding_debug
+            .selected_refs
+            .is_empty();
+
+    ResourceSkillConversationScaleSummary {
+        ready,
+        resource_count: resource_skill_report.resources.len(),
+        skill_count: resource_skill_report.skills.len(),
+        conversation_source_count: conversation_report.summary.source_count,
+        total_source_count,
+        accepted_sources,
+        failed_sources,
+        retrieved_block_count: combined_retrieve.blocks.len(),
+        retrieved_event_count: combined_retrieve.event_count,
+        selected_skill_count: resource_skill_report.skill_selection.selected.len(),
+        resource_lifecycle_watched_count: resource_skill_report.resource_lifecycle.watched_count,
+        skill_registry_enabled_count: resource_skill_report.skill_registry.enabled_count,
+        skill_registry_disabled_count: resource_skill_report.skill_registry.disabled_count,
+        embedding_ref_count: resource_skill_report.embedding_refs.len(),
+        embedding_requested_vectors: resource_skill_report
+            .embedding_evidence
+            .requested_vector_count,
+        embedding_generated_vectors: resource_skill_report
+            .embedding_evidence
+            .generated_vector_count,
+        embedding_live_call_count: resource_skill_report.embedding_evidence.live_call_count,
+        embedding_mock_generation_count: resource_skill_report
+            .embedding_evidence
+            .mock_generation_count,
+        embedding_production_evidence_ready: resource_skill_report
+            .embedding_evidence
+            .production_evidence_ready,
+        fanout_node_count: resource_skill_report.fanout.node_count,
+        fanout_event_count: resource_skill_report.fanout.event_count,
+        fanout_segment_count: resource_skill_report.fanout.segment_count,
+        fanout_entity_count: resource_skill_report.fanout.entity_count,
+        fanout_child_ref_count: resource_skill_report.fanout.child_ref_count,
+        fanout_embedding_count: resource_skill_report.fanout.embedding_count,
+        fanout_summary_count: resource_skill_report.fanout.summary_count,
+        fanout_compression_count: resource_skill_report.fanout.compression_count,
+        fanout_dirty_marker_count: resource_skill_report.fanout.dirty_marker_count,
+        fanout_secondary_index_count: resource_skill_report.fanout.secondary_index_count,
+        fanout_ready,
+        secondary_index_ready,
+        secondary_index_checked_refs: secondary_validation.checked_ref_count,
+        secondary_index_found_refs: secondary_validation.found_ref_count,
+        secondary_index_missing_refs: secondary_validation.missing_refs.len(),
+        summary_embedding_candidate_count,
+        summary_embedding_selected_count,
+        verbose_filter_group_count: combined_retrieve
+            .query_understanding_debug
+            .verbose_filter_groups
+            .len(),
+        selected_ref_count: combined_retrieve
+            .query_understanding_debug
+            .selected_refs
+            .len(),
+        ingest_ms,
+        retrieve_ms,
+        secondary_index_validation_ms,
+    }
+}
+
+fn local_context_harness_sweep_thresholds() -> ContextPipelineBenchmarkThresholds {
+    ContextPipelineBenchmarkThresholds {
+        min_ingest_sources_per_sec: 0.5,
+        min_retrieve_queries_per_sec: 0.5,
+        min_inject_queries_per_sec: 0.5,
+        ..ContextPipelineBenchmarkThresholds::default()
+    }
 }
 
 fn run_external_context_benchmark(engine: &TemporalEngine) -> ExternalContextBenchmarkReport {
