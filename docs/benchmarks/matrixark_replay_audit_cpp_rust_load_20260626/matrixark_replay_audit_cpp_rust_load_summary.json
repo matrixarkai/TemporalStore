@@ -1,0 +1,167 @@
+{
+  "artifacts": {
+    "load_json": "load.json",
+    "required_pipeline_json": "matrixark_required_pipeline_parity_replay-audit-load-20260626.json",
+    "required_pipeline_md": "matrixark_required_pipeline_parity_replay-audit-load-20260626.md",
+    "resource_skill_json": "matrixark_resource_skill_backend_parity_replay-audit-load-20260626.json",
+    "resource_skill_md": "matrixark_resource_skill_backend_parity_replay-audit-load-20260626.md"
+  },
+  "backends": {
+    "cpp": {
+      "admin_audit_actions": [
+        "context.ingest",
+        "context.refresh_summaries",
+        "context.replay",
+        "context.retrieve",
+        "resource.list",
+        "skill.list",
+        "skill.update"
+      ],
+      "admin_audit_count": 15,
+      "fallback_flags": {
+        "hash_embedding_fallback": false,
+        "memory_backend_fallback": false,
+        "oss_model_fallback": false,
+        "rust_cli_per_operation_fallback": null,
+        "topology_readiness_fallback": false,
+        "tree_traversal_flat_fallback": false
+      },
+      "load_errors": 0,
+      "load_latency_ms": {
+        "avg": 810.009,
+        "count": 16,
+        "max": 1074.539,
+        "p50": 797.441,
+        "p95": 834.12,
+        "p99": 1074.539
+      },
+      "load_qps": 8.766,
+      "load_total_ops": 16,
+      "load_workers": 8,
+      "record_counts": {
+        "context_child_ref": 6,
+        "context_embedding": 70,
+        "context_entity": 15,
+        "context_event": 19,
+        "context_index": 213,
+        "context_node": 8,
+        "context_pack_audit": 2,
+        "context_summary": 26,
+        "context_summary_dirty": 22,
+        "context_summary_refresh_audit": 9,
+        "matrixark_audit_log": 12,
+        "matrixark_metric": 4,
+        "resource_chunk": 8,
+        "resource_import_task": 12,
+        "resource_manifest": 3,
+        "resource_registry": 3,
+        "session_buffer_event": 4,
+        "skill_manifest": 1,
+        "skill_registry": 1,
+        "skill_section": 2
+      },
+      "required_pipeline_elapsed_ms": 1332.35,
+      "required_pipeline_ok": true,
+      "resource_replay_audit": true,
+      "resource_replay_selected_refs": 13,
+      "resource_skill_elapsed_ms": 1597.65,
+      "resource_skill_ok": true,
+      "resource_skill_readiness_attempts": 1,
+      "resource_skill_readiness_status": "ready",
+      "skill_replay_audit": true,
+      "skill_replay_selected_refs": 10
+    },
+    "rust": {
+      "admin_audit_actions": [
+        "context.ingest",
+        "context.refresh_summaries",
+        "context.replay",
+        "context.retrieve",
+        "resource.list",
+        "skill.list",
+        "skill.update"
+      ],
+      "admin_audit_count": 15,
+      "fallback_flags": {
+        "hash_embedding_fallback": false,
+        "memory_backend_fallback": false,
+        "oss_model_fallback": false,
+        "rust_cli_per_operation_fallback": false,
+        "topology_readiness_fallback": false,
+        "tree_traversal_flat_fallback": false
+      },
+      "load_errors": 0,
+      "load_latency_ms": {
+        "avg": 755.903,
+        "count": 16,
+        "max": 805.657,
+        "p50": 759.159,
+        "p95": 787.407,
+        "p99": 805.657
+      },
+      "load_qps": 10.102,
+      "load_total_ops": 16,
+      "load_workers": 8,
+      "record_counts": {
+        "context_child_ref": 6,
+        "context_embedding": 81,
+        "context_entity": 15,
+        "context_event": 19,
+        "context_index": 213,
+        "context_node": 8,
+        "context_pack_audit": 2,
+        "context_summary": 37,
+        "context_summary_dirty": 22,
+        "context_summary_refresh_audit": 14,
+        "matrixark_audit_log": 12,
+        "matrixark_metric": 4,
+        "resource_chunk": 8,
+        "resource_import_task": 12,
+        "resource_manifest": 3,
+        "resource_registry": 3,
+        "session_buffer_event": 4,
+        "skill_manifest": 1,
+        "skill_registry": 1,
+        "skill_section": 2
+      },
+      "required_pipeline_elapsed_ms": 1297.33,
+      "required_pipeline_ok": true,
+      "resource_replay_audit": true,
+      "resource_replay_selected_refs": 13,
+      "resource_skill_elapsed_ms": 1723.61,
+      "resource_skill_ok": true,
+      "resource_skill_readiness_attempts": 1,
+      "resource_skill_readiness_status": "ready",
+      "skill_replay_audit": true,
+      "skill_replay_selected_refs": 10
+    }
+  },
+  "comparison": {
+    "required_pipeline": {
+      "checks": {
+        "embedding_types_equal": true,
+        "memory_ref_counts_equal": true,
+        "record_types_equal": true,
+        "resource_ref_counts_equal": true,
+        "skill_ref_counts_equal": true,
+        "summary_types_equal": true
+      },
+      "status": "passed"
+    },
+    "resource_skill": {
+      "checks": {
+        "embedding_types_equal": true,
+        "resource_ref_types_equal": true,
+        "resource_registry_count_equal": true,
+        "skill_ref_types_equal": true,
+        "skill_registry_count_equal": true
+      },
+      "status": "passed"
+    }
+  },
+  "load_status": "passed",
+  "required_pipeline_status": "passed",
+  "resource_skill_status": "passed",
+  "run_id": "replay-audit-load-20260626",
+  "status": "passed"
+}

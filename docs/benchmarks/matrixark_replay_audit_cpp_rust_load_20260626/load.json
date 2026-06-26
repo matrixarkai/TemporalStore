@@ -1,0 +1,332 @@
+{
+  "load": [
+    {
+      "backend": "cpp",
+      "elapsed_sec": 1.825,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 810.009,
+        "count": 16,
+        "max": 1074.539,
+        "p50": 797.441,
+        "p95": 834.12,
+        "p99": 1074.539
+      },
+      "ops": [
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 777.992,
+          "ok": true,
+          "op_index": 0,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 798.341,
+          "ok": true,
+          "op_index": 1,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 777.923,
+          "ok": true,
+          "op_index": 2,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 774.99,
+          "ok": true,
+          "op_index": 3,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 1074.539,
+          "ok": true,
+          "op_index": 4,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 830.119,
+          "ok": true,
+          "op_index": 5,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 793.653,
+          "ok": true,
+          "op_index": 6,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 815.94,
+          "ok": true,
+          "op_index": 7,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 787.676,
+          "ok": true,
+          "op_index": 8,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 766.249,
+          "ok": true,
+          "op_index": 9,
+          "selected_or_count": 16
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 820.202,
+          "ok": true,
+          "op_index": 10,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 797.034,
+          "ok": true,
+          "op_index": 11,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 797.441,
+          "ok": true,
+          "op_index": 12,
+          "selected_or_count": 16
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 822.545,
+          "ok": true,
+          "op_index": 13,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 834.12,
+          "ok": true,
+          "op_index": 14,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "cpp",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 691.373,
+          "ok": true,
+          "op_index": 15,
+          "selected_or_count": 17
+        }
+      ],
+      "qps": 8.766,
+      "total_ops": 16,
+      "workers": 8
+    },
+    {
+      "backend": "rust",
+      "elapsed_sec": 1.584,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 755.903,
+        "count": 16,
+        "max": 805.657,
+        "p50": 759.159,
+        "p95": 787.407,
+        "p99": 805.657
+      },
+      "ops": [
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 760.689,
+          "ok": true,
+          "op_index": 0,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 759.159,
+          "ok": true,
+          "op_index": 1,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 730.66,
+          "ok": true,
+          "op_index": 2,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 740.33,
+          "ok": true,
+          "op_index": 3,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 805.657,
+          "ok": true,
+          "op_index": 4,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 741.923,
+          "ok": true,
+          "op_index": 5,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 725.337,
+          "ok": true,
+          "op_index": 6,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 787.407,
+          "ok": true,
+          "op_index": 7,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 781.686,
+          "ok": true,
+          "op_index": 8,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 763.755,
+          "ok": true,
+          "op_index": 9,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 764.495,
+          "ok": true,
+          "op_index": 10,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 743.298,
+          "ok": true,
+          "op_index": 11,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 722.939,
+          "ok": true,
+          "op_index": 12,
+          "selected_or_count": 15
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_skill_pack",
+          "latency_ms": 776.33,
+          "ok": true,
+          "op_index": 13,
+          "selected_or_count": 10
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "replay_resource_pack",
+          "latency_ms": 755.465,
+          "ok": true,
+          "op_index": 14,
+          "selected_or_count": 13
+        },
+        {
+          "backend": "rust",
+          "error": "",
+          "kind": "admin_audit",
+          "latency_ms": 735.314,
+          "ok": true,
+          "op_index": 15,
+          "selected_or_count": 15
+        }
+      ],
+      "qps": 10.102,
+      "total_ops": 16,
+      "workers": 8
+    }
+  ],
+  "source_report": "/tmp/matrixark-resource-skill-load-20260626/matrixark_resource_skill_backend_parity_replay-audit-load-20260626.json",
+  "status": "passed"
+}
