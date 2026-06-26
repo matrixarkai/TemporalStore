@@ -3088,6 +3088,8 @@ class MatrixArkLocalAdapter:
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
         max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
+        max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", 256, minimum=1)
+        max_selected_refs = integer_arg(ranking, "max_selected_refs", max(8, min(256, max_context_tokens)), minimum=1)
         traversal = tree_first_traversal(
             node_scores,
             top_k_per_layer=top_k_per_layer,
@@ -3115,6 +3117,21 @@ class MatrixArkLocalAdapter:
 
         tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
         tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        candidate_count_by_node: dict[Any, int] = {}
+        fanout_dropped_count = 0
+
+        def admit_candidate_for_node(record: Json) -> bool:
+            nonlocal fanout_dropped_count
+            node_key: Any = record.get("node_hash")
+            if node_key is None:
+                node_key = tuple(record.get("node_path", []))
+            count = candidate_count_by_node.get(node_key, 0)
+            if count >= max_candidates_per_node:
+                fanout_dropped_count += 1
+                return False
+            candidate_count_by_node[node_key] = count + 1
+            return True
+
         layer_scores = sorted(
             traversal["trace"] or node_scores.values(),
             key=lambda item: (item.get("depth", 0), -float(item.get("score", 0.0)), item.get("node_hash", 0)),
@@ -3137,6 +3154,8 @@ class MatrixArkLocalAdapter:
                     secondary_index_dropped_count += 1
                     continue
                 secondary_index_matched_count += 1
+                if not admit_candidate_for_node(record):
+                    continue
                 text = str(record.get("summary_text", ""))
                 if not text:
                     continue
@@ -3189,6 +3208,8 @@ class MatrixArkLocalAdapter:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
+            if not admit_candidate_for_node(record):
+                continue
             text = str(record.get("text", ""))
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
@@ -3263,6 +3284,8 @@ class MatrixArkLocalAdapter:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
+            if not admit_candidate_for_node(record):
+                continue
             text = f"{record.get('entity_type', '')}: {record.get('entity_name', '')} = {record.get('state', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
@@ -3335,6 +3358,8 @@ class MatrixArkLocalAdapter:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
+            if not admit_candidate_for_node(record):
+                continue
             text = f"{record.get('topic', '')}: {record.get('summary_text', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
@@ -3407,6 +3432,8 @@ class MatrixArkLocalAdapter:
                 secondary_index_dropped_count += 1
                 continue
             secondary_index_matched_count += 1
+            if not admit_candidate_for_node(record):
+                continue
             if record.get("record_type") == "skill_section":
                 ref_type = "skill_section"
                 ref_hash = int(record.get("section_hash") or 0)
@@ -3491,6 +3518,8 @@ class MatrixArkLocalAdapter:
                 continue
             if not selected_by_tree(record):
                 continue
+            if not admit_candidate_for_node(record):
+                continue
             text = f"TIME_COMPRESS: {record.get('summary_text', '')}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
@@ -3554,6 +3583,7 @@ class MatrixArkLocalAdapter:
             auxiliary_quota=auxiliary_quota,
             question_type=question_type,
             reserved_tokens=local_budget["token_estimate"],
+            max_selected_refs=max_selected_refs,
             duplicate_text_hashes=local_budget["text_hashes"],
             deadline_exceeded=deadline_exceeded,
             deadline_reason="deadline_during_context_pack",
@@ -3591,11 +3621,14 @@ class MatrixArkLocalAdapter:
                     "summary_embeddings": ["node_l0", "node_l1"],
                     "top_k_per_layer": top_k_per_layer,
                     "max_children_scored_per_parent": max_children_scored_per_parent,
+                    "max_candidates_per_node": max_candidates_per_node,
+                    "max_selected_refs": max_selected_refs,
                     "selected_node_count": len(selected_node_hashes),
                     "selected_path_count": len(selected_paths),
                     "selected_leaf_count": len(traversal.get("leaf_paths", [])),
                     "candidate_records_after_tree": len(tree_candidate_records),
                     "records_dropped_by_tree": tree_prefilter_dropped_count,
+                    "records_dropped_by_node_fanout": fanout_dropped_count,
                     "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
                     "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
                     "fallback_reason": "missing_or_stale_summary_embeddings" if traversal.get("fallback_to_flat") else "",
@@ -3608,6 +3641,7 @@ class MatrixArkLocalAdapter:
                     "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
                     "effective_mode": secondary_index_filter_mode,
                     "applied_before_embedding_scoring": True,
+                    "fanout_cap_applied_before_embedding_scoring": True,
                 },
                 "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
                 "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -3676,6 +3710,9 @@ class MatrixArkLocalAdapter:
                 "auxiliary_candidate_count": len(auxiliary_matches),
                 "tree_candidate_records": len(tree_candidate_records),
                 "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
+                "fanout_dropped_count": fanout_dropped_count,
+                "max_candidates_per_node": max_candidates_per_node,
+                "max_selected_refs": max_selected_refs,
                 "created_at_ms": now_ms(),
             }
         )

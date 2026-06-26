@@ -3126,20 +3126,23 @@ def select_token_budgeted_refs(
     auxiliary_quota: int,
     question_type: str = "fact",
     reserved_tokens: int = 0,
+    max_selected_refs: int | None = None,
     duplicate_text_hashes: set[int] | None = None,
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
+    selected_ref_cap = max(1, int(max_selected_refs or max(8, min(256, max_context_tokens))))
+    candidate_pool_limit = max(selected_ref_cap, max(8, min(256, max_context_tokens)))
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
-        total_limit=max(8, min(256, max_context_tokens)),
+        total_limit=candidate_pool_limit,
         auxiliary_quota=auxiliary_quota,
     )
     candidates.sort(key=lambda item: packing_sort_key(item, question_type), reverse=True)
-    candidates = diversify_for_question_type(candidates, question_type, total_limit=max(8, min(256, max_context_tokens)))
+    candidates = diversify_for_question_type(candidates, question_type, total_limit=candidate_pool_limit)
     selected: list[Json] = []
     used_tokens = 0
     dropped: Json = {
@@ -3150,6 +3153,7 @@ def select_token_budgeted_refs(
         "summary": 0,
         "raw_l2": 0,
         "deadline": 0,
+        "max_selected_refs": 0,
         "estimated_tokens": {
             "over_budget": 0,
             "duplicate": 0,
@@ -3158,6 +3162,7 @@ def select_token_budgeted_refs(
             "summary": 0,
             "raw_l2": 0,
             "deadline": 0,
+            "max_selected_refs": 0,
         },
         "reason_descriptions": {
             "over_budget": "candidate was relevant but exceeded the remaining remote context token budget",
@@ -3167,6 +3172,7 @@ def select_token_budgeted_refs(
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
             "raw_l2": "raw L2 content was dropped because a smaller cited chunk or summary was enough",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
+            "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
         "refs": [],
         "deadline_exceeded": False,
@@ -3174,6 +3180,14 @@ def select_token_budgeted_refs(
     }
     seen_text_hashes: set[int] = set()
     for index, candidate in enumerate(candidates):
+        if len(selected) >= selected_ref_cap:
+            remaining_candidates = candidates[index:]
+            dropped["max_selected_refs"] += len(remaining_candidates)
+            for skipped in remaining_candidates:
+                skipped_tokens = max(1, token_count(str(skipped.get("text", ""))))
+                dropped["estimated_tokens"]["max_selected_refs"] += skipped_tokens
+                record_dropped_candidate(dropped, skipped, reason="max_selected_refs", token_estimate=skipped_tokens)
+            break
         if deadline_exceeded is not None and deadline_exceeded():
             dropped["deadline_exceeded"] = True
             dropped["deadline_reason"] = deadline_reason
