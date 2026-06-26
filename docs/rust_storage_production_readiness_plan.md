@@ -162,13 +162,12 @@ cache pressure, shared-store sync/async replay, and the storage production/fault
 That evidence is sufficient for the Rust-native local/shared-store storage path, but it is not a
 global production-readiness claim. The Rust-native cache path now has weighted hotness/LRU
 eviction evidence, admission/eviction counters, pin-aware eviction skip accounting, warmup,
-invalidation, and tiny-cache pressure coverage. The `storage_cache` readiness area still fails
-closed on mtcache-class cache blockers until there is evidence for async writeback with
-backpressure and mature cache latency metrics. The Rust-native multi-tier replacement policy,
-pinned-handle accounting/eviction guards, and DRAM/PMEM/SSD placement semantics are now covered by
-weighted hotness/LRU memory plus SSD eviction evidence, pin/unpin state, pinned-skip counters, and
-`CacheTieringPolicy` placement decisions. PMEM is treated as an SSD-class persistent tier in the
-Rust-native deployment contract.
+invalidation, and tiny-cache pressure coverage. The Rust-native multi-tier replacement policy,
+pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async
+writeback/backpressure counters, and mature cache latency metrics are now covered by weighted
+hotness/LRU memory plus SSD eviction evidence, pin/unpin state, pinned-skip counters,
+`CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency
+metrics. PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract.
 
 Rust now persists a first-class slot/object/page ownership index and exposes whether reports are
 using that core index or falling back to model-map derivation. Changed objects are synchronized
