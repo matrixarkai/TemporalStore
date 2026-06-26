@@ -1258,6 +1258,41 @@ pub struct StorageMergedDumpLoadPolicyReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerLoopRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub apply: bool,
+    #[serde(default)]
+    pub expire_records: bool,
+    #[serde(default)]
+    pub compact_pages: bool,
+    #[serde(default)]
+    pub lifecycle: StorageLifecycleRequest,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerLoopPhaseReport {
+    pub phase: String,
+    pub attempted: bool,
+    pub applied: bool,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerLoopReport {
+    pub shard_id: ShardId,
+    pub loop_ready: bool,
+    pub phases: Vec<StorageManagerLoopPhaseReport>,
+    pub lifecycle: StorageLifecycleReport,
+    pub expiry_sweep: ShardExpirySweepReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<ShardCompactionReport>,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageProductionReadinessPolicy {
     #[serde(default)]
     pub max_dirty_slots: Option<usize>,
