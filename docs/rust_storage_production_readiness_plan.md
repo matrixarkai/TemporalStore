@@ -163,9 +163,10 @@ That evidence is sufficient for the Rust-native local/shared-store storage path,
 global production-readiness claim. The Rust-native cache path now has weighted hotness/LRU
 eviction evidence, admission/eviction counters, pin-aware eviction skip accounting, warmup,
 invalidation, and tiny-cache pressure coverage. The `storage_cache` readiness area still fails
-closed on mtcache-class cache blockers until there is evidence for a real multi-tier replacement
-policy, zero-copy or pinned-handle access model, DRAM/PMEM/SSD placement semantics, async
-writeback with backpressure, and mature cache latency metrics.
+closed on mtcache-class cache blockers until there is evidence for a zero-copy or pinned-handle
+access model, DRAM/PMEM/SSD placement semantics, async writeback with backpressure, and mature
+cache latency metrics. The Rust-native multi-tier replacement policy itself is now covered by
+weighted hotness/LRU memory plus SSD eviction evidence.
 
 Rust now persists a first-class slot/object/page ownership index and exposes whether reports are
 using that core index or falling back to model-map derivation. Changed objects are synchronized
