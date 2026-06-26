@@ -1744,6 +1744,7 @@ class MatrixArkLocalAdapter:
                     )
                     parsed_skill_chunks = rewrite_chunk_uris(parsed_skill.chunks, parse_uri=parse_uri, stored_raw_uri=raw_uri)
                     skill_hash = stable_hash(f"skill:{raw_uri}:{parsed_skill.name}:{parsed_skill.metadata.get('version', '1')}")
+                    skill_serving_metadata = serving_resource_metadata(parsed_skill.metadata)
                     self.append(
                         {
                             "record_type": "skill_manifest",
@@ -1772,14 +1773,33 @@ class MatrixArkLocalAdapter:
                             "outputs": parsed_skill.metadata.get("outputs", []),
                             "access_scope": access_scope,
                             "deployment_scope": deployment_scope,
-                            "text": parsed_skill.text,
+                            "text_preview": clip_context_text(parsed_skill.text),
                             "token_estimate": parsed_skill.token_estimate,
-                            "metadata": parsed_skill.metadata,
+                            "metadata": skill_serving_metadata,
                             "scope": envelope["scope"],
                             "storage_options": envelope.get("storage_options", {}),
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
+                    skill_debug_metadata = debug_resource_metadata(parsed_skill.metadata)
+                    if skill_debug_metadata or parsed_skill.text:
+                        self.append(
+                            {
+                                "record_type": "context_debug_record",
+                                "debug_type": "skill_parse_detail",
+                                "ref_type": "skill",
+                                "ref_hash": skill_hash,
+                                "skill_hash": skill_hash,
+                                "import_task_hash": resource_import_task_hash,
+                                "node_hash": node_hash,
+                                "node_path": node_path,
+                                "raw_uri": raw_uri,
+                                "metadata_debug": skill_debug_metadata,
+                                "text_preview": clip_context_text(parsed_skill.text),
+                                "scope": envelope["scope"],
+                                "updated_at_ms": envelope["ingestion_time_ms"],
+                            }
+                        )
                     self.append(
                         {
                             "record_type": "skill_registry",
@@ -2038,7 +2058,8 @@ class MatrixArkLocalAdapter:
                 )
             for chunk, vector in zip(parsed_chunks, chunk_vectors):
                 resource_chunk_hashes.append(chunk.chunk_hash)
-                chunk_metadata = sanitize_resource_metadata(chunk.metadata)
+                chunk_metadata = serving_resource_metadata(chunk.metadata)
+                chunk_debug_metadata = debug_resource_metadata(chunk.metadata)
                 if skill_hash is not None:
                     self.append(
                         {
@@ -2078,6 +2099,25 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+                if chunk_debug_metadata:
+                    self.append(
+                        {
+                            "record_type": "context_debug_record",
+                            "debug_type": "resource_chunk_parse_detail",
+                            "ref_type": "skill_section" if skill_hash is not None else "resource_chunk",
+                            "ref_hash": chunk.chunk_hash,
+                            "chunk_hash": chunk.chunk_hash,
+                            "import_task_hash": resource_import_task_hash,
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "raw_uri": raw_uri,
+                            "source_ref": chunk.source_ref,
+                            "metadata_debug": chunk_debug_metadata,
+                            "text_preview": clip_context_text(chunk.text),
+                            "scope": envelope["scope"],
+                            "updated_at_ms": envelope["ingestion_time_ms"],
+                        }
+                    )
                 self.append(
                     {
                         "record_type": "context_embedding",
@@ -2149,7 +2189,7 @@ class MatrixArkLocalAdapter:
             resource_fact_records: list[Json] = []
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
             for chunk in fact_chunks:
-                chunk_metadata = sanitize_resource_metadata(chunk.metadata)
+                chunk_metadata = serving_resource_metadata(chunk.metadata)
                 for fact_extraction in extract_resource_facts(
                     chunk,
                     chunk_metadata=chunk_metadata,
