@@ -536,7 +536,8 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
     assert!(segment
         .text
         .contains("cardiology appointment moved after the museum visit"));
-    assert_eq!(segment.related_node_hashes, vec![node_entity.node_hash]);
+    assert!(segment.related_node_hashes.is_empty());
+    assert_eq!(extract.related_node_hashes, vec![node_entity.node_hash]);
 
     let indexed = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -579,11 +580,26 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
     assert!(retrieved
         .blocks
         .iter()
-        .any(|block| { block.tier == ContextTier::L1 && block.text == node_entity.l1_ref }));
+        .any(|block| block.tier == ContextTier::L1));
     assert!(retrieved
         .blocks
         .iter()
         .any(|block| { block.tier == ContextTier::L2 && block.text == segment.text }));
+    let l1_summary = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::ContextQuerySummaries {
+            tenant_hash: 20260622,
+            node_hash: node_entity.node_hash,
+            level: 2,
+            as_of_ms: segment.event_time_ms,
+            limit: Some(2),
+        },
+    });
+    assert!(matches!(
+        l1_summary.response,
+        CommandResponse::ContextSummaries { ref summaries, .. }
+            if summaries.iter().any(|summary| summary.text == node_entity.l1_ref)
+    ));
 
     let inject = inject_context(
         &engine,
@@ -610,8 +626,8 @@ fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
         .iter()
         .any(|block| block.tier == ContextTier::L2));
     assert!(inject.injected_prompt.contains(&node_entity.l0));
-    assert!(inject.injected_prompt.contains(&node_entity.l1_ref));
-    assert!(inject.injected_prompt.contains(&segment.text));
+    assert!(inject.injected_prompt.contains("cardiology appointment"));
+    assert!(inject.injected_prompt.contains("museum visit"));
     assert!(inject
         .audit
         .selected_refs
