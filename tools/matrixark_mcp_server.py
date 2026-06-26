@@ -103,7 +103,7 @@ DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "dialogue_batch": 0.45,
     "session": 0.45,
 }
-MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:api_key", "admin:sso", "admin:audit"}
+MATRIXARK_ADMIN_SCOPES = {"admin:account", "admin:tenant", "admin:user", "admin:api_key", "admin:sso", "admin:audit", "portal:read"}
 MATRIXARK_CONTEXT_SCOPES = {
     "context:ingest",
     "context:retrieve",
@@ -123,7 +123,7 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_refresh_summaries": {"context:ingest"},
     "matrixark_retrieve": {"context:retrieve"},
     "matrixark_ingestion_dashboard": {"context:replay"},
-    "matrixark_management_portal": {"context:replay", "resource:read", "skill:read", "admin:account", "admin:user", "admin:api_key", "admin:audit"},
+    "matrixark_management_portal": {"portal:read"},
     "matrixark_auth_sso_login": set(),
     "matrixark_list_resources": {"resource:read"},
     "matrixark_list_skills": {"skill:read"},
@@ -146,6 +146,55 @@ MATRIXARK_TOOL_SCOPES: dict[str, set[str]] = {
     "matrixark_backend_ready": set(),
     "matrixark_backend_metrics": set(),
 }
+
+MATRIXARK_ROLE_SCOPE_LIMITS: dict[str, set[str] | None] = {
+    "owner": None,
+    "admin": None,
+    "operator": {
+        "portal:read",
+        "admin:audit",
+        "context:ingest",
+        "context:retrieve",
+        "context:feedback",
+        "context:replay",
+        "resource:ingest",
+        "resource:read",
+        "resource:manage",
+        "skill:read",
+        "skill:manage",
+    },
+    "developer": {
+        "portal:read",
+        "context:ingest",
+        "context:retrieve",
+        "context:feedback",
+        "context:replay",
+        "resource:ingest",
+        "resource:read",
+        "skill:read",
+    },
+    "viewer": {"portal:read", "context:retrieve", "context:replay", "resource:read", "skill:read"},
+    # Scoped service keys are capability-limited by their explicit scopes and
+    # optional user/session allow-lists. They may be used by Codex, Claude,
+    # Cursor, CI, or backend agents without forcing a human role name.
+    "service": None,
+    "local_agent": None,
+    "dev_admin": None,
+}
+
+
+def normalize_matrixark_role(role: str) -> str:
+    normalized = safe_identifier(role or "service", default="service")
+    aliases = {"administrator": "admin", "read_only": "viewer", "readonly": "viewer", "agent": "service"}
+    return aliases.get(normalized, normalized)
+
+
+def role_allows_scopes(role: str, scopes: set[str]) -> bool:
+    normalized = normalize_matrixark_role(role)
+    if normalized not in MATRIXARK_ROLE_SCOPE_LIMITS:
+        return False
+    limits = MATRIXARK_ROLE_SCOPE_LIMITS[normalized]
+    return limits is None or scopes.issubset(limits)
 
 
 def stable_hash(value: str) -> int:
@@ -7880,6 +7929,9 @@ class MatrixArkAccessManager:
             scopes = set(key_record.get("scopes", []))
             if not required_scopes.issubset(scopes):
                 raise MatrixArkError(f"API key lacks required scope(s): {sorted(required_scopes)}")
+            role = normalize_matrixark_role(str(key_record.get("role", "service")))
+            if not role_allows_scopes(role, required_scopes):
+                raise MatrixArkError(f"role {role!r} is not allowed to use scope(s): {sorted(required_scopes)}")
             account_id = str(key_record["account_id"])
             tenant_id = str(key_record["tenant_id"])
             requested_account = str(scope.get("account_id", ""))
@@ -7909,7 +7961,7 @@ class MatrixArkAccessManager:
                 "account_id": account_id,
                 "tenant_id": tenant_id,
                 "scopes": sorted(scopes),
-                "role": key_record.get("role", "service"),
+                "role": role,
                 "user_id": requested_user,
                 "session_id": requested_session,
                 "allowed_user_ids": sorted(allowed_user_ids),
@@ -7933,7 +7985,11 @@ class MatrixArkAccessManager:
         }
 
     def authorize_and_enrich(self, tool_name: str, args: Json) -> Json:
-        identity = self.authenticate(tool_name, args)
+        try:
+            identity = self.authenticate(tool_name, args)
+        except Exception as exc:
+            self.append_denied_audit(tool_name, args, reason=str(exc))
+            raise
         scope = optional_object(args, "scope")
         args["scope"] = enrich_scope_with_identity(scope, identity)
         auth_summary = {
@@ -8025,9 +8081,34 @@ class MatrixArkAccessManager:
                 "status": status,
                 "account_id": identity.get("account_id", ""),
                 "tenant_id": identity.get("tenant_id", ""),
+                "user_id": identity.get("user_id", ""),
+                "session_id": identity.get("session_id", ""),
                 "api_key_id": identity.get("api_key_id", ""),
-                "role": identity.get("role", ""),
+                "role": normalize_matrixark_role(str(identity.get("role", ""))),
                 "details": details or {},
+                "created_at_ms": now_ms(),
+            }
+        )
+
+    def append_denied_audit(self, action: str, args: Json, *, reason: str) -> None:
+        scope = optional_object(args, "scope")
+        api_key = optional_string(args, "api_key", "")
+        account_id = canonical_account_id(str(scope.get("account_id") or args.get("account_id") or "")) if (scope.get("account_id") or args.get("account_id")) else ""
+        tenant_id = canonical_tenant_id(str(scope.get("tenant_id") or args.get("tenant_id") or "")) if (scope.get("tenant_id") or args.get("tenant_id")) else ""
+        self.metadata.append(
+            {
+                "record_type": "matrixark_audit_log",
+                "audit_id_hash": stable_hash(f"denied:{action}:{secret_hash(api_key) if api_key else 'no_key'}:{now_ms()}"),
+                "action": action,
+                "status": "denied",
+                "account_id": account_id,
+                "tenant_id": tenant_id,
+                "user_id": str(scope.get("user_id") or ""),
+                "session_id": str(scope.get("session_id") or ""),
+                "api_key_id": "unknown",
+                "api_key_hash_prefix": secret_hash(api_key)[:12] if api_key else "",
+                "role": "unknown",
+                "details": {"reason": reason, "scope_keys": sorted(scope.keys())},
                 "created_at_ms": now_ms(),
             }
         )
@@ -8058,6 +8139,21 @@ class MatrixArkAccessManager:
             return
         if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
             raise MatrixArkError("admin operation account/tenant does not match API key")
+
+    def ensure_identity_can_read_scope(self, identity: Json, account_id: str, tenant_id: str, scope: Json | None = None) -> None:
+        if identity.get("mode") == "dev":
+            return
+        if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
+            raise MatrixArkError("portal scope account/tenant does not match API key")
+        scope = scope or {}
+        requested_user = str(scope.get("user_id") or "")
+        requested_session = str(scope.get("session_id") or "")
+        allowed_users = set(identity.get("allowed_user_ids") or [])
+        allowed_sessions = set(identity.get("allowed_session_ids") or [])
+        if allowed_users and requested_user and requested_user not in allowed_users:
+            raise MatrixArkError("portal scope.user_id is not allowed by API key")
+        if allowed_sessions and requested_session and requested_session not in allowed_sessions:
+            raise MatrixArkError("portal scope.session_id is not allowed by API key")
 
     def create_account(self, args: Json, identity: Json) -> Json:
         account_id = canonical_account_id(optional_string(args, "account_id") or f"acct_{stable_hash(optional_string(args, 'account_name', 'account'))}")
@@ -8192,6 +8288,7 @@ class MatrixArkAccessManager:
             )
             if len(rows) >= limit:
                 break
+        self.append_audit("admin.list_accounts", identity, status="ok", details={"account_id": requested_account, "tenant_id": requested_tenant, "count": len(rows)})
         return {"status": "ok", "accounts": rows, "count": len(rows)}
 
     def create_user(self, args: Json, identity: Json) -> Json:
@@ -8292,6 +8389,7 @@ class MatrixArkAccessManager:
             }
             if len(latest) >= limit:
                 break
+        self.append_audit("admin.list_users", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "count": len(latest)})
         return {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "users": list(latest.values()), "count": len(latest)}
 
     def create_api_key(self, args: Json, identity: Json) -> Json:
@@ -8305,7 +8403,9 @@ class MatrixArkAccessManager:
         unknown_scopes = sorted(set(scopes) - MATRIXARK_ALL_SCOPES)
         if unknown_scopes:
             raise MatrixArkError(f"unknown MatrixArk scope(s): {unknown_scopes}")
-        role = optional_string(args, "role", "service")
+        role = normalize_matrixark_role(optional_string(args, "role", "service"))
+        if not role_allows_scopes(role, set(scopes)):
+            raise MatrixArkError(f"role {role!r} cannot be granted requested scope(s): {sorted(scopes)}")
         display_name = optional_string(args, "display_name", role)
         allowed_user_ids = sorted(set(optional_string_list(args, "allowed_user_ids", [])))
         allowed_session_ids = sorted(set(optional_string_list(args, "allowed_session_ids", [])))
@@ -8431,9 +8531,9 @@ class MatrixArkAccessManager:
             "scopes": optional_string_list(
                 args,
                 "scopes",
-                ["context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read"],
+                ["context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read", "portal:read"],
             ),
-            "role": optional_string(args, "role", "local_agent"),
+            "role": normalize_matrixark_role(optional_string(args, "role", "local_agent")),
             "display_name": optional_string(args, "key_display_name", f"{agent_name} local key"),
             "allowed_user_ids": []
             if allow_all_users
@@ -8555,6 +8655,7 @@ class MatrixArkAccessManager:
             }
             if len(latest) >= limit:
                 break
+        self.append_audit("admin.list_api_keys", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "count": len(latest), "include_revoked": include_revoked})
         return {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "api_keys": list(latest.values()), "count": len(latest)}
 
 
@@ -8725,7 +8826,7 @@ class MatrixArkAccessManager:
         scope = optional_object(args, "scope")
         account_id = canonical_account_id(optional_string(args, "account_id") or str(scope.get("account_id") or identity["account_id"]))
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
-        self.ensure_identity_can_manage(identity, account_id, tenant_id)
+        self.ensure_identity_can_read_scope(identity, account_id, tenant_id, scope)
         effective_scope = enrich_scope_with_identity({**scope, "account_id": account_id, "tenant_id": tenant_id}, identity)
         page_size = args.get("page_size", 10)
         if not isinstance(page_size, int) or page_size <= 0 or page_size > 50:
@@ -8743,13 +8844,37 @@ class MatrixArkAccessManager:
                 "rows": rows[:page_size],
                 "next_page_token": page_size if len(rows) > page_size else None,
             }
-        account_rows = self.list_accounts({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
-        user_rows = self.list_users({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
-        api_key_rows = self.list_api_keys(
-            {"account_id": account_id, "tenant_id": tenant_id, "limit": 50, "include_revoked": include_revoked},
-            identity,
-        )
-        audit_rows = self.audit({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        identity_scopes = set(identity.get("scopes", []))
+        is_dev_identity = identity.get("mode") == "dev"
+        if is_dev_identity or "admin:account" in identity_scopes:
+            account_rows = self.list_accounts({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        else:
+            account_rows = {
+                "status": "ok",
+                "accounts": [{"account_id": account_id, "tenant_id": tenant_id, "account_status": "scoped", "tenant_status": "scoped"}],
+                "count": 1,
+            }
+        if is_dev_identity or "admin:user" in identity_scopes:
+            user_rows = self.list_users({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        else:
+            user_rows = {
+                "status": "ok",
+                "account_id": account_id,
+                "tenant_id": tenant_id,
+                "users": ([{"user_id": effective_scope.get("user_id", ""), "status": "scoped"}] if effective_scope.get("user_id") else []),
+                "count": 1 if effective_scope.get("user_id") else 0,
+            }
+        if is_dev_identity or "admin:api_key" in identity_scopes:
+            api_key_rows = self.list_api_keys(
+                {"account_id": account_id, "tenant_id": tenant_id, "limit": 50, "include_revoked": include_revoked},
+                identity,
+            )
+        else:
+            api_key_rows = {"status": "ok", "account_id": account_id, "tenant_id": tenant_id, "api_keys": [], "count": 0}
+        if is_dev_identity or "admin:audit" in identity_scopes:
+            audit_rows = self.audit({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
+        else:
+            audit_rows = {"status": "ok", "audit_logs": [], "count": 0}
         scoped_records = [record for record in records if scope_matches(self.adapter._dashboard_record_scope(record), effective_scope)]
         nodes = [record for record in scoped_records if record.get("record_type") == "context_node"]
         summaries = [record for record in scoped_records if record.get("record_type") == "context_summary"]
@@ -8903,6 +9028,7 @@ class MatrixArkAccessManager:
             raise MatrixArkError("limit must be a positive integer")
         account_id = optional_string(args, "account_id", identity["account_id"])
         tenant_id = optional_string(args, "tenant_id", identity["tenant_id"])
+        self.ensure_identity_can_manage(identity, account_id, tenant_id)
         rows = [
             record
             for record in reversed(self.metadata.read_all())
@@ -8910,6 +9036,7 @@ class MatrixArkAccessManager:
             and (not account_id or record.get("account_id") == account_id)
             and (not tenant_id or record.get("tenant_id") == tenant_id)
         ][:limit]
+        self.append_audit("admin.audit", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "count": len(rows)})
         return {"status": "ok", "audit_logs": rows, "count": len(rows)}
 
 
