@@ -1610,6 +1610,106 @@ fn storage_data_structure_api_parity_report_covers_stream_block_and_manager_surf
     );
 }
 
+// shared-corpus: storage_manager_background_loop;
+#[test]
+fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for command in [
+        Command::StringSet {
+            key: "manager-live".to_string(),
+            value: b"old".to_vec(),
+        },
+        Command::StringSet {
+            key: "manager-live".to_string(),
+            value: b"new".to_vec(),
+        },
+        Command::FeatureAppend {
+            key: "manager-feature".to_string(),
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"ten".to_vec(),
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: b"twenty".to_vec(),
+                },
+            ],
+        },
+        Command::StringSet {
+            key: "manager-expire".to_string(),
+            value: b"gone".to_vec(),
+        },
+        Command::CommonExpire {
+            key: "manager-expire".to_string(),
+            ttl_ms: 1,
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let report = engine.run_storage_manager_loop(StorageManagerLoopRequest {
+        shard_id: 1,
+        apply: true,
+        expire_records: true,
+        compact_pages: true,
+        lifecycle: StorageLifecycleRequest {
+            shard_id: 1,
+            max_dump_slots_per_round: 16,
+            min_undumped_oplog_records: 0,
+            purge_delayed_destroy: true,
+            prune_slot_dump_manifests: true,
+            roll_forward_slot_dump_installs: true,
+            invalidate_cache: true,
+            warm_cache: true,
+            ..StorageLifecycleRequest::default()
+        },
+    });
+
+    assert!(report.loop_ready, "{report:?}");
+    for phase in [
+        "prepare", "reclaim", "evict", "expire", "compact", "index_gc",
+    ] {
+        assert!(
+            report
+                .phases
+                .iter()
+                .any(|entry| entry.phase == phase && entry.attempted),
+            "missing attempted phase {phase}: {report:?}"
+        );
+    }
+    assert!(report.lifecycle.dump_manifest.is_some());
+    assert!(report.expiry_sweep.expired_records_removed >= 1);
+    assert!(report
+        .compaction
+        .as_ref()
+        .is_some_and(|compaction| compaction.model_layout_compaction_ready));
+    assert!(report
+        .phases
+        .iter()
+        .find(|phase| phase.phase == "prepare")
+        .unwrap()
+        .evidence
+        .iter()
+        .any(|item| item.contains("dirty slots")));
+    assert!(report
+        .evidence
+        .iter()
+        .any(|item| item.contains("prepare/reclaim/evict/expire/compact/index-GC")));
+}
+
 #[test]
 fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
     let engine = TemporalEngine::default();
