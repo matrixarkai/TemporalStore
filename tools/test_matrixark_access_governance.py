@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from http.server import ThreadingHTTPServer
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from urllib.request import Request, urlopen
 
-from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError
+from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError, make_matrixark_http_handler
 
 
 class MatrixArkAccessGovernanceTest(unittest.TestCase):
@@ -197,6 +201,119 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertIn("auth.signup", actions)
         self.assertIn("auth.sso_callback", actions)
 
+
+    def test_http_json_portal_facade_calls_live_mcp_admin_routes(self) -> None:
+        server = self.make_server()
+        handler = make_matrixark_http_handler(
+            server,
+            Path(__file__).resolve().parents[1] / "tools" / "temporalstore-monitoring-ui",
+        )
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        base_url = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+        def post(path: str, payload: dict) -> dict:
+            body = json.dumps(payload).encode("utf-8")
+            req = Request(
+                base_url + path,
+                data=body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        def get(path: str, api_key: str | None = None) -> dict:
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+            req = Request(base_url + path, headers=headers, method="GET")
+            with urlopen(req, timeout=10) as response:
+                return json.loads(response.read().decode("utf-8"))
+
+        try:
+            signup = post(
+                "/api/auth/signup",
+                {
+                    "arguments": {
+                        "trusted_gateway": True,
+                        "provider": "github",
+                        "email": "portal@example.com",
+                        "external_user_id": "github-portal-1",
+                        "account_id": "acct_http",
+                        "tenant_id": "tenant_http",
+                        "user_id": "portal_user",
+                        "display_name": "Portal User",
+                        "allowed_user_ids": ["portal_user"],
+                        "first_key_scopes": [
+                            "admin:account",
+                            "admin:user",
+                            "admin:api_key",
+                            "admin:sso",
+                            "admin:audit",
+                            "portal:read",
+                            "context:ingest",
+                            "context:retrieve",
+                            "context:replay",
+                            "resource:read",
+                            "skill:read",
+                        ],
+                    }
+                },
+            )
+            self.assertEqual("ok", signup["status"])
+            api_key = signup["result"]["api_key"]
+            scope = {"account_id": "acct_http", "tenant_id": "tenant_http", "user_id": "portal_user", "session_id": "s_http"}
+            ingest = post(
+                "/api/tools/call",
+                {
+                    "tool": "matrixark_ingest",
+                    "arguments": {
+                        "api_key": api_key,
+                        "scope": scope,
+                        "messages": [{"role": "user", "content": "HTTP portal user approved the live facade test."}],
+                    },
+                },
+            )
+            self.assertEqual("ok", ingest["status"])
+            retrieve = post(
+                "/api/tools/call",
+                {
+                    "tool": "matrixark_retrieve",
+                    "arguments": {"api_key": api_key, "scope": scope, "query": "what did the portal user approve?"},
+                },
+            )
+            pack_id = retrieve["result"]["context_pack_id"]
+            portal = post(
+                "/api/management_portal",
+                {"arguments": {"api_key": api_key, "scope": scope, "page_size": 5, "include_revoked": True}},
+            )
+            self.assertEqual("matrixark_management_portal", portal["tool"])
+            self.assertEqual("ok", portal["result"]["status"])
+            self.assertIn("dashboard", portal["result"])
+            self.assertIn("topology", portal["result"])
+            metrics = post("/api/backend_metrics", {"arguments": {}})
+            self.assertEqual("matrixark_backend_metrics", metrics["tool"])
+            self.assertEqual("ok", metrics["status"])
+            dashboard = get(
+                "/api/ingestion_dashboard?account_id=acct_http&tenant_id=tenant_http&user_id=portal_user&table=messages&page_size=5",
+                api_key,
+            )
+            self.assertEqual("matrixark_ingestion_dashboard", dashboard["tool"])
+            self.assertEqual("ok", dashboard["status"])
+            self.assertIn("rows", dashboard["result"])
+            replay = post("/api/replay", {"arguments": {"api_key": api_key, "context_pack_id": pack_id}})
+            self.assertEqual("matrixark_replay", replay["tool"])
+            self.assertEqual(pack_id, replay["result"]["context_pack_id"])
+            audit = post(
+                "/api/audit",
+                {"arguments": {"api_key": api_key, "account_id": "acct_http", "tenant_id": "tenant_http"}},
+            )
+            self.assertEqual("matrixark_admin_audit", audit["tool"])
+            self.assertTrue(audit["result"]["audit_logs"])
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=5)
 
 
 if __name__ == "__main__":
