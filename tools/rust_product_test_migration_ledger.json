@@ -9,13 +9,13 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 490,
+    "grandfathered_tests": 489,
     "by_classification": {
-      "move_to_shared": 484,
+      "move_to_shared": 483,
       "rust_internal": 6
     },
     "by_family": {
-      "ops/scale": 20,
+      "ops/scale": 19,
       "control plane": 86,
       "storage/cache": 171,
       "Redis/admin": 26,
@@ -4105,15 +4105,6 @@
       "test_id": "crates/temporalstore-rust/src/readiness.rs::metaserver_control_plane_readiness_splits_local_and_production_surfaces",
       "file": "crates/temporalstore-rust/src/readiness.rs",
       "test_name": "metaserver_control_plane_readiness_splits_local_and_production_surfaces",
-      "family": "ops/scale",
-      "classification": "move_to_shared",
-      "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/readiness.rs::storage_ssd_cache_pressure_report_covers_production_tier_policy",
-      "file": "crates/temporalstore-rust/src/readiness.rs",
-      "test_name": "storage_ssd_cache_pressure_report_covers_production_tier_policy",
       "family": "ops/scale",
       "classification": "move_to_shared",
       "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",

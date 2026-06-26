@@ -1195,6 +1195,17 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         });
         assert!(response.status.ok, "{response:?}");
     }
+    let async_response = engine.execute_replicated(
+        ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "compact-hot-object".to_string(),
+                value: b"hot".to_vec(),
+            },
+        }
+        .with_async_storage(),
+    );
+    assert!(async_response.status.ok, "{async_response:?}");
 
     let before = engine.storage_recovery_report(1);
     assert!(before.object_lifecycle.tombstoned_object_ids >= 1);
@@ -1203,6 +1214,19 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     let report = engine.compact_shard_pages(1).unwrap();
     assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
     assert!(report.rewritten_object_pages >= 5);
+    assert!(report.slot_layout_transition_count >= 1);
+    assert!(report
+        .slot_layout_states_after
+        .iter()
+        .any(|state| state.state == "object_page" && state.object_count >= 1));
+    assert!(report
+        .slot_layout_states_after
+        .iter()
+        .any(|state| state.state == "packed_timestamped_page" && state.object_count >= 1));
+    assert!(report
+        .slot_layout_states_after
+        .iter()
+        .any(|state| state.state == "tombstone" && state.object_count >= 1));
     assert!(report.before.stale_page_estimate >= 1);
     assert_eq!(report.after.stale_page_estimate, 0);
     assert!(
@@ -1221,7 +1245,7 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
             .find(|layout| layout.kind == kind)
             .unwrap_or_else(|| panic!("missing layout for {kind}: {:?}", report.model_layouts))
     };
-    assert_eq!(layout("string").unique_page_refs, 1);
+    assert_eq!(layout("string").unique_page_refs, 2);
     assert_eq!(layout("hash").unique_page_refs, 1);
     assert_eq!(layout("feature").index_refs, 2);
     assert_eq!(layout("feature").unique_page_refs, 1);
@@ -1243,6 +1267,24 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         .tombstoned_object_keys
         .iter()
         .any(|key| key == "compact-set"));
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let compacted_hot = shards
+        .get(&1)
+        .expect("loaded shard")
+        .slot_objects
+        .values()
+        .flat_map(|objects| objects.values())
+        .find(|object| object.object_key == "compact-hot-object")
+        .expect("hot object slot entry");
+    assert_eq!(compacted_hot.layout_state, SlotLayoutState::ObjectPage);
+    assert!(compacted_hot.layout_transition_count >= 1);
+    assert_eq!(
+        compacted_hot
+            .last_layout_transition
+            .as_ref()
+            .map(|transition| (&transition.from, &transition.to)),
+        Some((&SlotLayoutState::MemoryHot, &SlotLayoutState::ObjectPage))
+    );
 }
 
 #[test]

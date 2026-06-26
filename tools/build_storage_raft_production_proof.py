@@ -306,6 +306,12 @@ def build_cpp_raft_comparison(cpp_cases: dict[str, Any], raft_summary: dict[str,
 
 def case_ready(case: dict[str, Any]) -> bool:
     mutation_count = int(case.get("mutation_count") or 0)
+    shared_store_sync_applied = case.get("shared_store_sync_applied")
+    if shared_store_sync_applied is None:
+        shared_store_sync_applied = case.get("shared_store_sync", {}).get("applied")
+    shared_store_async_applied = case.get("shared_store_async_applied")
+    if shared_store_async_applied is None:
+        shared_store_async_applied = case.get("shared_store_async", {}).get("applied")
     return all(
         [
             mutation_count > 0,
@@ -314,8 +320,8 @@ def case_ready(case: dict[str, Any]) -> bool:
             int(case.get("cache_warmup_page_refs") or 0) > 0,
             bool(case.get("recovery_ok_before_restart")),
             bool(case.get("recovery_ok_after_restart")),
-            int(case.get("shared_store_sync_applied") or -1) == mutation_count,
-            int(case.get("shared_store_async_applied") or -1) == mutation_count,
+            int(shared_store_sync_applied or -1) == mutation_count,
+            int(shared_store_async_applied or -1) == mutation_count,
             bool(case.get("redis_admin_replay_ok")),
         ]
     )

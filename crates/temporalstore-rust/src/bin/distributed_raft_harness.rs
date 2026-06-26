@@ -395,6 +395,7 @@ fn main() {
     let byteraft_runtime_semantics = build_byteraft_runtime_semantics_report(
         &node_summaries,
         &replica_reads,
+        &options.value,
         &follower_write_rejection,
         &post_transfer_write,
         &scale_down,
@@ -448,6 +449,7 @@ fn main() {
 fn build_byteraft_runtime_semantics_report(
     nodes: &[NodeSummary],
     replica_reads: &[ReplicaReadSummary],
+    expected_replica_read_value: &[u8],
     follower_write_rejection: &Status,
     post_transfer_write: &Status,
     scale_down: &[MembershipSummary],
@@ -465,10 +467,11 @@ fn build_byteraft_runtime_semantics_report(
                 && node.status.has_majority
                 && node.status.leader_lease_valid
         });
-    let read_index_and_lease_validated = replica_reads
-        .iter()
-        .all(|read| read.status.ok && read.value.as_deref() == Some("replicated-value"))
-        && nodes.iter().all(|node| node.status.leader_lease_valid);
+    let expected_replica_read_value = String::from_utf8_lossy(expected_replica_read_value);
+    let read_index_and_lease_validated =
+        replica_reads.iter().all(|read| {
+            read.status.ok && read.value.as_deref() == Some(expected_replica_read_value.as_ref())
+        }) && nodes.iter().all(|node| node.status.leader_lease_valid);
     let stale_follower_write_rejected = !follower_write_rejection.ok;
     let leader_transfer_exact_once_validated = post_transfer_write.ok
         && nodes
