@@ -2553,6 +2553,46 @@ pub struct StorageEvictionReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMergedDumpLoadPolicyRequest {
+    pub lifecycle: StorageLifecycleRequest,
+    #[serde(default)]
+    pub create_dump_manifest: bool,
+    #[serde(default)]
+    pub install_dump_manifest: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMergedDumpLoadPolicyReport {
+    pub shard_id: ShardId,
+    pub policy_ready: bool,
+    pub dump_manifest_created: bool,
+    pub load_preflight_safe: bool,
+    pub load_installed: bool,
+    pub replay_boundary_safe: bool,
+    pub manifest_chain_valid: bool,
+    pub follower_retention_safe: bool,
+    pub index_gc_ready: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_id: Option<String>,
+    pub manifest_slot_ids: Vec<u32>,
+    pub manifest_page_segment_ids: Vec<u64>,
+    pub manifest_oplog_sequence: u64,
+    pub manifest_index_log_sequence: u64,
+    pub selected_replay_oplog_sequence: u64,
+    pub selected_replay_index_log_sequence: u64,
+    pub lifecycle: StorageLifecycleReport,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_preflight: Option<SlotDumpInstallPreflightReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_status: Option<Status>,
+    pub boundary: StorageRecoveryBoundaryReport,
+    pub manifest_prune_plan: SlotDumpManifestPrunePlan,
+    pub install_roll_forward_reports: Vec<SlotDumpInstallRollForwardReport>,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
     pub selected_slots: Vec<u32>,
