@@ -87,7 +87,7 @@ python3 - "$BACKEND" "$METASERVER" "$NAMESPACE" "$TABLE" "$PREFIX" "$TEMPORALSTO
 import json
 import sys
 
-from tools.matrixark_mcp_server import MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter
+from tools.matrixark_mcp_server import MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter, metaserver_reachable
 
 backend, metaserver, namespace, table, prefix, temporalstore_lib, rust_cli, request_timeout_ms, io_timeout_ms = sys.argv[1:]
 common = {
@@ -98,21 +98,60 @@ common = {
     "request_timeout_ms": int(request_timeout_ms),
     "io_timeout_ms": int(io_timeout_ms),
 }
-try:
-    if backend == "cpp":
-        adapter = MatrixArkTemporalStoreDirectAdapter(library_path=temporalstore_lib, **common)
-    elif backend == "rust":
-        adapter = MatrixArkTemporalStoreRustAdapter(rust_cli=rust_cli, **common)
-    else:
-        raise SystemExit(f"unknown backend {backend!r}")
-    result = adapter.ensure_backend_ready(reason="wait_temporalstore_topology_ready")
-except Exception as exc:
+meta_check = metaserver_reachable(metaserver)
+if not meta_check.get("ok"):
     result = {
         "status": "topology_not_ready",
         "backend": backend,
-        "error": str(exc),
+        "error": f"metaserver unreachable: {meta_check.get('error', 'unknown')}",
+        "attempts": 1,
+        "attempt_log": [
+            {
+                "attempt": 1,
+                "ok": False,
+                "retryable": True,
+                "error": f"metaserver unreachable: {meta_check.get('error', 'unknown')}",
+                "checks": {
+                    "mcp_process_started": True,
+                    "metaserver_reachable": meta_check,
+                    "namespace_table_opened": False,
+                    "slot_coverage_verified_by_warmup_hset_hget": False,
+                },
+            }
+        ],
         "topology": {"metaserver": metaserver, "namespace": namespace, "table": table, "storage_prefix": prefix},
+        "checks": {
+            "mcp_process_started": True,
+            "metaserver_reachable": meta_check,
+            "namespace_table_opened": False,
+            "slot_coverage_verified_by_warmup_hset_hget": False,
+        },
     }
+else:
+    try:
+        if backend == "cpp":
+            adapter = MatrixArkTemporalStoreDirectAdapter(library_path=temporalstore_lib, **common)
+        elif backend == "rust":
+            adapter = MatrixArkTemporalStoreRustAdapter(rust_cli=rust_cli, **common)
+        else:
+            raise SystemExit(f"unknown backend {backend!r}")
+        result = adapter.ensure_backend_ready(reason="wait_temporalstore_topology_ready")
+    except Exception as exc:
+        checks = {
+            "mcp_process_started": True,
+            "metaserver_reachable": meta_check,
+            "namespace_table_opened": False,
+            "slot_coverage_verified_by_warmup_hset_hget": False,
+        }
+        result = {
+            "status": "topology_not_ready",
+            "backend": backend,
+            "error": str(exc),
+            "attempts": 1,
+            "attempt_log": [{"attempt": 1, "ok": False, "retryable": True, "error": str(exc), "checks": checks}],
+            "topology": {"metaserver": metaserver, "namespace": namespace, "table": table, "storage_prefix": prefix},
+            "checks": checks,
+        }
 print(json.dumps(result, indent=2, sort_keys=True))
 raise SystemExit(0 if result.get("status") == "ready" else 2)
 PY
