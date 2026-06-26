@@ -1,0 +1,80 @@
+# MatrixArk Import Scale And 20-Message Batch Extraction - 2026-06-26
+
+## Summary
+
+This run validates two requested scale paths on the MatrixArk local JSONL backend:
+
+- resource import scale for a larger text-PDF fixture, CSV fixture, and repo directory fixture;
+- rolling one-pass batch extraction windows with `threshold_messages=20`.
+
+This is local backend evidence for the MatrixArk ingestion/extraction pipeline. It is not a C++/Rust storage-engine result.
+
+## Batch Extraction Windows
+
+| Metric | Value |
+| --- | ---: |
+| Messages requested | 400 |
+| Messages written | 400 |
+| Rolling window size | 20 |
+| Rolling windows committed | 20 |
+| Avg batch latency ms | 110.233 |
+| p50 batch latency ms | 89.269 |
+| p95 batch latency ms | 282.667 |
+| p99 batch latency ms | 301.453 |
+| Summary refresh ms | 273.304 |
+
+## Resource Import Scale
+
+| Resource | Status | Type | Import ms | Chunks | Fact events | Fact entities | Warnings |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| large_pdf | accepted | pdf | 189.356 | 60 | 80 | 80 | 0 |
+| large_csv | accepted | csv | 318.439 | 40 | 112 | 112 | 0 |
+| repo_directory | accepted | directory | 893.187 | 13 | 26 | 26 | 1 |
+| post_resource_summary_refresh | ok |  | 236.875 |  |  |  |  |
+
+## Sanity Retrieval After Import
+
+| Workers | Ops | QPS | p50 ms | p95 ms | p99 ms | Errors | Avg refs | Avg tokens |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 1 | 9.179 | 107.716 | 107.716 | 107.716 | 0 | 68 | 697 |
+
+## Context Model Records Written
+
+```json
+{
+  "context_child_ref": 36,
+  "context_embedding": 1304,
+  "context_entity": 338,
+  "context_entity_update_audit": 120,
+  "context_event": 621,
+  "context_extraction_audit": 20,
+  "context_index": 2826,
+  "context_node": 38,
+  "context_pack_audit": 1,
+  "context_segment": 80,
+  "context_summary": 152,
+  "context_summary_dirty": 98,
+  "context_summary_refresh_audit": 63,
+  "matrixark_audit_log": 29,
+  "matrixark_metric": 3,
+  "resource_chunk": 113,
+  "resource_import_task": 9,
+  "resource_manifest": 3,
+  "resource_registry": 3,
+  "session_buffer_event": 3
+}
+```
+
+## What This Proves
+
+- `matrixark_batch_extract` works as a 20-message rolling extraction window.
+- Each window writes ContextEvent, ContextEntity, ContextSegment, ContextSummary, ContextEmbedding, ContextIndex, and audit records.
+- Resource import writes ResourceImportTask, ResourceManifest, ResourceRegistry, ResourceChunk, resource facts, resource entities, summaries, embeddings, and indexes.
+- The imported resources are queryable after summary refresh.
+
+## Artifact Notes
+
+- Full runner JSON: `matrixark_retrieve_resource_scale.json`
+- Full runner Markdown: `matrixark_retrieve_resource_scale.md`
+- Focused JSON: `matrixark_import_batch20_resource_scale.json`
+- Local debug event log: `matrixark_retrieve_resource_scale.jsonl` kept locally because it is large raw debug output.

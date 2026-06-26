@@ -1,0 +1,251 @@
+{
+  "artifacts": {
+    "event_log_local_only": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
+    "raw_runner_report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.json",
+    "raw_runner_report_md": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.md",
+    "stdout": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/stdout.txt"
+  },
+  "backend": "local-jsonl",
+  "batch_extraction": {
+    "latency_ms": {
+      "avg": 110.233,
+      "count": 20,
+      "max": 301.453,
+      "p50": 89.269,
+      "p95": 282.667,
+      "p99": 301.453
+    },
+    "messages_written": 400,
+    "rolling_windows": 20,
+    "window_size_messages": 20
+  },
+  "record_counts": {
+    "context_child_ref": 36,
+    "context_embedding": 1304,
+    "context_entity": 338,
+    "context_entity_update_audit": 120,
+    "context_event": 621,
+    "context_extraction_audit": 20,
+    "context_index": 2826,
+    "context_node": 38,
+    "context_pack_audit": 1,
+    "context_segment": 80,
+    "context_summary": 152,
+    "context_summary_dirty": 98,
+    "context_summary_refresh_audit": 63,
+    "matrixark_audit_log": 29,
+    "matrixark_metric": 3,
+    "resource_chunk": 113,
+    "resource_import_task": 9,
+    "resource_manifest": 3,
+    "resource_registry": 3,
+    "session_buffer_event": 3
+  },
+  "resource_imports": [
+    {
+      "elapsed_ms": 189.356,
+      "file_count": null,
+      "name": "large_pdf",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 60,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 80,
+      "resource_fact_event_count": 80,
+      "resource_original_chunk_count": 60,
+      "resource_parse_warning_count": 0,
+      "resource_type": "pdf",
+      "resource_version": "1ceadd02e1f7abd3",
+      "size_bytes": 8688,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 318.439,
+      "file_count": null,
+      "name": "large_csv",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 40,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 112,
+      "resource_fact_event_count": 112,
+      "resource_original_chunk_count": 40,
+      "resource_parse_warning_count": 0,
+      "resource_type": "csv",
+      "resource_version": "91bdaf435b579175",
+      "size_bytes": 14727,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 893.187,
+      "file_count": 20,
+      "name": "repo_directory",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 13,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 26,
+      "resource_fact_event_count": 26,
+      "resource_original_chunk_count": 13,
+      "resource_parse_warning_count": 1,
+      "resource_type": "directory",
+      "resource_version": "1b8a3fbc622aa1c5",
+      "size_bytes": null,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 236.875,
+      "name": "post_resource_summary_refresh",
+      "refresh": {
+        "access": {
+          "account_id": "acct_scale",
+          "agent_name": "scale_runner",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "session_id": "session_resource_scale",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_scale"
+        },
+        "refreshed": [
+          {
+            "dirty_hash": 657228949274326728,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 9050254591536112160,
+            "node_path": [
+              "resources",
+              "scale",
+              "pdf"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 258
+            },
+            "summary_version_hash": 2867124729323482995
+          },
+          {
+            "dirty_hash": 6470271306637939711,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6910654198046711690,
+            "node_path": [
+              "resources",
+              "scale",
+              "csv"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 464
+            },
+            "summary_version_hash": 7546448463896262611
+          },
+          {
+            "dirty_hash": 3005695610036569744,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4743154237302771655,
+            "node_path": [
+              "resources"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 8,
+            "summary_generation_policy": {
+              "child_summary_count": 8,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 1519
+            },
+            "summary_version_hash": 8259417485266636021
+          },
+          {
+            "dirty_hash": 1058100196142613369,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 7374748380938904710,
+            "node_path": [
+              "resources",
+              "scale"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 8,
+            "summary_generation_policy": {
+              "child_summary_count": 8,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 1467
+            },
+            "summary_version_hash": 8467604571461627170
+          },
+          {
+            "dirty_hash": 2964262747824720423,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6466726722341936824,
+            "node_path": [
+              "resources",
+              "scale",
+              "repo"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 149
+            },
+            "summary_version_hash": 4961788965013670022
+          }
+        ],
+        "refreshed_count": 5,
+        "status": "ok"
+      },
+      "status": "ok"
+    }
+  ],
+  "sanity_retrieve": {
+    "avg_selected_refs": 68,
+    "avg_used_context_tokens": 697,
+    "elapsed_sec": 0.109,
+    "error_count": 0,
+    "errors": [],
+    "latency_ms": {
+      "avg": 107.716,
+      "count": 1,
+      "max": 107.716,
+      "p50": 107.716,
+      "p95": 107.716,
+      "p99": 107.716
+    },
+    "max_context_tokens": 700,
+    "qps": 9.179,
+    "status": "passed",
+    "total_ops": 1,
+    "workers": 1
+  },
+  "status": "passed"
+}
