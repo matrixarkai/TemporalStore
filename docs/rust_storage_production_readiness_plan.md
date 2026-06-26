@@ -277,7 +277,9 @@ native ObjectManager ownership at runtime, SlotStore layout transitions, stream-
 page compaction tied to model layout and tombstones, the continuous StorageManager
 prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load policy. Rust now
 persists a first-class slot/object/page ownership index and exposes whether reports are using that
-core index or falling back to model-map derivation, but that is still not treated as complete C++
+core index or falling back to model-map derivation. Changed objects are synchronized into that slot
+index incrementally, with slot dirty generations and PageIndex-like model id, page id,
+dirty/deleted/log flags, size, and address metadata. That is still not treated as complete C++
 runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
