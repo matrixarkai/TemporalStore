@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 RESULT_DIR="${RESULT_DIR:-/tmp/temporalstore-cpp-transport-parity-$(date +%Y%m%d-%H%M%S)}"
 TRANSPORT_REQUIRE_FRESH_BINARIES="${TRANSPORT_REQUIRE_FRESH_BINARIES:-1}"
+TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES="${TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES:-1}"
 
 DIRECT_HASH_OPS="${DIRECT_HASH_OPS:-2000}"
 DIRECT_FEATURE_KEYS="${DIRECT_FEATURE_KEYS:-16}"
@@ -59,7 +60,7 @@ echo "RUN direct SDK oracle parity"
   RESULT_DIR="${direct_dir}" \
   BUILD_TYPE="${BUILD_TYPE}" \
   REQUIRE_FRESH_BINARIES="${TRANSPORT_REQUIRE_FRESH_BINARIES}" \
-  REQUIRE_NO_TEMPORALSTORE_PROCESSES=1 \
+  REQUIRE_NO_TEMPORALSTORE_PROCESSES="${TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES}" \
   RUN_PYTHON_DIRECT_STRESS=1 \
   PYTHON_DIRECT_STRESS_HASH_OPS="${DIRECT_HASH_OPS}" \
   PYTHON_DIRECT_STRESS_FEATURE_KEYS="${DIRECT_FEATURE_KEYS}" \
@@ -76,7 +77,9 @@ echo "RUN direct SDK oracle parity"
 ) | tee "${RESULT_DIR}/direct_sdk_oracle.out"
 
 stop_cluster_processes benchdirectparity
-wait_for_no_temporalstore_processes
+if [[ "${TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES}" == "1" ]]; then
+  wait_for_no_temporalstore_processes
+fi
 
 echo "RUN live C++ proxy verified parity"
 (
@@ -84,7 +87,7 @@ echo "RUN live C++ proxy verified parity"
   RESULT_DIR="${proxy_dir}" \
   BUILD_TYPE="${BUILD_TYPE}" \
   REQUIRE_FRESH_BINARIES="${TRANSPORT_REQUIRE_FRESH_BINARIES}" \
-  REQUIRE_NO_TEMPORALSTORE_PROCESSES=1 \
+  REQUIRE_NO_TEMPORALSTORE_PROCESSES="${TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES}" \
   CLUSTER_NAME=benchproxyparity \
   NAMESPACE_NAME=sdk_ns \
   TABLE_NAME=sdk_table \
@@ -103,7 +106,9 @@ echo "RUN live C++ proxy verified parity"
 ) | tee "${RESULT_DIR}/live_proxy_verified.out"
 
 stop_cluster_processes benchproxyparity
-wait_for_no_temporalstore_processes
+if [[ "${TRANSPORT_REQUIRE_NO_TEMPORALSTORE_PROCESSES}" == "1" ]]; then
+  wait_for_no_temporalstore_processes
+fi
 
 python3 - "$RESULT_DIR" <<'PY'
 import json

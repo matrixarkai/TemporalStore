@@ -265,6 +265,7 @@ if [[ "${RUN_CPP_PROXY_PARITY}" == "1" ]]; then
       "${CPP_PROXY_PRESSURE_VERIFY_TIMEOUT_MS}" \
       "${CPP_PROXY_PRESSURE_VERIFY_POLL_MS}" \
       "${CPP_PROXY_PRESSURE_WRITE_RETRIES}" \
+      2>> "${RESULT_DIR}/cpp_proxy_pressure.err" \
       | tee "${RESULT_DIR}/cpp_proxy_pressure.out"
     proxy_pressure_code=${PIPESTATUS[0]}
     set -e
