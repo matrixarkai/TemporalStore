@@ -2188,6 +2188,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "scope": scope,
         "metadata": metadata,
         "ingestion_time_ms": now_ms(),
+        "storage_options": normalize_storage_options(args, metadata),
     }
     for field in [
         "context_pack_id",
@@ -2208,6 +2209,57 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         if field in args:
             envelope[field] = args[field]
     return envelope
+
+
+def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
+    metadata = metadata if isinstance(metadata, dict) else optional_object(args, "metadata")
+    raw_options = args.get("storage_options")
+    options = dict(raw_options) if isinstance(raw_options, dict) else {}
+    metadata_options = metadata.get("storage_options") if isinstance(metadata, dict) else None
+    if isinstance(metadata_options, dict):
+        options = {**metadata_options, **options}
+    aliases = {
+        "temporalstore_storage_mode": "storage_mode",
+        "temporalstore_oplog_mode": "oplog_mode",
+        "temporalstore_replication_mode": "replication_mode",
+        "temporalstore_raft_mode": "raft_mode",
+        "temporalstore_consistency": "consistency",
+    }
+    for source, target in aliases.items():
+        if source in args:
+            options[target] = args[source]
+        if isinstance(metadata, dict) and source in metadata:
+            options.setdefault(target, metadata[source])
+    if not options:
+        return {}
+
+    allowed = {
+        "storage_mode": {"default", "local", "single_node", "multi_node", "shared_store", "raft"},
+        "oplog_mode": {"default", "async", "sync"},
+        "replication_mode": {"default", "none", "shared_store", "raft"},
+        "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
+    }
+    normalized: Json = {}
+    for key, value in options.items():
+        if key == "raft_mode":
+            if not isinstance(value, bool):
+                raise MatrixArkError("storage_options.raft_mode must be a boolean")
+            normalized[key] = value
+            continue
+        if key not in allowed:
+            normalized[key] = value
+            continue
+        if not isinstance(value, str):
+            raise MatrixArkError(f"storage_options.{key} must be a string")
+        compact = value.strip().lower().replace("-", "_")
+        if compact not in allowed[key]:
+            raise MatrixArkError(f"storage_options.{key} must be one of {sorted(allowed[key])}")
+        normalized[key] = compact
+    if normalized.get("raft_mode") is True:
+        normalized.setdefault("replication_mode", "raft")
+        normalized.setdefault("storage_mode", "raft")
+    normalized["request_level"] = True
+    return normalized
 
 
 def text_from_messages(messages: list[Json]) -> str:

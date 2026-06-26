@@ -398,6 +398,7 @@ class MatrixArkLocalAdapter:
                 "commit_reason": commit_reason,
             }
         metadata = optional_object(args, "metadata")
+        storage_options = normalize_storage_options(args, metadata)
         if "node_path" not in metadata:
             metadata = {**metadata, "node_path": self.default_session_node_path(scope)}
         batch_result = self.batch_extract(
@@ -405,6 +406,7 @@ class MatrixArkLocalAdapter:
                 "messages": messages,
                 "scope": scope,
                 "metadata": metadata,
+                "storage_options": storage_options,
                 "threshold_messages": threshold,
                 "force": True,
                 "derive_from_existing_events": True,
@@ -439,6 +441,7 @@ class MatrixArkLocalAdapter:
                 "idle_timeout_ms": idle_timeout_ms,
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "agent_hook": hook,
+                "storage_options": storage_options,
                 "created_at_ms": now_ms(),
             }
         )
@@ -1229,6 +1232,7 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": envelope["scope"],
+                        "storage_options": envelope.get("storage_options", {}),
                         "wait": resource_import_wait,
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
@@ -1264,6 +1268,7 @@ class MatrixArkLocalAdapter:
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "scope": envelope["scope"],
+                            "storage_options": envelope.get("storage_options", {}),
                             "updated_at_ms": now_ms(),
                         }
                     )
@@ -1341,6 +1346,7 @@ class MatrixArkLocalAdapter:
                     "node_hash": node_hash,
                     "node_path": node_path,
                     "scope": envelope["scope"],
+                    "storage_options": envelope.get("storage_options", {}),
                     "updated_at_ms": now_ms(),
                 }
             )
@@ -1385,6 +1391,7 @@ class MatrixArkLocalAdapter:
                             "token_estimate": parsed_skill.token_estimate,
                             "metadata": parsed_skill.metadata,
                             "scope": envelope["scope"],
+                            "storage_options": envelope.get("storage_options", {}),
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -1572,6 +1579,7 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": envelope["scope"],
+                        "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -1992,6 +2000,7 @@ class MatrixArkLocalAdapter:
                 "internal_extraction": extraction,
                 "prior_context": prior_context,
                 "agent_hook": hook,
+                "storage_options": envelope.get("storage_options", {}),
             }
             self.append(record)
             event_index_terms = ordered_unique(
@@ -2188,6 +2197,7 @@ class MatrixArkLocalAdapter:
                         },
                         "prior_context": prior_context,
                         "agent_hook": hook,
+                        "storage_options": envelope.get("storage_options", {}),
                     }
                 )
                 records_to_append.append(
@@ -2638,6 +2648,7 @@ class MatrixArkLocalAdapter:
         started_perf = time.perf_counter()
         query = require_string(args, "query")
         scope = optional_object(args, "scope")
+        storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
         raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
         try:
@@ -3304,6 +3315,7 @@ class MatrixArkLocalAdapter:
                     "business": optional_object(ranking, "weights").get("business", DEFAULT_BUSINESS_WEIGHT),
                 },
                 "auxiliary_quota": auxiliary_quota,
+                "storage_options": storage_options,
                 "hard_deadline": {
                     "deadline_ms": deadline_ms,
                     "elapsed_ms": round((time.perf_counter() - started_perf) * 1000.0, 3),
@@ -3349,6 +3361,7 @@ class MatrixArkLocalAdapter:
                 "question_type": question_type,
                 "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
+                "storage_options": storage_options,
                 "local_context_policy": pack["local_context_policy"],
                 "used_local_context_tokens": pack["used_local_context_tokens"],
                 "used_remote_context_tokens": pack["used_remote_context_tokens"],
