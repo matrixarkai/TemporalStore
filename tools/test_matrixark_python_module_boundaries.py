@@ -35,6 +35,18 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             except ValueError:
                 pass
 
+
+    def test_mcp_entrypoint_reexports_split_modules(self) -> None:
+        server_mod = importlib.import_module("tools.matrixark_mcp_server")
+        metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
+        local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
+        temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
+
+        self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
+        self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
+        self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
+        self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
+
     def test_core_module_has_no_duplicate_top_level_symbols(self) -> None:
         module_path = TOOLS_DIR / "matrixark_mcp_core.py"
         tree = ast.parse(module_path.read_text(encoding="utf-8"))
@@ -137,10 +149,16 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual("accepted", ingest["status"])
         records = server.adapter.read_all()
         event = next(record for record in records if record.get("record_type") == "context_event")
-        self.assertEqual("async", event["storage_options"]["oplog_mode"])
-        self.assertEqual("raft", event["storage_options"]["storage_mode"])
-        self.assertEqual("raft", event["storage_options"]["replication_mode"])
-        self.assertTrue(event["storage_options"]["raft_mode"])
+        debug = next(
+            record
+            for record in records
+            if record.get("record_type") == "context_debug_record" and record.get("ref_hash") == event.get("event_id_hash")
+        )
+        storage_options = debug["debug_payload"]["storage_options"]
+        self.assertEqual("async", storage_options["oplog_mode"])
+        self.assertEqual("raft", storage_options["storage_mode"])
+        self.assertEqual("raft", storage_options["replication_mode"])
+        self.assertTrue(storage_options["raft_mode"])
 
         pack = server.call_tool(
             "matrixark_retrieve",
