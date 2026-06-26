@@ -49,6 +49,28 @@ enum class EventReplicationMode {
 struct RequestOptions {
     uint64_t trace_id = 0;
     EventReplicationMode event_replication_mode = EventReplicationMode::kInherit;
+
+    static RequestOptions ForReplication(EventReplicationMode mode, uint64_t trace_id = 0) {
+        RequestOptions options;
+        options.trace_id = trace_id;
+        options.event_replication_mode = mode;
+        return options;
+    }
+
+    RequestOptions& UseAsyncStorage() {
+        event_replication_mode = EventReplicationMode::kAsyncStorage;
+        return *this;
+    }
+
+    RequestOptions& UseSyncStorage() {
+        event_replication_mode = EventReplicationMode::kSyncStorage;
+        return *this;
+    }
+
+    RequestOptions& UseRaft() {
+        event_replication_mode = EventReplicationMode::kRaft;
+        return *this;
+    }
 };
 
 // NOTE: deprecated, please use swig_client

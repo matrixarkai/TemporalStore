@@ -1806,6 +1806,31 @@ impl EventReplicationMode {
     }
 }
 
+impl ExecuteRequest {
+    pub fn with_replication_mode(
+        self,
+        replication_mode: EventReplicationMode,
+    ) -> ReplicatedExecuteRequest {
+        ReplicatedExecuteRequest {
+            shard_id: self.shard_id,
+            command: self.command,
+            replication_mode,
+        }
+    }
+
+    pub fn with_async_storage(self) -> ReplicatedExecuteRequest {
+        self.with_replication_mode(EventReplicationMode::AsyncStorage)
+    }
+
+    pub fn with_sync_storage(self) -> ReplicatedExecuteRequest {
+        self.with_replication_mode(EventReplicationMode::SyncStorage)
+    }
+
+    pub fn with_raft(self) -> ReplicatedExecuteRequest {
+        self.with_replication_mode(EventReplicationMode::Raft)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventReplicationSelectionReport {
     pub requested_mode: EventReplicationMode,
@@ -1824,11 +1849,46 @@ pub struct ReplicatedExecuteRequest {
     pub replication_mode: EventReplicationMode,
 }
 
+impl ReplicatedExecuteRequest {
+    pub fn new(
+        shard_id: ShardId,
+        command: Command,
+        replication_mode: EventReplicationMode,
+    ) -> Self {
+        Self {
+            shard_id,
+            command,
+            replication_mode,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ReplicatedCommand {
     pub command: Command,
     #[serde(default)]
     pub replication_mode: EventReplicationMode,
+}
+
+impl ReplicatedCommand {
+    pub fn new(command: Command, replication_mode: EventReplicationMode) -> Self {
+        Self {
+            command,
+            replication_mode,
+        }
+    }
+
+    pub fn async_storage(command: Command) -> Self {
+        Self::new(command, EventReplicationMode::AsyncStorage)
+    }
+
+    pub fn sync_storage(command: Command) -> Self {
+        Self::new(command, EventReplicationMode::SyncStorage)
+    }
+
+    pub fn raft(command: Command) -> Self {
+        Self::new(command, EventReplicationMode::Raft)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1859,6 +1919,33 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // shared-corpus: dynamic_event_replication_mode_selection
+    #[test]
+    fn caller_can_select_event_replication_mode_with_helpers() {
+        let request = ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringSet {
+                key: "caller-choice".to_string(),
+                value: b"raft".to_vec(),
+            },
+        }
+        .with_raft();
+        assert_eq!(request.replication_mode, EventReplicationMode::Raft);
+
+        let batch_command = ReplicatedCommand::sync_storage(Command::HashSet {
+            key: "caller-choice".to_string(),
+            field: "mode".to_string(),
+            value: b"sync".to_vec(),
+        });
+        assert_eq!(
+            batch_command.replication_mode,
+            EventReplicationMode::SyncStorage
+        );
+        assert!(!EventReplicationMode::AsyncStorage.requires_restart());
+        assert!(!EventReplicationMode::SyncStorage.requires_restart());
+        assert!(!EventReplicationMode::Raft.requires_restart());
+    }
 
     // shared-corpus: context_cpp_wire_model_descriptor_roundtrip
     #[test]

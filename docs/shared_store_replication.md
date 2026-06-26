@@ -45,6 +45,60 @@ callers use `ReplicatedExecuteRequest` or `ReplicatedBatchExecuteRequest` with
 which is carried through `RequestOption.event_replication_mode`. `raft` requires an initialized
 data-Raft backend; otherwise the request fails closed with the existing failed-precondition status.
 
+Rust SDK-style usage:
+
+```rust
+let request = ExecuteRequest {
+    shard_id: 1,
+    command: Command::StringSet {
+        key: "event-key".to_string(),
+        value: b"value".to_vec(),
+    },
+};
+
+engine.execute_replicated(request.with_async_storage());
+engine.execute_replicated(request.clone().with_sync_storage());
+engine.execute_replicated(request.with_raft());
+```
+
+Rust HTTP usage:
+
+```json
+{
+  "shard_id": 1,
+  "replication_mode": "sync_storage",
+  "command": {
+    "kind": "string_set",
+    "key": "event-key",
+    "value": [118, 97, 108, 117, 101]
+  }
+}
+```
+
+Send that body to `/execute_replicated`. For batches, send `ReplicatedBatchExecuteRequest` to
+`/batch_execute_replicated` and set each command's `replication_mode`.
+
+C++ client usage:
+
+```cpp
+bcache2::client::RequestOptions async_opts =
+    bcache2::client::RequestOptions::ForReplication(
+        bcache2::client::EventReplicationMode::kAsyncStorage);
+bcache2::client::RequestOptions sync_opts =
+    bcache2::client::RequestOptions::ForReplication(
+        bcache2::client::EventReplicationMode::kSyncStorage);
+bcache2::client::RequestOptions raft_opts =
+    bcache2::client::RequestOptions::ForReplication(
+        bcache2::client::EventReplicationMode::kRaft);
+
+table->Set("async-key", "value", async_opts);
+table->Set("sync-key", "value", sync_opts);
+table->Set("raft-key", "value", raft_opts);
+```
+
+Callers can also mutate an existing C++ options object with `UseAsyncStorage()`,
+`UseSyncStorage()`, or `UseRaft()`.
+
 The primary can publish:
 
 1. `publish_oplog_entry` for each committed mutation command.
