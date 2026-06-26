@@ -505,6 +505,33 @@ impl TemporalEngine {
         storage_physical_index_report(shard_id, shard, summaries)
     }
 
+    pub fn object_manager_runtime_report(&self, shard_id: ShardId) -> ObjectManagerRuntimeReport {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return ObjectManagerRuntimeReport {
+                shard_id,
+                blockers: vec!["shard is not loaded".to_string()],
+                ..ObjectManagerRuntimeReport::default()
+            };
+        };
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        object_manager_runtime_report(
+            shard_id,
+            shard,
+            info.as_ref()
+                .map(|info| info.start_routing_slot)
+                .unwrap_or_default(),
+            info.as_ref()
+                .map(|info| info.end_routing_slot)
+                .unwrap_or(u32::MAX),
+        )
+    }
+
     pub fn routing_slot_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
         let info = self
             .infos
@@ -10302,6 +10329,129 @@ fn storage_physical_index_report(
         cpp_packed_layout_compatible: true,
         slot_nodes: slots.into_values().collect(),
     }
+}
+
+fn object_manager_runtime_report(
+    shard_id: ShardId,
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> ObjectManagerRuntimeReport {
+    let ownership =
+        slot_object_page_ownership_report(shard_id, shard, start_routing_slot, end_routing_slot);
+    let lifecycle = storage_object_lifecycle_report(shard_id, shard);
+    let mut report = ObjectManagerRuntimeReport {
+        shard_id,
+        routing_slot_count: shard.slot_objects.len() as u64,
+        dirty_slot_count: shard.dirty_slots.len() as u64,
+        max_dirty_generation: shard
+            .slot_dirty_generations
+            .values()
+            .copied()
+            .max()
+            .unwrap_or_default(),
+        missing_owner_page_ref_count: ownership.missing_owner_page_ref_count,
+        owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
+        reused_object_id_conflict_count: lifecycle.reused_object_id_conflicts,
+        evidence: vec![
+            "runtime owns hot/cold/tombstone object state in slot_objects".to_string(),
+            "runtime tracks dirty generations and dirty routing slots".to_string(),
+            "runtime tracks model layout state and transitions per object".to_string(),
+            "runtime validates owner refs before reporting ready".to_string(),
+        ],
+        ..ObjectManagerRuntimeReport::default()
+    };
+
+    for objects in shard.slot_objects.values() {
+        for object in objects.values() {
+            report.object_count = report.object_count.saturating_add(1);
+            report.page_ref_count = report
+                .page_ref_count
+                .saturating_add(object.pages.len() as u64);
+            if object.dirty {
+                report.dirty_object_count = report.dirty_object_count.saturating_add(1);
+            }
+            if object.loading {
+                report.loading_object_count = report.loading_object_count.saturating_add(1);
+            }
+            if object.meta {
+                report.meta_object_count = report.meta_object_count.saturating_add(1);
+            }
+            if object.ttl_expires_at_ms.is_some() {
+                report.ttl_object_count = report.ttl_object_count.saturating_add(1);
+            }
+            report.layout_transition_count = report
+                .layout_transition_count
+                .saturating_add(object.layout_transition_count);
+
+            let state = if object.layout_state == SlotLayoutState::Unknown {
+                slot_layout_state_for_object(object)
+            } else {
+                object.layout_state.clone()
+            };
+            match state {
+                SlotLayoutState::MemoryHot => {
+                    report.hot_object_count = report.hot_object_count.saturating_add(1);
+                }
+                SlotLayoutState::ObjectPage => {
+                    report.cold_object_count = report.cold_object_count.saturating_add(1);
+                    report.object_page_count = report.object_page_count.saturating_add(1);
+                }
+                SlotLayoutState::PackedTimestampedPage => {
+                    report.cold_object_count = report.cold_object_count.saturating_add(1);
+                    report.packed_timestamped_page_count =
+                        report.packed_timestamped_page_count.saturating_add(1);
+                }
+                SlotLayoutState::MultiPageObject => {
+                    let has_hot = object
+                        .pages
+                        .iter()
+                        .any(|page| page.address.page_segment_id == HOT_PAGE_SEGMENT_ID);
+                    let has_cold = object
+                        .pages
+                        .iter()
+                        .any(|page| page.address.page_segment_id != HOT_PAGE_SEGMENT_ID);
+                    if has_hot && has_cold {
+                        report.mixed_residency_object_count =
+                            report.mixed_residency_object_count.saturating_add(1);
+                    } else if has_hot {
+                        report.hot_object_count = report.hot_object_count.saturating_add(1);
+                    } else {
+                        report.cold_object_count = report.cold_object_count.saturating_add(1);
+                    }
+                    report.multi_page_object_count =
+                        report.multi_page_object_count.saturating_add(1);
+                }
+                SlotLayoutState::Tombstone => {
+                    report.tombstone_object_count = report.tombstone_object_count.saturating_add(1);
+                }
+                SlotLayoutState::Unknown => {}
+            }
+        }
+    }
+
+    if !ownership.first_class_index_present {
+        report
+            .blockers
+            .push("first-class slot_objects runtime index is empty".to_string());
+    }
+    if ownership.missing_owner_page_ref_count > 0 {
+        report
+            .blockers
+            .push("page refs are missing object/routing-slot ownership metadata".to_string());
+    }
+    if ownership.owner_mismatch_page_ref_count > 0 {
+        report
+            .blockers
+            .push("page refs disagree with expected object owners".to_string());
+    }
+    if lifecycle.reused_object_id_conflicts > 0 {
+        report
+            .blockers
+            .push("object id reuse conflicts are present".to_string());
+    }
+    report.runtime_ready = report.blockers.is_empty();
+    report
 }
 
 fn merge_last_dump_sequence(

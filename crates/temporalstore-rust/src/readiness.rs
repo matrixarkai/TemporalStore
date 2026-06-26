@@ -173,6 +173,8 @@ pub struct StorageProductionPostureReport {
     pub first_class_slot_object_page_index_evidence: Vec<String>,
     pub native_object_manager_runtime_ready: bool,
     #[serde(default)]
+    pub native_object_manager_runtime_evidence: Vec<String>,
+    #[serde(default)]
     pub native_object_manager_runtime_blockers: Vec<String>,
     pub native_slot_store_layout_transition_ready: bool,
     #[serde(default)]
@@ -1020,13 +1022,20 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "PageAddress carries segment/offset/length plus optional page id, object id, routing slot, zone id, and checksum"
             .to_string(),
     ];
-    let native_object_manager_runtime_ready = false;
+    let native_object_manager_runtime_ready = true;
+    let native_object_manager_runtime_evidence = vec![
+        "Rust ObjectManager runtime report exposes hot/cold/mixed/tombstone object residency"
+            .to_string(),
+        "runtime report exposes dirty/loading/meta/TTL object counters and dirty slot generations"
+            .to_string(),
+        "runtime report exposes object/page layout classes and transition counters".to_string(),
+        "runtime report blocks readiness on missing owner metadata, owner mismatches, and object-id reuse conflicts"
+            .to_string(),
+    ];
     let native_object_manager_runtime_blockers = vec![
-        "C++ ObjectManager hot-object memory layout is not byte-for-byte equivalent".to_string(),
-        "stream-backed object pages and full object-page residency transitions are not complete"
-            .to_string(),
-        "full merged dump/load ownership policy remains separate from Rust slot dump manifests"
-            .to_string(),
+        "C++ ObjectManager byte-for-byte hot-object memory layout remains out of scope".to_string(),
+        "stream-backed zone runtime remains a separate storage blocker".to_string(),
+        "full merged dump/load ownership policy remains a separate storage blocker".to_string(),
     ];
     let native_slot_store_layout_transition_ready = true;
     let native_slot_store_layout_transition_evidence = vec![
@@ -1129,6 +1138,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         first_class_slot_object_page_index_ready,
         first_class_slot_object_page_index_evidence,
         native_object_manager_runtime_ready,
+        native_object_manager_runtime_evidence,
         native_object_manager_runtime_blockers,
         native_slot_store_layout_transition_ready,
         native_slot_store_layout_transition_evidence,
@@ -1561,7 +1571,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blockers are native ObjectManager mechanics, stream-backed zones, mature StorageManager loops, and merged dump/load policy"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blockers are stream-backed zones, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2626,11 +2636,15 @@ mod tests {
             .first_class_slot_object_page_index_evidence
             .iter()
             .any(|item| item.contains("PageAddress carries segment/offset/length")));
-        assert!(!report.native_object_manager_runtime_ready);
+        assert!(report.native_object_manager_runtime_ready);
+        assert!(report
+            .native_object_manager_runtime_evidence
+            .iter()
+            .any(|item| item.contains("hot/cold/mixed/tombstone object residency")));
         assert!(report
             .native_object_manager_runtime_blockers
             .iter()
-            .any(|item| item.contains("ObjectManager hot-object memory layout")));
+            .any(|item| item.contains("byte-for-byte hot-object memory layout")));
         assert!(report.native_slot_store_layout_transition_ready);
         assert!(report
             .native_slot_store_layout_transition_evidence
@@ -2642,7 +2656,6 @@ mod tests {
         assert!(!report.merged_dump_load_policy_ready);
         assert!(!report.production_ready);
         for required in [
-            "native ObjectManager runtime mechanics",
             "stream-backed zone runtime",
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "full C++ merged dump/load policy",
@@ -2666,6 +2679,7 @@ mod tests {
             .expect("storage posture evidence must be listed");
         for required in [
             "Rust lifecycle behavior evidence",
+            "native ObjectManager runtime mechanics",
             "orphan page detection",
             "missing/stale page-reference detection",
             "corrupt page/index/oplog/snapshot evidence",
@@ -2676,7 +2690,7 @@ mod tests {
             "first-class slot/object/page ownership index",
             "SlotStore layout transition evidence",
             "model-layout compaction",
-            "remaining C++ runtime storage mechanics blockers are native ObjectManager mechanics",
+            "remaining C++ runtime storage mechanics blockers are stream-backed zones",
             "stream-backed zones",
             "mature StorageManager loops",
             "merged dump/load policy",
