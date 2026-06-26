@@ -27,6 +27,37 @@ try:
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
 
+
+def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
+    if total <= 0:
+        return 0.0
+    target = max(1, math.ceil(total * quantile))
+    previous_bound = 0.0
+    for count, bound in zip(buckets, bucket_bounds):
+        if int(count) >= target:
+            return previous_bound if bound == float("inf") else float(bound)
+        if bound != float("inf"):
+            previous_bound = float(bound)
+    return previous_bound
+
+
+def _latency_quantile_from_bucket_map(buckets: dict[str, Any], total: int, quantile: float) -> float:
+    if total <= 0:
+        return 0.0
+    parsed: list[tuple[float, int]] = []
+    for key, value in buckets.items():
+        bound = float("inf") if str(key) == "+Inf" else float(key)
+        parsed.append((bound, int(value or 0)))
+    parsed.sort(key=lambda item: item[0])
+    target = max(1, math.ceil(total * quantile))
+    previous = 0.0
+    for bound, count in parsed:
+        if count >= target:
+            return previous if bound == float("inf") else bound
+        if bound != float("inf"):
+            previous = bound
+    return previous
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     """MatrixArk storage adapter backed by the native C++ TemporalStore SDK.
 
@@ -144,7 +175,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _backend_prometheus(self) -> str:
         self._ensure_backend_metric_fields()
-        backend = "cpp" if self._backend_label() == "temporalstore-direct" else self._backend_label()
+        backend = "cpp" if self._backend_label() in {"temporalstore-direct", "temporalstore-cpp"} else self._backend_label()
         with self._metrics_lock:
             elapsed_s = max(0.001, (now_ms() - self._metrics_started_at_ms) / 1000.0)
             lines = [
@@ -160,6 +191,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.",
                 "# TYPE matrixark_backend_timeouts_total counter",
                 f'matrixark_backend_timeouts_total{{backend="{backend}"}} {self._timeouts_total}',
+                "# HELP matrixark_backend_info MatrixArk storage backend identity and mode.",
+                "# TYPE matrixark_backend_info gauge",
+                f'matrixark_backend_info{{backend="{backend}",storage_mode="direct-sdk"}} 1',
+                "# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.",
+                "# TYPE matrixark_backend_ready gauge",
+                f'matrixark_backend_ready{{backend="{backend}",storage_mode="direct-sdk",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
+                "# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.",
+                "# TYPE matrixark_backend_command_latency_ms gauge",
+                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.50"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.50), 3)}',
+                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.95"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.95), 3)}',
+                f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.99"}} {round(_latency_quantile_from_cumulative_buckets(self._latency_buckets, MatrixArkServiceMetrics.LATENCY_BUCKETS_MS, self._commands_total, 0.99), 3)}',
                 "# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.",
                 "# TYPE matrixark_backend_command_latency_ms_bucket counter",
                 "# HELP matrixark_backend_command_latency_ms_sum MatrixArk storage backend command latency sum in milliseconds.",
@@ -1123,6 +1165,17 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             "# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.",
             "# TYPE matrixark_backend_timeouts_total counter",
             f'matrixark_backend_timeouts_total{{backend="{backend}"}} {int(snapshot.get("timeouts_total") or 0)}',
+            "# HELP matrixark_backend_info MatrixArk storage backend identity and mode.",
+            "# TYPE matrixark_backend_info gauge",
+            f'matrixark_backend_info{{backend="{backend}",storage_mode="rust-gateway"}} 1',
+            "# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.",
+            "# TYPE matrixark_backend_ready gauge",
+            f'matrixark_backend_ready{{backend="{backend}",storage_mode="rust-gateway",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
+            "# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.",
+            "# TYPE matrixark_backend_command_latency_ms gauge",
+            f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.50"}} {round(_latency_quantile_from_bucket_map(buckets, int(snapshot.get("latency_ms_count") or 0), 0.50), 3)}',
+            f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.95"}} {round(_latency_quantile_from_bucket_map(buckets, int(snapshot.get("latency_ms_count") or 0), 0.95), 3)}',
+            f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.99"}} {round(_latency_quantile_from_bucket_map(buckets, int(snapshot.get("latency_ms_count") or 0), 0.99), 3)}',
             "# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.",
             "# TYPE matrixark_backend_command_latency_ms_bucket counter",
         ]

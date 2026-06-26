@@ -400,6 +400,27 @@ fn render_prometheus_metrics(
             "# HELP matrixark_backend_timeouts_total Backend-normalized timeout count.\n",
             "# TYPE matrixark_backend_timeouts_total counter\n",
             "matrixark_backend_timeouts_total{{backend=\"rust\"}} 0\n",
+            "# HELP matrixark_backend_info MatrixArk backend identity and storage mode.\n",
+            "# TYPE matrixark_backend_info gauge\n",
+            "matrixark_backend_info{{backend=\"rust\",storage_mode=\"rust-gateway\"}} 1\n",
+            "# HELP matrixark_backend_ready MatrixArk backend readiness state, 1 for ready and 0 for not ready.\n",
+            "# TYPE matrixark_backend_ready gauge\n",
+            "matrixark_backend_ready{{backend=\"rust\",storage_mode=\"rust-gateway\",status=\"ready\"}} 1\n",
+            "# HELP matrixark_backend_records_written_total Backend-normalized records/hash entries written.\n",
+            "# TYPE matrixark_backend_records_written_total counter\n",
+            "matrixark_backend_records_written_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_records_read_total Backend-normalized records/hash entries read.\n",
+            "# TYPE matrixark_backend_records_read_total counter\n",
+            "matrixark_backend_records_read_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_context_records_total MatrixArk context record count observed by backend.\n",
+            "# TYPE matrixark_context_records_total gauge\n",
+            "matrixark_context_records_total{{backend=\"rust\"}} {}\n",
+            "# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.\n",
+            "# TYPE matrixark_backend_audit_buffered_records gauge\n",
+            "matrixark_backend_audit_buffered_records{{backend=\"rust\"}} 0\n",
+            "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.\n",
+            "# TYPE matrixark_backend_audit_flush_failures_total counter\n",
+            "matrixark_backend_audit_flush_failures_total{{backend=\"rust\"}} 0\n",
             "# HELP matrixark_rust_record_log_cached_clients Cached TemporalEngine clients in the long-lived Rust gateway.\n",
             "# TYPE matrixark_rust_record_log_cached_clients gauge\n",
             "matrixark_rust_record_log_cached_clients {}\n",
@@ -435,12 +456,36 @@ fn render_prometheus_metrics(
         qps,
         command_count,
         failed_count,
+        records_written,
+        records_read,
+        records_written,
         cached_clients,
         cached_clients,
         records_written,
         records_read,
         records_written.saturating_add(records_read)
     );
+    output.push_str("# HELP matrixark_backend_command_latency_ms Backend-normalized command latency quantiles in milliseconds.\n");
+    output.push_str("# TYPE matrixark_backend_command_latency_ms gauge\n");
+    for (quantile, value) in [
+        (
+            "0.50",
+            bucket_quantile(latency_buckets, command_count, 0.50),
+        ),
+        (
+            "0.95",
+            bucket_quantile(latency_buckets, command_count, 0.95),
+        ),
+        (
+            "0.99",
+            bucket_quantile(latency_buckets, command_count, 0.99),
+        ),
+    ] {
+        output.push_str(&format!(
+            "matrixark_backend_command_latency_ms{{backend=\"rust\",quantile=\"{}\"}} {}\n",
+            quantile, value
+        ));
+    }
     for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
         output.push_str(&format!(
             "matrixark_rust_record_log_command_latency_ms_bucket{{le=\"{}\"}} {}\n",
@@ -485,6 +530,25 @@ fn render_prometheus_metrics(
         latency_max_ms, latency_max_ms
     ));
     output
+}
+
+fn bucket_quantile(
+    latency_buckets: &[u64; LATENCY_BUCKETS_MS.len()],
+    total: u64,
+    quantile: f64,
+) -> u128 {
+    if total == 0 {
+        return 0;
+    }
+    let target = ((total as f64) * quantile).ceil().max(1.0) as u64;
+    let mut previous = 0;
+    for (idx, count) in latency_buckets.iter().enumerate() {
+        if *count >= target {
+            return LATENCY_BUCKETS_MS[idx];
+        }
+        previous = LATENCY_BUCKETS_MS[idx];
+    }
+    previous
 }
 
 fn unix_ms() -> u128 {

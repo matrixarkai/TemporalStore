@@ -168,3 +168,25 @@ Scale SLO metrics are harness evidence fields, not normal process `/metrics` end
 - `temporalstore_scale_error_budget_remaining`
 
 Grafana panels and alerts reserve these names for Docker/AWS scale report ingestion. The ops scale readiness harness remains responsible for producing and validating the actual SLO evidence.
+
+
+### matrixark_backend
+
+C++/Rust MatrixArk parity question: are the storage-facing backends serving the same context pipeline SLOs for traffic, latency, records, audit buffering, and readiness?
+
+Rust metrics:
+
+- `matrixark_backend_qps`
+- `matrixark_backend_commands_total`
+- `matrixark_backend_errors_total`
+- `matrixark_backend_timeouts_total`
+- `matrixark_backend_command_latency_ms`
+- `matrixark_backend_command_latency_ms_bucket`
+- `matrixark_backend_records_written_total`
+- `matrixark_backend_records_read_total`
+- `matrixark_context_records_total`
+- `matrixark_backend_audit_buffered_records`
+- `matrixark_backend_audit_flush_failures_total`
+- `matrixark_backend_ready`
+
+C++ metrics use the same backend-normalized `matrixark_backend_*` families through the C++ TemporalStore direct adapter, so Grafana can compare `backend="cpp"` and `backend="rust"` without panel forks.
