@@ -7265,13 +7265,13 @@
         {
           "command": {
             "field": "increment_would_overflow",
-            "increment": 9223372036854775807,
+            "increment": 9223372036854776000,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": 9223372036854775807
+            "value": 9223372036854776000
           },
           "name": "set_max_signed"
         },
@@ -7291,13 +7291,13 @@
         {
           "command": {
             "field": "decrement_would_overflow",
-            "increment": -9223372036854775808,
+            "increment": -9223372036854776000,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": -9223372036854775808
+            "value": -9223372036854776000
           },
           "name": "set_min_signed"
         },
