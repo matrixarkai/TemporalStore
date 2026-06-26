@@ -5709,6 +5709,8 @@ impl TemporalEngine {
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+        let slot_layout_transition_count_after = slot_layout_transition_count(shard);
+        let slot_layout_states_after = slot_layout_state_counts(shard);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let object_manager_after =
@@ -10176,10 +10178,24 @@ fn slot_page_ref_from_entry(entry: LivePageEntry, dirty: bool) -> SlotObjectPage
     }
 }
 
-fn remove_slot_object_refs_for_key(shard: &mut ShardState, object_key: &str) {
+fn remove_slot_object_refs_for_key(
+    shard: &mut ShardState,
+    object_key: &str,
+) -> Vec<SlotObjectEntry> {
+    let mut removed = Vec::new();
     let mut empty_slots = Vec::new();
     for (routing_slot, objects) in &mut shard.slot_objects {
-        objects.retain(|_, object| object.object_key != object_key);
+        let removed_ids = objects
+            .iter()
+            .filter_map(|(object_id, object)| {
+                (object.object_key == object_key).then_some(*object_id)
+            })
+            .collect::<Vec<_>>();
+        for object_id in removed_ids {
+            if let Some(object) = objects.remove(&object_id) {
+                removed.push(object);
+            }
+        }
         if objects.is_empty() {
             empty_slots.push(*routing_slot);
         }
@@ -10187,6 +10203,142 @@ fn remove_slot_object_refs_for_key(shard: &mut ShardState, object_key: &str) {
     for routing_slot in empty_slots {
         shard.slot_objects.remove(&routing_slot);
     }
+    removed
+}
+
+fn timestamped_layout_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "feature"
+            | "sequence"
+            | "ips"
+            | "context_event"
+            | "context_index"
+            | "context_audit"
+            | "context_dirty"
+            | "context_child"
+            | "context_summary"
+            | "context_compression"
+    )
+}
+
+fn slot_layout_state_for_object(object: &SlotObjectEntry) -> SlotLayoutState {
+    if object.pages.is_empty() {
+        return SlotLayoutState::Tombstone;
+    }
+    if object
+        .pages
+        .iter()
+        .all(|page| page.address.page_segment_id == HOT_PAGE_SEGMENT_ID)
+    {
+        return SlotLayoutState::MemoryHot;
+    }
+    if timestamped_layout_kind(&object.kind) && object.pages.len() == 1 {
+        return SlotLayoutState::PackedTimestampedPage;
+    }
+    if object.pages.len() == 1 {
+        return SlotLayoutState::ObjectPage;
+    }
+    SlotLayoutState::MultiPageObject
+}
+
+fn apply_slot_layout_transition(
+    object: &mut SlotObjectEntry,
+    previous: Option<&SlotObjectEntry>,
+    reason: &str,
+) {
+    let previous_state = previous
+        .map(|entry| entry.layout_state.clone())
+        .filter(|state| *state != SlotLayoutState::Unknown)
+        .unwrap_or_else(|| {
+            previous
+                .map(slot_layout_state_for_object)
+                .unwrap_or(SlotLayoutState::Unknown)
+        });
+    let previous_count = previous
+        .map(|entry| entry.layout_transition_count)
+        .unwrap_or_default();
+    let previous_generation = previous
+        .map(|entry| entry.layout_generation)
+        .unwrap_or_default();
+    let current_state = slot_layout_state_for_object(object);
+    object.layout_state = current_state.clone();
+    if previous_state == SlotLayoutState::Unknown {
+        object.layout_generation = previous_generation.max(1);
+        object.layout_transition_count = previous_count;
+        object.last_layout_transition =
+            previous.and_then(|entry| entry.last_layout_transition.clone());
+        return;
+    }
+    if previous_state != current_state {
+        object.layout_generation = previous_generation.saturating_add(1).max(1);
+        object.layout_transition_count = previous_count.saturating_add(1);
+        object.last_layout_transition = Some(SlotLayoutTransition {
+            from: previous_state,
+            to: current_state,
+            reason: reason.to_string(),
+            generation: object.layout_generation,
+        });
+    } else {
+        object.layout_generation = previous_generation.max(1);
+        object.layout_transition_count = previous_count;
+        object.last_layout_transition =
+            previous.and_then(|entry| entry.last_layout_transition.clone());
+    }
+}
+
+fn previous_slot_object_by_id<'a>(
+    previous: &'a BTreeMap<u32, BTreeMap<u64, SlotObjectEntry>>,
+    object_id: u64,
+) -> Option<&'a SlotObjectEntry> {
+    previous
+        .values()
+        .find_map(|objects| objects.get(&object_id))
+}
+
+fn slot_layout_state_counts(shard: &ShardState) -> Vec<SlotLayoutStateCount> {
+    let mut counts = BTreeMap::<String, u64>::new();
+    for object in shard
+        .slot_objects
+        .values()
+        .flat_map(|objects| objects.values())
+    {
+        let state = if object.layout_state == SlotLayoutState::Unknown {
+            slot_layout_state_for_object(object)
+        } else {
+            object.layout_state.clone()
+        };
+        *counts
+            .entry(slot_layout_state_name(&state).to_string())
+            .or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .map(|(state, object_count)| SlotLayoutStateCount {
+            state,
+            object_count,
+        })
+        .collect()
+}
+
+fn slot_layout_state_name(state: &SlotLayoutState) -> &'static str {
+    match state {
+        SlotLayoutState::Unknown => "unknown",
+        SlotLayoutState::MemoryHot => "memory_hot",
+        SlotLayoutState::ObjectPage => "object_page",
+        SlotLayoutState::PackedTimestampedPage => "packed_timestamped_page",
+        SlotLayoutState::MultiPageObject => "multi_page_object",
+        SlotLayoutState::Tombstone => "tombstone",
+    }
+}
+
+fn slot_layout_transition_count(shard: &ShardState) -> u64 {
+    shard
+        .slot_objects
+        .values()
+        .flat_map(|objects| objects.values())
+        .map(|object| object.layout_transition_count)
+        .sum()
 }
 
 fn sync_slot_page_ownership_for_object(
@@ -10196,7 +10348,7 @@ fn sync_slot_page_ownership_for_object(
     start_routing_slot: u32,
     end_routing_slot: u32,
 ) {
-    remove_slot_object_refs_for_key(shard, object_key);
+    let previous_objects = remove_slot_object_refs_for_key(shard, object_key);
     let mut entries = collect_live_page_entries_from_model_maps(shard)
         .into_iter()
         .filter(|entry| entry.object_key == object_key)
@@ -10204,11 +10356,24 @@ fn sync_slot_page_ownership_for_object(
     if entries.is_empty() {
         let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
         shard.dirty_slots.insert(routing_slot);
-        shard
+        let dirty_generation = *shard
             .slot_dirty_generations
             .entry(routing_slot)
             .and_modify(|generation| *generation = generation.saturating_add(1))
             .or_insert(1);
+        if let Some(previous) = previous_objects.first() {
+            let mut tombstone = previous.clone();
+            tombstone.pages.clear();
+            tombstone.dirty = true;
+            tombstone.dirty_generation = dirty_generation;
+            tombstone.in_memory = false;
+            apply_slot_layout_transition(&mut tombstone, Some(previous), "delete_tombstone");
+            shard
+                .slot_objects
+                .entry(routing_slot)
+                .or_default()
+                .insert(tombstone.object_id, tombstone);
+        }
         return;
     }
     entries.sort_by(|left, right| {
@@ -10238,6 +10403,9 @@ fn sync_slot_page_ownership_for_object(
         let ttl_expires_at_ms = shard.expires_at_ms.get(object_key).copied();
         let in_memory = entry.address.page_segment_id == HOT_PAGE_SEGMENT_ID;
         let page_ref = slot_page_ref_from_entry(entry.clone(), true);
+        let previous_object = previous_objects
+            .iter()
+            .find(|object| object.object_id == object_id);
         let object = shard
             .slot_objects
             .entry(routing_slot)
@@ -10255,6 +10423,9 @@ fn sync_slot_page_ownership_for_object(
                 in_memory,
                 ttl_expires_at_ms,
                 layout_generation: 1,
+                layout_state: SlotLayoutState::Unknown,
+                layout_transition_count: 0,
+                last_layout_transition: None,
                 pages: Vec::new(),
             });
         object.dirty_generation = dirty_generation;
@@ -10271,6 +10442,7 @@ fn sync_slot_page_ownership_for_object(
                 .then(left.address.length.cmp(&right.address.length))
                 .then(left.model_id.cmp(&right.model_id))
         });
+        apply_slot_layout_transition(object, previous_object, "object_write");
     }
 }
 
@@ -10382,6 +10554,8 @@ fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry
                 deleted: page.deleted,
                 log_backed: page.log_backed,
             });
+            let previous = previous_slot_object_by_id(&previous_slot_objects, object.object_id);
+            apply_slot_layout_transition(object, previous, "slot_rebuild");
         }
     }
     entries

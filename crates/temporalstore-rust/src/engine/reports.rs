@@ -110,6 +110,12 @@ pub struct ShardCompactionModelLayoutReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotLayoutStateCount {
+    pub state: String,
+    pub object_count: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionModelLayoutReport {
     pub kind: String,
     pub object_count: usize,
