@@ -5930,6 +5930,29 @@
       ]
     },
     {
+      "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, manifest validation, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
+      "family": "storage/cache",
+      "name": "storage_merged_dump_load_policy",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates a slot dump manifest, validates the load preflight and recovery replay boundary, installs into a restored engine, and rejects a stale merged load attempt after newer writes.",
+            "kind": "storage_merged_dump_load_policy",
+            "expect_manifest_checksum": true,
+            "expect_generation_validation": true,
+            "expect_load_preflight": true,
+            "expect_replay_boundary": true,
+            "expect_roll_forward": true,
+            "expect_follower_safe_index_gc": true,
+            "expect_stale_load_rejection": true
+          },
+          "name": "storage_merged_policy_dump_load_replay_index_gc",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
       "family": "storage/cache",
       "name": "storage_stream_cross_block_large_values",

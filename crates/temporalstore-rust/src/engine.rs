@@ -4057,6 +4057,151 @@ impl TemporalEngine {
         report
     }
 
+    pub fn storage_merged_dump_load_policy_report(
+        &self,
+        request: StorageMergedDumpLoadPolicyRequest,
+    ) -> StorageMergedDumpLoadPolicyReport {
+        let mut lifecycle_request = request.lifecycle.clone();
+        lifecycle_request.roll_forward_slot_dump_installs = true;
+        let lifecycle = if request.create_dump_manifest {
+            self.apply_storage_lifecycle(lifecycle_request.clone())
+        } else {
+            let plan = self.storage_lifecycle_plan(lifecycle_request.clone());
+            let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+                lifecycle_request.shard_id,
+                lifecycle_request.follower_replay_cursors.clone(),
+            );
+            StorageLifecycleReport {
+                shard_id: lifecycle_request.shard_id,
+                plan,
+                manifest_prune_plan,
+                install_roll_forward_reports: self
+                    .slot_dump_install_roll_forward_reports(lifecycle_request.shard_id),
+                object_lifecycle: self
+                    .storage_recovery_report_without_boundary(lifecycle_request.shard_id)
+                    .object_lifecycle,
+                ..StorageLifecycleReport::default()
+            }
+        };
+        let manifest = lifecycle
+            .dump_manifest
+            .clone()
+            .or_else(|| latest_slot_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
+        let boundary = self.storage_recovery_boundary_report(lifecycle_request.shard_id);
+        let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+            lifecycle_request.shard_id,
+            lifecycle_request.follower_replay_cursors.clone(),
+        );
+        let install_roll_forward_reports =
+            self.slot_dump_install_roll_forward_reports(lifecycle_request.shard_id);
+        let load_preflight = manifest
+            .as_ref()
+            .map(|manifest| self.slot_dump_install_preflight_report(manifest));
+        let install_status = if request.install_dump_manifest {
+            manifest
+                .as_ref()
+                .map(|manifest| match self.install_slot_dump_manifest(manifest) {
+                    Ok(()) => Status::ok(),
+                    Err(status) => status,
+                })
+        } else {
+            None
+        };
+        let manifest_chain_valid = boundary.manifest_chain_issues.is_empty();
+        let follower_retention_safe = manifest_prune_plan.follower_blocks.is_empty()
+            && manifest_prune_plan.raft_snapshot_blocks.is_empty();
+        let load_preflight_safe = load_preflight
+            .as_ref()
+            .map(|preflight| preflight.install_safe)
+            .unwrap_or(false);
+        let load_installed = install_status
+            .as_ref()
+            .map(|status| status.ok)
+            .unwrap_or(!request.install_dump_manifest);
+        let replay_boundary_safe = manifest
+            .as_ref()
+            .map(|manifest| {
+                boundary.selected_replay_oplog_sequence >= manifest.oplog_sequence
+                    && boundary.selected_replay_index_log_sequence >= manifest.index_log_sequence
+            })
+            .unwrap_or(false);
+        let index_gc_ready = install_roll_forward_reports.iter().all(|report| {
+            report.can_roll_forward || report.can_retry_install || report.reason == "commit_ready"
+        }) && manifest_chain_valid;
+
+        let mut blockers = Vec::new();
+        if manifest.is_none() {
+            blockers.push("missing_dump_manifest".to_string());
+        }
+        if !load_preflight_safe {
+            blockers.push("load_preflight_unsafe".to_string());
+        }
+        if !load_installed {
+            blockers.push("load_install_failed".to_string());
+        }
+        if !replay_boundary_safe {
+            blockers.push("replay_boundary_before_dump_manifest".to_string());
+        }
+        if !manifest_chain_valid {
+            blockers.push("broken_manifest_chain".to_string());
+        }
+        if !follower_retention_safe {
+            blockers.push("retention_cursor_blocks_index_gc".to_string());
+        }
+        if !index_gc_ready {
+            blockers.push("index_gc_not_ready".to_string());
+        }
+        let policy_ready = blockers.is_empty();
+        let (
+            manifest_id,
+            manifest_slot_ids,
+            manifest_page_segment_ids,
+            manifest_oplog_sequence,
+            manifest_index_log_sequence,
+        ) = manifest
+            .as_ref()
+            .map(|manifest| {
+                (
+                    Some(manifest.manifest_id.clone()),
+                    manifest.slot_ids.clone(),
+                    manifest.page_segment_ids.clone(),
+                    manifest.oplog_sequence,
+                    manifest.index_log_sequence,
+                )
+            })
+            .unwrap_or_default();
+
+        StorageMergedDumpLoadPolicyReport {
+            shard_id: lifecycle_request.shard_id,
+            policy_ready,
+            dump_manifest_created: lifecycle.dump_manifest.is_some(),
+            load_preflight_safe,
+            load_installed,
+            replay_boundary_safe,
+            manifest_chain_valid,
+            follower_retention_safe,
+            index_gc_ready,
+            manifest_id,
+            manifest_slot_ids,
+            manifest_page_segment_ids,
+            manifest_oplog_sequence,
+            manifest_index_log_sequence,
+            selected_replay_oplog_sequence: boundary.selected_replay_oplog_sequence,
+            selected_replay_index_log_sequence: boundary.selected_replay_index_log_sequence,
+            lifecycle,
+            load_preflight,
+            install_status,
+            boundary,
+            manifest_prune_plan,
+            install_roll_forward_reports,
+            evidence: vec![
+                "merged dump/load policy coordinates dirty-slot dump selection, manifest checksum/generation validation, load preflight, recovery replay boundary, roll-forward markers, and follower-safe manifest retention".to_string(),
+                "policy report fails closed when manifest, load, replay, chain, retention, or index-GC evidence is unsafe".to_string(),
+            ],
+            blockers,
+        }
+    }
+
     pub fn run_storage_manager_loop(
         &self,
         mut request: StorageManagerLoopRequest,
