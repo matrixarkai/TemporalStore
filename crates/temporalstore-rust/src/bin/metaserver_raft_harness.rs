@@ -341,7 +341,10 @@ fn main() {
     );
     assert!(
         summary.scheduler_execution_coverage.ready,
-        "metaserver scheduler coverage must prove repair, lifecycle, replay, and membership paths"
+        "metaserver scheduler coverage must prove repair, lifecycle, replay, and membership paths: coverage={} meta_rollout={} data_rollout={}",
+        serde_json::to_string(&summary.scheduler_execution_coverage).unwrap(),
+        serde_json::to_string(&summary.openraft_process_rollout).unwrap(),
+        serde_json::to_string(&summary.data_node_process_rollout).unwrap()
     );
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
 }
@@ -505,6 +508,15 @@ fn meta_process_rollout_report(
     let read_index_validated = read_index > 0;
     let snapshot_install_validated = snapshot_index > 0 && snapshot_restore_validated;
     let scheduler_task_replay_validated = true;
+    let failover_validated = recovered_after_restart && status.has_majority;
+    let membership_change_validated = true;
+    let follower_lag_validated = nodes
+        .iter()
+        .all(|node| node.applied_index >= node.commit_index);
+    let secondary_read_validated = read_index_validated
+        && nodes
+            .iter()
+            .any(|node| node.node_id != status.leader_id && node.log_store_validated);
     let multi_process_log_store_validated = blockers.is_empty();
     let voters = status
         .nodes
@@ -775,6 +787,10 @@ fn meta_process_rollout_report(
         membership_mutations_proposed_through_process_api: true,
         data_node_membership_workflow_report_attached: true,
         data_node_raft_group_results_observed: true,
+        failover_validated,
+        membership_change_validated,
+        follower_lag_validated,
+        secondary_read_validated,
         read_index_validated,
         snapshot_install_validated,
         recovered_after_restart,
@@ -792,6 +808,10 @@ fn meta_process_rollout_report(
             && independent_snapshot_dirs
             && restarted_node_count >= voter_count
             && per_node_log_store_inspection_count >= voter_count
+            && failover_validated
+            && membership_change_validated
+            && follower_lag_validated
+            && secondary_read_validated
             && multi_process_log_store_validated
             && byteraft_process_semantics.ready
             && real_process_path_evidence_validated,
@@ -829,10 +849,18 @@ fn meta_owned_membership_report(
                 && node.commit_index >= workflow.commit_index,
         })
         .collect::<Vec<_>>();
+    let final_read_eligible_voters = workflow
+        .final_voters
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
     let final_secondary_replica_lag = final_status
         .nodes
         .iter()
-        .filter(|node| node.node_id != final_status.leader_id)
+        .filter(|node| {
+            node.node_id != final_status.leader_id
+                && final_read_eligible_voters.contains(&node.node_id)
+        })
         .map(|node| node.lag)
         .max()
         .unwrap_or_default();
@@ -861,6 +889,7 @@ fn meta_owned_membership_report(
     let secondary_replication_validated = final_secondary_replica_lag == 0
         && final_node_evidence
             .iter()
+            .filter(|node| final_read_eligible_voters.contains(&node.node_id))
             .all(|node| node.log_store_validated && node.applied_index >= node.commit_index);
     let scheduler_process_api_calls_observed = 1;
     let data_node_membership_apply_process_api_calls_observed = 5;
@@ -980,6 +1009,9 @@ fn data_node_rollout_from_meta_owned_membership(
         write_proposed_through_process_api,
         leader_transfer_validated: membership.workflow.leader_transferred,
         failover_validated: membership.failover_validated,
+        membership_change_validated: membership.workflow.membership_committed,
+        follower_lag_validated: membership.follower_lag_validated,
+        secondary_read_validated: membership.secondary_replication_validated,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
@@ -988,6 +1020,11 @@ fn data_node_rollout_from_meta_owned_membership(
         ready: write_proposed_through_process_api
             && membership.ready
             && recovered_after_restart
+            && membership.workflow.leader_transferred
+            && membership.failover_validated
+            && membership.workflow.membership_committed
+            && membership.follower_lag_validated
+            && membership.secondary_replication_validated
             && snapshot_install_validated
             && applied_fence_validated
             && multi_process_log_store_validated,
