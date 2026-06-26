@@ -486,6 +486,23 @@ def validate_raft_distributed_parity(job, summary):
         data_node["external_snapshot_read"] == "from-external-snapshot",
         f"{job}: data-node external snapshot read mismatch",
     )
+    runtime_semantics = data_node.get("byteraft_runtime_semantics")
+    require(runtime_semantics is not None, f"{job}: Byteraft runtime semantics report missing")
+    require(
+        runtime_semantics["ready"],
+        f"{job}: Byteraft runtime semantics not ready: {runtime_semantics.get('blockers')}",
+    )
+    for field in [
+        "process_path_validated",
+        "read_index_and_lease_validated",
+        "stale_follower_write_rejected",
+        "leader_transfer_exact_once_validated",
+        "snapshot_bootstrap_validated",
+        "membership_rescale_validated",
+        "apply_pipeline_converged",
+        "wal_persistence_observed",
+    ]:
+        require(runtime_semantics[field], f"{job}: Byteraft runtime semantics field {field} is false")
     for read in data_node["secondary_restart_reads"]:
         require(read["status"]["ok"], f"{job}: secondary restart read failed: {read}")
     require(

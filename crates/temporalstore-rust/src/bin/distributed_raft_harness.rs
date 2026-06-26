@@ -56,6 +56,7 @@ struct DistributedRaftSummary {
     rescale_up_after_snapshot: Vec<MembershipSummary>,
     post_rescale_up_write: Status,
     rescale_up_reads: Vec<ReplicaReadSummary>,
+    byteraft_runtime_semantics: ByteraftRuntimeSemanticsReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -81,6 +82,20 @@ struct MembershipSummary {
     status: Status,
     voters: Vec<RaftNodeId>,
     leader_id: RaftNodeId,
+}
+
+#[derive(Debug, Serialize)]
+struct ByteraftRuntimeSemanticsReport {
+    process_path_validated: bool,
+    read_index_and_lease_validated: bool,
+    stale_follower_write_rejected: bool,
+    leader_transfer_exact_once_validated: bool,
+    snapshot_bootstrap_validated: bool,
+    membership_rescale_validated: bool,
+    apply_pipeline_converged: bool,
+    wal_persistence_observed: bool,
+    ready: bool,
+    blockers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -377,6 +392,24 @@ fn main() {
             }
         })
         .collect::<Vec<_>>();
+    let byteraft_runtime_semantics = build_byteraft_runtime_semantics_report(
+        &node_summaries,
+        &replica_reads,
+        &follower_write_rejection,
+        &post_transfer_write,
+        &scale_down,
+        &scale_up,
+        &external_snapshot_read,
+        &rescale_down_after_snapshot,
+        &rescale_up_after_snapshot,
+        &rescale_down_reads,
+        &rescale_up_reads,
+    );
+    assert!(
+        byteraft_runtime_semantics.ready,
+        "Byteraft runtime semantics are incomplete: {:?}",
+        byteraft_runtime_semantics.blockers
+    );
 
     println!(
         "{}",
@@ -405,9 +438,107 @@ fn main() {
             rescale_up_after_snapshot,
             post_rescale_up_write,
             rescale_up_reads,
+            byteraft_runtime_semantics,
         })
         .expect("summary should serialize")
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_byteraft_runtime_semantics_report(
+    nodes: &[NodeSummary],
+    replica_reads: &[ReplicaReadSummary],
+    follower_write_rejection: &Status,
+    post_transfer_write: &Status,
+    scale_down: &[MembershipSummary],
+    scale_up: &[MembershipSummary],
+    external_snapshot_read: &ReplicaReadSummary,
+    rescale_down_after_snapshot: &[MembershipSummary],
+    rescale_up_after_snapshot: &[MembershipSummary],
+    rescale_down_reads: &[ReplicaReadSummary],
+    rescale_up_reads: &[ReplicaReadSummary],
+) -> ByteraftRuntimeSemanticsReport {
+    let process_path_validated = nodes.len() >= 4
+        && nodes.iter().all(|node| {
+            !node.addr.is_empty()
+                && !node.wal_dir.is_empty()
+                && node.status.has_majority
+                && node.status.leader_lease_valid
+        });
+    let read_index_and_lease_validated = replica_reads
+        .iter()
+        .all(|read| read.status.ok && read.value.as_deref() == Some("replicated-value"))
+        && nodes.iter().all(|node| node.status.leader_lease_valid);
+    let stale_follower_write_rejected = !follower_write_rejection.ok;
+    let leader_transfer_exact_once_validated = post_transfer_write.ok
+        && nodes
+            .iter()
+            .all(|node| node.status.leader_id == 2 && node.status.commit_index >= 2);
+    let snapshot_bootstrap_validated = external_snapshot_read.status.ok
+        && external_snapshot_read.value.as_deref() == Some("from-external-snapshot");
+    let membership_rescale_validated = scale_down
+        .iter()
+        .all(|item| item.status.ok && item.voters == [1, 2, 3])
+        && scale_up
+            .iter()
+            .all(|item| item.status.ok && item.voters == [1, 2, 3, 4])
+        && rescale_down_after_snapshot
+            .iter()
+            .all(|item| item.status.ok && item.voters == [1, 2, 3])
+        && rescale_up_after_snapshot
+            .iter()
+            .all(|item| item.status.ok && item.voters == [1, 2, 3, 4])
+        && rescale_down_reads
+            .iter()
+            .all(|read| read.status.ok && read.value.as_deref() == Some("after-rescale-down"))
+        && rescale_up_reads
+            .iter()
+            .all(|read| read.status.ok && read.value.as_deref() == Some("after-rescale-up"));
+    let apply_pipeline_converged = nodes.iter().all(|node| {
+        node.apply_health.healthy
+            && node.apply_health.max_apply_lag <= node.apply_health.max_allowed_apply_lag
+    });
+    let wal_persistence_observed = nodes.iter().all(|node| !node.wal_files.is_empty());
+
+    let mut blockers = Vec::new();
+    if !process_path_validated {
+        blockers.push("process_path_not_validated".to_string());
+    }
+    if !read_index_and_lease_validated {
+        blockers.push("read_index_or_lease_not_validated".to_string());
+    }
+    if !stale_follower_write_rejected {
+        blockers.push("stale_follower_write_not_rejected".to_string());
+    }
+    if !leader_transfer_exact_once_validated {
+        blockers.push("leader_transfer_exact_once_not_validated".to_string());
+    }
+    if !snapshot_bootstrap_validated {
+        blockers.push("snapshot_bootstrap_not_validated".to_string());
+    }
+    if !membership_rescale_validated {
+        blockers.push("membership_rescale_not_validated".to_string());
+    }
+    if !apply_pipeline_converged {
+        blockers.push("apply_pipeline_not_converged".to_string());
+    }
+    if !wal_persistence_observed {
+        blockers.push("wal_persistence_not_observed".to_string());
+    }
+    let ready = blockers.is_empty();
+
+    ByteraftRuntimeSemanticsReport {
+        process_path_validated,
+        read_index_and_lease_validated,
+        stale_follower_write_rejected,
+        leader_transfer_exact_once_validated,
+        snapshot_bootstrap_validated,
+        membership_rescale_validated,
+        apply_pipeline_converged,
+        wal_persistence_observed,
+        ready,
+        blockers,
+    }
 }
 
 fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8>) {
