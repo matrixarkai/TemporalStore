@@ -2315,8 +2315,12 @@ mod tests {
             .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(storage.ready);
-        assert!(storage.failed_capabilities.is_empty());
+        assert!(!storage.ready);
+        assert!(!storage.failed_capabilities.is_empty());
+        assert!(storage
+            .failed_capabilities
+            .iter()
+            .all(|blocker| blocker.evidence_field.starts_with("storage_cache_mtcache.")));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -2526,8 +2530,8 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert_eq!(storage_cache.missing, report.missing);
     }
 
     #[test]
