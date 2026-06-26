@@ -409,8 +409,7 @@ pub(super) fn context_event_candidate_terms(event: &ContextEvent) -> Vec<String>
     let text = event.text.to_ascii_lowercase();
     let mut terms = vec![
         "record_type:context_event".to_string(),
-        format!("event_kind:{}", event.kind),
-        format!("status:{}", event.status),
+        format!("event_type:{}", event.event_type_code()),
         "source_type:message".to_string(),
     ];
     if text.contains("now") || text.contains("current") || text.contains("latest") {
@@ -455,9 +454,6 @@ pub(super) fn context_event_candidate_terms(event: &ContextEvent) -> Vec<String>
         || text.contains("score")
     {
         terms.push("entity_type:quantity".to_string());
-    }
-    for token in context_query_terms(&event.source_ref) {
-        terms.push(format!("source_ref:{token}"));
     }
     terms.sort();
     terms.dedup();

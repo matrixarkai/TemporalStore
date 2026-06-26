@@ -1751,9 +1751,9 @@ fn ingest_external_benchmark_sources(
             confidence: 1.0,
             importance: 1.0,
             text: source.body.clone(),
-            source_ref,
-            related_node_hashes: vec![node_hash],
-            compact_attrs,
+            source_ref: String::new(),
+            related_node_hashes: Vec::new(),
+            compact_attrs: Vec::new(),
         };
         let index_ref = ContextIndexRef {
             primary_node_hash: node_hash,
@@ -2467,7 +2467,7 @@ fn context_pipeline_commands(extract: &temporalstore_rust::ContextExtractReport)
         Command::ContextWriteIndexRef {
             tenant_hash: 20260616,
             index_name: "source".to_string(),
-            index_value_hash: stable_hash64("mock-incident-1"),
+            index_value_hash: stable_hash64(&extract.source_ref),
             scope_hash: 0,
             event_time_ms: extract.event.event_time_ms,
             index_ref: extract.index_ref.clone(),
