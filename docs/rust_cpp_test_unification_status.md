@@ -2,7 +2,7 @@
 
 ## Snapshot
 
-Date: 2026-06-25
+Date: 2026-06-26
 
 Rust attributed tests counted with `#[test]` and `#[tokio::test]` under
 `crates/temporalstore-rust`: **585**.
@@ -11,7 +11,7 @@ Current grandfathered migration baseline: **519 Rust test functions**.
 
 Product behavior still to move into shared corpus: **512 Rust test functions**.
 
-Rust-only internals that can remain local: **7 Rust test functions**.
+Rust-only internals that can remain local: **6 Rust test functions**.
 
 Unification target:
 
@@ -36,12 +36,12 @@ C++ existing-test surfaces: no repeated required_paths
 The external `TemporalStoreTestCorpus` checkout now has a refreshed full draft migration inventory:
 
 ```text
-canonical shared cases: 150
-canonical shared steps: 312
+canonical shared cases: 164
+canonical shared steps: 326
 draft translated existing tests: 2700
 draft Rust candidates: 554
 draft C++ candidates: 2146
-Rust marked local tests remaining: 41
+Rust marked local tests remaining: 52
 Rust marked local tests removable now: 0
 ```
 
