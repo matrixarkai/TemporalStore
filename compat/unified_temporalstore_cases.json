@@ -5717,7 +5717,7 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive byteraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5773,7 +5773,7 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5902,7 +5902,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5933,7 +5933,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
