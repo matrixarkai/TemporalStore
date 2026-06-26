@@ -12,6 +12,18 @@ from pathlib import Path
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
 
 
+class CountingLocalAdapter(MatrixArkLocalAdapter):
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.flushed_batch_sizes: list[int] = []
+
+    def append_many(self, records: list[dict]) -> None:
+        active_batch = self._current_write_batch()
+        super().append_many(records)
+        if active_batch is None and records:
+            self.flushed_batch_sizes.append(len(records))
+
+
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
     def run_hook(self, repo: Path, event_log: Path, *, event: str, payload: dict, query: str = "") -> dict:
         cmd = [
@@ -49,6 +61,39 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
         if proc.returncode != 0:
             raise AssertionError(f"hook failed\nstdout={proc.stdout}\nstderr={proc.stderr}")
         return json.loads(proc.stdout)
+
+    def test_message_ingest_batches_hot_path_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            event_log = Path(tmp_dir) / "matrixark-message-batch.jsonl"
+            adapter = CountingLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Alice approved the GPU request after finance reviewed the budget.",
+                        }
+                    ],
+                    "scope": {
+                        "account_id": "acct_batch",
+                        "tenant_id": "tenant_batch",
+                        "user_id": "user_batch",
+                        "session_id": "session_batch",
+                    },
+                    "metadata": {"node_path": ["tenant:tenant_batch", "user:user_batch", "session:session_batch"]},
+                },
+            )
+            self.assertEqual("accepted", result["status"])
+            self.assertTrue(any(size >= 7 for size in adapter.flushed_batch_sizes), adapter.flushed_batch_sizes)
+            records = adapter.read_all()
+            record_types = {record.get("record_type") for record in records}
+            self.assertIn("context_event", record_types)
+            self.assertIn("context_embedding", record_types)
+            self.assertIn("context_index", record_types)
+            self.assertIn("session_buffer_event", record_types)
+            self.assertIn("context_summary_dirty", record_types)
 
     def test_codex_hook_ingests_conversation_resource_and_skill_then_retrieves_all(self) -> None:
         repo = Path(__file__).resolve().parents[1]

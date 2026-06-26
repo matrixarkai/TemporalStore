@@ -13,6 +13,8 @@ so operational behavior remains stable for existing scripts.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 try:
     from tools.matrixark_mcp_core import *
     from tools.matrixark_mcp_core import (
@@ -43,6 +45,44 @@ class MatrixArkLocalAdapter:
 
     def __post_init__(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
+        self._write_batch_local = threading.local()
+
+    def _write_batch_stack(self) -> list[list[Json]]:
+        local = getattr(self, "_write_batch_local", None)
+        if local is None:
+            self._write_batch_local = threading.local()
+            local = self._write_batch_local
+        stack = getattr(local, "stack", None)
+        if stack is None:
+            stack = []
+            local.stack = stack
+        return stack
+
+    def _current_write_batch(self) -> list[Json] | None:
+        stack = self._write_batch_stack()
+        return stack[-1] if stack else None
+
+    def _queue_batched_records(self, records: list[Json]) -> bool:
+        batch = self._current_write_batch()
+        if batch is None:
+            return False
+        batch.extend(records)
+        return True
+
+    @contextmanager
+    def write_batch(self, label: str = "hot_path"):
+        stack = self._write_batch_stack()
+        batch: list[Json] = []
+        stack.append(batch)
+        try:
+            yield batch
+        except Exception:
+            stack.pop()
+            raise
+        else:
+            stack.pop()
+            if batch:
+                self.append_many(batch)
 
     def ensure_backend_ready(self, *, reason: str = "manual", probe: bool = True, timeout_ms: int | None = None) -> Json:
         return {
@@ -70,11 +110,15 @@ class MatrixArkLocalAdapter:
         }
 
     def append(self, record: Json) -> None:
+        if self._queue_batched_records([record]):
+            return
         with self.event_log.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, sort_keys=True) + "\n")
 
     def append_many(self, records: list[Json]) -> None:
         if not records:
+            return
+        if self._queue_batched_records(records):
             return
         with self.event_log.open("a", encoding="utf-8") as handle:
             for record in records:
@@ -1734,82 +1778,107 @@ class MatrixArkLocalAdapter:
         summary_text = summarize_text(text)
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
-        session_key_parts = [str(part) for part in context_node_key(envelope)]
-        if any(session_key_parts):
-            session_summary_source = " ".join(
-                [item.get("text", "") for item in prior_context.get("summaries", [])[:2]]
-                + [item.get("text", "") for item in prior_context.get("messages", [])[:2]]
-                + [text]
-            )
-            session_summary_text = summarize_text(session_summary_source, limit=512)
-            session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
-            self.append(
-                {
-                    "record_type": "context_summary",
-                    "summary_type": "session_l0",
-                    "summary_hash": session_summary_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "context_node_key": session_key_parts,
-                    "summary_text": session_summary_text,
-                    "source_event_hash": event_id_hash,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
-            )
+        with self.write_batch("message_ingest_hot_path"):
+            session_key_parts = [str(part) for part in context_node_key(envelope)]
+            if any(session_key_parts):
+                session_summary_source = " ".join(
+                    [item.get("text", "") for item in prior_context.get("summaries", [])[:2]]
+                    + [item.get("text", "") for item in prior_context.get("messages", [])[:2]]
+                    + [text]
+                )
+                session_summary_text = summarize_text(session_summary_source, limit=512)
+                session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
+                self.append(
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "session_l0",
+                        "summary_hash": session_summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "context_node_key": session_key_parts,
+                        "summary_text": session_summary_text,
+                        "source_event_hash": event_id_hash,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+                self.append(
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "session_l0",
+                        "ref_type": "summary",
+                        "ref_hash": session_summary_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "dim": len(embedding_for_text(session_summary_text)),
+                        "model": embedding_model_name(),
+                        "vector": embedding_for_text(session_summary_text),
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
             self.append(
                 {
                     "record_type": "context_embedding",
-                    "embedding_type": "session_l0",
-                    "ref_type": "summary",
-                    "ref_hash": session_summary_hash,
+                    "embedding_type": "event_text",
+                    "ref_type": "event",
+                    "ref_hash": event_id_hash,
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "dim": len(embedding_for_text(session_summary_text)),
+                    "dim": len(event_embedding),
                     "model": embedding_model_name(),
-                    "vector": embedding_for_text(session_summary_text),
+                    "vector": event_embedding,
                     "scope": envelope["scope"],
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
-        self.append(
-            {
-                "record_type": "context_embedding",
-                "embedding_type": "event_text",
-                "ref_type": "event",
-                "ref_hash": event_id_hash,
+            record = {
+                "record_type": "context_event",
+                "event_id_hash": event_id_hash,
                 "node_hash": node_hash,
                 "node_path": node_path,
-                "dim": len(event_embedding),
-                "model": embedding_model_name(),
-                "vector": event_embedding,
-                "scope": envelope["scope"],
-                "updated_at_ms": envelope["ingestion_time_ms"],
+                "text": text,
+                "summary_text": summary_text,
+                "summary_embedding": summary_embedding,
+                "envelope": envelope,
+                "internal_extraction": extraction,
+                "prior_context": prior_context,
+                "agent_hook": hook,
             }
-        )
-        record = {
-            "record_type": "context_event",
-            "event_id_hash": event_id_hash,
-            "node_hash": node_hash,
-            "node_path": node_path,
-            "text": text,
-            "summary_text": summary_text,
-            "summary_embedding": summary_embedding,
-            "envelope": envelope,
-            "internal_extraction": extraction,
-            "prior_context": prior_context,
-            "agent_hook": hook,
-        }
-        self.append(record)
-        self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
-        summary_refresh = self.append_node_summary_embeddings(
-            node_path=node_path,
-            source_text=text,
-            scope=envelope["scope"],
-            updated_at_ms=envelope["ingestion_time_ms"],
-            source_hash_field="source_event_hash",
-            source_hash=event_id_hash,
-        )
+            self.append(record)
+            event_index_terms = ordered_unique(
+                extraction.get("indexes")
+                or [
+                    context_index_name("event_type", extraction.get("event_type") or infer_event_type(text)),
+                    context_index_name("classification", extraction.get("classification")),
+                    context_index_name("status", extraction.get("status") or "observed"),
+                    context_index_name("source_type", envelope["kind"]),
+                ]
+            )
+            for index_name in event_index_terms:
+                self.append(
+                    {
+                        "record_type": "context_index",
+                        "index_name": index_name,
+                        "index_hash": stable_hash(f"{index_name}:{event_id_hash}"),
+                        "ref_type": "event",
+                        "ref_hash": event_id_hash,
+                        "event_id_hash": event_id_hash,
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "updated_at_ms": envelope["ingestion_time_ms"],
+                    }
+                )
+            self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
+            summary_refresh = self.append_node_summary_embeddings(
+                node_path=node_path,
+                source_text=text,
+                scope=envelope["scope"],
+                updated_at_ms=envelope["ingestion_time_ms"],
+                source_hash_field="source_event_hash",
+                source_hash=event_id_hash,
+            )
         pending_event_count = len(self.pending_session_events(envelope["scope"]))
         auto_batch_result: Json | None = None
         auto_batch_extract = bool(args.get("auto_batch_extract", False))
@@ -3441,10 +3510,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return max(0, value)
 
     def append(self, record: Json) -> None:
+        if self._queue_batched_records([record]):
+            return
         self.append_many([record])
 
     def append_many(self, records: list[Json]) -> None:
         if not records:
+            return
+        if self._queue_batched_records(records):
             return
         started = time.monotonic()
         with self._records_lock:
@@ -4739,6 +4812,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 
 
