@@ -62,7 +62,7 @@ pub struct PageAddress {
     pub routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub zone_id: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
 
@@ -1500,6 +1500,43 @@ mod tests {
         fs::write(path, segment).unwrap();
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, PageStoreError::ChecksumMismatch { .. }));
+    }
+
+    // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
+    #[test]
+    fn page_address_matches_cpp_metadata_contract_and_checksum_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalPageStore::new(dir.path());
+        let address = store
+            .append_with_page_metadata(b"address-contract", Some(4242), Some(17))
+            .unwrap();
+
+        assert_eq!(address.page_segment_id, 0);
+        assert_eq!(address.offset, 0);
+        assert!(address.length > b"address-contract".len() as u64);
+        assert_eq!(address.page_id, Some(0));
+        assert_eq!(address.object_id, Some(4242));
+        assert_eq!(address.routing_slot, Some(17));
+        assert_eq!(address.zone_id, Some(0));
+        assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
+        assert_eq!(store.read(&address).unwrap(), b"address-contract");
+
+        let cpp_style_json = serde_json::json!({
+            "page_segment_id": address.page_segment_id,
+            "offset": address.offset,
+            "length": address.length,
+            "page_id": address.page_id,
+            "object_id": address.object_id,
+            "routing_slot": address.routing_slot,
+            "zone_id": address.zone_id,
+            "checksum": address.sha256,
+        });
+        let from_checksum_alias: PageAddress = serde_json::from_value(cpp_style_json).unwrap();
+        assert_eq!(from_checksum_alias, address);
+        assert_eq!(
+            serde_json::to_value(&address).unwrap()["sha256"],
+            serde_json::json!(sha256_hex(b"address-contract"))
+        );
     }
 
     #[test]
