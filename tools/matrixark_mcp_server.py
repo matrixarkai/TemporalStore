@@ -2957,6 +2957,57 @@ class MatrixArkLocalAdapter:
         def deadline_exceeded() -> bool:
             return deadline_ms > 0 and (time.perf_counter() - started_perf) * 1000.0 >= deadline_ms
 
+        stage_names = ["query_understanding", "candidate_fetch", "node_traversal", "rerank_score", "pack", "audit"]
+        explicit_stage_budgets = optional_object(args, "stage_budgets_ms") or optional_object(ranking, "stage_budgets_ms")
+        if deadline_ms > 0:
+            default_stage_budgets = {
+                "query_understanding": max(25, int(deadline_ms * 0.15)),
+                "candidate_fetch": max(25, int(deadline_ms * 0.20)),
+                "node_traversal": max(25, int(deadline_ms * 0.15)),
+                "rerank_score": max(25, int(deadline_ms * 0.30)),
+                "pack": max(25, int(deadline_ms * 0.15)),
+                "audit": max(10, int(deadline_ms * 0.05)),
+            }
+        else:
+            default_stage_budgets = {
+                "query_understanding": 500,
+                "candidate_fetch": 750,
+                "node_traversal": 500,
+                "rerank_score": 1000,
+                "pack": 500,
+                "audit": 250,
+            }
+        stage_budgets_ms: dict[str, int] = {}
+        for stage in stage_names:
+            value = explicit_stage_budgets.get(stage, ranking.get(f"{stage}_budget_ms", default_stage_budgets[stage]))
+            if not isinstance(value, int) or value < 0:
+                raise MatrixArkError(f"stage budget for {stage} must be a non-negative integer")
+            stage_budgets_ms[stage] = value
+        stage_latencies_ms: dict[str, float] = {}
+        stage_started_perf = time.perf_counter()
+
+        def finish_retrieval_stage(stage: str, started: float) -> float:
+            elapsed = round((time.perf_counter() - started) * 1000.0, 3)
+            stage_latencies_ms[stage] = elapsed
+            self._observe_model_latency(f"retrieval_{stage}", elapsed)
+            return elapsed
+
+        def stage_budget_snapshot() -> Json:
+            stages = {
+                stage: {
+                    "budget_ms": stage_budgets_ms[stage],
+                    "elapsed_ms": round(float(stage_latencies_ms.get(stage, 0.0)), 3),
+                    "over_budget": bool(stage_budgets_ms[stage] > 0 and float(stage_latencies_ms.get(stage, 0.0)) > stage_budgets_ms[stage]),
+                }
+                for stage in stage_names
+            }
+            return {
+                "enabled": True,
+                "source": "explicit" if explicit_stage_budgets else ("deadline_derived" if deadline_ms > 0 else "defaults"),
+                "stages": stages,
+                "over_budget_stages": [stage for stage, row in stages.items() if row["over_budget"]],
+            }
+
         question_type = str(args.get("question_type") or infer_query_type(query))
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
@@ -2975,6 +3026,8 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("reference_time_ms must be an integer")
         reference_time_ms = raw_reference_time_ms
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
+        finish_retrieval_stage("query_understanding", stage_started_perf)
+        stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
             scope=scope,
             secondary_index_groups=secondary_index_filter_groups,
@@ -2993,6 +3046,8 @@ class MatrixArkLocalAdapter:
             resource_version_key = str(manifest.get("resource_version") or "")
             if raw_uri_key and resource_version_key and raw_uri_key not in latest_resource_version_by_uri:
                 latest_resource_version_by_uri[raw_uri_key] = resource_version_key
+        finish_retrieval_stage("candidate_fetch", stage_started_perf)
+        stage_started_perf = time.perf_counter()
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -3095,6 +3150,8 @@ class MatrixArkLocalAdapter:
             top_k_per_layer=top_k_per_layer,
             max_children_scored_per_parent=max_children_scored_per_parent,
         )
+        finish_retrieval_stage("node_traversal", stage_started_perf)
+        stage_started_perf = time.perf_counter()
         selected_paths = traversal["selected_paths"]
         selected_leaf_paths = traversal["leaf_paths"]
         selected_node_hashes = traversal["selected_node_hashes"]
@@ -3574,6 +3631,8 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_compression_scan",
             )
+        finish_retrieval_stage("rerank_score", stage_started_perf)
+        stage_started_perf = time.perf_counter()
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
         selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
@@ -3681,41 +3740,54 @@ class MatrixArkLocalAdapter:
             "insufficient_context": not selected,
             "partial_context_pack": partial_context_pack,
         }
-        self.append_audit(
-            {
-                "record_type": "context_pack_audit",
-                "context_pack_id": context_pack_id_text,
-                "query": query,
-                "scope": scope,
-                "summary_text": pack_summary,
-                "selected_refs": compact_refs_for_audit(selected),
-                "selected_ref_counts": selected_context_counts,
-                "context_assembly_policy": pack["context_assembly_policy"],
-                "dropped_refs": dropped_over_budget,
-                "quality_warnings": quality_warnings,
-                "partial_context_pack": partial_context_pack,
-                "layer_scores": layer_scores[:24],
-                "tree_traversal": pack["recall_policy"]["tree_traversal"],
-                "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],
-                "question_type": question_type,
-                "packing_policy": pack["packing_policy"],
-                "recall_policy": pack["recall_policy"],
-                "storage_options": storage_options,
-                "local_context_policy": pack["local_context_policy"],
-                "used_local_context_tokens": pack["used_local_context_tokens"],
-                "used_remote_context_tokens": pack["used_remote_context_tokens"],
-                "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
-                "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
-                "primary_candidate_count": len(primary_matches),
-                "auxiliary_candidate_count": len(auxiliary_matches),
-                "tree_candidate_records": len(tree_candidate_records),
-                "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
-                "fanout_dropped_count": fanout_dropped_count,
-                "max_candidates_per_node": max_candidates_per_node,
-                "max_selected_refs": max_selected_refs,
-                "created_at_ms": now_ms(),
-            }
-        )
+        finish_retrieval_stage("pack", stage_started_perf)
+        pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
+        over_budget_stages = pack["recall_policy"]["stage_latency_budgets"].get("over_budget_stages", [])
+        if over_budget_stages:
+            quality_warnings.append("stage_budget_exceeded:" + ",".join(over_budget_stages))
+            pack["quality_warnings"] = quality_warnings
+        audit_started_perf = time.perf_counter()
+        audit_record = {
+            "record_type": "context_pack_audit",
+            "context_pack_id": context_pack_id_text,
+            "query": query,
+            "scope": scope,
+            "summary_text": pack_summary,
+            "selected_refs": compact_refs_for_audit(selected),
+            "selected_ref_counts": selected_context_counts,
+            "context_assembly_policy": pack["context_assembly_policy"],
+            "dropped_refs": dropped_over_budget,
+            "quality_warnings": quality_warnings,
+            "partial_context_pack": partial_context_pack,
+            "layer_scores": layer_scores[:24],
+            "tree_traversal": pack["recall_policy"]["tree_traversal"],
+            "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],
+            "question_type": question_type,
+            "packing_policy": pack["packing_policy"],
+            "recall_policy": pack["recall_policy"],
+            "stage_latency_budgets": pack["recall_policy"]["stage_latency_budgets"],
+            "storage_options": storage_options,
+            "local_context_policy": pack["local_context_policy"],
+            "used_local_context_tokens": pack["used_local_context_tokens"],
+            "used_remote_context_tokens": pack["used_remote_context_tokens"],
+            "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
+            "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+            "primary_candidate_count": len(primary_matches),
+            "auxiliary_candidate_count": len(auxiliary_matches),
+            "tree_candidate_records": len(tree_candidate_records),
+            "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
+            "fanout_dropped_count": fanout_dropped_count,
+            "max_candidates_per_node": max_candidates_per_node,
+            "max_selected_refs": max_selected_refs,
+            "created_at_ms": now_ms(),
+        }
+        self.append_audit(audit_record)
+        finish_retrieval_stage("audit", audit_started_perf)
+        pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
+        over_budget_stages = pack["recall_policy"]["stage_latency_budgets"].get("over_budget_stages", [])
+        if over_budget_stages and not any(str(warning).startswith("stage_budget_exceeded:") for warning in quality_warnings):
+            quality_warnings.append("stage_budget_exceeded:" + ",".join(over_budget_stages))
+            pack["quality_warnings"] = quality_warnings
         return pack
 
     def feedback(self, args: Json, *, hook: Json | None = None) -> Json:
