@@ -143,6 +143,11 @@ pub fn raft_openraft_rollout_readiness_from_reports(
                 && report.snapshot_install_validated
                 && report.applied_fence_validated
                 && report.multi_process_log_store_validated
+                && report.leader_transfer_validated
+                && report.failover_validated
+                && report.membership_change_validated
+                && report.follower_lag_validated
+                && report.secondary_read_validated
                 && report.nodes.len() >= 3
                 && report.nodes.iter().all(|node| {
                     node.restarted
@@ -161,6 +166,10 @@ pub fn raft_openraft_rollout_readiness_from_reports(
                 && report.recovered_after_restart
                 && report.scheduler_task_replay_validated
                 && report.multi_process_log_store_validated
+                && report.failover_validated
+                && report.membership_change_validated
+                && report.follower_lag_validated
+                && report.secondary_read_validated
                 && report.nodes.len() >= 3
                 && report.nodes.iter().all(|node| {
                     node.restarted
@@ -192,13 +201,13 @@ pub fn raft_openraft_rollout_readiness_from_reports(
     }
     if !data_node_real_process_rollout_validated {
         missing.push(
-            "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, restart recovery, snapshots, applied fences, and log-store validation"
+            "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, and secondary reads"
                 .to_string(),
         );
     }
     if !metaserver_real_process_rollout_validated {
         missing.push(
-            "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, read-index, restart recovery, snapshots, scheduler replay, and log-store validation"
+            "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and scheduler replay"
                 .to_string(),
         );
     }
@@ -630,6 +639,23 @@ impl std::error::Error for RaftProductionReadinessError {}
 
 pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let openraft_rollout = raft_openraft_rollout_readiness();
+    distributed_raft_readiness_from_rollout(openraft_rollout)
+}
+
+pub fn distributed_raft_readiness_from_openraft_reports(
+    data_node_report: &OpenRaftDataNodeProcessRolloutReport,
+    metaserver_report: &OpenRaftMetaProcessRolloutReport,
+) -> RaftDistributedReadiness {
+    let openraft_rollout = raft_openraft_rollout_readiness_from_reports(
+        Some(data_node_report),
+        Some(metaserver_report),
+    );
+    distributed_raft_readiness_from_rollout(openraft_rollout)
+}
+
+fn distributed_raft_readiness_from_rollout(
+    openraft_rollout: RaftOpenRaftRolloutReadiness,
+) -> RaftDistributedReadiness {
     let metaserver_membership = raft_metaserver_membership_readiness();
     let atomic_apply = raft_atomic_apply_readiness();
     let transport_security = raft_transport_security_readiness();

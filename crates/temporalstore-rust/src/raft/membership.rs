@@ -257,6 +257,12 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub healed_follower_catchup_observed: bool,
     #[serde(default)]
     pub lagging_follower_observed_lag: u64,
+    #[serde(default)]
+    pub membership_change_validated: bool,
+    #[serde(default)]
+    pub follower_lag_validated: bool,
+    #[serde(default)]
+    pub secondary_read_validated: bool,
     pub recovered_after_restart: bool,
     #[serde(default)]
     pub restart_recovery_validated: bool,
@@ -313,6 +319,14 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub data_node_membership_workflow_report_attached: bool,
     #[serde(default)]
     pub data_node_raft_group_results_observed: bool,
+    #[serde(default)]
+    pub failover_validated: bool,
+    #[serde(default)]
+    pub membership_change_validated: bool,
+    #[serde(default)]
+    pub follower_lag_validated: bool,
+    #[serde(default)]
+    pub secondary_read_validated: bool,
     pub read_index_validated: bool,
     pub snapshot_install_validated: bool,
     pub recovered_after_restart: bool,

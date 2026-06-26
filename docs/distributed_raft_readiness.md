@@ -9,8 +9,9 @@ model checking, but they are not readiness-eligible production evidence.
 The default readiness API therefore fails closed until callers provide passing
 `OpenRaftDataNodeProcessRolloutReport` and `OpenRaftMetaProcessRolloutReport` evidence with
 process API writes/mutations, restart recovery, snapshot install, applied/read-index checks,
-scheduler replay, and multi-process log-store validation. `LocalModel` remains a deserialization
-compatibility variant only and is rejected for runtime deployment selection.
+scheduler replay, real log-store validation, failover, membership change, follower-lag, and
+secondary-read validation. `LocalModel` remains a deserialization compatibility variant only and is
+rejected for runtime deployment selection.
 
 The Rust code currently has:
 
@@ -170,12 +171,16 @@ The readiness API is:
 temporalstore_rust::distributed_raft_readiness()
 ```
 
-With the `openraft-engine` feature enabled, it returns `complete = true` and
-`production_ready = true` for the Raft replication slice once the local real-process harnesses have
-emitted durable data-node and metaserver rollout evidence. That evidence now covers data-node
-applied Raft index atomicity with storage mutations and snapshot install, metaserver-owned learner
-add/catch-up/promotion/leader-movement/removal for data-node Raft groups, production mTLS process
-selection, and external packet-loss/disk-pressure/process-chaos validation.
+The no-argument API intentionally fails closed when no external process evidence is supplied. Tests
+and harness validators should use the report-backed path,
+`distributed_raft_readiness_from_openraft_reports(data_node_report, metaserver_report)`, as the
+default readiness-eligible path. With the `openraft-engine` feature enabled, that report-backed path
+returns `complete = true` and `production_ready = true` for the Raft replication slice only when the
+real-process harnesses have emitted durable data-node and metaserver rollout evidence. That evidence
+now covers data-node applied Raft index atomicity with storage mutations and snapshot install,
+metaserver-owned learner add/catch-up/promotion/leader-movement/removal for data-node Raft groups,
+production mTLS process selection, failover, membership changes, follower lag, secondary reads, and
+external packet-loss/disk-pressure/process-chaos validation.
 
 Production callers should use the hard guard:
 

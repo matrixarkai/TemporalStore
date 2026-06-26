@@ -2887,6 +2887,9 @@ fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutRe
         write_proposed_through_process_api: true,
         leader_transfer_validated: true,
         failover_validated: true,
+        membership_change_validated: true,
+        follower_lag_validated: true,
+        secondary_read_validated: true,
         recovered_after_restart: true,
         restart_recovery_validated: true,
         snapshot_install_validated: true,
@@ -2912,6 +2915,10 @@ fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
         scheduler_retries: 1,
         stale_scheduler_token_rejected: true,
         data_node_membership_results_ready: true,
+        failover_validated: true,
+        membership_change_validated: true,
+        follower_lag_validated: true,
+        secondary_read_validated: true,
         read_index_validated: true,
         snapshot_install_validated: true,
         recovered_after_restart: true,
@@ -2946,6 +2953,17 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
             .iter()
             .any(|item| item.contains("OpenRaft production engine adapter")));
     }
+    let distributed_with_evidence =
+        distributed_raft_readiness_from_openraft_reports(&data_report, &meta_report);
+    assert_eq!(
+        distributed_with_evidence.openraft_engine_adapter_present,
+        cfg!(feature = "openraft-engine")
+    );
+    assert!(distributed_with_evidence.metaserver_driven_membership_present);
+    assert_eq!(
+        distributed_with_evidence.production_ready,
+        cfg!(feature = "openraft-engine")
+    );
 
     let mut local_fixture_like_data = data_report;
     local_fixture_like_data.nodes.truncate(1);
@@ -2959,6 +2977,35 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("data-node multi-process rollout evidence")));
+
+    let mut missing_behavior_evidence = ready_data_node_openraft_rollout_report();
+    missing_behavior_evidence.failover_validated = false;
+    missing_behavior_evidence.membership_change_validated = false;
+    missing_behavior_evidence.follower_lag_validated = false;
+    missing_behavior_evidence.secondary_read_validated = false;
+    let rejected_behavior = raft_openraft_rollout_readiness_from_reports(
+        Some(&missing_behavior_evidence),
+        Some(&ready_meta_openraft_rollout_report()),
+    );
+    assert!(!rejected_behavior.data_node_real_process_rollout_validated);
+    assert!(!rejected_behavior.production_ready);
+    assert!(rejected_behavior
+        .missing
+        .iter()
+        .any(|item| item.contains("failover")));
+
+    let mut missing_meta_behavior = ready_meta_openraft_rollout_report();
+    missing_meta_behavior.secondary_read_validated = false;
+    let rejected_meta_behavior = raft_openraft_rollout_readiness_from_reports(
+        Some(&ready_data_node_openraft_rollout_report()),
+        Some(&missing_meta_behavior),
+    );
+    assert!(!rejected_meta_behavior.metaserver_real_process_rollout_validated);
+    assert!(!rejected_meta_behavior.production_ready);
+    assert!(rejected_meta_behavior
+        .missing
+        .iter()
+        .any(|item| item.contains("secondary reads")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence

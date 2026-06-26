@@ -157,9 +157,10 @@ evidence, but they cannot satisfy production readiness by themselves:
 
 - Raft OpenRaft rollout readiness is now explicit in the readiness gate: adapter presence,
   data-node/metaserver startup selection, durable local log state, data-node process API writes,
-  data-node restart/snapshot/applied-fence validation, metaserver process API mutations,
-  metaserver read-index/snapshot/scheduler replay validation, and multi-process log-store
-  validation are required.
+  data-node restart/snapshot/applied-fence validation, failover, membership-change, follower-lag,
+  and secondary-read validation, metaserver process API mutations, metaserver
+  read-index/snapshot/scheduler replay validation, metaserver failover/membership/lag/secondary-read
+  validation, and multi-process log-store validation are required.
 - Raft atomic apply readiness is now explicit in the readiness gate: storage apply fence
   persistence, WAL fence recovery validation, production runtime data-node atomic durability
   reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle
