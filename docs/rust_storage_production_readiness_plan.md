@@ -284,11 +284,17 @@ validation, local/shared-store sync and async replay, follower-cursor retention,
 compaction, tombstone preservation, stale-page-density accounting, and cold PageAddress reads
 through cache refill. These are readiness fields, not informal doc claims.
 
+Rust now also exposes a Rust-native ObjectManager runtime report. It covers hot/cold/mixed
+residency, tombstone objects, dirty/loading/meta/TTL object counters, dirty slot generations,
+layout classes, layout transition counters, missing owner refs, owner mismatches, and object-id
+reuse conflicts. That makes native Rust ObjectManager runtime mechanics readiness-backed rather
+than only doc-described.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
-native ObjectManager hot-object runtime ownership, stream-backed zones, the continuous
+C++ byte-for-byte ObjectManager hot-object memory layout, stream-backed zones, the continuous
 StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load
-policy. The slot-first index and layout evidence are real readiness evidence, but they are not
-treated as complete C++ runtime parity.
+policy. The slot-first index, ObjectManager runtime report, and layout evidence are real readiness
+evidence, but they are not treated as complete C++ runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
