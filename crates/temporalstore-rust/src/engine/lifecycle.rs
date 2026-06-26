@@ -112,7 +112,13 @@ impl TemporalEngine {
                 status: Status::error("already_exists", "shard already exists"),
             };
         }
-        let state = self.load_index(request.shard_id).unwrap_or_default();
+        let mut state = self.load_index(request.shard_id).unwrap_or_default();
+        rebuild_slot_page_ownership(
+            request.shard_id,
+            &mut state,
+            request.start_routing_slot,
+            request.end_routing_slot,
+        );
         self.shards
             .write()
             .expect("engine lock poisoned")
