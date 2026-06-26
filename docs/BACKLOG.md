@@ -127,6 +127,13 @@ Latest AWS/test state:
     - add batch extraction output field `candidate_node_path` with `canonical_node_path` after service-side normalization;
     - update retrieval metrics to report candidate children scored per layer and whether a query fell back to sparse/flat recall because hierarchy was too shallow;
     - benchmark flat entity state vs multi-layer node/entity state on LOCOMO/LongMemEval update and multi-hop buckets.
+  - Child fanout policy:
+    - retrieval should score every child under a selected parent while sibling fanout remains bounded;
+    - default runtime policy is `MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT=100000` with `MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT=100000` as the guardrail;
+    - 100k children is an upper safety ceiling for brute-force summary similarity in a scoped node, not the target steady state;
+    - when extraction/import sees a parent approaching a warning threshold such as 50k children, it should introduce stable intermediate layers such as topic, entity type, resource type, time bucket, repository path, or business object;
+    - if a caller tries to score more than the hard cap, retrieval rejects the request and tells the caller to split over-wide `ContextNode` children into deeper layers;
+    - add metrics for `children_scored_per_parent`, `fanout_warning_count`, and `fanout_hard_cap_rejections` so topology health is visible before recall quality degrades.
 
 - Implement a TemporalStore-native ContextOperator suite for event/entity memory.
   - Current status: MatrixArk already has retrieval-time `DECAY_SCORE` behavior in `tools/matrixark_mcp_server.py`: dense/sparse/node `origin_score` is combined with `time_score` and `business_score` using `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`. Defaults are `wtime=0.18` and `wbusi=0.22`, with configurable freshness tolerance, half-life, type weights, and instance-level business weight fields.
