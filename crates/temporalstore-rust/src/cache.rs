@@ -1965,6 +1965,9 @@ impl CacheInner {
             if self.pmem_bytes == before {
                 break;
             }
+            self.stats.memory_bytes = self.memory_bytes as u64;
+            self.refresh_pin_stats();
+            return true;
         }
     }
 
@@ -2426,6 +2429,16 @@ fn infer_block_kind(key: &CacheKey) -> CacheBlockKind {
         "oplog" => CacheBlockKind::Oplog,
         "string" | "hash" | "set" | "feature" => CacheBlockKind::Object,
         _ => CacheBlockKind::Other,
+    }
+}
+
+fn eviction_reason_for(score: EvictionScore) -> EvictionReason {
+    if score.hotness == 0 {
+        EvictionReason::Cold
+    } else if score.hits == 0 {
+        EvictionReason::LowHit
+    } else {
+        EvictionReason::Stale
     }
 }
 
