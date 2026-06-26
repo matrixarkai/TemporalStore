@@ -130,6 +130,22 @@ pub struct DataNodeRuntimeStats {
     pub storage_lifecycle_runs: u64,
     #[serde(default)]
     pub storage_manager_runs: u64,
+    #[serde(default)]
+    pub storage_manager_loops: u64,
+    #[serde(default)]
+    pub storage_manager_prepare_runs: u64,
+    #[serde(default)]
+    pub storage_manager_reclaim_oplog_runs: u64,
+    #[serde(default)]
+    pub storage_manager_reclaim_memory_runs: u64,
+    #[serde(default)]
+    pub storage_manager_expire_runs: u64,
+    #[serde(default)]
+    pub storage_manager_reclaim_page_runs: u64,
+    #[serde(default)]
+    pub storage_manager_compact_runs: u64,
+    #[serde(default)]
+    pub storage_manager_index_gc_runs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -403,6 +419,103 @@ pub struct GcResponse {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerOptions {
+    #[serde(default = "default_storage_manager_max_dump_slots_per_round")]
+    pub max_dump_slots_per_round: usize,
+    #[serde(default)]
+    pub min_undumped_oplog_records: u64,
+    #[serde(default)]
+    pub dirty_slot_pressure: usize,
+    #[serde(default)]
+    pub stale_page_segment_pressure: usize,
+    #[serde(default)]
+    pub reclaimable_physical_bytes_pressure: u64,
+    #[serde(default)]
+    pub cache_memory_bytes_pressure: u64,
+    #[serde(default)]
+    pub cache_disk_bytes_pressure: u64,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_prepare: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_oplog_reclaim: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_memory_reclaim: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_expire: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_page_gc: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_page_compaction: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_index_gc: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_metrics_reap: bool,
+}
+
+impl Default for StorageManagerOptions {
+    fn default() -> Self {
+        Self {
+            max_dump_slots_per_round: default_storage_manager_max_dump_slots_per_round(),
+            min_undumped_oplog_records: 1,
+            dirty_slot_pressure: 1,
+            stale_page_segment_pressure: 1,
+            reclaimable_physical_bytes_pressure: 1,
+            cache_memory_bytes_pressure: 1,
+            cache_disk_bytes_pressure: 1,
+            enable_prepare: true,
+            enable_oplog_reclaim: true,
+            enable_memory_reclaim: true,
+            enable_expire: true,
+            enable_page_gc: true,
+            enable_page_compaction: true,
+            enable_index_gc: true,
+            enable_metrics_reap: true,
+        }
+    }
+}
+
+fn default_storage_manager_max_dump_slots_per_round() -> usize {
+    64
+}
+
+fn default_storage_manager_stage_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerPressureSnapshot {
+    pub shard_id: ShardId,
+    pub dirty_slot_count: usize,
+    pub selected_dirty_slot_count: usize,
+    pub undumped_oplog_records: u64,
+    pub stale_page_segment_count: usize,
+    pub reclaim_candidate_count: usize,
+    pub reclaimable_physical_bytes: u64,
+    pub cache_memory_bytes: u64,
+    pub cache_disk_bytes: u64,
+    pub background_queue_depth: usize,
+    pub foreground_queue_depth: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StorageManagerLoopReport {
+    pub shard_id: ShardId,
+    pub pressure: StorageManagerPressureSnapshot,
+    pub executed_stages: Vec<String>,
+    pub skipped_stages: Vec<String>,
+    pub lifecycle_plan: StorageLifecyclePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_report: Option<StorageLifecycleReport>,
+    #[serde(default)]
+    pub expired_records_removed: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_report: Option<CompactionResponse>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gc_report: Option<GcResponse>,
+    pub status: Status,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageLifecycleResponse {
     pub status: Status,
     pub report: StorageLifecycleReport,
@@ -668,6 +781,14 @@ struct MutableRuntimeStats {
     gc_runs: u64,
     storage_lifecycle_runs: u64,
     storage_manager_runs: u64,
+    storage_manager_loops: u64,
+    storage_manager_prepare_runs: u64,
+    storage_manager_reclaim_oplog_runs: u64,
+    storage_manager_reclaim_memory_runs: u64,
+    storage_manager_expire_runs: u64,
+    storage_manager_reclaim_page_runs: u64,
+    storage_manager_compact_runs: u64,
+    storage_manager_index_gc_runs: u64,
 }
 
 #[derive(Debug)]
@@ -1418,6 +1539,293 @@ impl DataNodeRuntime {
         self.inner.engine.storage_lifecycle_plan(request)
     }
 
+    pub fn storage_manager_pressure_snapshot(
+        &self,
+        shard_id: ShardId,
+        options: &StorageManagerOptions,
+    ) -> (StorageManagerPressureSnapshot, StorageLifecyclePlan) {
+        let plan = self
+            .inner
+            .engine
+            .storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: options.max_dump_slots_per_round,
+                min_undumped_oplog_records: options.min_undumped_oplog_records,
+                purge_delayed_destroy: options.enable_page_gc,
+                prune_slot_dump_manifests: options.enable_index_gc,
+                roll_forward_slot_dump_installs: options.enable_index_gc,
+                follower_replay_cursors: Vec::new(),
+                invalidate_cache: false,
+                warm_cache: false,
+            });
+        let cache = self.inner.engine.cache().stats();
+        let queue = self
+            .inner
+            .queue
+            .lock()
+            .expect("runtime queue lock poisoned");
+        (
+            StorageManagerPressureSnapshot {
+                shard_id,
+                dirty_slot_count: plan.dirty_slots.len(),
+                selected_dirty_slot_count: plan.selected_dump_slots.len(),
+                undumped_oplog_records: plan.undumped_oplog_records,
+                stale_page_segment_count: plan.stale_page_segment_ids.len(),
+                reclaim_candidate_count: plan.reclaim_candidates.len(),
+                reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
+                cache_memory_bytes: cache.memory_bytes,
+                cache_disk_bytes: cache.disk_bytes,
+                background_queue_depth: queue.background_queued_total,
+                foreground_queue_depth: queue
+                    .queued_total
+                    .saturating_sub(queue.background_queued_total),
+            },
+            plan,
+        )
+    }
+
+    pub fn run_storage_manager_once(
+        &self,
+        shard_id: ShardId,
+        options: StorageManagerOptions,
+    ) -> StorageManagerLoopReport {
+        let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
+        let mut executed_stages = Vec::new();
+        let mut skipped_stages = Vec::new();
+        let mut lifecycle_report = None;
+        let mut compaction_report = None;
+        let mut gc_report = None;
+        let mut expired_records_removed = 0;
+        let mut status = Status::ok();
+
+        if options.enable_prepare {
+            executed_stages.push("prepare".to_string());
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_prepare_runs += 1;
+        } else {
+            skipped_stages.push("prepare_disabled".to_string());
+        }
+
+        let dump_pressure = pressure.dirty_slot_count >= options.dirty_slot_pressure.max(1)
+            || pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1);
+        let cache_pressure = pressure.cache_memory_bytes
+            >= options.cache_memory_bytes_pressure.max(1)
+            || pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1);
+        let stale_page_pressure = pressure.stale_page_segment_count
+            >= options.stale_page_segment_pressure.max(1)
+            || pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1)
+            || pressure.reclaimable_physical_bytes
+                >= options.reclaimable_physical_bytes_pressure.max(1);
+
+        if options.enable_oplog_reclaim && dump_pressure {
+            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: options.max_dump_slots_per_round,
+                min_undumped_oplog_records: options.min_undumped_oplog_records,
+                purge_delayed_destroy: false,
+                prune_slot_dump_manifests: false,
+                roll_forward_slot_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
+                invalidate_cache: false,
+                warm_cache: false,
+            });
+            if let Some(manifest) = response.report.dump_manifest.as_ref() {
+                clear_dirty_shard_slots(
+                    &self.inner.dirty,
+                    &self.inner.engine,
+                    shard_id,
+                    &manifest.slot_ids,
+                );
+                let mut stats = self
+                    .inner
+                    .stats
+                    .lock()
+                    .expect("runtime stats lock poisoned");
+                stats.dump_runs += 1;
+                stats.storage_manager_reclaim_oplog_runs += 1;
+            }
+            lifecycle_report = Some(response.report);
+            executed_stages.push("reclaim_oplog".to_string());
+        } else if !options.enable_oplog_reclaim {
+            skipped_stages.push("reclaim_oplog_disabled".to_string());
+        } else {
+            skipped_stages.push("reclaim_oplog_no_pressure".to_string());
+        }
+
+        if options.enable_memory_reclaim && cache_pressure {
+            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: 0,
+                min_undumped_oplog_records: 0,
+                purge_delayed_destroy: false,
+                prune_slot_dump_manifests: false,
+                roll_forward_slot_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
+                invalidate_cache: true,
+                warm_cache: false,
+            });
+            let mut stats = self
+                .inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned");
+            stats.storage_manager_reclaim_memory_runs += 1;
+            lifecycle_report = Some(response.report);
+            executed_stages.push("reclaim_memory".to_string());
+        } else if !options.enable_memory_reclaim {
+            skipped_stages.push("reclaim_memory_disabled".to_string());
+        } else {
+            skipped_stages.push("reclaim_memory_no_pressure".to_string());
+        }
+
+        if options.enable_expire {
+            expired_records_removed = self.sweep_expired_records();
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_expire_runs += 1;
+            executed_stages.push("expire".to_string());
+        } else {
+            skipped_stages.push("expire_disabled".to_string());
+        }
+
+        if options.enable_page_gc && stale_page_pressure {
+            let retain_page_segments_from_id = lifecycle_plan
+                .stale_page_segment_ids
+                .iter()
+                .min()
+                .map(|segment_id| segment_id.saturating_add(1));
+            let response = run_gc_inner(
+                &self.inner,
+                GcRequest {
+                    shard_id,
+                    retain_oplog_from_sequence: lifecycle_report
+                        .as_ref()
+                        .and_then(|report| report.dump_manifest.as_ref())
+                        .map(|manifest| manifest.oplog_sequence),
+                    retain_index_log_from_sequence: lifecycle_report
+                        .as_ref()
+                        .and_then(|report| report.dump_manifest.as_ref())
+                        .map(|manifest| manifest.index_log_sequence),
+                    retain_page_segments_from_id,
+                },
+            );
+            if !response.status.ok {
+                status = response.status.clone();
+            }
+            gc_report = Some(response);
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_reclaim_page_runs += 1;
+            executed_stages.push("reclaim_page".to_string());
+        } else if !options.enable_page_gc {
+            skipped_stages.push("reclaim_page_disabled".to_string());
+        } else {
+            skipped_stages.push("reclaim_page_no_pressure".to_string());
+        }
+
+        if options.enable_page_compaction && stale_page_pressure {
+            let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
+            if !response.status.ok {
+                status = response.status.clone();
+            }
+            compaction_report = Some(response);
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_compact_runs += 1;
+            executed_stages.push("compact_pages".to_string());
+        } else if !options.enable_page_compaction {
+            skipped_stages.push("compact_pages_disabled".to_string());
+        } else {
+            skipped_stages.push("compact_pages_no_pressure".to_string());
+        }
+
+        if options.enable_index_gc {
+            let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                shard_id,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: 0,
+                min_undumped_oplog_records: 0,
+                purge_delayed_destroy: true,
+                prune_slot_dump_manifests: true,
+                roll_forward_slot_dump_installs: true,
+                follower_replay_cursors: Vec::new(),
+                invalidate_cache: false,
+                warm_cache: false,
+            });
+            lifecycle_report = Some(response.report);
+            self.inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_index_gc_runs += 1;
+            executed_stages.push("reclaim_index".to_string());
+        } else {
+            skipped_stages.push("reclaim_index_disabled".to_string());
+        }
+
+        if options.enable_metrics_reap {
+            executed_stages.push("reap_metrics".to_string());
+        } else {
+            skipped_stages.push("reap_metrics_disabled".to_string());
+        }
+
+        self.inner
+            .stats
+            .lock()
+            .expect("runtime stats lock poisoned")
+            .storage_manager_loops += 1;
+
+        StorageManagerLoopReport {
+            shard_id,
+            pressure,
+            executed_stages,
+            skipped_stages,
+            lifecycle_plan,
+            lifecycle_report,
+            expired_records_removed,
+            compaction_report,
+            gc_report,
+            status,
+        }
+    }
+
+    pub fn start_storage_manager_scheduler(
+        &self,
+        interval: Duration,
+        shard_id: ShardId,
+        options: StorageManagerOptions,
+    ) -> StorageLifecycleScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                runtime.run_storage_manager_once(shard_id, options.clone());
+            }
+        });
+        StorageLifecycleScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
     pub fn storage_production_readiness_report(
         &self,
         shard_id: ShardId,
@@ -1728,6 +2136,14 @@ impl DataNodeRuntime {
             gc_runs: stats.gc_runs,
             storage_lifecycle_runs: stats.storage_lifecycle_runs,
             storage_manager_runs: stats.storage_manager_runs,
+            storage_manager_loops: stats.storage_manager_loops,
+            storage_manager_prepare_runs: stats.storage_manager_prepare_runs,
+            storage_manager_reclaim_oplog_runs: stats.storage_manager_reclaim_oplog_runs,
+            storage_manager_reclaim_memory_runs: stats.storage_manager_reclaim_memory_runs,
+            storage_manager_expire_runs: stats.storage_manager_expire_runs,
+            storage_manager_reclaim_page_runs: stats.storage_manager_reclaim_page_runs,
+            storage_manager_compact_runs: stats.storage_manager_compact_runs,
+            storage_manager_index_gc_runs: stats.storage_manager_index_gc_runs,
         }
     }
 
@@ -2550,248 +2966,13 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node compaction canceled before scan");
             }
-            let compaction = inner.engine.compact_shard_pages(request.shard_id);
-            let (
-                status,
-                compacted_objects,
-                previous_page_segment_id,
-                compacted_page_segment_id,
-                stale_page_segment_ids,
-                before,
-                after,
-            ) = match compaction {
-                Ok(report) => (
-                    Status::ok(),
-                    report.rewritten_page_refs,
-                    report.previous_page_segment_id,
-                    report.compacted_page_segment_id,
-                    report.stale_page_segment_ids,
-                    report.before,
-                    report.after,
-                ),
-                Err(status) => (
-                    status,
-                    0,
-                    0,
-                    0,
-                    Vec::new(),
-                    ShardCompactionUtilityReport::default(),
-                    ShardCompactionUtilityReport::default(),
-                ),
-            };
-            inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned")
-                .compaction_runs += 1;
-            DataNodeTaskOutput::Compact(CompactionResponse {
-                status,
-                shard_id: request.shard_id,
-                compacted_objects,
-                previous_page_segment_id,
-                compacted_page_segment_id,
-                stale_page_segment_ids,
-                before,
-                after,
-            })
+            DataNodeTaskOutput::Compact(run_compaction_inner(inner, request.clone()))
         }
         TaskRequest::Gc(request) => {
             if cancellation.is_requested() {
                 return task_canceled_output(task, "data node gc canceled before dirty cleanup");
             }
-            let collected_objects = clear_dirty_shard(&inner.dirty, request.shard_id);
-            let mut status = Status::ok();
-            let mut cache_entries_removed = 0;
-            let mut cache_disk_bytes_removed = 0;
-            let mut oplog_records_removed = 0;
-            let mut index_log_records_removed = 0;
-            let mut page_segments_removed = 0;
-            let mut page_segments_removed_physical_bytes = 0;
-            let mut page_segments_retained_physical_bytes = 0;
-            let mut page_segments_retained_live = 0;
-            let mut page_segments_retained_live_physical_bytes = 0;
-            let mut lifecycle_plan = None;
-            if cancellation.is_requested() {
-                return DataNodeTaskOutput::Gc(GcResponse {
-                    status: Status::error(
-                        "job_canceled",
-                        "data node gc canceled before cache cleanup",
-                    ),
-                    shard_id: request.shard_id,
-                    collected_objects,
-                    cache_entries_removed,
-                    cache_disk_bytes_removed,
-                    oplog_records_removed,
-                    index_log_records_removed,
-                    page_segments_removed,
-                    page_segments_removed_physical_bytes,
-                    page_segments_retained_physical_bytes,
-                    page_segments_retained_live,
-                    page_segments_retained_live_physical_bytes,
-                    lifecycle_plan,
-                });
-            }
-            match inner.engine.cache().invalidate_shard(request.shard_id) {
-                Ok(report) => {
-                    cache_entries_removed = report.memory_entries_removed;
-                    cache_disk_bytes_removed = report.disk_bytes_removed;
-                }
-                Err(err) => {
-                    status = Status::error("cache_gc_failed", &err.to_string());
-                }
-            }
-            if cancellation.is_requested() {
-                return DataNodeTaskOutput::Gc(GcResponse {
-                    status: Status::error(
-                        "job_canceled",
-                        "data node gc canceled before oplog cleanup",
-                    ),
-                    shard_id: request.shard_id,
-                    collected_objects,
-                    cache_entries_removed,
-                    cache_disk_bytes_removed,
-                    oplog_records_removed,
-                    index_log_records_removed,
-                    page_segments_removed,
-                    page_segments_removed_physical_bytes,
-                    page_segments_retained_physical_bytes,
-                    page_segments_retained_live,
-                    page_segments_retained_live_physical_bytes,
-                    lifecycle_plan,
-                });
-            }
-            if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
-                if status.ok {
-                    match inner
-                        .engine
-                        .oplog_store()
-                        .gc_before_sequence(request.shard_id, retain_from_sequence)
-                    {
-                        Ok(report) => oplog_records_removed = report.records_removed,
-                        Err(err) => {
-                            status = Status::error("oplog_gc_failed", &err.to_string());
-                        }
-                    }
-                }
-            }
-            if cancellation.is_requested() {
-                return DataNodeTaskOutput::Gc(GcResponse {
-                    status: Status::error(
-                        "job_canceled",
-                        "data node gc canceled before index-log cleanup",
-                    ),
-                    shard_id: request.shard_id,
-                    collected_objects,
-                    cache_entries_removed,
-                    cache_disk_bytes_removed,
-                    oplog_records_removed,
-                    index_log_records_removed,
-                    page_segments_removed,
-                    page_segments_removed_physical_bytes,
-                    page_segments_retained_physical_bytes,
-                    page_segments_retained_live,
-                    page_segments_retained_live_physical_bytes,
-                    lifecycle_plan,
-                });
-            }
-            if status.ok {
-                if let Some(retain_from_sequence) = request.retain_index_log_from_sequence {
-                    match inner
-                        .engine
-                        .index_log_store()
-                        .gc_before_sequence(request.shard_id, retain_from_sequence)
-                    {
-                        Ok(report) => index_log_records_removed = report.records_removed,
-                        Err(err) => {
-                            status = Status::error("index_log_gc_failed", &err.to_string());
-                        }
-                    }
-                }
-            }
-            if cancellation.is_requested() {
-                return DataNodeTaskOutput::Gc(GcResponse {
-                    status: Status::error(
-                        "job_canceled",
-                        "data node gc canceled before page-segment cleanup",
-                    ),
-                    shard_id: request.shard_id,
-                    collected_objects,
-                    cache_entries_removed,
-                    cache_disk_bytes_removed,
-                    oplog_records_removed,
-                    index_log_records_removed,
-                    page_segments_removed,
-                    page_segments_removed_physical_bytes,
-                    page_segments_retained_physical_bytes,
-                    page_segments_retained_live,
-                    page_segments_retained_live_physical_bytes,
-                    lifecycle_plan,
-                });
-            }
-            if status.ok {
-                if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
-                    let live_page_segment_ids =
-                        inner.engine.live_page_segment_ids(request.shard_id);
-                    match inner.engine.page_store().gc_segments_before_with_live_refs(
-                        retain_from_page_segment_id,
-                        live_page_segment_ids,
-                    ) {
-                        Ok(report) => {
-                            page_segments_removed = report.removed_page_segment_ids.len();
-                            page_segments_removed_physical_bytes = report.removed_physical_bytes;
-                            page_segments_retained_physical_bytes = report.retained_physical_bytes;
-                            page_segments_retained_live =
-                                report.retained_live_page_segment_ids.len();
-                            page_segments_retained_live_physical_bytes =
-                                report.retained_live_physical_bytes;
-                        }
-                        Err(err) => {
-                            status = Status::error("page_store_gc_failed", &err.to_string());
-                        }
-                    }
-                }
-            }
-            lifecycle_plan = Some(
-                inner
-                    .engine
-                    .storage_lifecycle_plan(StorageLifecycleRequest {
-                        shard_id: request.shard_id,
-                        selected_dump_slots: Vec::new(),
-                        max_dump_slots_per_round: 0,
-                        min_undumped_oplog_records: 0,
-                        purge_delayed_destroy: false,
-                        prune_slot_dump_manifests: false,
-                        roll_forward_slot_dump_installs: false,
-                        follower_replay_cursors: Vec::new(),
-                        page_gc_shared_store_cursors: Vec::new(),
-                        page_gc_raft_snapshot_refs: Vec::new(),
-                        page_gc_checkpoint_floor_segment_id: None,
-                        page_gc_raft_install_floor_segment_id: None,
-                        page_gc_delayed_destroy_grace_ms: 0,
-                        invalidate_cache: false,
-                        warm_cache: false,
-                    }),
-            );
-            inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned")
-                .gc_runs += 1;
-            DataNodeTaskOutput::Gc(GcResponse {
-                status,
-                shard_id: request.shard_id,
-                collected_objects,
-                cache_entries_removed,
-                cache_disk_bytes_removed,
-                oplog_records_removed,
-                index_log_records_removed,
-                page_segments_removed,
-                page_segments_removed_physical_bytes,
-                page_segments_retained_physical_bytes,
-                page_segments_retained_live,
-                page_segments_retained_live_physical_bytes,
-                lifecycle_plan,
-            })
+            DataNodeTaskOutput::Gc(run_gc_inner(inner, request.clone()))
         }
         TaskRequest::StorageManager(request) => {
             if cancellation.is_requested() {
@@ -2810,13 +2991,169 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 .last_storage_manager_cycle
                 .lock()
                 .expect("last storage manager cycle lock poisoned") = Some(report.clone());
-            inner
-                .stats
-                .lock()
-                .expect("runtime stats lock poisoned")
-                .storage_manager_runs += 1;
+            let mut stats = inner.stats.lock().expect("runtime stats lock poisoned");
+            stats.storage_manager_runs += 1;
+            stats.storage_manager_loops += 1;
             DataNodeTaskOutput::StorageManager(StorageManagerResponse { status, report })
         }
+    }
+}
+
+fn run_compaction_inner(
+    inner: &DataNodeRuntimeInner,
+    request: CompactionRequest,
+) -> CompactionResponse {
+    let compaction = inner.engine.compact_shard_pages(request.shard_id);
+    let (
+        status,
+        compacted_objects,
+        previous_page_segment_id,
+        compacted_page_segment_id,
+        stale_page_segment_ids,
+        before,
+        after,
+    ) = match compaction {
+        Ok(report) => (
+            Status::ok(),
+            report.rewritten_page_refs,
+            report.previous_page_segment_id,
+            report.compacted_page_segment_id,
+            report.stale_page_segment_ids,
+            report.before,
+            report.after,
+        ),
+        Err(status) => (
+            status,
+            0,
+            0,
+            0,
+            Vec::new(),
+            ShardCompactionUtilityReport::default(),
+            ShardCompactionUtilityReport::default(),
+        ),
+    };
+    inner
+        .stats
+        .lock()
+        .expect("runtime stats lock poisoned")
+        .compaction_runs += 1;
+    CompactionResponse {
+        status,
+        shard_id: request.shard_id,
+        compacted_objects,
+        previous_page_segment_id,
+        compacted_page_segment_id,
+        stale_page_segment_ids,
+        before,
+        after,
+    }
+}
+
+fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse {
+    let collected_objects = clear_dirty_shard(&inner.dirty, request.shard_id);
+    let mut status = Status::ok();
+    let mut cache_entries_removed = 0;
+    let mut cache_disk_bytes_removed = 0;
+    let mut oplog_records_removed = 0;
+    let mut index_log_records_removed = 0;
+    let mut page_segments_removed = 0;
+    let mut page_segments_removed_physical_bytes = 0;
+    let mut page_segments_retained_physical_bytes = 0;
+    let mut page_segments_retained_live = 0;
+    let mut page_segments_retained_live_physical_bytes = 0;
+    match inner.engine.cache().invalidate_shard(request.shard_id) {
+        Ok(report) => {
+            cache_entries_removed = report.memory_entries_removed;
+            cache_disk_bytes_removed = report.disk_bytes_removed;
+        }
+        Err(err) => {
+            status = Status::error("cache_gc_failed", &err.to_string());
+        }
+    }
+    if let Some(retain_from_sequence) = request.retain_oplog_from_sequence {
+        if status.ok {
+            match inner
+                .engine
+                .oplog_store()
+                .gc_before_sequence(request.shard_id, retain_from_sequence)
+            {
+                Ok(report) => oplog_records_removed = report.records_removed,
+                Err(err) => {
+                    status = Status::error("oplog_gc_failed", &err.to_string());
+                }
+            }
+        }
+    }
+    if status.ok {
+        if let Some(retain_from_sequence) = request.retain_index_log_from_sequence {
+            match inner
+                .engine
+                .index_log_store()
+                .gc_before_sequence(request.shard_id, retain_from_sequence)
+            {
+                Ok(report) => index_log_records_removed = report.records_removed,
+                Err(err) => {
+                    status = Status::error("index_log_gc_failed", &err.to_string());
+                }
+            }
+        }
+    }
+    if status.ok {
+        if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
+            let live_page_segment_ids = inner.engine.live_page_segment_ids(request.shard_id);
+            match inner.engine.page_store().gc_segments_before_with_live_refs(
+                retain_from_page_segment_id,
+                live_page_segment_ids,
+            ) {
+                Ok(report) => {
+                    page_segments_removed = report.removed_page_segment_ids.len();
+                    page_segments_removed_physical_bytes = report.removed_physical_bytes;
+                    page_segments_retained_physical_bytes = report.retained_physical_bytes;
+                    page_segments_retained_live = report.retained_live_page_segment_ids.len();
+                    page_segments_retained_live_physical_bytes =
+                        report.retained_live_physical_bytes;
+                }
+                Err(err) => {
+                    status = Status::error("page_store_gc_failed", &err.to_string());
+                }
+            }
+        }
+    }
+    let lifecycle_plan = Some(
+        inner
+            .engine
+            .storage_lifecycle_plan(StorageLifecycleRequest {
+                shard_id: request.shard_id,
+                selected_dump_slots: Vec::new(),
+                max_dump_slots_per_round: 0,
+                min_undumped_oplog_records: 0,
+                purge_delayed_destroy: false,
+                prune_slot_dump_manifests: false,
+                roll_forward_slot_dump_installs: false,
+                follower_replay_cursors: Vec::new(),
+                invalidate_cache: false,
+                warm_cache: false,
+            }),
+    );
+    inner
+        .stats
+        .lock()
+        .expect("runtime stats lock poisoned")
+        .gc_runs += 1;
+    GcResponse {
+        status,
+        shard_id: request.shard_id,
+        collected_objects,
+        cache_entries_removed,
+        cache_disk_bytes_removed,
+        oplog_records_removed,
+        index_log_records_removed,
+        page_segments_removed,
+        page_segments_removed_physical_bytes,
+        page_segments_retained_physical_bytes,
+        page_segments_retained_live,
+        page_segments_retained_live_physical_bytes,
+        lifecycle_plan,
     }
 }
 

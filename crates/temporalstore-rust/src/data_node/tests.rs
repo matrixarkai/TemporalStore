@@ -1349,6 +1349,132 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
 }
 
 #[test]
+// shared-corpus: storage_dump_load_recovery storage_cache_refill;
+fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine.clone(), 8);
+
+    for (key, value) in [
+        ("manager-a", b"old".to_vec()),
+        ("manager-a", b"new".to_vec()),
+        ("manager-b", b"two".to_vec()),
+    ] {
+        let response = runtime.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+    let ttl = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSetEx {
+            key: "manager-ttl".to_string(),
+            value: b"gone".to_vec(),
+            ttl_ms: 1,
+        },
+    });
+    assert!(ttl.status.ok, "{ttl:?}");
+    let cached = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "manager-a".to_string(),
+        },
+    });
+    assert!(cached.status.ok, "{cached:?}");
+    std::thread::sleep(Duration::from_millis(2));
+
+    let report = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            max_dump_slots_per_round: 16,
+            min_undumped_oplog_records: 1,
+            dirty_slot_pressure: 1,
+            stale_page_segment_pressure: 1,
+            reclaimable_physical_bytes_pressure: 1,
+            cache_memory_bytes_pressure: 1,
+            cache_disk_bytes_pressure: 1,
+            ..StorageManagerOptions::default()
+        },
+    );
+
+    assert!(report.status.ok, "{report:?}");
+    for stage in [
+        "prepare",
+        "reclaim_oplog",
+        "reclaim_memory",
+        "expire",
+        "reclaim_page",
+        "compact_pages",
+        "reclaim_index",
+        "reap_metrics",
+    ] {
+        assert!(
+            report
+                .executed_stages
+                .iter()
+                .any(|executed| executed == stage),
+            "missing stage {stage}: {report:?}"
+        );
+    }
+    assert!(report.pressure.dirty_slot_count >= 1);
+    assert!(report.pressure.undumped_oplog_records >= 1);
+    assert!(!report.lifecycle_plan.reclaim_candidates.is_empty());
+    assert!(report.lifecycle_report.is_some());
+    assert!(report.compaction_report.as_ref().unwrap().status.ok);
+    assert!(report.gc_report.as_ref().unwrap().status.ok);
+    assert!(report.expired_records_removed >= 1);
+    assert!(runtime.dirty_objects().is_empty());
+
+    let stats = runtime.stats();
+    assert_eq!(stats.storage_manager_loops, 1);
+    assert_eq!(stats.storage_manager_prepare_runs, 1);
+    assert_eq!(stats.storage_manager_reclaim_oplog_runs, 1);
+    assert_eq!(stats.storage_manager_reclaim_memory_runs, 1);
+    assert_eq!(stats.storage_manager_expire_runs, 1);
+    assert_eq!(stats.storage_manager_reclaim_page_runs, 1);
+    assert_eq!(stats.storage_manager_compact_runs, 1);
+    assert_eq!(stats.storage_manager_index_gc_runs, 1);
+}
+
+#[test]
+// rust-internal: validates periodic runtime scheduling for the StorageManager loop
+fn runtime_storage_manager_scheduler_runs_continuous_loop() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 8,
+        },
+    );
+    let response = runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "manager-scheduler".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+
+    let scheduler = runtime.start_storage_manager_scheduler(
+        Duration::from_millis(5),
+        1,
+        StorageManagerOptions::default(),
+    );
+    wait_until(Duration::from_secs(1), || {
+        runtime.stats().storage_manager_loops >= 1
+    });
+    scheduler.stop();
+    assert!(runtime.stats().storage_manager_loops >= 1);
+}
+
+#[test]
 fn runtime_expiry_sweep_scheduler_removes_expired_records() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
