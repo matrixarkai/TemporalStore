@@ -26,6 +26,10 @@ names, for example `process_path_validated`, `read_index_validated`, or
 `membership_rescale_validated`, `apply_pipeline_converged`, or
 `wal_persistence_observed`, rather than a vague "Raft API present" failure.
 
+When a process report lacks those semantics, the readiness blocker includes the exact missing field
+names, for example `process_path_validated`, `read_index_validated`, or
+`leader_lease_validated`, rather than a vague "Raft API present" failure.
+
 The Rust code currently has:
 
 - production data-node Raft runtime options with TemporalRaft/raft-rs engine selection
