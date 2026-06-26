@@ -407,6 +407,107 @@ fn context_workflow_extracts_retrieves_and_injects_mock_context() {
     assert!(!inject.audit.selected_refs.is_empty());
 }
 
+// shared-corpus: context_query_debug_filter_group_cpp_parity
+#[test]
+fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
+    let engine = test_engine();
+    let relevant = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 4242,
+            source_kind: ContextSourceKind::Incident,
+            source_id: "INC-payment-1".to_string(),
+            title: "Payment risk incident".to_string(),
+            body:
+                "Latest checkout update: payment risk score moved to 87 after the gateway timeout."
+                    .to_string(),
+            timestamp_ms: 10_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let unrelated = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 4242,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "CHAT-preference-1".to_string(),
+            title: "Notification preference".to_string(),
+            body: "Support chat: the user changed the email notification preference to weekly."
+                .to_string(),
+            timestamp_ms: 11_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(relevant.status.ok, "{:?}", relevant.status);
+    assert!(unrelated.status.ok, "{:?}", unrelated.status);
+
+    let report = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 4242,
+            node_hashes: vec![relevant.node.node_hash, unrelated.node.node_hash],
+            query: "What is the latest checkout payment risk score?".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 20_000,
+            max_events: 8,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(report.status.ok, "{:?}", report.status);
+    let debug = &report.query_understanding_debug;
+    assert_eq!(debug.debug_schema, "matrixark_context_query_debug_v1");
+    assert_ne!(debug.query_hash, 0);
+    assert!(debug
+        .normalized_query_terms
+        .contains(&"checkout".to_string()));
+    assert_eq!(debug.question_type, "current_state");
+    assert!(debug.filter_group_summary.total_groups >= 2);
+    assert!(debug.filter_group_summary.secondary_index_group_count >= 1);
+    assert!(debug.filter_group_summary.total_candidate_count >= 2);
+    assert!(debug.filter_group_summary.total_matched_count >= 1);
+    assert!(debug.filter_group_summary.total_dropped_count >= 1);
+    assert!(debug.candidates_passing_prefilter >= 1);
+    assert!(debug.candidates_dropped_before_scoring >= 1);
+    assert!(debug
+        .verbose_filter_groups
+        .iter()
+        .any(|group| group.group_kind == "secondary_index_prefilter"
+            && group.matched_count > 0
+            && group.dropped_count > 0));
+    assert!(debug.prefilter_candidate_sample.iter().any(|candidate| {
+        !candidate.passes_secondary_index_prefilter
+            && candidate.drop_reason == "secondary_index_prefilter_miss"
+    }));
+    assert_eq!(
+        debug
+            .tree_traversal_summary
+            .summary_embedding_candidate_count,
+        2
+    );
+    assert_eq!(
+        debug
+            .tree_traversal_summary
+            .summary_embedding_selected_count,
+        2
+    );
+    assert!(!debug.selected_refs.is_empty());
+    assert_eq!(debug.injection_ordering.len(), debug.selected_refs.len());
+    assert_eq!(debug.injection_ordering[0].prompt_rank, 1);
+    assert_eq!(
+        debug.injection_ordering[0].ref_hash,
+        debug.selected_refs[0].ref_hash
+    );
+    assert!(debug.injection_ordering[0]
+        .selection_reason
+        .contains("tree traversal"));
+}
+
 // shared-corpus: context_benchmark_injection_entity_segment_index
 #[test]
 fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
