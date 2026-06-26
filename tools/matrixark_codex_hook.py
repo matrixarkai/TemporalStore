@@ -14,6 +14,52 @@ from typing import Any
 
 Json = dict[str, Any]
 
+RESOURCE_TYPE_BY_SUFFIX = {
+    ".md": "md",
+    ".markdown": "md",
+    ".txt": "txt",
+    ".log": "log",
+    ".html": "html",
+    ".htm": "html",
+    ".pdf": "pdf",
+    ".docx": "docx",
+    ".pptx": "pptx",
+    ".xlsx": "xlsx",
+    ".csv": "csv",
+    ".tsv": "tsv",
+    ".json": "json",
+    ".jsonl": "jsonl",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".webp": "image",
+}
+RESOURCE_EVENTS = {
+    "resourceadded",
+    "resource_added",
+    "addresource",
+    "add_resource",
+    "resource",
+    "fileadded",
+    "file_added",
+    "documentadded",
+    "document_added",
+    "resourceimport",
+    "resource_import",
+    "skilladded",
+    "skill_added",
+}
+
+
+def normalized_event_name(event: str) -> str:
+    return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
+
+
+def is_resource_event(event: str) -> bool:
+    return normalized_event_name(event) in RESOURCE_EVENTS
+
 
 def load_matrixark(root: Path):
     sys.path.insert(0, str(root))
@@ -210,6 +256,56 @@ def payload_text(payload: Json) -> str:
     return json.dumps(payload, sort_keys=True)[:4000] if payload else ""
 
 
+def payload_resource_uri(payload: Json) -> str:
+    return first_string_at(
+        payload,
+        [
+            ["raw_uri"],
+            ["rawUri"],
+            ["uri"],
+            ["url"],
+            ["path"],
+            ["file_path"],
+            ["filePath"],
+            ["resource_path"],
+            ["resourcePath"],
+            ["document_path"],
+            ["documentPath"],
+            ["params", "raw_uri"],
+            ["params", "uri"],
+            ["params", "path"],
+            ["metadata", "raw_uri"],
+            ["metadata", "uri"],
+            ["metadata", "path"],
+        ],
+    )
+
+
+def payload_resource_type(payload: Json, raw_uri: str) -> str:
+    direct = first_string_at(
+        payload,
+        [
+            ["resource_type"],
+            ["resourceType"],
+            ["type"],
+            ["mime_type"],
+            ["mimeType"],
+            ["params", "resource_type"],
+            ["params", "resourceType"],
+            ["metadata", "resource_type"],
+            ["metadata", "resourceType"],
+        ],
+    )
+    if direct:
+        value = direct.strip().lower()
+        if "/" in value:
+            value = value.split("/")[-1]
+        return value
+    if Path(raw_uri).name.lower() == "skill.md":
+        return "skill"
+    return RESOURCE_TYPE_BY_SUFFIX.get(Path(raw_uri).suffix.lower(), "")
+
+
 def compact_payload_item(item: Any, *, max_text: int = 1200) -> Json:
     if isinstance(item, str):
         return {"text": item[:max_text]}
@@ -403,7 +499,9 @@ def main() -> int:
     resolved_session_id, session_id_source = resolve_session_id(payload, args)
     args.session_id = resolved_session_id
     text = payload_text(payload) or args.query
-    if not text and args.event not in {"IdleTimeout", "SessionIdle"}:
+    raw_uri = payload_resource_uri(payload)
+    resource_type = payload_resource_type(payload, raw_uri) if raw_uri else ""
+    if not text and not raw_uri and args.event not in {"IdleTimeout", "SessionIdle"}:
         print(json.dumps({"status": "skipped", "reason": "empty hook payload"}))
         return 0
     agent_context = agent_context_from_payload(payload, event=args.event, session_id_source=session_id_source, args=args)
@@ -415,7 +513,40 @@ def main() -> int:
         common["api_key"] = args.api_key
 
     ingest = {}
-    if text:
+    if raw_uri and is_resource_event(args.event):
+        kind = "skill" if resource_type == "skill" or Path(raw_uri).name.lower() == "skill.md" else "resource"
+        ingest_args = {
+            **common,
+            "kind": kind,
+            "messages": [{"role": "user", "content": text or f"{kind} added: {raw_uri}"}],
+            "raw_uri": raw_uri,
+            "resource_type": resource_type or kind,
+            "metadata": {
+                "source": "codex_hook",
+                "codex_event": args.event,
+                "raw_hook_payload": payload,
+                "agent_context": agent_context,
+                "compacted_session_summary": False,
+                "codex_session_id_source": session_id_source,
+                "raw_uri": raw_uri,
+                "resource_type": resource_type or kind,
+            },
+            "understanding_provider": args.understanding_provider,
+            "segment_provider": args.segment_provider,
+            "agent_hook": {
+                "source": "codex",
+                "hook_type": "resource_added",
+                "hook_id": f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
+                "observed_at_ms": int(time.time() * 1000),
+                "idempotency_key": str(payload.get("id") or payload.get("turn_id") or raw_uri),
+                "trigger": args.event,
+                "auto_captured": True,
+                "session_id_source": session_id_source,
+            },
+            "wait": bool(payload.get("wait", True)),
+        }
+        ingest = call_tool(server, "matrixark_ingest", ingest_args)
+    elif text:
         ingest_args: Json = {
             **common,
             "messages": [{"role": role_for_event(args.event), "content": text}],
@@ -505,6 +636,8 @@ def main() -> int:
                     "auto_threshold_commit": bool(ingest.get("auto_batch_extract_result")) if ingest else False,
                 },
                 "ingest": ingest,
+                "resource_uri": raw_uri,
+                "resource_type": resource_type,
                 "retrieve": {
                     "context_pack_id": retrieve.get("context_pack_id"),
                     "selected_ref_count": len(retrieve.get("selected_refs", [])) if retrieve else 0,
