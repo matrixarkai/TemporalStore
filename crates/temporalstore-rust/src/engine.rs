@@ -5463,37 +5463,14 @@ impl TemporalEngine {
         shard_id: ShardId,
         shard: &ShardState,
     ) -> StoragePageOwnershipValidation {
-        let mut validation = StoragePageOwnershipValidation::default();
-        for entry in collect_live_page_entries_from_model_maps(shard) {
-            let expected_object_id = expected_live_page_object_id(shard_id, &entry);
-            let expected_routing_slot = self.routing_slot_for_key(shard_id, &entry.object_key);
-            let object_mismatch = entry
-                .address
-                .object_id
-                .is_some_and(|actual| actual != expected_object_id);
-            let slot_mismatch = entry
-                .address
-                .routing_slot
-                .is_some_and(|actual| actual != expected_routing_slot);
-            if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
-                validation.missing_owner_page_refs =
-                    validation.missing_owner_page_refs.saturating_add(1);
-            }
-            if object_mismatch || slot_mismatch {
-                validation
-                    .mismatches
-                    .push(StorageRecoveryPageOwnerMismatch {
-                        object_key: entry.object_key,
-                        page_segment_id: entry.address.page_segment_id,
-                        offset: entry.address.offset,
-                        expected_object_id,
-                        actual_object_id: entry.address.object_id,
-                        expected_routing_slot,
-                        actual_routing_slot: entry.address.routing_slot,
-                    });
-            }
-        }
-        validation
+        let (start_routing_slot, end_routing_slot) = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .map(|info| (info.start_routing_slot, info.end_routing_slot))
+            .unwrap_or((0, u32::MAX));
+        validate_slot_ownership_index(shard_id, shard, start_routing_slot, end_routing_slot)
     }
 
     pub fn compact_shard_pages(&self, shard_id: ShardId) -> Result<ShardCompactionReport, Status> {
@@ -10922,6 +10899,46 @@ fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64
         &entry.object_key,
         entry.component.as_deref(),
     )
+}
+
+fn validate_slot_ownership_index(
+    shard_id: ShardId,
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> StoragePageOwnershipValidation {
+    let mut validation = StoragePageOwnershipValidation::default();
+    for entry in collect_live_page_entries_from_model_maps(shard) {
+        let expected_object_id = expected_live_page_object_id(shard_id, &entry);
+        let expected_routing_slot =
+            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot);
+        let object_mismatch = entry
+            .address
+            .object_id
+            .is_some_and(|actual| actual != expected_object_id);
+        let slot_mismatch = entry
+            .address
+            .routing_slot
+            .is_some_and(|actual| actual != expected_routing_slot);
+        if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
+            validation.missing_owner_page_refs =
+                validation.missing_owner_page_refs.saturating_add(1);
+        }
+        if object_mismatch || slot_mismatch {
+            validation
+                .mismatches
+                .push(StorageRecoveryPageOwnerMismatch {
+                    object_key: entry.object_key,
+                    page_segment_id: entry.address.page_segment_id,
+                    offset: entry.address.offset,
+                    expected_object_id,
+                    actual_object_id: entry.address.object_id,
+                    expected_routing_slot,
+                    actual_routing_slot: entry.address.routing_slot,
+                });
+        }
+    }
+    validation
 }
 
 fn storage_object_lifecycle_report(
