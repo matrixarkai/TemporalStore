@@ -102,6 +102,13 @@ run_dataset() {
         --storage-prefix "${prefix}" \
         --request-timeout-ms "${REQUEST_TIMEOUT_MS}" \
         --io-timeout-ms "${IO_TIMEOUT_MS}" \
+        --storage-mode "${MATRIXARK_BENCHMARK_STORAGE_MODE:-multi_node}" \
+        --oplog-mode "${MATRIXARK_BENCHMARK_OPLOG_MODE:-async}" \
+        --replication-mode "${MATRIXARK_BENCHMARK_REPLICATION_MODE:-shared_store}" \
+        --direct-audit-mode deferred \
+        --direct-write-retries "${MATRIXARK_DIRECT_WRITE_RETRIES:-5}" \
+        --direct-write-backoff-ms "${MATRIXARK_DIRECT_WRITE_BACKOFF_MS:-50}" \
+        --direct-record-bundle-max-bytes "${MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES:-65536}" \
         --batch-size "${BATCH_SIZE}" \
         --max-context-tokens "${MAX_CONTEXT_TOKENS}" \
         --question-limit "${qlimit}"
