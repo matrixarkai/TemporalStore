@@ -8578,6 +8578,67 @@ class MatrixArkAccessManager:
             "default_node_path": self.adapter.default_session_node_path(local_scope),
         }
 
+    def signup(self, args: Json, identity: Json) -> Json:
+        """Production signup/onboarding flow for hosted MatrixArk.
+
+        A trusted product gateway may call this after validating a human login;
+        an admin key may also call it directly. MatrixArk stores only account,
+        tenant, user, SSO metadata, a hashed first API key, and audit records.
+        """
+
+        trusted_gateway = bool(args.get("trusted_gateway", False))
+        identity_scopes = set(identity.get("scopes", []))
+        if self.mode == "enforced" and identity.get("mode") != "api_key" and not trusted_gateway:
+            raise MatrixArkError("signup requires a trusted gateway or MatrixArk admin API key in enforced mode")
+        if identity.get("mode") == "api_key" and not trusted_gateway and not {"admin:account", "admin:user", "admin:api_key"}.issubset(identity_scopes):
+            raise MatrixArkError("signup with an API key requires account, user, and api-key admin scopes")
+
+        provider = safe_identifier(optional_string(args, "provider", "local"), default="local")
+        email = optional_string(args, "email", "")
+        external_user_id = optional_string(args, "external_user_id", email or optional_string(args, "external_subject", ""))
+        external_subject = optional_string(args, "external_subject", f"{provider}:{external_user_id}" if external_user_id else "")
+        first_key_scopes = optional_string_list(args, "first_key_scopes", sorted(MATRIXARK_ALL_SCOPES))
+        apply_args: Json = {
+            **args,
+            "scopes": first_key_scopes,
+            "role": normalize_matrixark_role(optional_string(args, "first_key_role", optional_string(args, "role", "owner"))),
+            "external_subject": external_subject or optional_string(args, "external_subject", ""),
+            "key_display_name": optional_string(args, "key_display_name", "MatrixArk owner key"),
+            "key_prefix": optional_string(args, "key_prefix", "mk_live"),
+        }
+        result = self.apply_api_key(apply_args, identity)
+        signup_identity = {
+            **identity,
+            "account_id": result.get("account_id", identity.get("account_id", "")),
+            "tenant_id": result.get("tenant_id", identity.get("tenant_id", "")),
+            "user_id": result.get("local_scope", {}).get("user_id", optional_string(args, "user_id", "")),
+        }
+        self.append_audit(
+            "auth.signup",
+            signup_identity,
+            status="ok",
+            details={
+                "api_key_id": result.get("api_key_id"),
+                "provider": provider,
+                "email_present": bool(email),
+                "external_user_id_present": bool(external_user_id),
+                "trusted_gateway": trusted_gateway,
+                "created_records": result.get("created_records", []),
+            },
+        )
+        return {
+            **result,
+            "status": "signed_up",
+            "signup_contract": "account_tenant_user_first_scoped_key",
+            "identity_metadata_stored": {
+                "provider": provider,
+                "email": email,
+                "external_subject": external_subject,
+                "matrixark_user_id": result.get("local_scope", {}).get("user_id", ""),
+            },
+            "key_inventory_redacted": True,
+        }
+
     def revoke_api_key(self, args: Json, identity: Json, *, action: str = "admin.revoke_api_key") -> Json:
         api_key_id = require_string(args, "api_key_id")
         record = self.latest_api_key_record(api_key_id)
@@ -8626,8 +8687,24 @@ class MatrixArkAccessManager:
         tenant_id = canonical_tenant_id(optional_string(args, "tenant_id") or str(scope.get("tenant_id") or identity["tenant_id"]))
         self.ensure_identity_can_manage(identity, account_id, tenant_id)
         include_revoked = bool(args.get("include_revoked", False))
+        metadata_records = self.metadata.read_all()
+        usage_by_key: dict[str, Json] = {}
+        for usage in metadata_records:
+            if usage.get("record_type") != "matrixark_api_key_usage":
+                continue
+            if usage.get("account_id") != account_id or usage.get("tenant_id") != tenant_id:
+                continue
+            usage_key_id = str(usage.get("api_key_id", ""))
+            if not usage_key_id:
+                continue
+            stats = usage_by_key.setdefault(usage_key_id, {"usage_count": 0, "last_used_at_ms": 0, "last_used_action": ""})
+            stats["usage_count"] = int(stats.get("usage_count") or 0) + 1
+            used_at_ms = int(usage.get("used_at_ms") or 0)
+            if used_at_ms >= int(stats.get("last_used_at_ms") or 0):
+                stats["last_used_at_ms"] = used_at_ms
+                stats["last_used_action"] = usage.get("action", "")
         latest: dict[str, Json] = {}
-        for record in reversed(self.metadata.read_all()):
+        for record in reversed(metadata_records):
             if record.get("record_type") != "matrixark_api_key":
                 continue
             if record.get("account_id") != account_id or record.get("tenant_id") != tenant_id:
@@ -8652,6 +8729,10 @@ class MatrixArkAccessManager:
                 "expires_at_ms": expires_at_ms,
                 "created_at_ms": record.get("created_at_ms", 0),
                 "revoked_at_ms": record.get("revoked_at_ms", 0),
+                "last_used_at_ms": usage_by_key.get(api_key_id, {}).get("last_used_at_ms", 0),
+                "last_used_action": usage_by_key.get(api_key_id, {}).get("last_used_action", ""),
+                "usage_count": usage_by_key.get(api_key_id, {}).get("usage_count", 0),
+                "redacted": True,
             }
             if len(latest) >= limit:
                 break
@@ -8794,6 +8875,52 @@ class MatrixArkAccessManager:
                     "arguments": {"scope": login_scope, "include_revoked": True},
                 },
             },
+        }
+
+    def sso_callback(self, args: Json, identity: Json) -> Json:
+        """Trusted gateway callback contract for OAuth/OIDC providers.
+
+        The gateway verifies Google/Gmail, GitHub, Okta, or Azure AD tokens.
+        MatrixArk receives only stable identity metadata and never stores raw
+        OAuth access tokens, refresh tokens, or ID-token bytes.
+        """
+
+        provider = safe_identifier(require_string(args, "provider"), default="sso")
+        allowed_providers = {"google", "gmail", "github", "okta", "azure_ad", "azuread", "oidc"}
+        if provider not in allowed_providers:
+            raise MatrixArkError(f"unsupported SSO provider {provider!r}; expected google, github, okta, azure_ad, or oidc")
+        if self.mode == "enforced" and not (bool(args.get("id_token_verified", False)) or bool(args.get("trusted_gateway", False))):
+            raise MatrixArkError("SSO callback requires trusted gateway verification in enforced mode")
+        login = self.sso_login(args, identity)
+        callback_identity = {
+            **identity,
+            "account_id": login.get("account_id", identity.get("account_id", "")),
+            "tenant_id": login.get("tenant_id", identity.get("tenant_id", "")),
+            "user_id": login.get("matrixark_user_id", ""),
+        }
+        self.append_audit(
+            "auth.sso_callback",
+            callback_identity,
+            status="ok",
+            details={
+                "provider": provider,
+                "external_user_id_present": bool(login.get("external_user_id")),
+                "email_present": bool(login.get("email")),
+                "matrixark_user_id": login.get("matrixark_user_id", ""),
+                "stored_tokens": False,
+            },
+        )
+        return {
+            **login,
+            "status": "sso_callback_mapped",
+            "callback_contract": "trusted_gateway_oidc_oauth_callback",
+            "stored_identity_metadata": {
+                "provider": provider,
+                "external_user_id": login.get("external_user_id", ""),
+                "email": login.get("email", ""),
+                "matrixark_user_id": login.get("matrixark_user_id", ""),
+            },
+            "stored_oauth_tokens": False,
         }
 
     def map_sso_user(self, args: Json, identity: Json) -> Json:
@@ -9588,6 +9715,61 @@ TOOLS: list[Json] = [
         },
     },
     {
+        "name": "matrixark_auth_signup",
+        "description": "Production signup: create account, tenant, user, first scoped API key, and audit record. In enforced mode call from a trusted gateway or an admin API key.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "api_key": API_KEY_SCHEMA,
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "provider": {"type": "string", "description": "local, google, github, okta, azure_ad, or oidc."},
+                "external_user_id": {"type": "string"},
+                "email": {"type": "string"},
+                "account_id": {"type": "string"},
+                "account_name": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "external_subject": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "first_key_scopes": {"type": "array", "items": {"type": "string"}},
+                "first_key_role": {"type": "string", "default": "owner"},
+                "key_display_name": {"type": "string"},
+                "allowed_user_ids": {"type": "array", "items": {"type": "string"}},
+                "allowed_session_ids": {"type": "array", "items": {"type": "string"}},
+                "allow_all_users": {"type": "boolean", "default": False},
+                "expires_at_ms": {"type": "integer"},
+                "key_prefix": {"type": "string", "default": "mk_live"},
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
+        "name": "matrixark_auth_sso_callback",
+        "description": "Trusted OAuth/OIDC gateway callback for Google/Gmail, GitHub, Okta, and Azure AD. MatrixArk stores mapped identity metadata only, never raw OAuth tokens.",
+        "inputSchema": {
+            "type": "object",
+            "required": ["provider"],
+            "properties": {
+                "provider": {"type": "string", "enum": ["google", "gmail", "github", "okta", "azure_ad", "azuread", "oidc"]},
+                "external_user_id": {"type": "string", "description": "Stable IdP subject, such as OIDC sub or GitHub id."},
+                "email": {"type": "string"},
+                "matrixark_user_id": {"type": "string"},
+                "display_name": {"type": "string"},
+                "account_id": {"type": "string"},
+                "tenant_id": {"type": "string"},
+                "account_name": {"type": "string"},
+                "tenant_name": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "id_token_verified": {"type": "boolean", "default": False},
+                "trusted_gateway": {"type": "boolean", "default": False},
+                "api_key": API_KEY_SCHEMA,
+            },
+            "additionalProperties": True,
+        },
+    },
+    {
         "name": "matrixark_auth_sso_login",
         "description": "Map verified Google/Okta/Azure AD/OIDC login claims into a MatrixArk user scope. In enforced mode the gateway must pass id_token_verified=true or trusted_gateway=true.",
         "inputSchema": {
@@ -9997,8 +10179,14 @@ class MatrixArkMcpServer:
             result = self.adapter.ingestion_dashboard(args)
             self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})
             return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_auth_signup":
+            result = self.access.signup(args, identity)
+            return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_auth_sso_login":
             result = self.access.sso_login(args, identity)
+            return {**result, "access": args.get("_matrixark_auth", {})}
+        if name == "matrixark_auth_sso_callback":
+            result = self.access.sso_callback(args, identity)
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_management_portal":
             result = self.access.management_portal(args, identity)

@@ -226,7 +226,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
 
         self.assertIn("matrixark_management_portal", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
-        self.assertIn("matrixark_auth_sso_login", html)
+        self.assertIn("matrixark_auth_signup", html)
+        self.assertIn("matrixark_auth_sso_callback", html)
         self.assertIn("matrixark_admin_map_sso_user", html)
         self.assertIn("matrixark_admin_rotate_api_key", html)
         self.assertIn("matrixark_admin_revoke_api_key", html)
@@ -255,6 +256,11 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("bytekv_sql", html)
         self.assertIn("mysql://matrixark", html)
         self.assertIn("matrixark_metadata_records", html)
+        self.assertIn("last_used_at_ms", html)
+        self.assertIn("usage_count", html)
+        self.assertIn("allowed_session_ids", html)
+        self.assertIn("expires_at_ms", html)
+        self.assertIn("redacted", html)
 
     def test_matrixark_site_has_management_portal(self) -> None:
         html = (SITE_DIR / "management-portal.html").read_text(encoding="utf-8")
@@ -262,7 +268,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
 
         self.assertIn("MatrixArk Management Portal", html)
         self.assertIn("./management-portal.css", html)
-        self.assertIn("matrixark_auth_sso_login", html)
+        self.assertIn("matrixark_auth_signup", html)
+        self.assertIn("matrixark_auth_sso_callback", html)
         self.assertIn("matrixark_admin_apply_api_key", html)
         self.assertIn("mcpServers", html)
         self.assertIn("MATRIXARK_METADATA_BACKEND", html)
