@@ -107,6 +107,33 @@
         </article>
       </section>
 
+
+      <section class="layout">
+        <article class="panel panel-wide">
+          <div class="panel-head">
+            <div>
+              <h2>Security And Governance</h2>
+              <p>Portal reads are scoped before data is returned. API keys are returned once, stored as hashes, and every admin, key, SSO, replay, and portal operation is audited.</p>
+            </div>
+            <span class="badge">Governance</span>
+          </div>
+          <div class="portal-ops-grid">
+            <article><strong>Scope First</strong><p>Account, tenant, user, and session constraints are enforced before dashboard rows, topology, resources, skills, audits, or ContextPacks are returned.</p></article>
+            <article><strong>Hash-Only Keys</strong><p>Raw MatrixArk API keys are only shown at creation. Metadata stores api_key_hash plus key id, role, scopes, allow-lists, status, and expiration.</p></article>
+            <article><strong>Audit Everywhere</strong><p>Admin actions, key operations, SSO mapping/login, portal reads, backend metrics, retrieval, feedback, replay, and denied auth attempts produce audit records.</p></article>
+          </div>
+        </article>
+        <article class="panel">
+          <div class="panel-head compact"><h2>Roles And Service Keys</h2></div>
+          <div class="metric-list">
+            <div class="metric-row"><span>Human roles</span><strong>owner / admin / operator / developer / viewer</strong></div>
+            <div class="metric-row"><span>Agent keys</span><strong>service or local_agent with scoped capabilities</strong></div>
+            <div class="metric-row"><span>Isolation</span><strong>allowed_user_ids and allowed_session_ids</strong></div>
+            <div class="metric-row"><span>Portal scope</span><strong>portal:read</strong></div>
+          </div>
+        </article>
+      </section>
+
       <section class="layout context-layout">
         <article class="panel panel-wide">
           <div class="panel-head">

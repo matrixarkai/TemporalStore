@@ -203,6 +203,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "Quick Start",
             "Registration, SSO, And API Keys",
             "Token And Usage Monitoring",
+            "Security And Governance",
+            "Roles And Service Keys",
             "Prometheus Observability",
             "Alert Posture",
             "Model Fallback Flags",
@@ -250,6 +252,9 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("bytekv_sql", html)
         self.assertIn("mysql://matrixark", html)
         self.assertIn("matrixark_metadata_records", html)
+        self.assertIn("Security And Governance", html)
+        self.assertIn("portal:read", html)
+        self.assertIn("owner / admin / operator / developer / viewer", html)
         self.assertIn("Prometheus Observability", html)
         self.assertIn("matrixark_backend_metrics", html)
         self.assertIn("matrixark_ingest_qps", html)
