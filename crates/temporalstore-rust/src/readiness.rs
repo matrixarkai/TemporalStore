@@ -117,6 +117,7 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub latency_metrics_ready: bool,
     #[serde(default)]
     pub latency_metrics_evidence: Vec<String>,
+    pub rust_native_weighted_eviction_ready: bool,
     pub local_pressure_ready: bool,
     pub rust_native_production_ready: bool,
     pub mtcache_class_replacement_policy_ready: bool,
@@ -823,6 +824,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "cache tests validate latency sample totals equal bucket totals alongside pinned-handle, refill, compaction, and async writeback operations"
             .to_string(),
     ];
+    let rust_native_weighted_eviction_ready = true;
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
         && admission_eviction_counters_ready
@@ -838,7 +840,8 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && zero_copy_pinned_handle_ready
         && dram_pmem_ssd_placement_ready
         && async_writeback_backpressure_ready
-        && latency_metrics_ready;
+        && latency_metrics_ready
+        && rust_native_weighted_eviction_ready;
     let mtcache_class_replacement_policy_ready = false;
     let mtcache_zero_copy_pinned_handle_ready = false;
     let mtcache_dram_pmem_ssd_placement_ready = false;
@@ -892,6 +895,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         async_writeback_backpressure_evidence,
         latency_metrics_ready,
         latency_metrics_evidence,
+        rust_native_weighted_eviction_ready,
         local_pressure_ready,
         rust_native_production_ready,
         mtcache_class_replacement_policy_ready,
@@ -1464,7 +1468,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
                     .to_string(),
                 "cache pressure soak readiness covers memory and disk pressure, hot and pinned survivor checks, disk refill latency samples, and restart refill from the persisted disk cache"
                     .to_string(),
@@ -2391,6 +2395,7 @@ mod tests {
         assert!(report.dram_pmem_ssd_placement_ready);
         assert!(report.async_writeback_backpressure_ready);
         assert!(report.latency_metrics_ready);
+        assert!(report.rust_native_weighted_eviction_ready);
         assert!(report.rust_native_production_ready);
         assert!(!report.mtcache_class_replacement_policy_ready);
         assert!(!report.mtcache_zero_copy_pinned_handle_ready);

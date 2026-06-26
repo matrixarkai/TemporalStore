@@ -102,6 +102,10 @@ Cycle 3 adds cache policy depth and inspection for storage lifecycle parity:
   failure counters.
 - Regression coverage validates oversized-block admission rejection, capacity eviction reasons,
   slot-aware inspection, and slot invalidation.
+- Cache eviction now uses a Rust-native weighted hotness/LRU victim policy instead of only FIFO
+  order. Victim selection skips pinned entries, prefers lower hotness, then lower hit count, then
+  older access epochs, and reports cold/low-hit/stale eviction reasons separately for memory and
+  SSD tiers.
 
 The next cycle should run the storage-mode harness with tiny memory/disk cache settings through
 dump, load, restart, and replay.
