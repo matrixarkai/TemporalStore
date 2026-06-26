@@ -168,9 +168,10 @@ backpressure, and mature cache latency metrics.
 It also fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 native ObjectManager ownership at runtime, SlotStore layout transitions, stream-backed zones,
 page compaction tied to model layout and tombstones, the continuous StorageManager
-prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load policy. Slot
-summaries, lifecycle reports, and local compaction are useful parity evidence, but they are not
-treated as complete C++ runtime parity.
+prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load policy. Rust now
+persists a first-class slot/object/page ownership index and exposes whether reports are using that
+core index or falling back to model-map derivation, but that is still not treated as complete C++
+runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when

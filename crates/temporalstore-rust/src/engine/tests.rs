@@ -5667,6 +5667,13 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
             .sum::<u64>(),
         2
     );
+    let ownership = engine.slot_object_page_ownership_report(1);
+    assert!(ownership.first_class_index_present);
+    assert!(!ownership.derived_from_model_maps);
+    assert!(ownership.core_index_ready);
+    assert_eq!(ownership.object_count, 2);
+    assert_eq!(ownership.page_ref_count, 2);
+    assert_eq!(ownership.fallback_model_map_page_refs, 0);
 
     engine.unload_shard(1);
     engine.load_shard_with(LoadShardRequest {
@@ -5679,21 +5686,29 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
         readonly: false,
         table_name: String::new(),
     });
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).unwrap();
-    assert_eq!(
-        shard
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).unwrap();
+        assert_eq!(
+            shard
+                .slot_objects
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>(),
+            2
+        );
+        assert!(shard
             .slot_objects
             .values()
-            .map(BTreeMap::len)
-            .sum::<usize>(),
-        2
-    );
-    assert!(shard
-        .slot_objects
-        .values()
-        .flat_map(|objects| objects.values())
-        .all(|object| object.kind == "hash" && !object.pages.is_empty()));
+            .flat_map(|objects| objects.values())
+            .all(|object| object.kind == "hash" && !object.pages.is_empty()));
+    }
+    let reloaded_ownership = engine.slot_object_page_ownership_report(1);
+    assert!(reloaded_ownership.first_class_index_present);
+    assert!(!reloaded_ownership.derived_from_model_maps);
+    assert!(reloaded_ownership.core_index_ready);
+    assert_eq!(reloaded_ownership.object_count, 2);
+    assert_eq!(reloaded_ownership.page_ref_count, 2);
 }
 
 #[test]

@@ -161,6 +161,7 @@ pub struct StorageProductionPostureReport {
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
+    pub first_class_slot_object_page_index_ready: bool,
     pub native_object_manager_runtime_ready: bool,
     pub native_slot_store_layout_transition_ready: bool,
     pub stream_backed_zone_runtime_ready: bool,
@@ -980,6 +981,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
     let unified_storage_corpus_ready =
         migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
+    let first_class_slot_object_page_index_ready = true;
     let native_object_manager_runtime_ready = false;
     let native_slot_store_layout_transition_ready = false;
     let stream_backed_zone_runtime_ready = false;
@@ -1012,6 +1014,9 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !unified_storage_corpus_ready {
         missing.push("unified storage corpus evidence".to_string());
     }
+    if !first_class_slot_object_page_index_ready {
+        missing.push("first-class slot/object/page ownership index".to_string());
+    }
     if !native_object_manager_runtime_ready {
         missing.push("native ObjectManager runtime mechanics".to_string());
     }
@@ -1043,6 +1048,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         cache_pressure_and_refill_ready,
         shared_store_sync_async_replay_ready,
         unified_storage_corpus_ready,
+        first_class_slot_object_page_index_ready,
         native_object_manager_runtime_ready,
         native_slot_store_layout_transition_ready,
         stream_backed_zone_runtime_ready,
@@ -1474,7 +1480,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, native ObjectManager mechanics, SlotStore layout transitions, stream-backed zones, model-layout compaction, mature StorageManager loops, and merged dump/load policy"
+                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, native ObjectManager mechanics, SlotStore layout transitions, stream-backed zones, model-layout compaction, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2496,6 +2502,7 @@ mod tests {
         assert!(report.cache_pressure_and_refill_ready);
         assert!(report.shared_store_sync_async_replay_ready);
         assert!(report.unified_storage_corpus_ready);
+        assert!(report.first_class_slot_object_page_index_ready);
         assert!(!report.native_object_manager_runtime_ready);
         assert!(!report.native_slot_store_layout_transition_ready);
         assert!(!report.stream_backed_zone_runtime_ready);
@@ -2536,6 +2543,7 @@ mod tests {
             "cache pressure/refill",
             "shared-store sync/async replay",
             "unified storage corpus cases",
+            "first-class slot/object/page ownership index",
             "native ObjectManager mechanics",
             "SlotStore layout transitions",
             "stream-backed zones",
