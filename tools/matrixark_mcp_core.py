@@ -3348,6 +3348,40 @@ def local_context_budget(args: Json) -> Json:
     }
 
 
+def compact_local_context_refs(local_budget: Json) -> list[Json]:
+    refs: list[Json] = []
+    for item in local_budget.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        refs.append(
+            {
+                "ref_type": item.get("ref_type", "local_context"),
+                "source": item.get("source", ""),
+                "token_estimate": item.get("token_estimate", 0),
+                "text_hash": item.get("text_hash"),
+            }
+        )
+    return refs
+
+
+def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
+    refs: list[Json] = []
+    for item in local_budget.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        refs.append(
+            {
+                "ref_type": item.get("ref_type", "local_context"),
+                "source": item.get("source", ""),
+                "token_estimate": item.get("token_estimate", 0),
+                "text_hash": item.get("text_hash"),
+                "text": item.get("text", ""),
+                "selection_reason": "provided by agent-visible local context before MatrixArk remote retrieval",
+            }
+        )
+    return refs
+
+
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or "")

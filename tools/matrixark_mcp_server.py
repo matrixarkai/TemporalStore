@@ -3144,7 +3144,10 @@ class MatrixArkLocalAdapter:
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
         pack = {
             "context_pack_id": context_pack_id,
+            "context_sources_order": ["local_context", "matrixark_remote_context"],
+            "local_context_refs": local_context_refs_for_pack(local_budget),
             "selected_refs": selected,
+            "remote_context_refs": selected,
             "layer_scores": [],
             "question_type": question_type,
             "packing_policy": f"deadline_fallback:{question_type}",
@@ -3184,6 +3187,8 @@ class MatrixArkLocalAdapter:
                 "scope": scope,
                 "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
                 "selected_refs": compact_refs_for_audit(selected),
+                "local_context_refs": compact_local_context_refs(local_budget),
+                "context_sources_order": pack["context_sources_order"],
                 "question_type": question_type,
                 "packing_policy": pack["packing_policy"],
                 "recall_policy": pack["recall_policy"],
@@ -3925,7 +3930,10 @@ class MatrixArkLocalAdapter:
         selected_context_counts = selected_context_class_counts(selected)
         pack = {
             "context_pack_id": str(context_pack_id),
+            "context_sources_order": ["local_context", "matrixark_remote_context"],
+            "local_context_refs": local_context_refs_for_pack(local_budget),
             "selected_refs": selected,
+            "remote_context_refs": selected,
             "selected_ref_counts": selected_context_counts,
             "context_assembly_policy": {
                 "access_scope_before_scoring": True,
@@ -4021,6 +4029,8 @@ class MatrixArkLocalAdapter:
             "scope": scope,
             "summary_text": pack_summary,
             "selected_refs": compact_refs_for_audit(selected),
+            "local_context_refs": compact_local_context_refs(local_budget),
+            "context_sources_order": pack["context_sources_order"],
             "selected_ref_counts": selected_context_counts,
             "context_assembly_policy": pack["context_assembly_policy"],
             "dropped_refs": dropped_over_budget,
