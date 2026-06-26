@@ -2419,6 +2419,33 @@ fn extract_routing_slot(key: &CacheKey) -> Option<u32> {
     slot.parse::<u32>().ok()
 }
 
+fn infer_block_kind(key: &CacheKey) -> CacheBlockKind {
+    match key.namespace.as_str() {
+        "page" => CacheBlockKind::Page,
+        "index" => CacheBlockKind::Index,
+        "oplog" => CacheBlockKind::Oplog,
+        "string" | "hash" | "set" | "feature" => CacheBlockKind::Object,
+        _ => CacheBlockKind::Other,
+    }
+}
+
+fn initial_hotness(block_kind: CacheBlockKind, block_bytes: usize) -> u32 {
+    match block_kind {
+        CacheBlockKind::Page => 2,
+        CacheBlockKind::Index => 3,
+        CacheBlockKind::Oplog => 1,
+        CacheBlockKind::Object if block_bytes <= 4096 => 2,
+        CacheBlockKind::Object => 1,
+        CacheBlockKind::Other => 0,
+    }
+}
+
+fn extract_routing_slot(key: &CacheKey) -> Option<u32> {
+    let suffix = key.selector.strip_prefix("slot-")?;
+    let (slot, _) = suffix.split_once(':')?;
+    slot.parse::<u32>().ok()
+}
+
 fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
     if !path.exists() {
         return Ok(0);
