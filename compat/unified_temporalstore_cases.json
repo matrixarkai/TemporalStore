@@ -4736,7 +4736,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
-              "src/extension/context/interface.proto",
               "src/model/context_model.h"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_relevance_ranks_qa_synonyms_and_phrases -- --test-threads=1",
@@ -4847,7 +4846,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
-              "docs/rust_context_pipeline_debug_trace.md",
               "docs/rust_vs_cpp_temporalstore_parity_report.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_models_match_cpp_keys_timeline_pages_and_filters --lib -- --test-threads=1",
@@ -6868,9 +6866,7 @@
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-skill-registry-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow.rs"
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust context_skill_registry_supports_updates_and_retrieval_selection --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "cpp_context_pipeline_parity"
@@ -6920,7 +6916,6 @@
             "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow.rs",
-              "crates/temporalstore-rust/src/types.rs",
               "docs/rust_context_pipeline_debug_trace.md",
               "src/extension/context/interface.proto",
               "src/extension/context/implement.cc"
@@ -6979,7 +6974,6 @@
             "required_paths": [
               "compat/storage_migration_corpus.json",
               "crates/temporalstore-rust/src/page_store.rs",
-              "crates/temporalstore-rust/src/engine.rs",
               "src/storage",
               "src/extension/context"
             ],
