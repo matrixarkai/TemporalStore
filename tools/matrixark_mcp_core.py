@@ -1722,6 +1722,42 @@ def ordered_unique(values: list[str]) -> list[str]:
 
 
 RAW_BYTE_METADATA_FIELDS = {"raw_bytes", "file_bytes", "bytes", "binary", "payload_bytes", "data_url", "base64"}
+SERVING_RESOURCE_METADATA_FIELDS = {
+    "resource_type",
+    "resource_version",
+    "unit_kind",
+    "relative_path",
+    "heading",
+    "heading_slug",
+    "heading_path",
+    "keywords",
+    "citation",
+    "source_ref",
+    "raw_uri",
+    "content_hash",
+    "token_estimate",
+    "row_start",
+    "row_end",
+    "record_start",
+    "record_end",
+    "page",
+    "page_section",
+    "slide_number",
+    "sheet_name",
+    "row_count",
+    "supersedes_chunk_hash",
+}
+DEBUG_RESOURCE_METADATA_FIELDS = {
+    "embedding_text",
+    "parse_warnings",
+    "parser_name",
+    "parser_version",
+    "parse_warning_count",
+    "columns",
+    "links",
+    "tables",
+    "front_matter",
+}
 
 
 def sanitize_resource_metadata(metadata: Json) -> Json:
@@ -1734,6 +1770,40 @@ def sanitize_resource_metadata(metadata: Json) -> Json:
     sanitized["raw_storage_policy"] = str(sanitized.get("raw_storage_policy") or "raw_uri_only")
     sanitized["raw_bytes_stored"] = False
     return sanitized
+
+
+def serving_resource_metadata(metadata: Json) -> Json:
+    sanitized = sanitize_resource_metadata(metadata)
+    serving = {
+        key: sanitized[key]
+        for key in SERVING_RESOURCE_METADATA_FIELDS
+        if key in sanitized and sanitized[key] not in (None, "", [], {})
+    }
+    serving["raw_storage_policy"] = sanitized.get("raw_storage_policy", "raw_uri_only")
+    serving["raw_bytes_stored"] = False
+    parse_warnings = normalize_parse_warnings(sanitized)
+    if parse_warnings:
+        serving["parse_warning_count"] = len(parse_warnings)
+        serving["has_parse_warnings"] = True
+    return serving
+
+
+def debug_resource_metadata(metadata: Json) -> Json:
+    sanitized = sanitize_resource_metadata(metadata)
+    debug = {
+        key: sanitized[key]
+        for key in sorted(DEBUG_RESOURCE_METADATA_FIELDS)
+        if key in sanitized and sanitized[key] not in (None, "", [], {})
+    }
+    parse_warnings = normalize_parse_warnings(sanitized)
+    if parse_warnings:
+        debug["parse_warnings"] = parse_warnings
+        debug["parse_warning_count"] = len(parse_warnings)
+    embedding_text = str(sanitized.get("embedding_text") or "")
+    if embedding_text:
+        debug["embedding_text_hash"] = stable_hash(embedding_text)
+        debug["embedding_text_preview"] = summarize_text(embedding_text, limit=320)
+    return debug
 
 
 def registry_access_scope(scope: Json) -> Json:
