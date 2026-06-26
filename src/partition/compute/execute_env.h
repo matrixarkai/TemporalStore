@@ -97,6 +97,7 @@ class ExecuteEnv {
     Status GetOrNewObject(const absl::string_view& key, ObjectHandle<Model>* obj);
 
     Status DeleteObject(const absl::string_view& key);
+    Status GetObjectModelId(const absl::string_view& key, uint8_t* model_id);
 
     template <typename RealModuleMetrics>
     RealModuleMetrics* GetModuleMetrics() {
@@ -182,6 +183,27 @@ inline Status ExecuteEnv::DeleteObject(const absl::string_view& key) {
         off_memory_slots_.push_back(slot_id);
     }
     return status;
+}
+
+
+inline Status ExecuteEnv::GetObjectModelId(const absl::string_view& key, uint8_t* model_id) {
+    uint64_t slot_id = hash_func(key.data(), key.size());
+    partition::Object object;
+    Status status = object_manager_->GetObject(slot_id, key, &object, true);
+    if (status.IsFailedPrecondition()) {
+        cmd_context_->object_in_memory = false;
+        off_memory_slots_.push_back(slot_id);
+        return status;
+    }
+    if (status.IsNotFound()) {
+        cmd_context_->object_hit = false;
+        return status;
+    }
+    if (!status.ok()) {
+        return status;
+    }
+    *model_id = object.ModelId();
+    return Status::OK();
 }
 
 }  // namespace bcache2

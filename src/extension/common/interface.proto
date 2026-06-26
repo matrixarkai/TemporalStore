@@ -8,6 +8,7 @@ enum Function {
     TTL = 2;
     EXISTS = 3;
     PERSIST = 4;
+    OBJECT_TYPE = 5;
 }
 
 message DelObjectRequest {
@@ -45,4 +46,12 @@ message PersistRequest {
 }
 
 message PersistResponse {
+}
+
+message ObjectTypeRequest {
+    string key = 1;
+}
+
+message ObjectTypeResponse {
+    uint32 model_id = 1;
 }

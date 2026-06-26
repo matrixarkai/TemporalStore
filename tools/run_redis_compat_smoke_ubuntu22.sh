@@ -167,7 +167,7 @@ expect_eq hget v1b HGET "$(k hash)" f1
 expect_eq hmget $'v1b\nv2' HMGET "$(k hash)" f1 f2
 expect_eq hmget_missing $'v1b\n\nv2' HMGET "$(k hash)" f1 nofield f2
 expect_eq hexists 1 HEXISTS "$(k hash)" f2
-expect_eq hlen 2 HLEN "$(k hash)"
+expect_eq hlen 3 HLEN "$(k hash)"
 expect_eq hincrby_1 3 HINCRBY "$(k hash)" counter 3
 expect_eq hincrby_2 7 HINCRBY "$(k hash)" counter 4
 expect_contains_line hgetall_f1 f1 HGETALL "$(k hash)"

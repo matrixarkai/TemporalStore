@@ -280,7 +280,7 @@ bool RunPhase(const std::string& phase, const std::string& metaserver, const std
 
             for (int i = t; i < ops; i += threads) {
                 auto begin = std::chrono::steady_clock::now();
-                if (!fn(table.get(), i)) {
+                if (!fn(&client, &table, i)) {
                     errors.fetch_add(1);
                 }
                 auto end = std::chrono::steady_clock::now();
@@ -348,15 +348,19 @@ int main(int argc, char** argv) {
     std::atomic<int> set_errors_logged{0};
     if (!RunPhase(mode == "get" ? "seed_set" : "set", metaserver, idc, namespace_name,
                   table_name, true, ops, threads, value_bytes,
-                  [&](bcache2::client::Table* table, int i) {
-                      bcache2::Status status =
-                          table->Set(prefix + ":" + std::to_string(i), value);
+                  [&](std::unique_ptr<bcache2::client::Client>* client,
+                      std::unique_ptr<bcache2::client::Table>* table, int i) {
+                      const std::string key = prefix + ":" + std::to_string(i);
+                      bcache2::Status status = (*table)->Set(key, value);
                       if (!status.ok() && set_retry_ms > 0) {
                           const auto deadline = std::chrono::steady_clock::now() +
                                                 std::chrono::milliseconds(set_retry_ms);
                           do {
                               std::this_thread::sleep_for(std::chrono::milliseconds(20));
-                              status = table->Set(prefix + ":" + std::to_string(i), value);
+                              // Topology can change during Raft failover. Reopen the table so the
+                              // client refreshes placement instead of retrying a dead primary socket.
+                              OpenTable(metaserver, idc, namespace_name, table_name, true, client, table);
+                              status = (*table)->Set(key, value);
                           } while (!status.ok() && std::chrono::steady_clock::now() < deadline);
                       }
                       if (!status.ok() && set_errors_logged.fetch_add(1) < 10) {

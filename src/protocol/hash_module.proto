@@ -11,6 +11,11 @@ message HashModuleRequest {
         SetRequest set_request = 1;
         DelRequest del_request = 2;
         GetRequest get_request = 3;
+        MGetRequest mget_request = 4;
+        MSetRequest mset_request = 5;
+        GetAllRequest getall_request = 6;
+        LenRequest len_request = 7;
+        IncrByRequest incrby_request = 8;
     }
 }
 
@@ -19,6 +24,11 @@ message HashModuleResponse {
         SetResponse set_response = 1;
         DelResponse del_response = 2;
         GetResponse get_response = 3;
+        MGetResponse mget_response = 4;
+        MSetResponse mset_response = 5;
+        GetAllResponse getall_response = 6;
+        LenResponse len_response = 7;
+        IncrByResponse incrby_response = 8;
     }
 }
 
@@ -46,4 +56,50 @@ message GetRequest {
 
 message GetResponse {
     bytes value = 1;
+}
+
+message MGetRequest {
+    bytes key = 1;
+    repeated bytes fields = 2;
+}
+
+message MGetResponse {
+    repeated bool exists = 1;
+    repeated bytes values = 2;
+}
+
+message MSetRequest {
+    bytes key = 1;
+    repeated bytes fields = 2;
+    repeated bytes values = 3;
+}
+
+message MSetResponse {
+}
+
+message GetAllRequest {
+    bytes key = 1;
+}
+
+message GetAllResponse {
+    repeated bytes fields = 1;
+    repeated bytes values = 2;
+}
+
+message LenRequest {
+    bytes key = 1;
+}
+
+message LenResponse {
+    uint64 len = 1;
+}
+
+message IncrByRequest {
+    bytes key = 1;
+    bytes field = 2;
+    int64 increment = 3;
+}
+
+message IncrByResponse {
+    int64 value = 1;
 }
