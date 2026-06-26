@@ -57,6 +57,207 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 }
 
 
+class MatrixArkServiceMetrics:
+    """In-process Prometheus metrics for MatrixArk MCP pipeline work."""
+
+    LATENCY_BUCKETS_MS = (25, 50, 100, 250, 500, 1000, 2000, 5000, 10000, float("inf"))
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._started_at = time.time()
+        self._ops: dict[str, Json] = {}
+        self._model: dict[str, Json] = {}
+        self._timeout_count = 0
+        self._partial_context_pack_count = 0
+        self._token_pressure_samples: list[float] = []
+        self._last_token_pressure = 0.0
+        self._last_backend_ready = 0
+        self._last_backend_ready_status = "unknown"
+        self._last_resource_queue_depth = 0
+        self._last_resource_import_lag_ms = 0
+        self._last_dirty_summary_lag_ms = 0
+        self._last_audit_write_failures = 0
+
+    def observe_operation(self, operation: str, status: str, elapsed_ms: float, *, timeout: bool = False) -> None:
+        with self._lock:
+            row = self._ops.setdefault(
+                operation,
+                {"ok": 0, "error": 0, "latencies": [], "buckets": [0 for _ in self.LATENCY_BUCKETS_MS]},
+            )
+            row["ok" if status == "ok" else "error"] += 1
+            samples = row["latencies"]
+            samples.append(float(elapsed_ms))
+            if len(samples) > 4096:
+                del samples[: len(samples) - 4096]
+            for index, bucket in enumerate(self.LATENCY_BUCKETS_MS):
+                if elapsed_ms <= bucket:
+                    row["buckets"][index] += 1
+            if timeout:
+                self._timeout_count += 1
+
+    def observe_model_latency(self, stage: str, elapsed_ms: float) -> None:
+        with self._lock:
+            row = self._model.setdefault(stage, {"count": 0, "latencies": [], "buckets": [0 for _ in self.LATENCY_BUCKETS_MS]})
+            row["count"] += 1
+            samples = row["latencies"]
+            samples.append(float(elapsed_ms))
+            if len(samples) > 4096:
+                del samples[: len(samples) - 4096]
+            for index, bucket in enumerate(self.LATENCY_BUCKETS_MS):
+                if elapsed_ms <= bucket:
+                    row["buckets"][index] += 1
+
+    def observe_retrieve_result(self, result: Json) -> None:
+        with self._lock:
+            if result.get("partial_context_pack"):
+                self._partial_context_pack_count += 1
+            budget = int(result.get("remote_context_budget_tokens") or result.get("max_context_tokens") or 0)
+            used = int(result.get("used_remote_context_tokens") or result.get("used_context_tokens") or 0)
+            pressure = min(1.0, used / budget) if budget > 0 else 0.0
+            self._last_token_pressure = pressure
+            self._token_pressure_samples.append(pressure)
+            if len(self._token_pressure_samples) > 4096:
+                del self._token_pressure_samples[: len(self._token_pressure_samples) - 4096]
+
+    def observe_ingest_result(self, result: Json) -> None:
+        task = result.get("resource_import_task") if isinstance(result, dict) else {}
+        if isinstance(task, dict) and task.get("metrics"):
+            metrics = task.get("metrics") or {}
+            try:
+                self.observe_model_latency("resource_import", float(metrics.get("duration_ms") or 0.0))
+            except (TypeError, ValueError):
+                pass
+
+    def observe_resource_queue_depth(self, depth: int) -> None:
+        with self._lock:
+            self._last_resource_queue_depth = max(0, int(depth))
+
+    def observe_backend_ready(self, ready: bool, status: str = "") -> None:
+        with self._lock:
+            self._last_backend_ready = 1 if ready else 0
+            self._last_backend_ready_status = status or ("ready" if ready else "not_ready")
+
+    def update_gauges(self, *, dirty_summary_lag_ms: int, resource_import_lag_ms: int, queue_depth: int, audit_write_failures: int) -> None:
+        with self._lock:
+            self._last_dirty_summary_lag_ms = max(0, int(dirty_summary_lag_ms))
+            self._last_resource_import_lag_ms = max(0, int(resource_import_lag_ms))
+            self._last_resource_queue_depth = max(0, int(queue_depth))
+            self._last_audit_write_failures = max(0, int(audit_write_failures))
+
+    @staticmethod
+    def _percentile(values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        ordered = sorted(values)
+        index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
+        return round(float(ordered[index]), 3)
+
+    @staticmethod
+    def _escape(value: str) -> str:
+        return value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+
+    def snapshot(self) -> Json:
+        with self._lock:
+            return {
+                "started_at": self._started_at,
+                "ops": json.loads(json.dumps(self._ops)),
+                "model": json.loads(json.dumps(self._model)),
+                "timeout_count": self._timeout_count,
+                "partial_context_pack_count": self._partial_context_pack_count,
+                "last_token_pressure": round(self._last_token_pressure, 6),
+                "avg_token_pressure": round(sum(self._token_pressure_samples) / len(self._token_pressure_samples), 6)
+                if self._token_pressure_samples
+                else 0.0,
+                "backend_ready": self._last_backend_ready,
+                "backend_ready_status": self._last_backend_ready_status,
+                "resource_import_queue_depth": self._last_resource_queue_depth,
+                "resource_import_lag_ms": self._last_resource_import_lag_ms,
+                "dirty_summary_lag_ms": self._last_dirty_summary_lag_ms,
+                "audit_write_failures": self._last_audit_write_failures,
+            }
+
+    def render_prometheus(self, *, backend: str, storage_mode: str) -> str:
+        snap = self.snapshot()
+        backend_label = self._escape(backend)
+        storage_label = self._escape(storage_mode)
+        base_labels = f'backend="{backend_label}",storage_mode="{storage_label}"'
+        elapsed_s = max(0.001, time.time() - float(snap["started_at"]))
+        lines = [
+            "# HELP matrixark_backend_info MatrixArk backend identity and storage mode.",
+            "# TYPE matrixark_backend_info gauge",
+            f"matrixark_backend_info{{{base_labels}}} 1",
+            "# HELP matrixark_backend_ready MatrixArk backend readiness state, 1 for ready and 0 for not ready.",
+            "# TYPE matrixark_backend_ready gauge",
+            f'matrixark_backend_ready{{{base_labels},status="{self._escape(str(snap["backend_ready_status"]))}"}} {snap["backend_ready"]}',
+            "# HELP matrixark_service_requests_total MatrixArk MCP service requests by operation and status.",
+            "# TYPE matrixark_service_requests_total counter",
+            "# HELP matrixark_service_qps MatrixArk MCP service request QPS by operation.",
+            "# TYPE matrixark_service_qps gauge",
+            "# HELP matrixark_service_latency_ms MatrixArk MCP service latency quantiles by operation.",
+            "# TYPE matrixark_service_latency_ms gauge",
+            "# HELP matrixark_service_latency_ms_bucket MatrixArk MCP service latency histogram buckets by operation.",
+            "# TYPE matrixark_service_latency_ms_bucket counter",
+        ]
+        for operation, row in sorted(snap["ops"].items()):
+            op_label = self._escape(operation)
+            total = int(row.get("ok", 0)) + int(row.get("error", 0))
+            for status in ("ok", "error"):
+                lines.append(
+                    f'matrixark_service_requests_total{{{base_labels},operation="{op_label}",status="{status}"}} {int(row.get(status, 0))}'
+                )
+            lines.append(f'matrixark_service_qps{{{base_labels},operation="{op_label}"}} {round(total / elapsed_s, 6)}')
+            samples = [float(value) for value in row.get("latencies", [])]
+            for quantile, percentile in (("0.5", 0.50), ("0.95", 0.95), ("0.99", 0.99)):
+                lines.append(
+                    f'matrixark_service_latency_ms{{{base_labels},operation="{op_label}",quantile="{quantile}"}} {self._percentile(samples, percentile)}'
+                )
+            for bucket, count in zip(self.LATENCY_BUCKETS_MS, row.get("buckets", [])):
+                le = "+Inf" if bucket == float("inf") else str(int(bucket))
+                lines.append(f'matrixark_service_latency_ms_bucket{{{base_labels},operation="{op_label}",le="{le}"}} {int(count)}')
+
+        lines.extend(
+            [
+                "# HELP matrixark_timeouts_total MatrixArk MCP timeout count.",
+                "# TYPE matrixark_timeouts_total counter",
+                f"matrixark_timeouts_total{{{base_labels}}} {int(snap['timeout_count'])}",
+                "# HELP matrixark_partial_context_pack_total MatrixArk partial ContextPack count.",
+                "# TYPE matrixark_partial_context_pack_total counter",
+                f"matrixark_partial_context_pack_total{{{base_labels}}} {int(snap['partial_context_pack_count'])}",
+                "# HELP matrixark_token_pressure_ratio Remote context budget pressure.",
+                "# TYPE matrixark_token_pressure_ratio gauge",
+                f"matrixark_token_pressure_ratio{{{base_labels},window=\"last\"}} {snap['last_token_pressure']}",
+                f"matrixark_token_pressure_ratio{{{base_labels},window=\"avg\"}} {snap['avg_token_pressure']}",
+                "# HELP matrixark_dirty_summary_lag_ms Oldest pending dirty summary lag in milliseconds.",
+                "# TYPE matrixark_dirty_summary_lag_ms gauge",
+                f"matrixark_dirty_summary_lag_ms{{{base_labels}}} {int(snap['dirty_summary_lag_ms'])}",
+                "# HELP matrixark_resource_import_lag_ms Oldest queued/running resource import lag in milliseconds.",
+                "# TYPE matrixark_resource_import_lag_ms gauge",
+                f"matrixark_resource_import_lag_ms{{{base_labels}}} {int(snap['resource_import_lag_ms'])}",
+                "# HELP matrixark_resource_import_queue_depth Current MatrixArk resource import queue depth.",
+                "# TYPE matrixark_resource_import_queue_depth gauge",
+                f"matrixark_resource_import_queue_depth{{{base_labels}}} {int(snap['resource_import_queue_depth'])}",
+                "# HELP matrixark_audit_write_failures_total MatrixArk audit write flush failure count.",
+                "# TYPE matrixark_audit_write_failures_total counter",
+                f"matrixark_audit_write_failures_total{{{base_labels}}} {int(snap['audit_write_failures'])}",
+                "# HELP matrixark_model_latency_ms MatrixArk parser/model latency quantiles by stage.",
+                "# TYPE matrixark_model_latency_ms gauge",
+                "# HELP matrixark_model_latency_ms_bucket MatrixArk parser/model latency buckets by stage.",
+                "# TYPE matrixark_model_latency_ms_bucket counter",
+            ]
+        )
+        for stage, row in sorted(snap["model"].items()):
+            stage_label = self._escape(stage)
+            samples = [float(value) for value in row.get("latencies", [])]
+            for quantile, percentile in (("0.5", 0.50), ("0.95", 0.95), ("0.99", 0.99)):
+                lines.append(
+                    f'matrixark_model_latency_ms{{{base_labels},stage="{stage_label}",quantile="{quantile}"}} {self._percentile(samples, percentile)}'
+                )
+            for bucket, count in zip(self.LATENCY_BUCKETS_MS, row.get("buckets", [])):
+                le = "+Inf" if bucket == float("inf") else str(int(bucket))
+                lines.append(f'matrixark_model_latency_ms_bucket{{{base_labels},stage="{stage_label}",le="{le}"}} {int(count)}')
+        return "\n".join(lines) + "\n"
+
+
 @dataclass
 class MatrixArkLocalAdapter:
     event_log: Path
@@ -131,6 +332,14 @@ class MatrixArkLocalAdapter:
                 "event_log": str(self.event_log),
             },
         }
+
+    def _observe_model_latency(self, stage: str, elapsed_ms: float) -> None:
+        metrics = getattr(self, "_matrixark_service_metrics", None)
+        if metrics is not None:
+            try:
+                metrics.observe_model_latency(stage, elapsed_ms)
+            except Exception:
+                pass
 
     def append(self, record: Json) -> None:
         if self._queue_batched_records([record]):
@@ -1107,6 +1316,10 @@ class MatrixArkLocalAdapter:
             )
         status = self._resource_import_pool_status()
         status["queue_depth_before_enqueue"] = queue_before
+        self._observe_model_latency("resource_import_queue_wait", 0.0)
+        metrics = getattr(self, "_matrixark_service_metrics", None)
+        if metrics is not None:
+            metrics.observe_resource_queue_depth(int(status.get("queue_depth") or 0))
         return status
 
     def _run_background_resource_import(self, args: Json, hook: Json | None) -> None:
@@ -1163,10 +1376,12 @@ class MatrixArkLocalAdapter:
             if args.get("skip_prior_context")
             else collect_prior_context(envelope, prior_records)
         )
+        extraction_started_perf = time.perf_counter()
         extraction = compact_internal_extraction(
             envelope,
             prior_context=prior_context,
         )
+        self._observe_model_latency("extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
         text = text_from_messages(envelope["messages"])
         event_id_hash = stable_hash(
             f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
@@ -1932,8 +2147,10 @@ class MatrixArkLocalAdapter:
                 }
             )
         summary_text = summarize_text(text)
+        embedding_started_perf = time.perf_counter()
         event_embedding = embedding_for_text(text)
         summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
+        self._observe_model_latency("embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         with self.write_batch("message_ingest_hot_path"):
             session_key_parts = [str(part) for part in context_node_key(envelope)]
             if any(session_key_parts):
@@ -2154,7 +2371,9 @@ class MatrixArkLocalAdapter:
             if args.get("skip_prior_context")
             else collect_prior_context(envelope, prior_records)
         )
+        extraction_started_perf = time.perf_counter()
         extraction = one_pass_memory_extraction(envelope, prior_context=prior_context)
+        self._observe_model_latency("batch_extraction", (time.perf_counter() - extraction_started_perf) * 1000.0)
         batch_text = text_from_messages(envelope["messages"])
         batch_id_hash = stable_hash(
             f"batch:{batch_text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
@@ -2669,7 +2888,9 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("max_context_tokens must be a positive integer")
         local_budget = local_context_budget(args)
         query_terms = {term for term in tokens(query) if len(term) > 2}
+        embedding_started_perf = time.perf_counter()
         query_embedding = embedding_for_text(query)
+        self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
             raise MatrixArkError("reference_time_ms must be an integer")
@@ -3452,6 +3673,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._write_retries = max(0, DIRECT_WRITE_RETRIES)
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
+        self._backend_ready = False
+        self._backend_ready_result: Json | None = None
+        self._backend_readiness_lock = threading.RLock()
         self._metrics_lock = threading.RLock()
         self._metrics_started_at_ms = now_ms()
         self._commands_total = 0
@@ -3459,12 +3683,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._timeouts_total = 0
         self._latency_sum_ms = 0.0
         self._latency_max_ms = 0.0
-        self._latency_buckets = [0 for _ in BACKEND_LATENCY_BUCKETS_MS]
+        self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
         self._records_written_total = 0
         self._records_read_total = 0
-        self._backend_ready = False
-        self._backend_ready_result: Json | None = None
-        self._backend_readiness_lock = threading.RLock()
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -3482,7 +3703,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 self._timeouts_total += 1
             self._latency_sum_ms += max(0.0, latency_ms)
             self._latency_max_ms = max(self._latency_max_ms, latency_ms)
-            for idx, bucket_ms in enumerate(BACKEND_LATENCY_BUCKETS_MS):
+            for idx, bucket_ms in enumerate(MatrixArkServiceMetrics.LATENCY_BUCKETS_MS):
                 if latency_ms <= bucket_ms:
                     self._latency_buckets[idx] += 1
             self._records_written_total += max(0, records_written)
@@ -3537,11 +3758,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "# HELP matrixark_backend_command_latency_ms Backend-normalized command latency histogram in milliseconds.",
             "# TYPE matrixark_backend_command_latency_ms histogram",
         ]
-        for idx, bucket_ms in enumerate(BACKEND_LATENCY_BUCKETS_MS):
-            output.append(f'matrixark_backend_command_latency_ms_bucket{{backend="cpp",le="{bucket_ms}"}} {latency_buckets[idx]}')
+        for idx, bucket_ms in enumerate(MatrixArkServiceMetrics.LATENCY_BUCKETS_MS):
+            le = "+Inf" if bucket_ms == float("inf") else str(int(bucket_ms))
+            output.append(f'matrixark_backend_command_latency_ms_bucket{{backend="cpp",le="{le}"}} {latency_buckets[idx]}')
         output.extend(
             [
-                f'matrixark_backend_command_latency_ms_bucket{{backend="cpp",le="+Inf"}} {commands_total}',
                 f'matrixark_backend_command_latency_ms_sum{{backend="cpp"}} {latency_sum_ms:.6f}',
                 f'matrixark_backend_command_latency_ms_count{{backend="cpp"}} {commands_total}',
                 "# HELP matrixark_backend_command_latency_max_ms Backend-normalized max observed command latency in milliseconds.",
@@ -3571,6 +3792,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "commands_total": self._commands_total,
                 "errors_total": self._errors_total,
                 "timeouts_total": self._timeouts_total,
+                "records_written_total": self._records_written_total,
+                "records_read_total": self._records_read_total,
                 "qps": self._commands_total / max(0.001, (now_ms() - self._metrics_started_at_ms) / 1000.0),
                 "p95_latency_ms": None,
                 "p99_latency_ms": None,
@@ -4352,6 +4575,10 @@ class MatrixArkRustCliClient:
                 "records_read_total": self._records_read_total,
                 "backpressure_rejections_total": self._backpressure_rejections_total,
                 "last_latency_ms": round(self._last_latency_ms, 3),
+                "latency_ms_sum": round(sum(samples), 3),
+                "latency_ms_count": len(samples),
+                "latency_ms_max": round(max(samples) if samples else 0.0, 3),
+                "latency_buckets": {str(int(bucket) if bucket != float("inf") else "+Inf"): sum(1 for value in samples if value <= bucket) for bucket in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS},
                 "p95_latency_ms": round(self._percentile(samples, 0.95), 3),
                 "p99_latency_ms": round(self._percentile(samples, 0.99), 3),
                 "max_observed_latency_ms": round(self._max_observed_latency_ms, 3),
@@ -4478,8 +4705,59 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-rust"
 
-    def _backend_label(self) -> str:
-        return "temporalstore-rust"
+    def _backend_neutral_prometheus(self, snapshot: Json) -> str:
+        backend = "rust"
+        buckets = snapshot.get("latency_buckets") if isinstance(snapshot.get("latency_buckets"), dict) else {}
+        lines = [
+            "# HELP matrixark_backend_qps MatrixArk storage backend command QPS.",
+            "# TYPE matrixark_backend_qps gauge",
+            f'matrixark_backend_qps{{backend="{backend}"}} {snapshot.get("qps", 0)}',
+            "# HELP matrixark_backend_commands_total MatrixArk storage backend command count.",
+            "# TYPE matrixark_backend_commands_total counter",
+            f'matrixark_backend_commands_total{{backend="{backend}"}} {int(snapshot.get("commands_total") or 0)}',
+            "# HELP matrixark_backend_errors_total MatrixArk storage backend command errors.",
+            "# TYPE matrixark_backend_errors_total counter",
+            f'matrixark_backend_errors_total{{backend="{backend}"}} {int(snapshot.get("commands_failed_total") or 0)}',
+            "# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.",
+            "# TYPE matrixark_backend_timeouts_total counter",
+            f'matrixark_backend_timeouts_total{{backend="{backend}"}} {int(snapshot.get("timeouts_total") or 0)}',
+            "# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.",
+            "# TYPE matrixark_backend_command_latency_ms_bucket counter",
+        ]
+        for bucket, count in buckets.items():
+            lines.append(f'matrixark_backend_command_latency_ms_bucket{{backend="{backend}",le="{bucket}"}} {int(count)}')
+        lines.extend(
+            [
+                "# HELP matrixark_backend_command_latency_ms_sum MatrixArk storage backend command latency sum in milliseconds.",
+                "# TYPE matrixark_backend_command_latency_ms_sum counter",
+                f'matrixark_backend_command_latency_ms_sum{{backend="{backend}"}} {snapshot.get("latency_ms_sum", 0)}',
+                "# HELP matrixark_backend_command_latency_ms_count MatrixArk storage backend command latency sample count.",
+                "# TYPE matrixark_backend_command_latency_ms_count counter",
+                f'matrixark_backend_command_latency_ms_count{{backend="{backend}"}} {int(snapshot.get("latency_ms_count") or 0)}',
+                "# HELP matrixark_backend_command_latency_max_ms MatrixArk storage backend maximum command latency in milliseconds.",
+                "# TYPE matrixark_backend_command_latency_max_ms gauge",
+                f'matrixark_backend_command_latency_max_ms{{backend="{backend}"}} {snapshot.get("latency_ms_max", 0)}',
+                "# HELP matrixark_backend_records_written_total MatrixArk storage backend records written.",
+                "# TYPE matrixark_backend_records_written_total counter",
+                f'matrixark_backend_records_written_total{{backend="{backend}"}} {int(snapshot.get("records_written_total") or 0)}',
+                "# HELP matrixark_backend_records_read_total MatrixArk storage backend records read.",
+                "# TYPE matrixark_backend_records_read_total counter",
+                f'matrixark_backend_records_read_total{{backend="{backend}"}} {int(snapshot.get("records_read_total") or 0)}',
+                "# HELP matrixark_context_records_total MatrixArk context records currently cached by backend.",
+                "# TYPE matrixark_context_records_total gauge",
+                f'matrixark_context_records_total{{backend="{backend}"}} {int(snapshot.get("matrixark_context_records_total") or 0)}',
+                "# HELP matrixark_backend_cached_clients MatrixArk storage backend cached clients.",
+                "# TYPE matrixark_backend_cached_clients gauge",
+                f'matrixark_backend_cached_clients{{backend="{backend}"}} {int(snapshot.get("clients_created_total") or 1)}',
+                "# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.",
+                "# TYPE matrixark_backend_audit_buffered_records gauge",
+                f'matrixark_backend_audit_buffered_records{{backend="{backend}"}} {len(getattr(self, "_audit_buffer", []))}',
+                "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.",
+                "# TYPE matrixark_backend_audit_flush_failures_total counter",
+                f'matrixark_backend_audit_flush_failures_total{{backend="{backend}"}} {int(getattr(self, "_audit_flush_failures", 0) or 0)}',
+            ]
+        )
+        return "\n".join(lines) + "\n"
 
     def backend_metrics(self) -> Json:
         health: Json
@@ -4492,10 +4770,11 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             readiness = self._client.readiness()
         except Exception as exc:
             readiness = {"ok": False, "error": str(exc)}
+        rust_client_metrics = self._client.metrics_snapshot()
         try:
-            prometheus = self._client.metrics_prometheus()
+            prometheus = self._backend_neutral_prometheus(rust_client_metrics) + self._client.metrics_prometheus()
         except Exception as exc:
-            prometheus = f"# matrixark_rust_gateway_metrics_error {json.dumps(str(exc))}\n"
+            prometheus = self._backend_neutral_prometheus(rust_client_metrics) + f"# matrixark_rust_gateway_metrics_error {json.dumps(str(exc))}\n"
         return {
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
@@ -4527,7 +4806,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "audit_mode": self._audit_mode,
                 "audit_buffered_records": len(self._audit_buffer),
                 "audit_flush_failures": self._audit_flush_failures,
-                "rust_client": self._client.metrics_snapshot(),
+                "rust_client": rust_client_metrics,
             },
         }
 
@@ -4542,6 +4821,8 @@ class MatrixArkMcpServer:
         self.adapter = adapter
         self.line_json = line_json
         self.access = MatrixArkAccessManager(adapter, mode=access_mode)
+        self.metrics = MatrixArkServiceMetrics()
+        setattr(self.adapter, "_matrixark_service_metrics", self.metrics)
         self._summary_worker_started = False
         self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
         self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
@@ -4561,7 +4842,9 @@ class MatrixArkMcpServer:
         while True:
             time.sleep(self._summary_refresh_interval_s)
             try:
+                started_perf = time.perf_counter()
                 result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
+                self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
                 refreshed_count = int(result.get("refreshed_count") or 0)
                 if refreshed_count:
                     self.access.append_audit(
@@ -4575,7 +4858,65 @@ class MatrixArkMcpServer:
                         },
                     )
             except Exception as exc:
+                self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
+
+    def _backend_storage_mode_from_metrics(self, result: Json) -> str:
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        return str(metrics.get("mode") or result.get("gateway_mode") or metrics.get("audit_mode") or "unknown")
+
+    def _refresh_service_metric_gauges(self) -> None:
+        now = now_ms()
+        dirty_lag_ms = 0
+        import_lag_ms = 0
+        try:
+            records = self.adapter.read_all()
+            dirty_times = [int(record.get("updated_at_ms") or record.get("created_at_ms") or now) for record in records if record.get("record_type") == "context_summary_dirty"]
+            import_times = [
+                int(record.get("updated_at_ms") or record.get("created_at_ms") or now)
+                for record in records
+                if record.get("record_type") == "resource_import_task" and str(record.get("status") or "") in {"queued", "running"}
+            ]
+            if dirty_times:
+                dirty_lag_ms = max(0, now - min(dirty_times))
+            if import_times:
+                import_lag_ms = max(0, now - min(import_times))
+        except Exception as exc:
+            _mcp_debug_log(f"matrixark metrics gauge refresh failed: {exc}")
+        queue_depth = 0
+        queue_obj = getattr(self.adapter, "_resource_import_queue", None)
+        if queue_obj is not None:
+            try:
+                queue_depth = int(queue_obj.qsize())
+            except Exception:
+                queue_depth = 0
+        audit_write_failures = int(getattr(self.adapter, "_audit_flush_failures", 0) or 0)
+        self.metrics.update_gauges(
+            dirty_summary_lag_ms=dirty_lag_ms,
+            resource_import_lag_ms=import_lag_ms,
+            queue_depth=queue_depth,
+            audit_write_failures=audit_write_failures,
+        )
+
+    def _merge_service_prometheus(self, result: Json) -> Json:
+        self._refresh_service_metric_gauges()
+        raw_backend = str(result.get("backend") or getattr(self.adapter, "_backend_label", lambda: "local")())
+        backend = {
+            "temporalstore-cpp": "cpp",
+            "temporalstore-direct": "cpp",
+            "temporalstore-rust": "rust",
+        }.get(raw_backend, raw_backend)
+        storage_mode = self._backend_storage_mode_from_metrics(result)
+        service_prometheus = self.metrics.render_prometheus(backend=backend, storage_mode=storage_mode)
+        combined = str(result.get("prometheus") or "")
+        if combined and not combined.endswith("\n"):
+            combined += "\n"
+        result = dict(result)
+        result["metrics_format"] = "prometheus"
+        result["prometheus"] = combined + service_prometheus
+        metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
+        result["metrics"] = {**metrics, "service": self.metrics.snapshot()}
+        return result
 
     def error_response(self, request_id: Any, code: int, message: str, *, data: Json | None = None) -> Json:
         error: Json = {"code": code, "message": message}
@@ -4647,13 +4988,21 @@ class MatrixArkMcpServer:
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
         if name == "matrixark_backend_ready":
-            result = adapter_ensure_backend_ready(
-                self.adapter,
-                reason=str(args.get("reason") or "manual"),
-                probe=bool(args.get("probe", True)),
-                timeout_ms=args.get("timeout_ms"),
-            )
+            started_perf = time.perf_counter()
+            try:
+                result = adapter_ensure_backend_ready(
+                    self.adapter,
+                    reason=str(args.get("reason") or "manual"),
+                    probe=bool(args.get("probe", True)),
+                    timeout_ms=args.get("timeout_ms"),
+                )
+            except Exception as exc:
+                self.metrics.observe_operation("backend_ready", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                self.metrics.observe_backend_ready(False, "error")
+                raise
             status = "ok" if result.get("status") == "ready" else "topology_not_ready"
+            self.metrics.observe_operation("backend_ready", "ok", (time.perf_counter() - started_perf) * 1000.0)
+            self.metrics.observe_backend_ready(result.get("status") == "ready", str(result.get("status") or status))
             self.access.append_audit(
                 "backend.ready",
                 identity,
@@ -4662,7 +5011,13 @@ class MatrixArkMcpServer:
             )
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_backend_metrics":
-            result = self.adapter.backend_metrics()
+            started_perf = time.perf_counter()
+            try:
+                result = self._merge_service_prometheus(self.adapter.backend_metrics())
+            except Exception as exc:
+                self.metrics.observe_operation("backend_metrics", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                raise
+            self.metrics.observe_operation("backend_metrics", "ok", (time.perf_counter() - started_perf) * 1000.0)
             self.access.append_audit(
                 "backend.metrics",
                 identity,
@@ -4671,11 +5026,24 @@ class MatrixArkMcpServer:
             )
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_ingest":
-            result = self.adapter.ingest(args, hook=hook)
+            started_perf = time.perf_counter()
+            try:
+                result = self.adapter.ingest(args, hook=hook)
+            except Exception as exc:
+                self.metrics.observe_operation("ingest", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                raise
+            self.metrics.observe_operation("ingest", "ok", (time.perf_counter() - started_perf) * 1000.0)
+            self.metrics.observe_ingest_result(result)
             self.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_batch_extract":
-            result = self.adapter.batch_extract(args, hook=hook)
+            started_perf = time.perf_counter()
+            try:
+                result = self.adapter.batch_extract(args, hook=hook)
+            except Exception as exc:
+                self.metrics.observe_operation("batch_extract", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                raise
+            self.metrics.observe_operation("batch_extract", "ok", (time.perf_counter() - started_perf) * 1000.0)
             self.access.append_audit("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_session_commit":
@@ -4683,11 +5051,24 @@ class MatrixArkMcpServer:
             self.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_refresh_summaries":
-            result = self.adapter.refresh_summaries(args)
+            started_perf = time.perf_counter()
+            try:
+                result = self.adapter.refresh_summaries(args)
+            except Exception as exc:
+                self.metrics.observe_operation("summary_refresh", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                raise
+            self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
             self.access.append_audit("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_retrieve":
-            result = self.adapter.retrieve(args)
+            started_perf = time.perf_counter()
+            try:
+                result = self.adapter.retrieve(args)
+            except Exception as exc:
+                self.metrics.observe_operation("retrieve", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
+                raise
+            self.metrics.observe_operation("retrieve", "ok", (time.perf_counter() - started_perf) * 1000.0)
+            self.metrics.observe_retrieve_result(result)
             self.access.append_audit("context.retrieve", identity, status="ok", details={"context_pack_id": result.get("context_pack_id")})
             return {**result, "access": args.get("_matrixark_auth", {})}
         if name == "matrixark_ingestion_dashboard":
@@ -4994,4 +5375,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
