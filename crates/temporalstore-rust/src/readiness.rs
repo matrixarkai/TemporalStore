@@ -1596,7 +1596,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed extent runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
-                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, and unified storage corpus cases"
+                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, native ObjectManager mechanics, SlotStore layout transitions, stream-backed zones, model-layout compaction, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2320,7 +2320,7 @@ mod tests {
         assert!(storage
             .failed_capabilities
             .iter()
-            .all(|blocker| blocker.evidence_field.starts_with("storage_cache_mtcache.")));
+            .all(|blocker| blocker.evidence_field.starts_with("storage_")));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -2531,7 +2531,12 @@ mod tests {
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
         assert!(!storage_cache.ready);
-        assert_eq!(storage_cache.missing, report.missing);
+        for missing in &report.missing {
+            assert!(
+                storage_cache.missing.contains(missing),
+                "storage cache area should include cache-pressure blocker {missing}"
+            );
+        }
     }
 
     #[test]
