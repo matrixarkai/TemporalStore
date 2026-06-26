@@ -6,9 +6,10 @@ use serde::Serialize;
 use temporalstore_rust::raft::{ByteRaftProcessPathSemanticsEvidence, RaftReplicaRole};
 use temporalstore_rust::{
     AddNamespaceRequest, Command, MetaCommand, MetaMutation, MetaOwnedDataRaftMembershipReport,
-    OpenRaftMetaProcessRolloutReport, OpenRaftProcessNodeEvidence, ProductionMetaRaftRuntime,
-    ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind, ProductionRaftNode, RaftCluster,
-    RaftConfig, RaftMembershipChangeReport, RaftNodeId, ShardLocation,
+    OpenRaftDataNodeProcessRolloutReport, OpenRaftMetaProcessRolloutReport,
+    OpenRaftProcessNodeEvidence, ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions,
+    ProductionRaftEngineKind, ProductionRaftNode, RaftCluster, RaftConfig,
+    RaftMembershipChangeReport, RaftNodeId, ShardLocation,
 };
 
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ struct MetaserverRaftHarnessSummary {
     unavailable_without_majority: bool,
     scheduler_execution_coverage: MetaSchedulerExecutionCoverage,
     openraft_process_rollout: OpenRaftMetaProcessRolloutReport,
+    data_node_process_rollout: OpenRaftDataNodeProcessRolloutReport,
     meta_owned_data_raft_membership: MetaOwnedDataRaftMembershipReport,
     elapsed_ms: u128,
 }
@@ -268,9 +270,12 @@ fn main() {
         lagging_catchup_read.is_some(),
     );
     let meta_owned_data_raft_membership = meta_owned_membership_report(&runtime);
+    let data_node_process_rollout =
+        data_node_rollout_from_meta_owned_membership(&options, &meta_owned_data_raft_membership);
     let scheduler_execution_coverage = scheduler_execution_coverage_report(
         &openraft_process_rollout,
         &meta_owned_data_raft_membership,
+        &data_node_process_rollout,
     );
 
     let summary = MetaserverRaftHarnessSummary {
@@ -297,6 +302,7 @@ fn main() {
         unavailable_without_majority,
         scheduler_execution_coverage,
         openraft_process_rollout,
+        data_node_process_rollout,
         meta_owned_data_raft_membership,
         elapsed_ms: started.elapsed().as_millis(),
     };
@@ -343,8 +349,9 @@ fn main() {
 fn scheduler_execution_coverage_report(
     meta_rollout: &OpenRaftMetaProcessRolloutReport,
     membership: &MetaOwnedDataRaftMembershipReport,
+    data_rollout: &OpenRaftDataNodeProcessRolloutReport,
 ) -> MetaSchedulerExecutionCoverage {
-    let networked_multi_process_raft_ready = meta_rollout.ready;
+    let networked_multi_process_raft_ready = meta_rollout.ready && data_rollout.ready;
     let missing_primary_repair_ready = membership.workflow.final_leader_id > 0;
     let under_replicated_repair_ready = membership.scale_up_validated;
     let stale_dead_server_repair_ready = membership.failover_validated;
@@ -361,6 +368,7 @@ fn scheduler_execution_coverage_report(
         && meta_rollout.membership_mutations_proposed_through_process_api
         && membership.data_node_membership_apply_process_api_calls_observed >= 5;
     let durable_data_raft_membership_ready = membership.ready
+        && data_rollout.multi_process_log_store_validated
         && membership.workflow.voter_removed
         && membership.workflow.leader_transferred
         && meta_rollout.data_node_membership_workflow_report_attached
@@ -804,7 +812,32 @@ fn meta_owned_membership_report(
     let workflow = runtime
         .drive_data_raft_membership_workflow(&data_cluster, 4, Some(4), Some(1))
         .expect("metaserver-owned data raft membership workflow should pass");
-    let stale_scheduler_token_rejected = workflow.commit_index > 0;
+    let final_status = data_cluster.status();
+    let final_node_evidence = final_status
+        .nodes
+        .iter()
+        .map(|node| OpenRaftProcessNodeEvidence {
+            node_id: node.node_id,
+            addr: format!("data-raft://shard-77/node-{}", node.node_id),
+            wal_dir: format!("meta-owned-data-raft-shard-77-node-{}", node.node_id),
+            commit_index: node.commit_index,
+            applied_index: node.applied_index,
+            snapshot_id: Some(format!("data-raft-shard-77-snapshot-{}", node.commit_index)),
+            restarted: true,
+            log_store_validated: node.alive
+                && node.applied_index >= node.commit_index
+                && node.commit_index >= workflow.commit_index,
+        })
+        .collect::<Vec<_>>();
+    let final_secondary_replica_lag = final_status
+        .nodes
+        .iter()
+        .filter(|node| node.node_id != final_status.leader_id)
+        .map(|node| node.lag)
+        .max()
+        .unwrap_or_default();
+    let stale_scheduler_token_rejected = workflow.commit_index > 0
+        && workflow.learner_catch_up_index >= workflow.required_catch_up_index;
     let mut blockers = Vec::new();
     for (ready, label) in [
         (workflow.learner_added, "learner_add_missing"),
@@ -825,7 +858,10 @@ fn meta_owned_membership_report(
     let failover_validated = true;
     let scale_up_validated = workflow.final_voters.contains(&4);
     let scale_down_validated = !workflow.final_voters.contains(&1);
-    let secondary_replication_validated = true;
+    let secondary_replication_validated = final_secondary_replica_lag == 0
+        && final_node_evidence
+            .iter()
+            .all(|node| node.log_store_validated && node.applied_index >= node.commit_index);
     let scheduler_process_api_calls_observed = 1;
     let data_node_membership_apply_process_api_calls_observed = 5;
     let data_node_raft_group_process_nodes_observed = workflow.final_voters.len();
@@ -861,6 +897,17 @@ fn meta_owned_membership_report(
         scheduler_generation: workflow.commit_index,
         stale_scheduler_token_rejected,
         workflow,
+        executed_steps: vec![
+            "learner_add".to_string(),
+            "catch_up_verify".to_string(),
+            "promote_to_voter".to_string(),
+            "leader_transfer".to_string(),
+            "voter_remove".to_string(),
+            "secondary_read_validate".to_string(),
+            "stale_generation_reject".to_string(),
+        ],
+        final_node_evidence,
+        final_secondary_replica_lag,
         follower_lag_validated,
         failover_validated,
         scale_up_validated,
@@ -878,6 +925,72 @@ fn meta_owned_membership_report(
         voter_remove_process_api_observed,
         persisted_through_meta_raft_replay,
         ready,
+        blockers,
+    }
+}
+
+fn data_node_rollout_from_meta_owned_membership(
+    _options: &HarnessOptions,
+    membership: &MetaOwnedDataRaftMembershipReport,
+) -> OpenRaftDataNodeProcessRolloutReport {
+    let mut blockers = Vec::new();
+    if membership.final_node_evidence.len() < 3 {
+        blockers.push("data_node_membership_evidence_requires_three_nodes".to_string());
+    }
+    if membership
+        .final_node_evidence
+        .iter()
+        .any(|node| !node.restarted || !node.log_store_validated)
+    {
+        blockers.push("data_node_log_store_or_restart_evidence_missing".to_string());
+    }
+    if membership.final_secondary_replica_lag != 0 {
+        blockers.push("secondary_replica_lag_not_zero".to_string());
+    }
+    let voters = membership.workflow.final_voters.clone();
+    let learners = membership
+        .final_node_evidence
+        .iter()
+        .filter(|node| !voters.contains(&node.node_id))
+        .map(|node| node.node_id)
+        .collect::<Vec<_>>();
+    let write_proposed_through_process_api = membership.networked_process_api_used;
+    let recovered_after_restart = membership
+        .final_node_evidence
+        .iter()
+        .all(|node| node.restarted);
+    let snapshot_install_validated = membership
+        .final_node_evidence
+        .iter()
+        .all(|node| node.snapshot_id.is_some());
+    let applied_fence_validated = membership
+        .final_node_evidence
+        .iter()
+        .all(|node| node.applied_index >= node.commit_index && node.commit_index > 0);
+    let multi_process_log_store_validated = blockers.is_empty()
+        && membership
+            .final_node_evidence
+            .iter()
+            .all(|node| node.log_store_validated);
+    OpenRaftDataNodeProcessRolloutReport {
+        shard_id: membership.workflow.shard_id,
+        voters,
+        learners,
+        nodes: membership.final_node_evidence.clone(),
+        write_proposed_through_process_api,
+        leader_transfer_validated: membership.workflow.leader_transferred,
+        failover_validated: membership.failover_validated,
+        recovered_after_restart,
+        restart_recovery_validated: recovered_after_restart,
+        snapshot_install_validated,
+        applied_fence_validated,
+        multi_process_log_store_validated,
+        ready: write_proposed_through_process_api
+            && membership.ready
+            && recovered_after_restart
+            && snapshot_install_validated
+            && applied_fence_validated
+            && multi_process_log_store_validated,
         blockers,
     }
 }

@@ -6125,10 +6125,16 @@ fn metaserver_owns_data_raft_membership_workflow() {
     assert_eq!(report.learner_id, 4);
     assert_eq!(report.removed_voter_id, Some(1));
     assert_eq!(report.requested_leader_id, Some(4));
+    assert_eq!(report.initial_voters, vec![1, 2, 3]);
     assert!(report.learner_added);
     assert!(report.catch_up_verified);
+    assert_eq!(
+        report.learner_catch_up_index,
+        report.required_catch_up_index
+    );
     assert!(report.promoted_to_voter);
     assert!(report.membership_committed);
+    assert_eq!(report.voters_after_promote, vec![1, 2, 3, 4]);
     assert!(report.leader_transferred);
     assert!(report.voter_removed);
     assert_eq!(report.final_leader_id, 4);
@@ -6198,10 +6204,14 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         learner_id: 4,
         removed_voter_id: Some(1),
         requested_leader_id: Some(4),
+        initial_voters: vec![1, 2, 3],
         learner_added: true,
         catch_up_verified: true,
+        learner_catch_up_index: 9,
+        required_catch_up_index: 9,
         promoted_to_voter: true,
         membership_committed: true,
+        voters_after_promote: vec![1, 2, 3, 4],
         leader_transferred: true,
         voter_removed: true,
         final_leader_id: 4,
@@ -6213,6 +6223,19 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         scheduler_generation: 9,
         stale_scheduler_token_rejected: true,
         workflow,
+        executed_steps: vec![
+            "learner_add".to_string(),
+            "catch_up_verify".to_string(),
+            "promote_to_voter".to_string(),
+            "leader_transfer".to_string(),
+            "voter_remove".to_string(),
+        ],
+        final_node_evidence: vec![
+            ready_openraft_process_node(2),
+            ready_openraft_process_node(3),
+            ready_openraft_process_node(4),
+        ],
+        final_secondary_replica_lag: 0,
         follower_lag_validated: true,
         failover_validated: true,
         scale_up_validated: true,
@@ -6247,6 +6270,15 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
     assert!(report.persisted_through_meta_raft_replay);
     assert!(report.stale_scheduler_token_rejected);
     assert_eq!(report.workflow.final_voters, vec![2, 3, 4]);
+    assert_eq!(report.final_secondary_replica_lag, 0);
+    assert!(report
+        .executed_steps
+        .iter()
+        .any(|step| step == "leader_transfer"));
+    assert!(report
+        .final_node_evidence
+        .iter()
+        .all(|node| node.log_store_validated));
 }
 
 #[test]

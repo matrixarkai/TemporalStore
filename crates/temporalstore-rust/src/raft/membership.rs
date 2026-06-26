@@ -61,10 +61,18 @@ pub struct MetaDataRaftMembershipWorkflowReport {
     pub learner_id: RaftNodeId,
     pub removed_voter_id: Option<RaftNodeId>,
     pub requested_leader_id: Option<RaftNodeId>,
+    #[serde(default)]
+    pub initial_voters: Vec<RaftNodeId>,
     pub learner_added: bool,
     pub catch_up_verified: bool,
+    #[serde(default)]
+    pub learner_catch_up_index: u64,
+    #[serde(default)]
+    pub required_catch_up_index: u64,
     pub promoted_to_voter: bool,
     pub membership_committed: bool,
+    #[serde(default)]
+    pub voters_after_promote: Vec<RaftNodeId>,
     pub leader_transferred: bool,
     pub voter_removed: bool,
     pub final_leader_id: RaftNodeId,
@@ -324,6 +332,12 @@ pub struct MetaOwnedDataRaftMembershipReport {
     pub scheduler_generation: u64,
     pub stale_scheduler_token_rejected: bool,
     pub workflow: MetaDataRaftMembershipWorkflowReport,
+    #[serde(default)]
+    pub executed_steps: Vec<String>,
+    #[serde(default)]
+    pub final_node_evidence: Vec<OpenRaftProcessNodeEvidence>,
+    #[serde(default)]
+    pub final_secondary_replica_lag: u64,
     pub follower_lag_validated: bool,
     pub failover_validated: bool,
     pub scale_up_validated: bool,
