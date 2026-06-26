@@ -91,8 +91,8 @@ bool OpenTable(const std::string& metaserver, const std::string& idc,
     client->reset(raw_client);
 
     bcache2::client::TableOptions table_options;
-    table_options.io_timeout_ms = 2000;
-    table_options.connect_timeout_ms = 2000;
+    table_options.io_timeout_ms = 200;
+    table_options.connect_timeout_ms = 500;
     bcache2::client::Table* raw_table = nullptr;
     status = (*client)->OpenTable(namespace_name, table_name, table_options, &raw_table);
     if (!status.ok()) {
@@ -158,6 +158,27 @@ bool GetExpectedValueWithRetry(bcache2::client::Table* table, const std::string&
     return false;
 }
 
+bool WarmSecondaryVisibility(bcache2::client::Table* primary_table,
+                             bcache2::client::Table* secondary_table,
+                             const std::string& prefix, int value_bytes, int warmup_count,
+                             int max_wait_ms) {
+    for (int i = 0; i < warmup_count; ++i) {
+        const std::string key = prefix + ":warmup:" + std::to_string(i);
+        const std::string value = MakeValue(value_bytes, i);
+        const bcache2::Status status = primary_table->Set(key, value);
+        if (!status.ok()) {
+            std::cerr << "warmup Set failed: " << status.ToString() << std::endl;
+            return false;
+        }
+        if (!GetExpectedValueWithRetry(secondary_table, key, value, max_wait_ms)) {
+            std::cerr << "warmup key did not become visible on secondary: " << key
+                      << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 struct LoadStats {
     std::atomic<int64_t> writes{0};
     std::atomic<int64_t> reads{0};
@@ -168,7 +189,8 @@ struct LoadStats {
 void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
                          const std::string& namespace_name, const std::string& table_name,
                          const std::string& prefix, int value_bytes, int writer_threads,
-                         int reader_threads, int reader_max_wait_ms, std::atomic<bool>* stop,
+                         int reader_threads, int reader_max_wait_ms, int reader_seed_count,
+                         int writer_pause_us, int reader_pause_us, std::atomic<bool>* stop,
                          LoadStats* stats, std::vector<std::thread>* workers) {
     for (int t = 0; t < writer_threads; ++t) {
         workers->emplace_back([=] {
@@ -190,6 +212,9 @@ void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
                 } else {
                     stats->write_errors.fetch_add(1, std::memory_order_relaxed);
                 }
+                if (writer_pause_us > 0) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(writer_pause_us));
+                }
             }
         });
     }
@@ -206,13 +231,16 @@ void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
             }
             int64_t i = 0;
             while (!stop->load(std::memory_order_acquire)) {
-                const int64_t slot = i++ % 1024;
+                const int64_t slot = i++ % std::max(1, reader_seed_count);
                 const std::string key = prefix + ":seed:" + std::to_string(slot);
                 if (GetExpectedValueWithRetry(table.get(), key, MakeValue(value_bytes, slot),
                                               reader_max_wait_ms)) {
                     stats->reads.fetch_add(1, std::memory_order_relaxed);
                 } else {
                     stats->read_errors.fetch_add(1, std::memory_order_relaxed);
+                }
+                if (reader_pause_us > 0) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(reader_pause_us));
                 }
             }
         });
@@ -222,11 +250,12 @@ void StartBackgroundLoad(const std::string& metaserver, const std::string& idc,
 }  // namespace
 
 int main(int argc, char** argv) {
-    if (argc < 5 || argc > 11) {
+    if (argc < 5 || argc > 13) {
         std::cout << "usage: " << argv[0]
                   << " <metaserver_host:port> <idc> <namespace> <table> [probe_ops=100]"
                      " [probe_threads=1] [value_bytes=128] [max_wait_ms=30000]"
                      " [background_writer_threads=0] [background_reader_threads=0]"
+                     " [background_writer_pause_us=0] [background_reader_pause_us=0]"
                   << std::endl;
         return 2;
     }
@@ -241,6 +270,8 @@ int main(int argc, char** argv) {
     const int max_wait_ms = argc > 8 ? std::atoi(argv[8]) : 30000;
     const int background_writer_threads = argc > 9 ? std::atoi(argv[9]) : 0;
     const int background_reader_threads = argc > 10 ? std::atoi(argv[10]) : 0;
+    const int background_writer_pause_us = std::max(0, argc > 11 ? std::atoi(argv[11]) : 0);
+    const int background_reader_pause_us = std::max(0, argc > 12 ? std::atoi(argv[12]) : 0);
     const std::string prefix = "visibility_lag_" + std::to_string(NowNs());
 
     std::unique_ptr<bcache2::client::Client> seed_client;
@@ -250,7 +281,7 @@ int main(int argc, char** argv) {
                    &seed_table)) {
         return 1;
     }
-    constexpr int kSeedCount = 1024;
+    constexpr int kSeedCount = 128;
     for (int i = 0; i < kSeedCount; ++i) {
         const std::string key = prefix + ":seed:" + std::to_string(i);
         const bcache2::Status status = seed_table->Set(key, MakeValue(value_bytes, i));
@@ -272,7 +303,27 @@ int main(int argc, char** argv) {
     std::vector<std::thread> background_workers;
     StartBackgroundLoad(metaserver, idc, namespace_name, table_name, prefix, value_bytes,
                         background_writer_threads, background_reader_threads, max_wait_ms,
+                        kSeedCount, background_writer_pause_us, background_reader_pause_us,
                         &stop_background, &load_stats, &background_workers);
+
+    std::unique_ptr<bcache2::client::Client> warmup_primary_client;
+    std::unique_ptr<bcache2::client::Table> warmup_primary_table;
+    std::unique_ptr<bcache2::client::Client> warmup_secondary_client;
+    std::unique_ptr<bcache2::client::Table> warmup_secondary_table;
+    if (!OpenTable(metaserver, idc, namespace_name, table_name,
+                   bcache2::client::PartitionPickOptions::Policy::kPrimary, "",
+                   &warmup_primary_client, &warmup_primary_table) ||
+        !OpenTable(metaserver, idc, namespace_name, table_name,
+                   bcache2::client::PartitionPickOptions::Policy::kVdcAffinity,
+                   "force-secondary-read", &warmup_secondary_client, &warmup_secondary_table) ||
+        !WarmSecondaryVisibility(warmup_primary_table.get(), warmup_secondary_table.get(), prefix,
+                                 value_bytes, 32, max_wait_ms)) {
+        stop_background.store(true, std::memory_order_release);
+        for (auto& worker : background_workers) {
+            worker.join();
+        }
+        return 1;
+    }
 
     std::vector<int64_t> lag_samples(static_cast<size_t>(probe_ops), 0);
     std::vector<int64_t> attempts_samples(static_cast<size_t>(probe_ops), 0);
@@ -375,12 +426,14 @@ int main(int argc, char** argv) {
     const int64_t total_ms =
         std::chrono::duration_cast<std::chrono::milliseconds>(end - begin).count();
     std::cout << "config,metaserver,idc,namespace,table,probe_ops,probe_threads,value_bytes,"
-                 "max_wait_ms,background_writer_threads,background_reader_threads"
+                 "max_wait_ms,background_writer_threads,background_reader_threads,"
+                 "background_writer_pause_us,background_reader_pause_us"
               << std::endl;
     std::cout << "config," << metaserver << "," << idc << "," << namespace_name << ","
               << table_name << "," << probe_ops << "," << probe_threads << "," << value_bytes
               << "," << max_wait_ms << "," << background_writer_threads << ","
-              << background_reader_threads << std::endl;
+              << background_reader_threads << "," << background_writer_pause_us << ","
+              << background_reader_pause_us << std::endl;
     PrintSummary("secondary_visibility_lag_after_primary_set",
                  Summarize(std::move(successful_lag), errors.load()), probe_threads, total_ms);
     PrintSummary("secondary_visibility_poll_attempts",

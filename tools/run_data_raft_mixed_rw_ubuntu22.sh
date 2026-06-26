@@ -31,6 +31,8 @@ VALUE_BYTES="${VALUE_BYTES:-128}"
 MAX_WAIT_MS="${MAX_WAIT_MS:-30000}"
 BACKGROUND_WRITER_THREADS="${BACKGROUND_WRITER_THREADS:-2}"
 BACKGROUND_READER_THREADS="${BACKGROUND_READER_THREADS:-4}"
+BACKGROUND_WRITER_PAUSE_US="${BACKGROUND_WRITER_PAUSE_US:-0}"
+BACKGROUND_READER_PAUSE_US="${BACKGROUND_READER_PAUSE_US:-0}"
 BENCH_TIMEOUT_S="${BENCH_TIMEOUT_S:-300}"
 REPLICATION_SMOKE_ATTEMPTS="${REPLICATION_SMOKE_ATTEMPTS:-30}"
 REPLICATION_SMOKE_WAIT_MS="${REPLICATION_SMOKE_WAIT_MS:-30000}"
@@ -211,6 +213,10 @@ echo "server_heartbeat_timeout_ms=${SERVER_HEARTBEAT_TIMEOUT_MS}" \
   | tee -a "${RESULT_DIR}/summary.txt"
 echo "server_meta_tinker_interval_ms=${SERVER_META_TINKER_INTERVAL_MS}" \
   | tee -a "${RESULT_DIR}/summary.txt"
+echo "background_writer_pause_us=${BACKGROUND_WRITER_PAUSE_US}" \
+  | tee -a "${RESULT_DIR}/summary.txt"
+echo "background_reader_pause_us=${BACKGROUND_READER_PAUSE_US}" \
+  | tee -a "${RESULT_DIR}/summary.txt"
 
 for smoke_idx in $(seq 1 "${RAFT_STABILITY_SMOKE_COUNT}"); do
   run_replication_smoke_with_retries \
@@ -224,6 +230,7 @@ timeout "${BENCH_TIMEOUT_S}" \
   "${leader}" "${IDC}" "${NAMESPACE_NAME}" "${TABLE_NAME}" \
   "${PROBE_OPS}" "${PROBE_THREADS}" "${VALUE_BYTES}" "${MAX_WAIT_MS}" \
   "${BACKGROUND_WRITER_THREADS}" "${BACKGROUND_READER_THREADS}" \
+  "${BACKGROUND_WRITER_PAUSE_US}" "${BACKGROUND_READER_PAUSE_US}" \
   > "${RESULT_DIR}/mixed_visibility.out" 2> "${RESULT_DIR}/mixed_visibility.err"
 csv_has_zero_errors "${RESULT_DIR}/mixed_visibility.out"
 cat "${RESULT_DIR}/mixed_visibility.out" | tee -a "${RESULT_DIR}/summary.txt"

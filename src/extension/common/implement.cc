@@ -67,5 +67,16 @@ Status Persist(ExecuteEnv* env, const PersistRequest& request, PersistResponse* 
 }
 REGISTER_FUNCTION(COMMON, PERSIST, Persist, Write);
 
+Status ObjectType(ExecuteEnv* env, const ObjectTypeRequest& request, ObjectTypeResponse* response) {
+    uint8_t model_id = 0;
+    Status status = env->GetObjectModelId(request.key(), &model_id);
+    if (!status.ok()) {
+        return status;
+    }
+    response->set_model_id(model_id);
+    return Status::OK();
+}
+REGISTER_FUNCTION(COMMON, OBJECT_TYPE, ObjectType, Read);
+
 }  // namespace common2
 }  // namespace bcache2
