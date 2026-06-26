@@ -227,8 +227,33 @@ impl TemporalEngine {
             command.clone(),
         );
         if outcome.mutated {
-            for object_key in command_object_keys(&command) {
-                shard.dirty_objects.insert(object_key);
+            let object_keys = command_object_keys(&command);
+            if object_keys.is_empty() {
+                rebuild_slot_page_ownership(
+                    request.shard_id,
+                    shard,
+                    info.as_ref()
+                        .map(|info| info.start_routing_slot)
+                        .unwrap_or_default(),
+                    info.as_ref()
+                        .map(|info| info.end_routing_slot)
+                        .unwrap_or(u32::MAX),
+                );
+            } else {
+                for object_key in object_keys {
+                    shard.dirty_objects.insert(object_key.clone());
+                    sync_slot_page_ownership_for_object(
+                        request.shard_id,
+                        shard,
+                        &object_key,
+                        info.as_ref()
+                            .map(|info| info.start_routing_slot)
+                            .unwrap_or_default(),
+                        info.as_ref()
+                            .map(|info| info.end_routing_slot)
+                            .unwrap_or(u32::MAX),
+                    );
+                }
             }
             if !command_updates_slot_index_directly(&command)
                 || shard.slot_index.slot_map.is_empty()
@@ -10114,6 +10139,141 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     collect_model_live_page_entries(shard)
 }
 
+fn model_id_for_kind(kind: &str) -> u16 {
+    match kind {
+        "string" => 1,
+        "hash" => 2,
+        "set" => 3,
+        "feature" => 4,
+        "sequence" => 5,
+        "ips" => 6,
+        "context_node" => 20,
+        "context_event" => 21,
+        "context_index" => 22,
+        "context_audit" => 23,
+        "context_dirty" => 24,
+        "context_entity" => 25,
+        "context_child" => 26,
+        "context_embedding" => 27,
+        "context_summary" => 28,
+        "context_compression" => 29,
+        _ => u16::MAX,
+    }
+}
+
+fn slot_page_ref_from_entry(entry: LivePageEntry, dirty: bool) -> SlotObjectPageRef {
+    let size_bytes = entry.address.length;
+    SlotObjectPageRef {
+        model_id: model_id_for_kind(&entry.kind),
+        page_id: entry.address.page_id,
+        dirty,
+        deleted: false,
+        log: false,
+        size_bytes,
+        logical_bytes: size_bytes,
+        physical_bytes: size_bytes,
+        address: entry.address,
+    }
+}
+
+fn remove_slot_object_refs_for_key(shard: &mut ShardState, object_key: &str) {
+    let mut empty_slots = Vec::new();
+    for (routing_slot, objects) in &mut shard.slot_objects {
+        objects.retain(|_, object| object.object_key != object_key);
+        if objects.is_empty() {
+            empty_slots.push(*routing_slot);
+        }
+    }
+    for routing_slot in empty_slots {
+        shard.slot_objects.remove(&routing_slot);
+    }
+}
+
+fn sync_slot_page_ownership_for_object(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    object_key: &str,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    remove_slot_object_refs_for_key(shard, object_key);
+    let mut entries = collect_live_page_entries_from_model_maps(shard)
+        .into_iter()
+        .filter(|entry| entry.object_key == object_key)
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
+        shard.dirty_slots.insert(routing_slot);
+        shard
+            .slot_dirty_generations
+            .entry(routing_slot)
+            .and_modify(|generation| *generation = generation.saturating_add(1))
+            .or_insert(1);
+        return;
+    }
+    entries.sort_by(|left, right| {
+        left.kind
+            .cmp(&right.kind)
+            .then(left.component.cmp(&right.component))
+            .then(
+                left.address
+                    .page_segment_id
+                    .cmp(&right.address.page_segment_id),
+            )
+            .then(left.address.offset.cmp(&right.address.offset))
+            .then(left.address.length.cmp(&right.address.length))
+    });
+    for entry in entries {
+        let object_id = expected_live_page_object_id(shard_id, &entry);
+        let routing_slot = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| page_routing_slot(object_key, start_routing_slot, end_routing_slot));
+        shard.dirty_slots.insert(routing_slot);
+        let dirty_generation = *shard
+            .slot_dirty_generations
+            .entry(routing_slot)
+            .and_modify(|generation| *generation = generation.saturating_add(1))
+            .or_insert(1);
+        let ttl_expires_at_ms = shard.expires_at_ms.get(object_key).copied();
+        let in_memory = entry.address.page_segment_id == HOT_PAGE_SEGMENT_ID;
+        let page_ref = slot_page_ref_from_entry(entry.clone(), true);
+        let object = shard
+            .slot_objects
+            .entry(routing_slot)
+            .or_default()
+            .entry(object_id)
+            .or_insert_with(|| SlotObjectEntry {
+                object_id,
+                object_key: entry.object_key.clone(),
+                kind: entry.kind.clone(),
+                component: entry.component.clone(),
+                dirty_generation,
+                dirty: true,
+                meta: entry.kind.starts_with("context_"),
+                loading: false,
+                in_memory,
+                ttl_expires_at_ms,
+                layout_generation: 1,
+                pages: Vec::new(),
+            });
+        object.dirty_generation = dirty_generation;
+        object.dirty = true;
+        object.in_memory |= in_memory;
+        object.ttl_expires_at_ms = ttl_expires_at_ms;
+        object.layout_generation = object.layout_generation.max(1);
+        object.pages.push(page_ref);
+        object.pages.sort_by(|left, right| {
+            left.address
+                .page_segment_id
+                .cmp(&right.address.page_segment_id)
+                .then(left.address.offset.cmp(&right.address.offset))
+                .then(left.address.length.cmp(&right.address.length))
+                .then(left.model_id.cmp(&right.model_id))
+        });
+    }
+}
+
 fn rebuild_slot_page_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
@@ -10912,6 +11072,7 @@ fn validate_slot_ownership_index(
         let expected_object_id = expected_live_page_object_id(shard_id, &entry);
         let expected_routing_slot =
             page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot);
+        let expected_page_id = entry.address.page_id;
         let object_mismatch = entry
             .address
             .object_id
@@ -10923,6 +11084,25 @@ fn validate_slot_ownership_index(
         if entry.address.object_id.is_none() || entry.address.routing_slot.is_none() {
             validation.missing_owner_page_refs =
                 validation.missing_owner_page_refs.saturating_add(1);
+        }
+        if !shard.slot_objects.is_empty() {
+            let slot_page_present = shard
+                .slot_objects
+                .get(&expected_routing_slot)
+                .and_then(|objects| objects.get(&expected_object_id))
+                .is_some_and(|object| {
+                    object.pages.iter().any(|page| {
+                        page.address.page_segment_id == entry.address.page_segment_id
+                            && page.address.offset == entry.address.offset
+                            && page.address.length == entry.address.length
+                            && page.page_id == expected_page_id
+                            && page.model_id == model_id_for_kind(&entry.kind)
+                    })
+                });
+            if !slot_page_present {
+                validation.missing_owner_page_refs =
+                    validation.missing_owner_page_refs.saturating_add(1);
+            }
         }
         if object_mismatch || slot_mismatch {
             validation
@@ -11082,14 +11262,33 @@ fn slot_storage_summaries(
             );
         }
     }
-    for key in &shard.dirty_objects {
-        let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
-        let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
-            routing_slot,
-            ..SlotStorageSummary::default()
-        });
-        summary.dirty_object_count = summary.dirty_object_count.saturating_add(1);
-        summary.dirty_generation = summary.dirty_generation.saturating_add(1);
+    if !shard.slot_objects.is_empty() {
+        for routing_slot in &shard.dirty_slots {
+            let summary = slots.entry(*routing_slot).or_insert(SlotStorageSummary {
+                routing_slot: *routing_slot,
+                ..SlotStorageSummary::default()
+            });
+            summary.dirty_object_count = shard
+                .slot_objects
+                .get(routing_slot)
+                .map(|objects| objects.values().filter(|object| object.dirty).count() as u64)
+                .unwrap_or_default();
+            summary.dirty_generation = shard
+                .slot_dirty_generations
+                .get(routing_slot)
+                .copied()
+                .unwrap_or_default();
+        }
+    } else {
+        for key in &shard.dirty_objects {
+            let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
+            let summary = slots.entry(routing_slot).or_insert(SlotStorageSummary {
+                routing_slot,
+                ..SlotStorageSummary::default()
+            });
+            summary.dirty_object_count = summary.dirty_object_count.saturating_add(1);
+            summary.dirty_generation = summary.dirty_generation.saturating_add(1);
+        }
     }
     for (routing_slot, summary) in &mut slots {
         summary.page_segment_ids = page_segments_by_slot
@@ -12990,11 +13189,15 @@ fn object_manager_stats(
             .map(BTreeMap::len)
             .sum::<usize>();
     let routing_slot_count = routing_slot_count(start_routing_slot, end_routing_slot);
-    let dirty_slots = shard
-        .dirty_objects
-        .iter()
-        .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count))
-        .collect::<BTreeSet<_>>();
+    let dirty_slots = if !shard.slot_objects.is_empty() {
+        shard.dirty_slots.clone()
+    } else {
+        shard
+            .dirty_objects
+            .iter()
+            .map(|key| slot_for_object(key, start_routing_slot, routing_slot_count))
+            .collect::<BTreeSet<_>>()
+    };
     ObjectManagerStats {
         object_count,
         page_ref_count,
@@ -13048,8 +13251,8 @@ fn page_routing_slot(key: &str, start_routing_slot: u32, end_routing_slot: u32) 
 
 fn command_object_keys(command: &Command) -> Vec<String> {
     match command {
-        Command::CommonDelete { key }
-        | Command::CommonExpire { key, .. }
+        Command::CommonDelete { key } => associated_record_keys(key),
+        Command::CommonExpire { key, .. }
         | Command::StringSet { key, .. }
         | Command::StringSetEx { key, .. }
         | Command::StringSetConditional { key, .. }
