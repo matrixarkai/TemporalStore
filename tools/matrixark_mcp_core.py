@@ -213,7 +213,7 @@ MATRIXARK_ROLE_SCOPE_LIMITS: dict[str, set[str] | None] = {
 
 def normalize_matrixark_role(role: str) -> str:
     normalized = safe_identifier(role or "service", default="service")
-    aliases = {"administrator": "admin", "read_only": "viewer", "readonly": "viewer", "agent": "service"}
+    aliases = {"administrator": "admin", "tenant_admin": "admin", "portal_user": "developer", "read_only": "viewer", "readonly": "viewer", "agent": "service", "agent_service": "service"}
     return aliases.get(normalized, normalized)
 
 
@@ -443,12 +443,44 @@ def scope_key_prefix_for_query(query_scope: Json) -> str:
     return scope_key_from_hashes(tenant_hash, user_hash, session_hash)
 
 
+def parse_scope_key(scope_key: str) -> dict[str, int]:
+    parsed: dict[str, int] = {}
+    for part in str(scope_key or "").split("|"):
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        try:
+            parsed[key] = int(value)
+        except ValueError:
+            continue
+    return parsed
+
+
+def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_keys: set[str]) -> bool:
+    record_parts = parse_scope_key(record_scope_key)
+    tenant_hash = int(query_scope.get("tenant_hash") or 0)
+    if tenant_hash and record_parts.get("t") != tenant_hash:
+        return False
+    if "user_id" in explicit_keys:
+        user_hash = int(query_scope.get("user_hash") or 0)
+        if user_hash and record_parts.get("u") != user_hash:
+            return False
+    if "session_id" in explicit_keys:
+        session_hash = int(query_scope.get("session_hash") or 0)
+        if session_hash and record_parts.get("s") != session_hash:
+            return False
+    return True
+
+
 def canonical_scope_key(scope: Json) -> str:
     scope_key = str(scope.get("scope_key") or "")
     if scope_key:
         return scope_key
+    tenant_hash = int(scope.get("tenant_hash") or 0)
+    if not tenant_hash:
+        return ""
     return scope_key_from_hashes(
-        int(scope.get("tenant_hash") or 0),
+        tenant_hash,
         int(scope.get("user_hash") or 0),
         int(scope.get("session_hash") or 0),
     )
@@ -520,8 +552,9 @@ def materialize_serving_records(record: Json) -> list[Json]:
 
     serving = dict(record)
     envelope = serving.get("envelope") if isinstance(serving.get("envelope"), dict) else {}
+    existing_scope_key = str(serving.get("scope_key") or "")
     scope = serving.get("scope") if isinstance(serving.get("scope"), dict) else envelope.get("scope", {})
-    scope_key = canonical_scope_key(scope) if isinstance(scope, dict) else str(serving.get("scope_key") or "")
+    scope_key = canonical_scope_key(scope) if isinstance(scope, dict) and scope else existing_scope_key
     if scope_key:
         serving["scope_key"] = scope_key
     serving.pop("scope", None)
@@ -719,12 +752,16 @@ def session_summary_for_events(level: str, event_records: list[Json], all_record
     if level != "session" or not event_records:
         return None
     target_key = context_node_key(event_records[0].get("envelope", {}))
+    event_hashes = {record.get("event_id_hash") for record in event_records if record.get("event_id_hash") is not None}
+    fallback_summary = None
     for record in reversed(all_records):
         if record.get("record_type") != "context_summary" or record.get("summary_type") != "session_l0":
             continue
-        if tuple(record.get("context_node_key", [])) == target_key:
+        if target_key and tuple(record.get("context_node_key", [])) == target_key:
             return record
-    return None
+        if record.get("source_event_hash") in event_hashes and fallback_summary is None:
+            fallback_summary = record
+    return fallback_summary
 
 
 def collect_prior_context(envelope: Json, records: list[Json]) -> Json:
@@ -768,7 +805,7 @@ def collect_prior_context(envelope: Json, records: list[Json]) -> Json:
             if record.get("record_type") != "context_event":
                 continue
             prior_envelope = record.get("envelope", {})
-            if session_key(prior_envelope) == key:
+            if session_key(prior_envelope) == key or scope_matches(scope_from_serving_record(record), envelope.get("scope", {})):
                 selected_events.append(record)
                 if len(selected_events) >= MAX_PRIOR_MESSAGES:
                     break
@@ -782,7 +819,7 @@ def collect_prior_context(envelope: Json, records: list[Json]) -> Json:
             if record.get("record_type") != "context_event":
                 continue
             prior_envelope = record.get("envelope", {})
-            if user_key(prior_envelope) == fallback_key:
+            if user_key(prior_envelope) == fallback_key or scope_matches(scope_from_serving_record(record), envelope.get("scope", {})):
                 selected_events.append(record)
                 if len(selected_events) >= MAX_PRIOR_MESSAGES:
                     break
@@ -1188,7 +1225,13 @@ def detect_memory_segments(messages: list[Json], envelope: Json | None = None) -
         model_path = str(envelope.get("segment_model_path") or os.getenv("MATRIXARK_SEGMENT_MODEL_PATH", ""))
         max_new_tokens = int(envelope.get("segment_max_new_tokens") or os.getenv("MATRIXARK_SEGMENT_MAX_NEW_TOKENS", "512"))
         try:
-            raw = oss_model_memory_segments(messages, model=model, model_path=model_path, max_new_tokens=max_new_tokens)
+            raw = oss_model_memory_segments(
+                messages,
+                model=model,
+                model_path=model_path,
+                max_new_tokens=max_new_tokens,
+                local_only=fallback_enabled,
+            )
             segments = normalize_model_segments(raw, messages)
             return segments, {
                 "provider": "oss",
@@ -1238,7 +1281,7 @@ def parse_first_json_object(text: str) -> Json:
     raise MatrixArkError("model response did not contain a JSON object")
 
 
-def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512) -> Json:
+def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: str = "", max_new_tokens: int = 512, local_only: bool = False) -> Json:
     try:
         import torch  # type: ignore
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
@@ -1249,7 +1292,7 @@ def oss_model_memory_segments(messages: list[Json], *, model: str, model_path: s
     cache_key = f"{target}:{max_new_tokens}"
     cached = _OSS_SEGMENT_MODEL_CACHE.get(cache_key)
     if cached is None:
-        local_only = bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
+        local_only = bool(local_only) or bool(model_path) or os.getenv("MATRIXARK_SEGMENT_MODEL_LOCAL_ONLY", "").lower() in {"1", "true", "yes"}
         tokenizer = AutoTokenizer.from_pretrained(target, local_files_only=local_only)
         model_obj = AutoModelForCausalLM.from_pretrained(target, local_files_only=local_only)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -3750,10 +3793,9 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
     if not query_scope:
         return True
     explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
-    query_scope_key = scope_key_prefix_for_query(query_scope)
     record_scope_key = str(record_scope.get("scope_key") or "")
-    if query_scope_key and record_scope_key:
-        if not record_scope_key.startswith(query_scope_key):
+    if record_scope_key:
+        if not scope_key_matches_query(record_scope_key, query_scope, explicit_keys):
             return False
         if set(record_scope.keys()).issubset({"scope_key"}):
             return True
@@ -3761,6 +3803,10 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
         if str(key).startswith("_"):
             continue
         if key == "scope_key":
+            continue
+        if key == "agent_name" and key not in record_scope:
+            continue
+        if key in {"team", "project"} and key not in record_scope and record_scope_key:
             continue
         if key in {"agent_name", "team", "project"} and key not in explicit_keys:
             continue

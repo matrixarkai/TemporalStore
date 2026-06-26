@@ -286,6 +286,8 @@ class MatrixArkLocalAdapter:
         self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
         self._resource_import_workers_started = False
         self._resource_import_worker_lock = threading.RLock()
+        self._resource_import_stop = threading.Event()
+        self._resource_import_threads: list[threading.Thread] = []
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -732,18 +734,22 @@ class MatrixArkLocalAdapter:
         records: list[Json],
         node_path: list[str],
         scope: Json,
+        node_hash: int | None = None,
         max_events: int = 8,
         max_child_summaries: int = 8,
     ) -> tuple[list[Json], list[Json]]:
         prefix = node_path_tuple(node_path)
+        target_node_hash = int(node_hash) if node_hash is not None else stable_hash("/".join(node_path))
         child_summaries: list[Json] = []
         events: list[Json] = []
         seen_summary_keys: set[tuple[int, str]] = set()
         for record in reversed(records):
-            if not scope_matches(record.get("scope", record.get("envelope", {}).get("scope", {})), scope):
+            if not scope_matches(candidate_access_scope(record), scope):
                 continue
             record_path = node_path_tuple(record.get("node_path", []))
-            if not record_path or not starts_with_path(record_path, prefix):
+            path_matches = bool(record_path and starts_with_path(record_path, prefix))
+            node_matches = record.get("node_hash") == target_node_hash
+            if not path_matches and not node_matches:
                 continue
             if record.get("record_type") == "context_summary" and record.get("summary_type") in {"node_l0", "node_l1", "batch_l0", "session_l0", "resource_l0", "skill_l0"}:
                 if len(child_summaries) >= max_child_summaries:
@@ -849,6 +855,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 node_path=node_path,
                 scope=dirty.get("scope", scope),
+                node_hash=node_hash,
             )
             event_texts = [str(record.get("text", "")) for record in events if record.get("text")]
             child_summary_texts = [
@@ -1021,17 +1028,30 @@ class MatrixArkLocalAdapter:
 
     def _dashboard_message_rows(self, records: list[Json], scope: Json) -> list[Json]:
         rows: list[Json] = []
+        debug_by_ref: dict[Any, Json] = {}
+        for record in records:
+            if record.get("record_type") != "context_debug_record" or record.get("ref_type") != "event":
+                continue
+            debug_by_ref[record.get("ref_hash")] = record.get("debug_payload", {}) if isinstance(record.get("debug_payload"), dict) else {}
         for record in records:
             if record.get("record_type") != "context_event":
                 continue
             if not scope_matches(self._dashboard_record_scope(record), scope):
                 continue
-            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
-            kind = str(envelope.get("kind") or "message")
+            debug_payload = debug_by_ref.get(record.get("event_id_hash"), {})
+            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
+            if not isinstance(envelope, dict):
+                envelope = {}
+            kind = str(envelope.get("kind") or record.get("source_kind") or "")
             if kind not in {"message", "feedback", "business_data"}:
                 continue
             messages = envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []
-            for message in messages or [{"role": "unknown", "content": record.get("text", "")}]:
+            if not messages and kind == "message":
+                messages = [{"role": "unknown", "content": record.get("text", "")}]
+            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else debug_payload.get("internal_extraction", {})
+            if not isinstance(extraction, dict):
+                extraction = {}
+            for message in messages:
                 if not isinstance(message, dict):
                     continue
                 rows.append(
@@ -1043,12 +1063,12 @@ class MatrixArkLocalAdapter:
                         "name": message.get("name", ""),
                         "content": message.get("content", ""),
                         "summary_text": record.get("summary_text", ""),
-                        "classification": record.get("internal_extraction", {}).get("classification", ""),
-                        "event_type": record.get("internal_extraction", {}).get("event_type", ""),
+                        "classification": extraction.get("classification", ""),
+                        "event_type": extraction.get("event_type", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": envelope.get("scope", record.get("scope", {})),
-                        "agent_name": envelope.get("scope", {}).get("agent_name", ""),
+                        "scope": envelope.get("scope", scope_from_serving_record(record)),
+                        "agent_name": envelope.get("scope", {}).get("agent_name", "") if isinstance(envelope.get("scope"), dict) else "",
                         "created_at_ms": message.get("created_at_ms") or envelope.get("ingestion_time_ms") or record.get("updated_at_ms", 0),
                     }
                 )
@@ -1151,7 +1171,16 @@ class MatrixArkLocalAdapter:
                         "created_at_ms": record.get("created_at_ms", 0),
                     }
                 )
-        rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
+        if table == "resources":
+            priority = {"resource_manifest": 0, "resource_chunk": 1, "resource_import_task": 2}
+            rows.sort(
+                key=lambda row: (
+                    priority.get(str(row.get("row_type") or ""), 9),
+                    -int(row.get("updated_at_ms") or row.get("created_at_ms") or 0),
+                )
+            )
+        else:
+            rows.sort(key=lambda row: int(row.get("updated_at_ms") or row.get("created_at_ms") or 0), reverse=True)
         return rows
 
     def ingestion_dashboard(self, args: Json) -> Json:
@@ -1337,6 +1366,7 @@ class MatrixArkLocalAdapter:
         with self._resource_import_worker_lock:
             if self._resource_import_workers_started:
                 return
+            self._resource_import_stop.clear()
             for worker_index in range(self._resource_import_worker_count):
                 thread = threading.Thread(
                     target=self._resource_import_worker_loop,
@@ -1344,17 +1374,39 @@ class MatrixArkLocalAdapter:
                     daemon=True,
                 )
                 thread.start()
+                self._resource_import_threads.append(thread)
             self._resource_import_workers_started = True
 
     def _resource_import_worker_loop(self) -> None:
         while True:
             item = self._resource_import_queue.get()
             try:
+                if item.get("_stop"):
+                    return
                 args = item.get("args", {})
                 hook = item.get("hook")
                 self._run_background_resource_import(args, hook if isinstance(hook, dict) else None)
             finally:
                 self._resource_import_queue.task_done()
+
+    def close(self, *, timeout_s: float = 5.0) -> None:
+        """Drain async import work and stop background workers."""
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while getattr(self._resource_import_queue, "unfinished_tasks", 0) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self._resource_import_stop.set()
+        with self._resource_import_worker_lock:
+            if self._resource_import_workers_started:
+                for _thread in self._resource_import_threads:
+                    remaining = max(0.0, deadline - time.monotonic())
+                    try:
+                        self._resource_import_queue.put({"_stop": True}, timeout=remaining if remaining > 0 else 0.01)
+                    except thread_queue.Full:
+                        pass
+                for thread in list(self._resource_import_threads):
+                    thread.join(timeout=max(0.0, deadline - time.monotonic()))
+                self._resource_import_threads = [thread for thread in self._resource_import_threads if thread.is_alive()]
+                self._resource_import_workers_started = bool(self._resource_import_threads)
 
     def _enqueue_resource_import(self, *, args: Json, hook: Json | None, task_hash: int) -> Json:
         self._ensure_resource_import_workers()
@@ -1389,21 +1441,24 @@ class MatrixArkLocalAdapter:
             metadata = optional_object(args, "metadata")
             node_hint = metadata.get("node_path") or self.default_session_node_path(scope)
             node_path = [str(part) for part in node_hint if str(part)]
-            self.append(
-                {
-                    "record_type": "resource_import_task",
-                    "task_hash": task_hash,
-                    "status": "failed",
-                    "kind": str(args.get("kind") or "resource"),
-                    "raw_uri": str(args.get("raw_uri") or metadata.get("raw_uri") or "inline-resource"),
-                    "resource_type": str(args.get("resource_type") or metadata.get("resource_type") or ""),
-                    "error": str(exc),
-                    "node_hash": stable_hash("/".join(node_path)),
-                    "node_path": node_path,
-                    "scope": dict(scope),
-                    "updated_at_ms": now_ms(),
-                }
-            )
+            try:
+                self.append(
+                    {
+                        "record_type": "resource_import_task",
+                        "task_hash": task_hash,
+                        "status": "failed",
+                        "kind": str(args.get("kind") or "resource"),
+                        "raw_uri": str(args.get("raw_uri") or metadata.get("raw_uri") or "inline-resource"),
+                        "resource_type": str(args.get("resource_type") or metadata.get("resource_type") or ""),
+                        "error": str(exc),
+                        "node_hash": stable_hash("/".join(node_path)),
+                        "node_path": node_path,
+                        "scope": dict(scope),
+                        "updated_at_ms": now_ms(),
+                    }
+                )
+            except Exception:
+                _mcp_debug_log(f"resource import background failure could not be recorded: {exc}")
 
     def _resource_import_async_default_reason(self, args: Json, envelope: Json, raw_uri: str) -> str:
         if "wait" in args:
@@ -2926,31 +2981,49 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("source_start_ms must be <= source_end_ms")
         if max_source_events <= 0:
             raise MatrixArkError("max_source_events must be positive")
+        records = self.read_all()
+        debug_by_ref = {
+            record.get("ref_hash"): record.get("debug_payload", {})
+            for record in records
+            if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
+        }
         source_events = []
-        for record in self.read_all():
+        event_times: dict[int, int] = {}
+        event_scopes: dict[int, Json] = {}
+        for record in records:
             if record.get("record_type") != "context_event":
                 continue
             if int(record.get("node_hash") or 0) != node_hash:
                 continue
-            event_scope = record.get("envelope", {}).get("scope", {})
+            event_hash = int(record.get("event_id_hash") or 0)
+            debug_payload = debug_by_ref.get(event_hash, {}) if event_hash else {}
+            envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
+            if not isinstance(envelope, dict):
+                envelope = {}
+            event_scope = envelope.get("scope", scope_from_serving_record(record))
             if not scope_matches(event_scope, scope):
                 continue
-            event_time = int(record.get("envelope", {}).get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
+            event_time = int(envelope.get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
             if event_time < source_start_ms or event_time > source_end_ms:
                 continue
-            extraction = record.get("internal_extraction", {})
+            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else debug_payload.get("internal_extraction", {})
+            if not isinstance(extraction, dict):
+                extraction = {}
             confidence = float(extraction.get("confidence", record.get("confidence", 1.0)) or 1.0)
-            importance = float(record.get("envelope", {}).get("metadata", {}).get("importance", record.get("importance", 1.0)) or 1.0)
+            metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
+            importance = float(metadata.get("importance", record.get("importance", 1.0)) or 1.0)
             if confidence < min_confidence or importance < min_importance:
                 continue
             source_events.append(record)
-        source_events.sort(key=lambda record: int(record.get("envelope", {}).get("ingestion_time_ms") or 0))
+            event_times[event_hash] = event_time
+            event_scopes[event_hash] = event_scope
+        source_events.sort(key=lambda record: event_times.get(int(record.get("event_id_hash") or 0), 0))
         selected = source_events[:max_source_events]
         if not selected:
             raise MatrixArkError("no source events matched compression window")
         truncated = len(source_events) > len(selected)
         source_event_ids = [int(record["event_id_hash"]) for record in selected]
-        compression_scope = selected[0].get("envelope", {}).get("scope", scope)
+        compression_scope = event_scopes.get(int(selected[0].get("event_id_hash") or 0), scope)
         if not summary:
             snippets = [summarize_text(str(record.get("text", "")), limit=180) for record in selected[:5]]
             suffix = " plus additional source events" if truncated else ""
@@ -5254,6 +5327,8 @@ class MatrixArkMcpServer:
         self.metrics = MatrixArkServiceMetrics()
         setattr(self.adapter, "_matrixark_service_metrics", self.metrics)
         self._summary_worker_started = False
+        self._summary_stop = threading.Event()
+        self._summary_thread: threading.Thread | None = None
         self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
         self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
         self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
@@ -5267,15 +5342,15 @@ class MatrixArkMcpServer:
         if self._summary_worker_started or self._summary_refresh_interval_s <= 0:
             return
         self._summary_worker_started = True
-        thread = threading.Thread(target=self._summary_refresh_loop, name="matrixark-summary-refresher", daemon=True)
-        thread.start()
+        self._summary_stop.clear()
+        self._summary_thread = threading.Thread(target=self._summary_refresh_loop, name="matrixark-summary-refresher", daemon=True)
+        self._summary_thread.start()
         _mcp_debug_log(
             f"matrixark summary refresher started interval_ms={SUMMARY_REFRESH_INTERVAL_MS} limit={self._summary_refresh_limit}"
         )
 
     def _summary_refresh_loop(self) -> None:
-        while True:
-            time.sleep(self._summary_refresh_interval_s)
+        while not self._summary_stop.wait(self._summary_refresh_interval_s):
             try:
                 started_perf = time.perf_counter()
                 result = self.adapter.refresh_summaries({"scope": {}, "limit": self._summary_refresh_limit})
@@ -5295,6 +5370,14 @@ class MatrixArkMcpServer:
             except Exception as exc:
                 self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
+
+    def close(self, *, timeout_s: float = 5.0) -> None:
+        self._summary_stop.set()
+        if self._summary_thread is not None:
+            self._summary_thread.join(timeout=max(0.0, timeout_s))
+        adapter_close = getattr(self.adapter, "close", None)
+        if callable(adapter_close):
+            adapter_close(timeout_s=timeout_s)
 
     def _backend_storage_mode_from_metrics(self, result: Json) -> str:
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
