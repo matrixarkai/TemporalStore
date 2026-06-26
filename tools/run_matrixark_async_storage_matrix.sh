@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MATRIXARK_DATASET_RUNNER="${ROOT}/third_party/TemporalStoreTestCorpus/tools/run_matrixark_dataset_benchmark.py"
+if [[ ! -f "${MATRIXARK_DATASET_RUNNER}" && -f "${ROOT}/../TemporalStoreTestCorpus/tools/run_matrixark_dataset_benchmark.py" ]]; then
+  MATRIXARK_DATASET_RUNNER="${ROOT}/../TemporalStoreTestCorpus/tools/run_matrixark_dataset_benchmark.py"
+fi
+if [[ ! -f "${MATRIXARK_DATASET_RUNNER}" ]]; then
+  echo "MatrixArk dataset runner is shared in TemporalStoreTestCorpus; initialize third_party/TemporalStoreTestCorpus or check it out as a sibling repo." >&2
+  exit 2
+fi
 
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 DATASET="${DATASET:-locomo}"
@@ -82,7 +90,7 @@ run_dataset() {
       MATRIXARK_DIRECT_WRITE_RETRIES="${MATRIXARK_DIRECT_WRITE_RETRIES:-5}" \
       MATRIXARK_DIRECT_WRITE_BACKOFF_MS="${MATRIXARK_DIRECT_WRITE_BACKOFF_MS:-50}" \
       MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES="${MATRIXARK_DIRECT_RECORD_BUNDLE_MAX_BYTES:-65536}" \
-      python3 tools/run_matrixark_dataset_benchmark.py \
+      python3 "${MATRIXARK_DATASET_RUNNER}" \
         --dataset "${DATASET}" \
         --data-path "${DATA_PATH}" \
         --artifact-dir "${artifact_dir}" \
