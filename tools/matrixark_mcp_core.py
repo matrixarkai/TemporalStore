@@ -69,9 +69,26 @@ MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", 
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
+MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
-MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", "8"))
-MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", "8"))
+MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
+MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
+SECONDARY_INDEX_PRIORITY_PREFIXES = (
+    "source_type:",
+    "resource_type:",
+    "unit_kind:",
+    "entity_type:",
+    "event_type:",
+    "classification:",
+    "status:",
+    "skill_name:",
+    "skill_trigger:",
+    "skill_tool:",
+    "relative_path:",
+    "heading_slug:",
+    "segment_topic:",
+    "keyword:",
+)
 MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "16"))
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", str(2 * 1024 * 1024)))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "200000"))
@@ -2030,8 +2047,23 @@ def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KE
     return ordered_unique(terms)
 
 
+def secondary_index_priority(term: str) -> int:
+    for index, prefix in enumerate(SECONDARY_INDEX_PRIORITY_PREFIXES):
+        if term.startswith(prefix):
+            return index
+    return len(SECONDARY_INDEX_PRIORITY_PREFIXES)
+
+
 def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
-    return ordered_unique([term for term in terms if term])[: max(0, limit)]
+    unique_terms = ordered_unique([term for term in terms if term])
+    capped_limit = max(0, int(limit))
+    return [
+        term
+        for _, term in sorted(
+            enumerate(unique_terms),
+            key=lambda item: (secondary_index_priority(item[1]), item[0]),
+        )
+    ][:capped_limit]
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
