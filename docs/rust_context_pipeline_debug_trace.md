@@ -28,6 +28,13 @@ The harness creates a real `TemporalEngine` with local cache, page-store, and in
 executes durable context commands, then validates restart replay, shared-store sync replay,
 shared-store async replay, Raft replica reads, and unified corpus readiness.
 
+Context event records now follow the trimmed C++ hot schema boundary. `ContextEvent` carries only
+event id, event time, type, confidence, importance, text, and ingestion time. Source refs,
+resource refs, skill refs, entity refs, summary refs, node links, compression payloads, dirty
+summary markers, and selected evidence ordering are written through `ContextIndexRef`,
+`ContextChildRef`, `ContextCompressionEvent`, `ContextSummaryDirtyMarker`, `ContextSummary`,
+`ContextEmbedding`, and `ContextPackAudit` sidecar records.
+
 ## Run Metrics
 
 | Field | Value |
@@ -69,16 +76,20 @@ flowchart LR
   B --> C["extract_context / ingest_extract_context"]
   C --> D["ContextNodeModel id 9"]
   C --> E["ContextEventModel / ContextSegment id 10"]
-  C --> F["ContextIndexModel id 11"]
+  C --> F["ContextIndexModel id 11 (source/resource/skill/entity/summary refs)"]
   C --> G["ContextDirtyModel id 13"]
   C --> N["ContextSummaryModel id 16"]
   C --> O["ContextEmbeddingModel id 15"]
+  C --> P["ContextChildModel id 14"]
+  C --> Q["ContextCompression sidecar"]
   D --> H["TemporalEngine durable pages/index-log/oplog"]
   E --> H
   F --> H
   G --> H
   N --> H
   O --> H
+  P --> H
+  Q --> H
   H --> I["retrieve_context L0/L1/L2"]
   I --> J["ContextBlock evidence"]
   J --> K["inject_context"]

@@ -6905,6 +6905,159 @@
       ]
     },
     {
+      "name": "context_hot_event_sidecar_index_boundary",
+      "shard_id": 33,
+      "steps": [
+        {
+          "name": "context_events_stay_lean_sidecars_and_indexes_carry_metadata",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
+            "rust_runner": "cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval context_models_round_trip_cpp_wire_payloads_and_type_alias -- --test-threads=1",
+            "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow.rs",
+              "crates/temporalstore-rust/src/types.rs",
+              "docs/rust_context_pipeline_debug_trace.md",
+              "src/extension/context/interface.proto",
+              "src/extension/context/implement.cc"
+            ],
+            "acceptance": {
+              "context_event_hot_fields": [
+                "event_id_hash",
+                "event_time_ms",
+                "type",
+                "confidence",
+                "importance",
+                "text",
+                "ingestion_time_ms"
+              ],
+              "metadata_sidecars": [
+                "ContextIndexRef",
+                "ContextChildRef",
+                "ContextCompressionEvent",
+                "ContextSummaryDirtyMarker",
+                "ContextPackAudit"
+              ],
+              "secondary_index_families": [
+                "resource_ref",
+                "skill_ref",
+                "entity_ref",
+                "source_ref",
+                "summary_ref"
+              ],
+              "forbidden_hot_event_fields": [
+                "source_ref",
+                "related_node_hashes",
+                "compact_attrs",
+                "status",
+                "actor_hash",
+                "valid_until_ms"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_recovery_sidecar_dependency_matrix",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "storage_recovery_validates_indexes_pages_manifests_and_sidecar_refs",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_storage_parity",
+            "description": "Shared storage case tying dump/load, recovery, corrupt page/index/oplog/snapshot, follower-safe GC, cache refill, and context sidecar/index refs into one dependency matrix.",
+            "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus storage_fault_matrix storage_follower_safe_gc storage_cache_refill -- --test-threads=1",
+            "cpp_runner_contract": "C++ storage corpus runner must report equivalent orphan pages, missing refs, stale refs, corrupt bytes, replay boundary, follower cursor retention, cache refill, and shared-store replay evidence.",
+            "required_paths": [
+              "compat/storage_migration_corpus.json",
+              "crates/temporalstore-rust/src/page_store.rs",
+              "crates/temporalstore-rust/src/engine.rs",
+              "src/storage",
+              "src/extension/context"
+            ],
+            "acceptance": {
+              "recovery_errors_reported": [
+                "orphan_pages",
+                "missing_index_refs",
+                "stale_page_refs",
+                "corrupt_page_bytes",
+                "duplicate_timestamp_refs",
+                "replay_boundary"
+              ],
+              "retention_inputs": [
+                "follower_cursor",
+                "checkpoint_generation",
+                "oplog_sequence",
+                "raft_snapshot_index"
+              ],
+              "cache_paths": [
+                "memory_miss",
+                "disk_or_page_store_read",
+                "memory_refill",
+                "eviction_reason"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_openraft_process_read_safety_and_membership_matrix",
+      "shard_id": 39,
+      "steps": [
+        {
+          "name": "openraft_process_read_safety_membership_and_snapshot_evidence",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "stress",
+            "suite": "cpp_data_raft_parity",
+            "description": "Shared Raft case requiring production OpenRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
+            "rust_runner": "cargo test -p temporalstore-rust raft_openraft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-openraft-process-read-safety",
+            "cpp_runner_contract": "C++ ByteRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/raft.rs",
+              "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
+              "crates/temporalstore-rust/src/bin/raft_node.rs",
+              "src/byteraft",
+              "src/metaserver_v2"
+            ],
+            "acceptance": {
+              "read_safety": [
+                "read_index",
+                "lease_read_guard",
+                "lagging_follower_rejects_stale_read",
+                "secondary_read_after_catchup"
+              ],
+              "membership": [
+                "learner_add",
+                "catch_up_verified",
+                "promote",
+                "leader_transfer",
+                "voter_remove"
+              ],
+              "faults": [
+                "failover",
+                "snapshot_install",
+                "restart_recovery",
+                "follower_lag"
+              ]
+            },
+            "timeout_s": 1800,
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <openraft-process-read-safety.json>"
+          }
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust Redis operational/admin command flow covering CONFIG, AUTH, ECHO, SELECT, SLAVEOF, INFO replication, PARTITION, BGSAVE, and CONFIG REWRITE server-shape behavior.",
       "family": "Redis/admin",
       "name": "redis_operational_admin_commands",
@@ -9012,7 +9165,10 @@
       "all_family_client_proxy_control_plane_policy",
       "all_family_ingestion_kafka_flink_idempotence",
       "all_family_api_redis_admin_product_models",
-      "all_family_benchmark_locomo_longmemeval_contract"
+      "all_family_benchmark_locomo_longmemeval_contract",
+      "context_hot_event_sidecar_index_boundary",
+      "storage_recovery_sidecar_dependency_matrix",
+      "raft_openraft_process_read_safety_and_membership_matrix"
     ],
     "required_command_kinds": [
       "string_set",
@@ -9119,7 +9275,8 @@
       "raft_byteraft_leader_transfer_high_write_fault_harness",
       "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
       "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
-      "raft_byteraft_shared_fault_gate"
+      "raft_byteraft_shared_fault_gate",
+      "raft_openraft_process_read_safety_and_membership_matrix"
     ],
     "required_response_kinds": [
       "empty",

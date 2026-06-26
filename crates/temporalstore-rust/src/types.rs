@@ -2078,7 +2078,7 @@ mod tests {
         assert_eq!(event.primary_time_ms(), 1001);
         let cpp_event = ContextEvent {
             ingestion_time_ms: 1001,
-            kind: 2,
+            kind: 0,
             actor_hash: 0,
             status: 0,
             valid_until_ms: 0,

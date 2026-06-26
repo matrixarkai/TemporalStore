@@ -1783,6 +1783,14 @@ fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
         report.status, report.fanout, report.secondary_indexes
     );
     assert_eq!(report.ingest.failed, 0);
+    assert!(report.ingest.extracts.iter().all(|extract| {
+        extract.event.source_ref.is_empty()
+            && extract.event.related_node_hashes.is_empty()
+            && extract.event.compact_attrs.is_empty()
+            && !extract.source_ref.is_empty()
+            && !extract.related_node_hashes.is_empty()
+            && extract.summary_refs.len() == 2
+    }));
     assert_eq!(report.resource_lifecycle.watched_count, 1);
     assert_eq!(
         report

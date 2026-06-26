@@ -166,6 +166,14 @@ pub struct ContextExtractReport {
     pub event: ContextEvent,
     pub index_ref: ContextIndexRef,
     pub dirty_marker: ContextSummaryDirtyMarker,
+    #[serde(default)]
+    pub source_ref: String,
+    #[serde(default)]
+    pub related_node_hashes: Vec<u64>,
+    #[serde(default)]
+    pub summary_refs: Vec<String>,
+    #[serde(default)]
+    pub compact_summary_ref: String,
     pub node_uri: String,
     pub event_uri: String,
     pub l0: String,
@@ -1638,6 +1646,10 @@ pub fn extract_context(
                 reason: 0,
                 propagate_depth: 0,
             },
+            source_ref: String::new(),
+            related_node_hashes: Vec::new(),
+            summary_refs: Vec::new(),
+            compact_summary_ref: String::new(),
             node_uri: String::new(),
             event_uri: String::new(),
             l0: String::new(),
@@ -1681,9 +1693,9 @@ pub fn extract_context(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: request.source_id.clone(),
-            related_node_hashes: vec![node_hash],
-            compact_attrs: l1.as_bytes().to_vec(),
+            source_ref: String::new(),
+            related_node_hashes: Vec::new(),
+            compact_attrs: Vec::new(),
         },
     );
     let index_ref = ContextIndexRef {
@@ -1691,6 +1703,10 @@ pub fn extract_context(
         primary_event_time_ms: timestamp_ms,
         event_id_hash,
     };
+    let summary_refs = vec![
+        format!("summary:{node_hash}:l0"),
+        format!("summary:{node_hash}:l1"),
+    ];
     let dirty_marker = ContextSummaryDirtyMarker {
         node_hash,
         event_time_ms: timestamp_ms,
@@ -1828,6 +1844,10 @@ pub fn extract_context(
                 event,
                 index_ref,
                 dirty_marker,
+                source_ref: request.source_id.clone(),
+                related_node_hashes: vec![node_hash],
+                summary_refs,
+                compact_summary_ref: l1.clone(),
                 node_uri: context_node_uri(request.tenant_hash, node_hash),
                 event_uri: context_event_uri(request.tenant_hash, node_hash, timestamp_ms),
                 l0,
@@ -1845,6 +1865,10 @@ pub fn extract_context(
         event,
         index_ref,
         dirty_marker,
+        source_ref: request.source_id,
+        related_node_hashes: vec![node_hash],
+        summary_refs,
+        compact_summary_ref: l1.clone(),
         node_uri: context_node_uri(request.tenant_hash, node_hash),
         event_uri: context_event_uri(request.tenant_hash, node_hash, timestamp_ms),
         l0,
@@ -2063,7 +2087,7 @@ pub fn ingest_resource_skill_context(
             node_hash: extract.node.node_hash,
             entity_type: source_kind_code(ContextSourceKind::Document),
             name: extract.node.canonical_name.clone(),
-            value: extract.event.source_ref.clone(),
+            value: extract.source_ref.clone(),
             updated_at_ms: extract.event.event_time_ms,
             valid_from_ms: extract.event.event_time_ms,
             confidence: 1.0,
@@ -2072,26 +2096,25 @@ pub fn ingest_resource_skill_context(
         let compression = ContextCompressionEvent {
             compression_id_hash: stable_hash64(&format!(
                 "ctx-resource-skill-compress:{}:{}",
-                extract.event.source_ref, extract.event.event_time_ms
+                extract.source_ref, extract.event.event_time_ms
             )),
             node_hash: extract.node.node_hash,
             source_start_ms: extract.event.event_time_ms,
             source_end_ms: extract.event.event_time_ms.saturating_add(1),
             compressed_time_ms: extract.event.event_time_ms.saturating_add(1),
-            summary: extract.l1.clone(),
+            summary: extract.compact_summary_ref.clone(),
         };
-        let summary_ref_l0 = format!("summary:{}:l0", extract.node.node_hash);
-        let summary_ref_l1 = format!("summary:{}:l1", extract.node.node_hash);
         let mut index_writes = vec![
-            ("source_ref".to_string(), extract.event.source_ref.clone()),
+            ("source_ref".to_string(), extract.source_ref.clone()),
             ("entity_ref".to_string(), entity_ref.clone()),
-            ("summary_ref".to_string(), summary_ref_l0.clone()),
-            ("summary_ref".to_string(), summary_ref_l1.clone()),
         ];
-        if let Some(resource_ref) = resource_ref_by_source.get(&extract.event.source_ref) {
+        for summary_ref in &extract.summary_refs {
+            index_writes.push(("summary_ref".to_string(), summary_ref.clone()));
+        }
+        if let Some(resource_ref) = resource_ref_by_source.get(&extract.source_ref) {
             index_writes.push(("resource_ref".to_string(), resource_ref.clone()));
         }
-        if let Some(skill_ref) = skill_ref_by_source.get(&extract.event.source_ref) {
+        if let Some(skill_ref) = skill_ref_by_source.get(&extract.source_ref) {
             index_writes.push(("skill_ref".to_string(), skill_ref.clone()));
         }
 
@@ -3688,6 +3711,7 @@ pub fn retrieve_context(
         .collect();
 
     for node_hash in node_hashes {
+        let mut node_source_ref = String::new();
         let node_response = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
             command: Command::ContextGetNode {
@@ -3700,6 +3724,7 @@ pub fn retrieve_context(
         } = node_response.response
         {
             node_count += 1;
+            node_source_ref = node.raw_metadata_ref.clone();
             if tiers.contains(&ContextTier::L0) {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
@@ -3755,14 +3780,19 @@ pub fn retrieve_context(
                 }
                 event_count += 1;
                 if tiers.contains(&ContextTier::L2) {
+                    let source_ref = if event.source_ref.is_empty() {
+                        node_source_ref.clone()
+                    } else {
+                        event.source_ref.clone()
+                    };
                     blocks.push(ContextBlock {
                         uri: context_event_uri(request.tenant_hash, node_hash, event.event_time_ms),
                         tier: ContextTier::L2,
                         node_hash,
                         event_time_ms: event.event_time_ms,
                         text: event.text,
-                        estimated_tokens: estimate_tokens(&event.source_ref),
-                        source_ref: event.source_ref,
+                        estimated_tokens: estimate_tokens(&source_ref),
+                        source_ref,
                     });
                 }
             }
@@ -4040,6 +4070,10 @@ fn empty_extract_report(
             reason: 0,
             propagate_depth: 0,
         },
+        source_ref: String::new(),
+        related_node_hashes: Vec::new(),
+        summary_refs: Vec::new(),
+        compact_summary_ref: String::new(),
         node_uri: context_node_uri(tenant_hash, 0),
         event_uri: context_event_uri(tenant_hash, 0, timestamp_ms),
         l0: String::new(),
@@ -4276,4 +4310,3 @@ fn redact_context_pii(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
-
