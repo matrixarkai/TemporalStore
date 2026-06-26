@@ -1,0 +1,80 @@
+# MatrixArk Replay/Audit Load And C++/Rust Parity - 2026-06-26
+
+## Summary
+
+This report combines three checks:
+
+1. Required MatrixArk pipeline parity on C++ and Rust: ingest, extraction, async summary refresh, L0/L1 tree traversal, secondary-index prefilter, events/entities/resources/skills retrieval, ContextPack, audit, and replay.
+2. Resource/skill backend parity on C++ and Rust, including replay checks and admin audit actions.
+3. 8-worker replay/admin-audit load against the generated C++ and Rust ContextPack IDs.
+
+Overall status: `passed`.
+
+## Load And Parity Metrics
+
+| Backend | Required pipeline OK | Resource/skill OK | Load ops | Load QPS | p50 ms | p95 ms | p99 ms | Errors | Resource replay audit | Skill replay audit | Admin audit count |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- | ---: |
+| cpp | True | True | 16 | 8.766 | 797.441 | 834.12 | 1074.539 | 0 | True | True | 15 |
+| rust | True | True | 16 | 10.102 | 759.159 | 787.407 | 805.657 | 0 | True | True | 15 |
+
+## Fallback Flags
+
+| Backend | Memory fallback | Topology fallback | Flat traversal fallback | Hash embedding fallback | OSS model fallback | Rust CLI-per-op fallback |
+| --- | --- | --- | --- | --- | --- | --- |
+| cpp | False | False | False | False | False | None |
+| rust | False | False | False | False | False | False |
+
+## C++ Vs Rust Comparisons
+
+Required pipeline comparison:
+
+```json
+{
+  "checks": {
+    "embedding_types_equal": true,
+    "memory_ref_counts_equal": true,
+    "record_types_equal": true,
+    "resource_ref_counts_equal": true,
+    "skill_ref_counts_equal": true,
+    "summary_types_equal": true
+  },
+  "status": "passed"
+}
+```
+
+Resource/skill comparison:
+
+```json
+{
+  "checks": {
+    "embedding_types_equal": true,
+    "resource_ref_types_equal": true,
+    "resource_registry_count_equal": true,
+    "skill_ref_types_equal": true,
+    "skill_registry_count_equal": true
+  },
+  "status": "passed"
+}
+```
+
+## Replay/Audit Correctness Under Load
+
+- C++: 16 replay/admin-audit operations over 8 workers, 0 errors. Resource replay selected 13 refs; skill replay selected 10 refs.
+- Rust: 16 replay/admin-audit operations over 8 workers, 0 errors. Resource replay selected 13 refs; skill replay selected 10 refs.
+- Admin audit actions observed include context ingest, refresh, retrieve, replay, resource list, skill list, and skill update.
+
+## Raw Artifacts
+
+- `matrixark_required_pipeline_parity_replay-audit-load-20260626.json`
+- `matrixark_required_pipeline_parity_replay-audit-load-20260626.md`
+- `matrixark_resource_skill_backend_parity_replay-audit-load-20260626.json`
+- `matrixark_resource_skill_backend_parity_replay-audit-load-20260626.md`
+- `load.json`
+- `matrixark_replay_audit_cpp_rust_load_summary.json`
+
+## Notes
+
+- The run used live C++ direct and Rust TemporalStore MCP backend scripts with topology readiness checks.
+- No memory-backend fallback was used.
+- No flat traversal fallback was reported; retrieval used L0/L1 tree traversal.
+- The run completed with OSS embedding/understanding requirements from the backend wrapper scripts; no model fallback flag was reported by the executed gates.
