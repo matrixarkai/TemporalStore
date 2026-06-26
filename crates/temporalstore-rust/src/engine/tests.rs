@@ -5658,6 +5658,33 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
                 .sum::<usize>(),
             2
         );
+        assert_eq!(shard.dirty_slots.len(), 1);
+        let dirty_slot = *shard.dirty_slots.iter().next().unwrap();
+        let dirty_generation = shard
+            .slot_dirty_generations
+            .get(&dirty_slot)
+            .copied()
+            .unwrap_or_default();
+        assert!(dirty_generation >= 2);
+        assert!(shard
+            .slot_objects
+            .values()
+            .flat_map(|objects| objects.values())
+            .all(|object| object.dirty
+                && object.dirty_generation > 0
+                && object.kind == "hash"
+                && object.layout_generation == 1));
+        assert!(shard
+            .slot_objects
+            .values()
+            .flat_map(|objects| objects.values())
+            .flat_map(|object| object.pages.iter())
+            .all(|page| page.model_id == 2
+                && page.dirty
+                && !page.deleted
+                && !page.log
+                && page.size_bytes == page.logical_bytes
+                && page.page_id == page.address.page_id));
     }
     assert_eq!(
         engine
@@ -5673,6 +5700,8 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     assert!(ownership.core_index_ready);
     assert_eq!(ownership.object_count, 2);
     assert_eq!(ownership.page_ref_count, 2);
+    assert_eq!(ownership.dirty_slot_count, 1);
+    assert!(ownership.max_dirty_generation >= 2);
     assert_eq!(ownership.fallback_model_map_page_refs, 0);
 
     engine.unload_shard(1);
@@ -5702,6 +5731,13 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
             .values()
             .flat_map(|objects| objects.values())
             .all(|object| object.kind == "hash" && !object.pages.is_empty()));
+        assert!(shard.dirty_slots.is_empty());
+        assert!(shard.slot_dirty_generations.is_empty());
+        assert!(shard
+            .slot_objects
+            .values()
+            .flat_map(|objects| objects.values())
+            .all(|object| !object.dirty));
     }
     let reloaded_ownership = engine.slot_object_page_ownership_report(1);
     assert!(reloaded_ownership.first_class_index_present);
@@ -5709,6 +5745,8 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     assert!(reloaded_ownership.core_index_ready);
     assert_eq!(reloaded_ownership.object_count, 2);
     assert_eq!(reloaded_ownership.page_ref_count, 2);
+    assert_eq!(reloaded_ownership.dirty_slot_count, 0);
+    assert_eq!(reloaded_ownership.max_dirty_generation, 0);
 }
 
 #[test]
