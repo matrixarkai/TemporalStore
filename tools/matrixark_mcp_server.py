@@ -56,6 +56,8 @@ RETRIEVAL_HOT_RECORD_TYPES = {
     "skill_section",
 }
 
+RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
+
 
 class MatrixArkServiceMetrics:
     """In-process Prometheus metrics for MatrixArk MCP pipeline work."""
@@ -1342,10 +1344,45 @@ class MatrixArkLocalAdapter:
                     "error": str(exc),
                     "node_hash": stable_hash("/".join(node_path)),
                     "node_path": node_path,
-                    "scope": normalize_scope(scope),
+                    "scope": dict(scope),
                     "updated_at_ms": now_ms(),
                 }
             )
+
+    def _resource_import_async_default_reason(self, args: Json, envelope: Json, raw_uri: str) -> str:
+        if "wait" in args:
+            return ""
+        inline_text = "\n\n".join(str(message.get("content", "")) for message in envelope.get("messages", []))
+        if len(inline_text) >= RESOURCE_ASYNC_DEFAULT_TEXT_CHARS:
+            return f"inline_text_chars>={RESOURCE_ASYNC_DEFAULT_TEXT_CHARS}"
+        try:
+            path = Path(raw_uri)
+            if not path.exists():
+                return ""
+            if path.is_file():
+                size = path.stat().st_size
+                if size >= RESOURCE_ASYNC_DEFAULT_BYTES:
+                    return f"file_bytes>={RESOURCE_ASYNC_DEFAULT_BYTES}"
+            elif path.is_dir():
+                file_count = 0
+                total_size = 0
+                for child in path.rglob("*"):
+                    if not child.is_file():
+                        continue
+                    if any(part in RESOURCE_IMPORT_IGNORE_DIRS for part in child.parts):
+                        continue
+                    file_count += 1
+                    try:
+                        total_size += child.stat().st_size
+                    except OSError:
+                        pass
+                    if file_count >= RESOURCE_ASYNC_DEFAULT_PATH_COUNT:
+                        return f"path_count>={RESOURCE_ASYNC_DEFAULT_PATH_COUNT}"
+                    if total_size >= RESOURCE_ASYNC_DEFAULT_BYTES:
+                        return f"directory_bytes>={RESOURCE_ASYNC_DEFAULT_BYTES}"
+        except (OSError, ValueError):
+            return ""
+        return ""
 
     def ingest(self, args: Json, *, hook: Json | None = None) -> Json:
         envelope = normalize_envelope(args, default_kind="message")
@@ -1407,7 +1444,8 @@ class MatrixArkLocalAdapter:
         if envelope["kind"] in {"resource", "skill"}:
             requested_raw_uri = str(envelope.get("raw_uri") or envelope["metadata"].get("raw_uri") or "inline-resource")
             resource_type = str(envelope.get("resource_type") or envelope["metadata"].get("resource_type") or "")
-            resource_import_wait = bool(args.get("wait", True))
+            async_default_reason = self._resource_import_async_default_reason(args, envelope, requested_raw_uri)
+            resource_import_wait = bool(args.get("wait", not bool(async_default_reason)))
             resource_import_background = bool(args.get("_background_resource_import", False))
             deployment_scope = deployment_scope_from_args(args, envelope)
             access_scope = registry_access_scope(envelope["scope"])
@@ -1449,6 +1487,8 @@ class MatrixArkLocalAdapter:
                         "scope": envelope["scope"],
                         "storage_options": envelope.get("storage_options", {}),
                         "wait": resource_import_wait,
+                        "async_default_reason": async_default_reason,
+                        "progress": {"stage": "queued", "percent": 0},
                         "created_at_ms": envelope["ingestion_time_ms"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -1479,14 +1519,15 @@ class MatrixArkLocalAdapter:
                             "raw_storage_mode": storage_resolution["storage_mode"],
                             "raw_storage_policy": raw_storage_policy,
                             "raw_bytes_stored": False,
-                            "error": str(exc),
-                            "node_hash": node_hash,
-                            "node_path": node_path,
-                            "scope": envelope["scope"],
-                            "storage_options": envelope.get("storage_options", {}),
-                            "updated_at_ms": now_ms(),
-                        }
-                    )
+                        "error": str(exc),
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "scope": envelope["scope"],
+                        "storage_options": envelope.get("storage_options", {}),
+                        "progress": {"stage": "failed", "percent": 100},
+                        "updated_at_ms": now_ms(),
+                    }
+                )
                     raise
                 return {
                     "status": "queued",
@@ -1504,6 +1545,8 @@ class MatrixArkLocalAdapter:
                         "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
                         "worker_pool": queue_status,
+                        "progress": {"stage": "queued", "percent": 0},
+                        "async_default_reason": async_default_reason,
                     },
                     "node_materialization": node_materialization,
                 }
@@ -1535,6 +1578,7 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": envelope["scope"],
+                        "progress": {"stage": "failed", "percent": 100},
                         "updated_at_ms": now_ms(),
                     }
                 )
@@ -1562,6 +1606,7 @@ class MatrixArkLocalAdapter:
                     "node_path": node_path,
                     "scope": envelope["scope"],
                     "storage_options": envelope.get("storage_options", {}),
+                    "progress": {"stage": "running", "percent": 10},
                     "updated_at_ms": now_ms(),
                 }
             )
@@ -1694,6 +1739,7 @@ class MatrixArkLocalAdapter:
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "scope": envelope["scope"],
+                        "progress": {"stage": "failed", "percent": 100},
                         "updated_at_ms": now_ms(),
                     }
                 )
@@ -1723,6 +1769,9 @@ class MatrixArkLocalAdapter:
             ]
             parse_warnings = aggregate_parse_warnings_from_chunks(parsed_chunks)
             chunk_vectors = embeddings_for_texts([embedding_text_for_chunk(chunk) for chunk in parsed_chunks])
+            index_write_count = 0
+            index_candidate_count = 0
+            index_dropped_by_cap_count = 0
             resource_kind = "skill" if skill_hash is not None else "resource"
             resource_l0_text = summarize_text(
                 summarize_resource_chunks(parsed_chunks, raw_uri=raw_uri, resource_kind=resource_kind),
@@ -1785,6 +1834,7 @@ class MatrixArkLocalAdapter:
                 )
             )
             for index_name in resource_indexes:
+                index_write_count += 1
                 self.append(
                     {
                         "record_type": "context_index",
@@ -1934,7 +1984,7 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                chunk_index_terms = limited_index_terms(
+                raw_chunk_index_terms = (
                     [
                         context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
@@ -1946,10 +1996,16 @@ class MatrixArkLocalAdapter:
                         + [context_index_name("skill_tool", tool) for tool in parsed_skill.metadata.get("allowed_tools", [])]
                         if skill_hash is not None and parsed_skill is not None
                         else []
-                    ),
+                    )
+                )
+                index_candidate_count += len([term for term in raw_chunk_index_terms if term])
+                chunk_index_terms = limited_index_terms(
+                    raw_chunk_index_terms,
                     limit=MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
                 )
+                index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_chunk_index_terms if term])) - len(chunk_index_terms))
                 for index_name in chunk_index_terms:
+                    index_write_count += 1
                     self.append(
                         {
                             "record_type": "context_index",
@@ -2056,13 +2112,18 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    for index_name in limited_index_terms([
+                    raw_fact_index_terms = [
                         context_index_name("source_type", "resource_fact"),
                         context_index_name("event_type", fact_event_type),
                         context_index_name("entity_type", fact_entity_type),
                         context_index_name("entity_type", "resource_fact"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
-                    ] + metadata_index_terms(chunk_metadata), limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT):
+                    ] + metadata_index_terms(chunk_metadata)
+                    index_candidate_count += len([term for term in raw_fact_index_terms if term])
+                    fact_index_terms = limited_index_terms(raw_fact_index_terms, limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT)
+                    index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_fact_index_terms if term])) - len(fact_index_terms))
+                    for index_name in fact_index_terms:
+                        index_write_count += 1
                         resource_fact_records.append(
                             {
                                 "record_type": "context_index",
@@ -2088,6 +2149,11 @@ class MatrixArkLocalAdapter:
                 "embedding_count": len(chunk_vectors) + 1 + len(resource_fact_event_hashes) + len(resource_fact_entity_hashes),
                 "resource_fact_count": len(resource_fact_event_hashes),
                 "resource_entity_count": len(resource_fact_entity_hashes),
+                "index_candidate_count": index_candidate_count,
+                "index_write_count": index_write_count,
+                "index_dropped_by_cap_count": index_dropped_by_cap_count,
+                "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
+                "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
                 "parse_warning_count": len(parse_warnings),
                 "parse_warnings": parse_warnings[:100],
                 "raw_storage_mode": storage_resolution["storage_mode"],
@@ -2125,7 +2191,13 @@ class MatrixArkLocalAdapter:
                     "superseded_chunk_hashes": superseded_chunk_hashes[:200],
                     "resource_fact_count": len(resource_fact_event_hashes),
                     "resource_entity_count": len(resource_fact_entity_hashes),
+                    "index_candidate_count": index_candidate_count,
+                    "index_write_count": index_write_count,
+                    "index_dropped_by_cap_count": index_dropped_by_cap_count,
+                    "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
+                    "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
                     "summary_dirty_hashes": resource_dirty_hashes,
+                    "progress": {"stage": "completed", "percent": 100},
                     "metrics": resource_import_metrics,
                     "node_hash": node_hash,
                     "node_path": node_path,
@@ -2142,6 +2214,7 @@ class MatrixArkLocalAdapter:
                     "raw_uri": raw_uri,
                     "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                     "metrics": resource_import_metrics,
+                    "progress": {"stage": "completed", "percent": 100},
                     "scope": envelope["scope"],
                     "created_at_ms": now_ms(),
                 }
@@ -2314,6 +2387,7 @@ class MatrixArkLocalAdapter:
                 "upload_status": storage_resolution.get("upload_status", "") if resource_import_task_hash else "",
                 "cloud_bucket": storage_resolution.get("cloud_bucket", "") if resource_import_task_hash else "",
                 "cloud_key": storage_resolution.get("cloud_key", "") if resource_import_task_hash else "",
+                "progress": {"stage": resource_import_task_status, "percent": 100 if resource_import_task_status == "completed" else 0},
             },
             "node_materialization": node_materialization,
             "resource_chunks": resource_chunk_hashes,
@@ -2337,6 +2411,11 @@ class MatrixArkLocalAdapter:
             "resource_fact_event_count": len(resource_fact_event_hashes),
             "resource_fact_entities": resource_fact_entity_hashes,
             "resource_fact_entity_count": len(resource_fact_entity_hashes),
+            "resource_index_candidate_count": index_candidate_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_index_write_count": index_write_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_index_dropped_by_cap_count": index_dropped_by_cap_count if envelope["kind"] in {"resource", "skill"} else 0,
+            "resource_index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
+            "resource_index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
             "skill_hash": skill_hash,
             "session_buffer": {
                 "buffer_key": list(session_buffer_key(envelope)),
