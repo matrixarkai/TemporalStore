@@ -1646,6 +1646,55 @@ fn raft_process_snapshot_sender_completion_clears_in_progress_state() {
     assert_eq!(peer3.snapshot_send_completed, 1);
 }
 
+// shared-corpus: raft_byteraft_snapshot_lifecycle_depth
+#[test]
+fn byteraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
+    let transport = FlakyTransport {
+        cluster: RaftCluster::new_single_shard(213, [1, 2, 3]),
+        failures_left: Arc::new(Mutex::new(1)),
+    };
+    for index in 0..3 {
+        transport
+            .cluster
+            .propose(Command::StringSet {
+                key: format!("snapshot-retry-{index}"),
+                value: vec![index as u8],
+            })
+            .unwrap();
+    }
+    let chunks = transport
+        .cluster
+        .build_install_snapshot_chunks(3, 2)
+        .unwrap();
+    let runtime = RaftRpcRuntime::new(
+        transport.clone(),
+        RaftRpcRuntimeOptions {
+            max_inflight: 1,
+            max_retries: 2,
+            retry_backoff_ms: 0,
+            deadline_ms: 100,
+            auth_token_required: false,
+        },
+    );
+
+    let first = runtime.install_snapshot_chunk(chunks[0].clone()).unwrap();
+    assert!(first.success);
+    assert!(!first.snapshot_complete);
+    assert_eq!(first.received_chunks, 1);
+    let metrics = runtime.metrics();
+    assert_eq!(metrics.attempts, 2);
+    assert_eq!(metrics.retries, 1);
+    assert_eq!(metrics.successes, 1);
+    assert_eq!(metrics.inflight, 0);
+
+    let _permit = runtime.acquire().unwrap();
+    assert!(matches!(
+        runtime.install_snapshot_chunk(chunks[1].clone()).unwrap_err(),
+        RaftError::Transport(message) if message.contains("backpressure")
+    ));
+    assert_eq!(runtime.metrics().backpressure_rejections, 1);
+}
+
 #[test]
 fn raft_snapshot_transport_rejects_stale_term_before_install() {
     let cluster = RaftCluster::new_single_shard(211, [1, 2, 3]);
@@ -1979,6 +2028,15 @@ impl RaftTransport for FlakyTransport {
         &self,
         request: InstallSnapshotChunkRequest,
     ) -> Result<InstallSnapshotChunkResponse, RaftError> {
+        let mut failures_left = self
+            .failures_left
+            .lock()
+            .expect("flaky transport lock poisoned");
+        if *failures_left > 0 {
+            *failures_left -= 1;
+            return Err(RaftError::Transport("injected retry".to_string()));
+        }
+        drop(failures_left);
         self.cluster.receive_install_snapshot_chunk(request)
     }
 }
@@ -3922,6 +3980,7 @@ fn raft_can_elect_new_leader_and_continue() {
     assert_eq!(cluster.commit_index(3).unwrap(), 1);
 }
 
+// shared-corpus: raft_byteraft_election_controls
 #[test]
 fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -3967,6 +4026,7 @@ fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
     assert_eq!(read_safety.pre_vote_rejected, 0);
 }
 
+// shared-corpus: raft_byteraft_election_controls
 #[test]
 fn raft_prevote_rejects_candidate_without_quorum() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -4027,6 +4087,7 @@ fn raft_status_read_index_and_transfer_leader_match_engine_control_shape() {
     assert!(metrics.contains("temporalstore_raft_node_lag"));
 }
 
+// shared-corpus: raft_byteraft_read_safety_policy
 #[test]
 fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -4325,6 +4386,7 @@ fn data_raft_read_policy_matches_cpp_partition_manager_modes() {
         .is_ok());
 }
 
+// shared-corpus: raft_byteraft_read_safety_policy
 #[test]
 fn raft_read_index_and_transfer_reject_lagging_replica() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -5476,6 +5538,7 @@ fn raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat() {
     );
 }
 
+// shared-corpus: raft_byteraft_follower_rejoin_compacted_logs_fault_harness
 #[test]
 fn append_entries_matches_snapshot_floor_after_leader_compaction() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -5542,6 +5605,92 @@ fn append_entries_matches_snapshot_floor_after_leader_compaction() {
     );
 }
 
+// shared-corpus: raft_byteraft_follower_rejoin_compacted_logs_fault_harness
+#[test]
+fn byteraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_applied_log_bytes: 1,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "compacted-rejoin-base".to_string(),
+            value: b"base".to_vec(),
+        })
+        .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "compacted-rejoin-base".to_string(),
+            value: b"snapshotted".to_vec(),
+        })
+        .unwrap();
+    let snapshot_report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(snapshot_report.triggered);
+    assert_eq!(snapshot_report.applied_index, 2);
+    let compacted_snapshot = cluster.create_snapshot().unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "compacted-rejoin-tail".to_string(),
+            value: b"tail".to_vec(),
+        })
+        .unwrap();
+
+    cluster.set_alive(3, true).unwrap();
+    assert_eq!(
+        cluster.read_index(3).unwrap_err(),
+        RaftError::ReplicaLagging {
+            replica_id: 3,
+            replica_commit_index: 0,
+            leader_commit_index: 3,
+        }
+    );
+
+    cluster.install_snapshot(3, compacted_snapshot).unwrap();
+    assert_eq!(cluster.commit_index(3).unwrap(), 2);
+    assert_eq!(
+        cluster.read_index(3).unwrap_err(),
+        RaftError::ReplicaLagging {
+            replica_id: 3,
+            replica_commit_index: 2,
+            leader_commit_index: 3,
+        }
+    );
+    cluster.catch_up(3).unwrap();
+    assert!(cluster.read_index(3).is_ok());
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "compacted-rejoin-base".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"snapshotted".to_vec())
+        }
+    );
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "compacted-rejoin-tail".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"tail".to_vec())
+        }
+    );
+}
+
 #[test]
 fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -5598,6 +5747,56 @@ fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
             value: Some(b"tail".to_vec())
         }
     );
+}
+
+// shared-corpus: raft_byteraft_leader_transfer_high_write_fault_harness
+#[test]
+fn byteraft_leader_transfer_under_high_write_load_commits_once() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    let mut accepted = Vec::new();
+
+    for index in 0..32 {
+        let key = format!("transfer-load-before-{index}");
+        let value = format!("before-{index}").into_bytes();
+        cluster
+            .propose(Command::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .unwrap();
+        accepted.push((key, value));
+    }
+
+    cluster.transfer_leader(2).unwrap();
+    assert_eq!(cluster.leader_id(), 2);
+
+    for index in 0..32 {
+        let key = format!("transfer-load-after-{index}");
+        let value = format!("after-{index}").into_bytes();
+        cluster
+            .propose(Command::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .unwrap();
+        accepted.push((key, value));
+    }
+
+    assert_eq!(cluster.status().commit_index, accepted.len() as u64);
+    for node_id in [1, 2, 3] {
+        assert_eq!(
+            cluster.commit_index(node_id).unwrap(),
+            accepted.len() as u64
+        );
+    }
+    for (key, value) in accepted {
+        assert_eq!(
+            cluster
+                .read_from_replica(2, Command::StringGet { key })
+                .unwrap(),
+            CommandResponse::Bytes { value: Some(value) }
+        );
+    }
 }
 
 #[test]
