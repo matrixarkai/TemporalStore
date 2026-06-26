@@ -2728,6 +2728,14 @@ impl ProductionMetaRaftRuntime {
     ) -> Result<MetaDataRaftMembershipWorkflowReport, RaftError> {
         self.validate_ready()?;
         let shard_id = data_cluster.shard_id();
+        let initial_status = data_cluster.status();
+        let initial_voters = initial_status
+            .nodes
+            .iter()
+            .filter(|node| node.replica_role.participates_in_quorum())
+            .map(|node| node.node_id)
+            .collect::<Vec<_>>();
+        let required_catch_up_index = initial_status.commit_index;
         let mut learner_added = false;
         if data_cluster.local_status(learner_id).is_err() {
             data_cluster.add_node_with_role(learner_id, RaftReplicaRole::Learner)?;
@@ -2737,6 +2745,7 @@ impl ProductionMetaRaftRuntime {
         data_cluster.catch_up(learner_id)?;
         let learner_status = data_cluster.local_status(learner_id)?;
         let catch_up_verified = learner_status.lag == 0;
+        let learner_catch_up_index = learner_status.commit_index;
         if !catch_up_verified {
             return Err(RaftError::ReplicaLagging {
                 replica_id: learner_id,
@@ -2764,6 +2773,7 @@ impl ProductionMetaRaftRuntime {
                 return Err(err);
             }
         };
+        let voters_after_promote = committed_membership.voters.clone();
 
         let mut leader_transferred = false;
         if let Some(target_leader_id) = requested_leader_id {
@@ -2789,10 +2799,14 @@ impl ProductionMetaRaftRuntime {
             learner_id,
             removed_voter_id: remove_voter_id,
             requested_leader_id,
+            initial_voters,
             learner_added,
             catch_up_verified,
+            learner_catch_up_index,
+            required_catch_up_index,
             promoted_to_voter: true,
             membership_committed: !committed_membership.voters.is_empty(),
+            voters_after_promote,
             leader_transferred,
             voter_removed,
             final_leader_id: final_status.leader_id,
