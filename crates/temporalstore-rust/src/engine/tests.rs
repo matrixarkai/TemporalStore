@@ -1562,6 +1562,110 @@ fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
 }
 
 #[test]
+// shared-corpus: storage_cache_refill storage_byteraft_cache_refill_pressure;
+fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memory() {
+    let root = tempfile::tempdir().unwrap();
+    let cache_dir = root.path().join("cache");
+    let page_dir = root.path().join("pages");
+    let index_dir = root.path().join("index");
+    let engine = TemporalEngine::with_local_dirs(128, &cache_dir, &page_dir, &index_dir);
+    engine.load_shard(1);
+
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "cold-key".to_string(),
+                    value: b"cold-value".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    let page_key = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("loaded shard");
+        let address = shard.strings.get("cold-key").expect("indexed page address");
+        assert_ne!(address.page_segment_id, HOT_PAGE_SEGMENT_ID);
+        CacheKey::page_with_slot(
+            1,
+            address.page_segment_id,
+            address.offset,
+            address.length,
+            address.routing_slot,
+        )
+    };
+
+    let first = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "cold-key".to_string(),
+        },
+    });
+    assert_eq!(
+        first.response,
+        CommandResponse::Bytes {
+            value: Some(b"cold-value".to_vec())
+        }
+    );
+    assert_eq!(engine.page_store().stats().reads, 1);
+    assert!(engine.cache().stats().misses >= 2);
+    assert!(engine.cache().stats().puts >= 2);
+    assert_eq!(
+        engine.cache().get_memory(&page_key),
+        Some(b"cold-value".to_vec())
+    );
+
+    let _ = engine.cache().invalidate(&CacheKey::string(1, "cold-key"));
+    engine.cache().clear_memory_for_test();
+    assert_eq!(engine.cache().get_memory(&page_key), None);
+    let reads_before_disk_cache = engine.page_store().stats().reads;
+    let disk_cache_read = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "cold-key".to_string(),
+        },
+    });
+    assert_eq!(
+        disk_cache_read.response,
+        CommandResponse::Bytes {
+            value: Some(b"cold-value".to_vec())
+        }
+    );
+    assert_eq!(engine.page_store().stats().reads, reads_before_disk_cache);
+    assert!(engine.cache().stats().disk_hits >= 1);
+    assert_eq!(
+        engine.cache().get_memory(&page_key),
+        Some(b"cold-value".to_vec())
+    );
+
+    let cold_restart = TemporalEngine::with_local_dirs(
+        128,
+        root.path().join("fresh-cache"),
+        &page_dir,
+        &index_dir,
+    );
+    cold_restart.load_shard(1);
+    let restart_read = cold_restart.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "cold-key".to_string(),
+        },
+    });
+    assert_eq!(
+        restart_read.response,
+        CommandResponse::Bytes {
+            value: Some(b"cold-value".to_vec())
+        }
+    );
+    assert_eq!(cold_restart.page_store().stats().reads, 1);
+    assert!(cold_restart.cache().stats().misses >= 2);
+    assert!(cold_restart.cache().stats().puts >= 2);
+}
+
+#[test]
 fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
     let cache_dir = unique_temp_path("recovery-rebuild-cache");
     let page_dir = unique_temp_path("recovery-rebuild-pages");
