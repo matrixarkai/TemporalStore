@@ -5906,6 +5906,30 @@
       ]
     },
     {
+      "description": "Shared C++/Rust StorageManager lifecycle case: one background loop reports prepare, reclaim, evict, expire, compact, and index-GC phases.",
+      "family": "storage/cache",
+      "name": "storage_manager_background_loop",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Runs the Rust-native StorageManager loop over dirty slots, reclaim candidates, cache eviction, TTL expiry, model-layout compaction, and slot dump manifest/index cleanup.",
+            "kind": "storage_manager_background_loop",
+            "expect_phases": [
+              "prepare",
+              "reclaim",
+              "evict",
+              "expire",
+              "compact",
+              "index_gc"
+            ]
+          },
+          "name": "storage_manager_loop_prepare_reclaim_evict_expire_compact_index_gc",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
       "family": "storage/cache",
       "name": "storage_stream_cross_block_large_values",
