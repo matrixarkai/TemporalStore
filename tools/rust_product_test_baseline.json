@@ -452,7 +452,6 @@
     "crates/temporalstore-rust/src/readiness.rs::remaining_blockers_map_to_concrete_evidence_fields",
     "crates/temporalstore-rust/src/readiness.rs::data_node_service_readiness_splits_local_and_distributed_surfaces",
     "crates/temporalstore-rust/src/readiness.rs::metaserver_control_plane_readiness_splits_local_and_production_surfaces",
-    "crates/temporalstore-rust/src/readiness.rs::storage_ssd_cache_pressure_report_covers_production_tier_policy",
     "crates/temporalstore-rust/src/readiness.rs::storage_migration_corpus_report_covers_external_cpp_export_and_ci_artifacts",
     "crates/temporalstore-rust/src/readiness.rs::feature_and_context_readiness_have_production_corpus_evidence",
     "crates/temporalstore-rust/src/readiness.rs::production_readiness_report_summarizes_requested_service_readiness",

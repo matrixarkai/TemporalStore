@@ -20,6 +20,10 @@ pub struct ShardCompactionReport {
     #[serde(default)]
     pub rewritten_object_pages: usize,
     #[serde(default)]
+    pub slot_layout_transition_count: u64,
+    #[serde(default)]
+    pub slot_layout_states_after: Vec<SlotLayoutStateCount>,
+    #[serde(default)]
     pub tombstoned_object_ids_before: u64,
     #[serde(default)]
     pub tombstoned_object_ids_after: u64,
@@ -31,6 +35,12 @@ pub struct ShardCompactionReport {
     pub after: ShardCompactionUtilityReport,
     #[serde(default)]
     pub model_rewrite_policies: Vec<ModelCompactionRewriteReport>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotLayoutStateCount {
+    pub state: String,
+    pub object_count: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

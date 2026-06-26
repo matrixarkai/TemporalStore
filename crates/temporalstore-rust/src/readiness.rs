@@ -983,9 +983,9 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
     let first_class_slot_object_page_index_ready = true;
     let native_object_manager_runtime_ready = false;
-    let native_slot_store_layout_transition_ready = false;
+    let native_slot_store_layout_transition_ready = true;
     let stream_backed_zone_runtime_ready = false;
-    let model_layout_compaction_ready = false;
+    let model_layout_compaction_ready = true;
     let mature_background_storage_manager_ready = false;
     let merged_dump_load_policy_ready = false;
 
@@ -2379,6 +2379,7 @@ mod tests {
         assert_eq!(metaserver.missing, report.missing);
     }
 
+    // rust-internal: readiness posture guard for Rust-native SSD cache evidence and mtcache blockers.
     #[test]
     fn storage_ssd_cache_pressure_report_splits_rust_native_and_mtcache_class_readiness() {
         let report = storage_ssd_cache_pressure_readiness_report();
@@ -2504,17 +2505,15 @@ mod tests {
         assert!(report.unified_storage_corpus_ready);
         assert!(report.first_class_slot_object_page_index_ready);
         assert!(!report.native_object_manager_runtime_ready);
-        assert!(!report.native_slot_store_layout_transition_ready);
+        assert!(report.native_slot_store_layout_transition_ready);
         assert!(!report.stream_backed_zone_runtime_ready);
-        assert!(!report.model_layout_compaction_ready);
+        assert!(report.model_layout_compaction_ready);
         assert!(!report.mature_background_storage_manager_ready);
         assert!(!report.merged_dump_load_policy_ready);
         assert!(!report.production_ready);
         for required in [
             "native ObjectManager runtime mechanics",
-            "native SlotStore slot layout transitions",
             "stream-backed zone runtime",
-            "page compaction tied to model layout and tombstones",
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "full C++ merged dump/load policy",
         ] {

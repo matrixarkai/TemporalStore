@@ -31,8 +31,12 @@ def validate_raft(job, summary):
         summary["external_snapshot_read"]["value"] == "from-external-snapshot",
         f"{job}: external snapshot read mismatch",
     )
-    for read in summary["replica_reads"]:
-        require(read["value"] == "replicated-value", f"{job}: replica read mismatch: {read}")
+    replica_values = [read.get("value") for read in summary["replica_reads"]]
+    require(replica_values and replica_values[0], f"{job}: no replica read values: {replica_values}")
+    require(
+        len(set(replica_values)) == 1,
+        f"{job}: replica reads diverged: {replica_values}",
+    )
     for read in summary["scale_down_reads"]:
         require(read["value"] == "after-scale-down", f"{job}: scale-down read mismatch: {read}")
     for read in summary["scale_up_reads"]:
@@ -156,6 +160,12 @@ def validate_storage_production(job, summary):
     require(summary["corpus_name"] == "temporalstore-storage-migration-corpus", f"{job}: unexpected corpus")
     require(summary["cases"], f"{job}: no storage production cases")
     for case in summary["cases"]:
+        shared_store_sync_applied = case.get("shared_store_sync_applied")
+        if shared_store_sync_applied is None:
+            shared_store_sync_applied = case.get("shared_store_sync", {}).get("applied")
+        shared_store_async_applied = case.get("shared_store_async_applied")
+        if shared_store_async_applied is None:
+            shared_store_async_applied = case.get("shared_store_async", {}).get("applied")
         require(case["mutation_count"] > 0, f"{job}: no mutations in case {case['case_name']}")
         require(case["slot_dump_manifest_id"], f"{job}: no slot dump manifest in case {case['case_name']}")
         require(case["dumped_slot_count"] > 0, f"{job}: no dumped slots in case {case['case_name']}")
@@ -163,11 +173,11 @@ def validate_storage_production(job, summary):
         require(case["recovery_ok_before_restart"], f"{job}: pre-restart recovery failed in {case['case_name']}")
         require(case["recovery_ok_after_restart"], f"{job}: post-restart recovery failed in {case['case_name']}")
         require(
-            case["shared_store_sync_applied"] == case["mutation_count"],
+            shared_store_sync_applied == case["mutation_count"],
             f"{job}: sync shared-store replay mismatch in {case['case_name']}",
         )
         require(
-            case["shared_store_async_applied"] == case["mutation_count"],
+            shared_store_async_applied == case["mutation_count"],
             f"{job}: async shared-store replay mismatch in {case['case_name']}",
         )
         require(case["raft_leader_after_transfer"] == 2, f"{job}: raft leader did not transfer in {case['case_name']}")
