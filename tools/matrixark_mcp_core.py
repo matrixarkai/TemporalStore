@@ -398,7 +398,27 @@ def identity_hashes(account_id: str, tenant_id: str, user_id: str = "", session_
         "tenant_hash": tenant_hash,
         "user_hash": user_hash,
         "session_hash": session_hash,
+        "scope_key": scope_key_from_hashes(tenant_hash, user_hash, session_hash),
     }
+
+
+def scope_key_from_hashes(tenant_hash: int, user_hash: int = 0, session_hash: int = 0) -> str:
+    parts = [f"t={int(tenant_hash)}"]
+    if user_hash:
+        parts.append(f"u={int(user_hash)}")
+    if session_hash:
+        parts.append(f"s={int(session_hash)}")
+    return "|".join(parts) + "|"
+
+
+def scope_key_prefix_for_query(query_scope: Json) -> str:
+    explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
+    tenant_hash = int(query_scope.get("tenant_hash") or 0)
+    if not tenant_hash:
+        return ""
+    user_hash = int(query_scope.get("user_hash") or 0) if "user_id" in explicit_keys else 0
+    session_hash = int(query_scope.get("session_hash") or 0) if "session_id" in explicit_keys else 0
+    return scope_key_from_hashes(tenant_hash, user_hash, session_hash)
 
 
 def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
@@ -418,6 +438,7 @@ def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
         "account_id": account_id,
         "tenant_id": tenant_id,
         "tenant_hash": hashes["tenant_hash"],
+        "scope_key": hashes["scope_key"],
         "_explicit_scope_keys": sorted(explicit_scope_keys),
     }
     if identity.get("agent_name") and "agent_name" not in enriched:
@@ -1706,6 +1727,7 @@ def registry_access_scope(scope: Json) -> Json:
         "tenant_hash": scope.get("tenant_hash", 0),
         "user_hash": scope.get("user_hash", 0),
         "session_hash": scope.get("session_hash", 0),
+        "scope_key": scope.get("scope_key", ""),
     }
 
 
@@ -3465,8 +3487,14 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
     if not query_scope:
         return True
     explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
+    query_scope_key = scope_key_prefix_for_query(query_scope)
+    record_scope_key = str(record_scope.get("scope_key") or "")
+    if query_scope_key and record_scope_key and not record_scope_key.startswith(query_scope_key):
+        return False
     for key, value in query_scope.items():
         if str(key).startswith("_"):
+            continue
+        if key == "scope_key":
             continue
         if key in {"agent_name", "team", "project"} and key not in explicit_keys:
             continue

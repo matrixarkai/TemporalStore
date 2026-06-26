@@ -254,11 +254,13 @@ class MatrixArkAccessManager:
             if allowed_session_ids and requested_session not in allowed_session_ids:
                 raise MatrixArkError("scope.session_id is not allowed by API key")
             self.ensure_user_active(account_id, tenant_id, requested_user)
+            hashes = identity_hashes(account_id, tenant_id, requested_user, requested_session)
             return {
                 "mode": "api_key",
                 "api_key_id": key_record["api_key_id"],
                 "account_id": account_id,
                 "tenant_id": tenant_id,
+                **hashes,
                 "scopes": sorted(scopes),
                 "role": role,
                 "user_id": requested_user,
@@ -271,11 +273,13 @@ class MatrixArkAccessManager:
         defaults = local_identity_defaults(args, scope)
         account_id = str(defaults["account_id"])
         tenant_id = str(defaults["tenant_id"])
+        hashes = identity_hashes(account_id, tenant_id, str(defaults["user_id"]), str(defaults["session_id"]))
         return {
             "mode": "dev",
             "api_key_id": "dev",
             "account_id": account_id,
             "tenant_id": tenant_id,
+            **hashes,
             "scopes": sorted(MATRIXARK_ALL_SCOPES),
             "role": "dev_admin",
             "user_id": str(defaults["user_id"]),
@@ -297,6 +301,10 @@ class MatrixArkAccessManager:
             "account_id": identity["account_id"],
             "tenant_id": identity["tenant_id"],
             "role": identity["role"],
+            "tenant_hash": identity.get("tenant_hash", 0),
+            "user_hash": identity.get("user_hash", 0),
+            "session_hash": identity.get("session_hash", 0),
+            "scope_key": args["scope"].get("scope_key", identity.get("scope_key", "")),
         }
         if identity.get("user_id"):
             auth_summary["user_id"] = identity["user_id"]
@@ -382,6 +390,10 @@ class MatrixArkAccessManager:
                 "tenant_id": identity.get("tenant_id", ""),
                 "user_id": identity.get("user_id", ""),
                 "session_id": identity.get("session_id", ""),
+                "tenant_hash": identity.get("tenant_hash", 0),
+                "user_hash": identity.get("user_hash", 0),
+                "session_hash": identity.get("session_hash", 0),
+                "scope_key": identity.get("scope_key", ""),
                 "api_key_id": identity.get("api_key_id", ""),
                 "role": normalize_matrixark_role(str(identity.get("role", ""))),
                 "details": details or {},
@@ -394,6 +406,7 @@ class MatrixArkAccessManager:
         api_key = optional_string(args, "api_key", "")
         account_id = canonical_account_id(str(scope.get("account_id") or args.get("account_id") or "")) if (scope.get("account_id") or args.get("account_id")) else ""
         tenant_id = canonical_tenant_id(str(scope.get("tenant_id") or args.get("tenant_id") or "")) if (scope.get("tenant_id") or args.get("tenant_id")) else ""
+        hashes = identity_hashes(account_id, tenant_id, str(scope.get("user_id") or ""), str(scope.get("session_id") or "")) if account_id and tenant_id else {}
         self.metadata.append(
             {
                 "record_type": "matrixark_audit_log",
@@ -404,6 +417,10 @@ class MatrixArkAccessManager:
                 "tenant_id": tenant_id,
                 "user_id": str(scope.get("user_id") or ""),
                 "session_id": str(scope.get("session_id") or ""),
+                "tenant_hash": hashes.get("tenant_hash", 0),
+                "user_hash": hashes.get("user_hash", 0),
+                "session_hash": hashes.get("session_hash", 0),
+                "scope_key": hashes.get("scope_key", ""),
                 "api_key_id": "unknown",
                 "api_key_hash_prefix": secret_hash(api_key)[:12] if api_key else "",
                 "role": "unknown",
@@ -429,6 +446,7 @@ class MatrixArkAccessManager:
                 "tenant_hash": scope.get("tenant_hash", 0),
                 "user_hash": scope.get("user_hash", 0),
                 "session_hash": scope.get("session_hash", 0),
+                "scope_key": scope.get("scope_key", ""),
                 "used_at_ms": now_ms(),
             }
         )
