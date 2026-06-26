@@ -61,6 +61,79 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 {"api_key": viewer, "account_id": "acct_gov", "tenant_id": "tenant_gov"},
             )
 
+    def test_local_api_key_application_gets_resource_skill_management_scopes(self) -> None:
+        server = self.make_server()
+        applied = server.call_tool(
+            "matrixark_admin_apply_api_key",
+            {
+                "account_id": "acct_local",
+                "agent_name": "codex",
+                "user_id": "local_user",
+                "scope": {"session_id": "local_session"},
+            },
+        )
+        scopes = set(applied["scopes"])
+        self.assertIn("resource:ingest", scopes)
+        self.assertIn("resource:manage", scopes)
+        self.assertIn("skill:manage", scopes)
+        self.assertEqual("tenant_codex", applied["tenant_id"])
+        self.assertEqual("local_user", applied["local_scope"]["user_id"])
+        self.assertTrue(applied["api_key"].startswith("mk_local_"))
+
+    def test_disabled_user_and_tenant_block_portal_and_context_access(self) -> None:
+        server = self.make_server()
+        admin_key = server.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "scope": {"account_id": "acct_disable", "tenant_id": "tenant_disable"},
+                "account_id": "acct_disable",
+                "tenant_id": "tenant_disable",
+                "role": "owner",
+                "scopes": ["admin:account", "admin:user", "admin:api_key", "admin:audit", "portal:read", "context:retrieve"],
+            },
+        )["api_key"]
+        server.call_tool(
+            "matrixark_admin_create_account",
+            {"api_key": admin_key, "account_id": "acct_disable", "tenant_id": "tenant_disable"},
+        )
+        server.call_tool(
+            "matrixark_admin_create_user",
+            {"api_key": admin_key, "account_id": "acct_disable", "tenant_id": "tenant_disable", "user_id": "alice"},
+        )
+        viewer_key = server.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "api_key": admin_key,
+                "account_id": "acct_disable",
+                "tenant_id": "tenant_disable",
+                "role": "viewer",
+                "scopes": ["portal:read", "context:retrieve", "context:replay"],
+                "allowed_user_ids": ["alice"],
+            },
+        )["api_key"]
+        scope = {"account_id": "acct_disable", "tenant_id": "tenant_disable", "user_id": "alice"}
+        self.assertEqual("ok", server.call_tool("matrixark_management_portal", {"api_key": viewer_key, "scope": scope})["status"])
+
+        server.call_tool(
+            "matrixark_admin_update_user",
+            {"api_key": admin_key, "account_id": "acct_disable", "tenant_id": "tenant_disable", "user_id": "alice", "status": "disabled"},
+        )
+        with self.assertRaises(MatrixArkError):
+            server.call_tool("matrixark_management_portal", {"api_key": viewer_key, "scope": scope})
+
+        server.call_tool(
+            "matrixark_admin_update_user",
+            {"api_key": admin_key, "account_id": "acct_disable", "tenant_id": "tenant_disable", "user_id": "alice", "status": "active"},
+        )
+        server.call_tool(
+            "matrixark_admin_update_account",
+            {"api_key": admin_key, "account_id": "acct_disable", "tenant_id": "tenant_disable", "tenant_status": "disabled"},
+        )
+        with self.assertRaises(MatrixArkError):
+            server.call_tool("matrixark_retrieve", {"api_key": viewer_key, "scope": scope, "query": "what is visible?"})
+        with self.assertRaises(MatrixArkError):
+            server.call_tool("matrixark_management_portal", {"api_key": viewer_key, "scope": scope})
+
     def test_denied_and_portal_and_replay_are_audited(self) -> None:
         server = self.make_server()
         admin_key = server.call_tool(
