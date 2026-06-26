@@ -6282,6 +6282,130 @@ fn slot_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     );
 }
 
+// shared-corpus: storage_merged_dump_load_policy
+#[test]
+fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "merged-a".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "merged-feature".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: b"seven".to_vec(),
+            }],
+        },
+    });
+
+    let report =
+        engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
+            lifecycle: StorageLifecycleRequest {
+                shard_id: 1,
+                max_dump_slots_per_round: 16,
+                prune_slot_dump_manifests: true,
+                roll_forward_slot_dump_installs: true,
+                invalidate_cache: true,
+                warm_cache: true,
+                ..StorageLifecycleRequest::default()
+            },
+            create_dump_manifest: true,
+            install_dump_manifest: false,
+        });
+    assert!(report.policy_ready, "{report:?}");
+    assert!(report.dump_manifest_created);
+    assert!(report.load_preflight_safe);
+    assert!(report.replay_boundary_safe);
+    assert!(report.manifest_chain_valid);
+    assert!(report.follower_retention_safe);
+    assert!(report.index_gc_ready);
+    assert!(report.manifest_id.is_some());
+    assert!(!report.manifest_slot_ids.is_empty());
+    assert!(report.manifest_oplog_sequence > 0);
+    assert!(report.manifest_index_log_sequence > 0);
+    assert!(report
+        .evidence
+        .iter()
+        .any(|item| item
+            .contains("dirty-slot dump selection, manifest checksum/generation validation")));
+
+    let manifest = report.lifecycle.dump_manifest.clone().unwrap();
+    let restore_engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("restore-cache"),
+        dir.path().join("pages"),
+        dir.path().join("restore-indexes"),
+    );
+    restore_engine.load_shard(1);
+    restore_engine
+        .install_slot_dump_manifest(&manifest)
+        .expect("merged policy manifest should install into restore engine");
+    let get = restore_engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "merged-a".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        }
+    );
+    let feature = restore_engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "merged-feature".to_string(),
+            start_ms: 0,
+            end_ms: 20,
+            count: None,
+        },
+    });
+    assert!(matches!(
+        feature.response,
+        CommandResponse::FeaturePoints { ref points } if points.len() == 1
+    ));
+
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "newer-after-dump".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    let stale = engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
+        lifecycle: StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_slots: Vec::new(),
+            ..StorageLifecycleRequest::default()
+        },
+        create_dump_manifest: false,
+        install_dump_manifest: true,
+    });
+    assert!(!stale.policy_ready);
+    assert!(!stale.load_preflight_safe);
+    assert!(stale
+        .blockers
+        .contains(&"load_preflight_unsafe".to_string()));
+    assert!(matches!(
+        stale.install_status,
+        Some(Status { ok: false, ref code, .. }) if code == "slot_dump_stale_manifest"
+    ));
+}
+
 #[test]
 fn slot_dump_install_markers_report_interrupted_prepare() {
     let dir = tempfile::tempdir().unwrap();

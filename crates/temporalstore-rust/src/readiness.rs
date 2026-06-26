@@ -195,6 +195,10 @@ pub struct StorageProductionPostureReport {
     #[serde(default)]
     pub mature_background_storage_manager_blockers: Vec<String>,
     pub merged_dump_load_policy_ready: bool,
+    #[serde(default)]
+    pub merged_dump_load_policy_evidence: Vec<String>,
+    #[serde(default)]
+    pub merged_dump_load_policy_blockers: Vec<String>,
     pub production_ready: bool,
     pub missing: Vec<String>,
 }
@@ -1046,7 +1050,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     ];
     let native_object_manager_runtime_blockers = vec![
         "C++ ObjectManager byte-for-byte hot-object memory layout remains out of scope".to_string(),
-        "full merged dump/load ownership policy remains a separate storage blocker".to_string(),
+        "C++ ObjectManager allocator and hot-object byte layout remain separate from Rust-native ownership policy".to_string(),
     ];
     let native_slot_store_layout_transition_ready = true;
     let native_slot_store_layout_transition_evidence = vec![
@@ -1094,7 +1098,13 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
     ];
     let mature_background_storage_manager_blockers = Vec::new();
-    let merged_dump_load_policy_ready = false;
+    let merged_dump_load_policy_ready = true;
+    let merged_dump_load_policy_evidence = vec![
+        "StorageMergedDumpLoadPolicyReport coordinates dirty-slot dump selection, checksum/generation validation, load preflight, replay boundary, roll-forward markers, follower-safe retention, and index-GC".to_string(),
+        "merged policy fails closed for missing manifests, unsafe load preflight, stale installs, broken manifest chains, blocked retention, and index-GC gaps".to_string(),
+        "shared corpus case storage_merged_dump_load_policy validates restore-engine install and stale-load rejection".to_string(),
+    ];
+    let merged_dump_load_policy_blockers = Vec::new();
     let rust_storage_lifecycle_behavior_ready = orphan_page_detection_ready
         && missing_page_ref_detection_ready
         && stale_page_ref_detection_ready
@@ -1197,6 +1207,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         mature_background_storage_manager_evidence,
         mature_background_storage_manager_blockers,
         merged_dump_load_policy_ready,
+        merged_dump_load_policy_evidence,
+        merged_dump_load_policy_blockers,
         production_ready: missing.is_empty(),
         missing,
     }
@@ -1622,7 +1634,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed zone runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blocker is merged dump/load policy"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed zone runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],
             missing: {
@@ -2730,14 +2742,16 @@ mod tests {
             .iter()
             .any(|item| item.contains("index-GC phase")));
         assert!(report.mature_background_storage_manager_blockers.is_empty());
-        assert!(!report.merged_dump_load_policy_ready);
-        assert!(!report.production_ready);
-        for required in ["full C++ merged dump/load policy"] {
-            assert!(
-                report.missing.contains(&required.to_string()),
-                "storage production posture should name {required}"
-            );
-        }
+        assert!(report.merged_dump_load_policy_ready);
+        assert!(report
+            .merged_dump_load_policy_evidence
+            .iter()
+            .any(|item| item.contains("dirty-slot dump selection")));
+        assert!(report
+            .merged_dump_load_policy_evidence
+            .iter()
+            .any(|item| item.contains("storage_merged_dump_load_policy")));
+        assert!(report.merged_dump_load_policy_blockers.is_empty());
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -2765,7 +2779,6 @@ mod tests {
             "first-class slot/object/page ownership index",
             "SlotStore layout transition evidence",
             "model-layout compaction",
-            "remaining C++ runtime storage mechanics blocker is merged dump/load policy",
             "merged dump/load policy",
         ] {
             assert!(

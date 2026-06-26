@@ -203,11 +203,18 @@ live/stale segment plans, ranks reclaim candidates, invalidates cache entries wi
 sweeps TTL metadata, runs model-layout compaction, and prunes or rolls forward slot dump manifest
 state.
 
+Rust now also has a merged dump/load ownership policy report. `StorageMergedDumpLoadPolicyReport`
+coordinates dirty-slot dump selection, slot dump manifest checksum and generation validation, load
+preflight, replay-boundary selection, interrupted-install roll-forward, follower-safe manifest
+retention, and index-GC as one fail-closed readiness surface. The shared
+`storage_merged_dump_load_policy` case verifies restore-engine install and stale-load rejection.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
-full merged dump/load policy, and C++ byte-for-byte cleaner internals. The slot-first index,
-ObjectManager runtime report, stream-backed zone report, StorageManager loop report, and layout
-evidence are real readiness evidence, but they are not treated as complete C++ runtime parity.
+C++ byte-for-byte cleaner internals, and CacheLib/mtcache-class cache behavior. The slot-first
+index, ObjectManager runtime report, stream-backed zone report, StorageManager loop report, merged
+dump/load policy report, and layout evidence are real readiness evidence, but they are not treated
+as byte-for-byte C++ runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
