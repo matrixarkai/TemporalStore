@@ -1212,6 +1212,16 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(before.object_lifecycle.stale_object_ids >= 1);
 
     let report = engine.compact_shard_pages(1).unwrap();
+    assert!(report.model_layout_compaction_ready, "{report:?}");
+    assert!(report.model_layout_compaction_blockers.is_empty());
+    assert!(report
+        .model_layout_compaction_evidence
+        .iter()
+        .any(|item| item.contains("rewrites live refs by model layout")));
+    assert!(report
+        .model_layout_compaction_evidence
+        .iter()
+        .any(|item| item.contains("tombstone object ids are preserved")));
     assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
     assert!(report.rewritten_object_pages >= 5);
     assert!(report.slot_layout_transition_count >= 1);

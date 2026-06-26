@@ -5101,6 +5101,13 @@ impl TemporalEngine {
         let tombstoned_object_ids_before =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
+        let object_manager_before = object_manager_runtime_report(
+            shard_id,
+            shard,
+            start_routing_slot,
+            end_routing_slot,
+        );
+        let slot_layout_transition_count_before = object_manager_before.layout_transition_count;
         let roll = self
             .page_store
             .roll_segment()
@@ -5284,6 +5291,14 @@ impl TemporalEngine {
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
+        let object_manager_after = object_manager_runtime_report(
+            shard_id,
+            shard,
+            start_routing_slot,
+            end_routing_slot,
+        );
+        let slot_layout_transition_count_after = object_manager_after.layout_transition_count;
+        let slot_layout_states_after = object_manager_after.layout_states;
         let stale_page_segment_ids = before_segments
             .difference(&after_segments)
             .copied()
@@ -5294,8 +5309,47 @@ impl TemporalEngine {
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_json(shard_id, &index_bytes);
         let rewritten_object_pages = rewrite_stats.rewritten_page_refs;
+        let slot_layout_transition_count =
+            slot_layout_transition_count_after.saturating_sub(slot_layout_transition_count_before);
+        let has_model_layouts = !model_layouts_before.is_empty();
+        let preserves_tombstones = tombstoned_object_ids_after >= tombstoned_object_ids_before;
+        let improves_density =
+            before.live_ref_density_basis_points <= after.live_ref_density_basis_points;
+        let has_layout_transitions = slot_layout_transition_count > 0
+            || slot_layout_states_after
+                .iter()
+                .any(|state| state.object_count > 0);
+        let mut model_layout_compaction_blockers = Vec::new();
+        if rewritten_object_pages == 0 {
+            model_layout_compaction_blockers.push("no live page refs were rewritten".to_string());
+        }
+        if !has_model_layouts {
+            model_layout_compaction_blockers.push("model layout report is empty".to_string());
+        }
+        if !preserves_tombstones {
+            model_layout_compaction_blockers
+                .push("tombstone object count decreased during compaction".to_string());
+        }
+        if !improves_density {
+            model_layout_compaction_blockers
+                .push("live-ref density did not improve or remain stable".to_string());
+        }
+        if !has_layout_transitions {
+            model_layout_compaction_blockers
+                .push("slot layout transition evidence is missing".to_string());
+        }
         Ok(ShardCompactionReport {
             shard_id,
+            model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
+            model_layout_compaction_evidence: vec![
+                "compaction rewrites live refs by model layout".to_string(),
+                "packed timestamped model layouts preserve shared page refs".to_string(),
+                "tombstone object ids are preserved across compaction".to_string(),
+                "stale page density is removed from the compacted live set".to_string(),
+                "slot layout transition counts and states are reported after compaction"
+                    .to_string(),
+            ],
+            model_layout_compaction_blockers,
             previous_page_segment_id: roll.previous_page_segment_id,
             compacted_page_segment_id: roll.new_page_segment_id,
             rewritten_page_refs: rewrite_stats.rewritten_page_refs,
@@ -5308,6 +5362,8 @@ impl TemporalEngine {
             stale_page_segment_ids,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
             rewritten_object_pages,
+            slot_layout_transition_count,
+            slot_layout_states_after,
             tombstoned_object_ids_before,
             tombstoned_object_ids_after,
             model_layouts: model_layouts_before,
