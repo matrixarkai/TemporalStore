@@ -2030,9 +2030,14 @@ mod tests {
             });
             assert_eq!(code, 200);
             let report = parse_json::<ProductionReadinessReport>(&body).unwrap();
-            assert!(report.production_ready);
-            assert!(report.cpp_parity_ready);
-            assert_eq!(report.missing_count(), 0);
+            assert!(!report.production_ready);
+            assert!(!report.cpp_parity_ready);
+            assert!(report.missing_count() > 0);
+            assert!(report
+                .missing_by_area("storage_cache")
+                .expect("storage cache area must exist")
+                .iter()
+                .any(|item| item.contains("mtcache-class")));
             assert!(report
                 .missing_by_area("scale_testing")
                 .expect("scale testing area must exist")

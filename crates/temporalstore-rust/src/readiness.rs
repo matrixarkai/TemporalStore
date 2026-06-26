@@ -118,6 +118,13 @@ pub struct StorageSsdCachePressureReadinessReport {
     #[serde(default)]
     pub latency_metrics_evidence: Vec<String>,
     pub local_pressure_ready: bool,
+    pub rust_native_production_ready: bool,
+    pub mtcache_class_replacement_policy_ready: bool,
+    pub mtcache_zero_copy_pinned_handle_ready: bool,
+    pub mtcache_dram_pmem_ssd_placement_ready: bool,
+    pub mtcache_async_writeback_backpressure_ready: bool,
+    pub mtcache_latency_metrics_ready: bool,
+    pub mtcache_class_production_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
 }
@@ -816,7 +823,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && slot_warmup_ready
         && cache_invalidation_ready
         && local_tiny_cache_pressure_harness_ready;
-    let production_ready = local_pressure_ready
+    let rust_native_production_ready = local_pressure_ready
         && production_ssd_tiering_ready
         && admission_tuning_ready
         && long_running_pressure_validation_ready
@@ -826,21 +833,35 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && dram_pmem_ssd_placement_ready
         && async_writeback_backpressure_ready
         && latency_metrics_ready;
+    let mtcache_class_replacement_policy_ready = false;
+    let mtcache_zero_copy_pinned_handle_ready = false;
+    let mtcache_dram_pmem_ssd_placement_ready = false;
+    let mtcache_async_writeback_backpressure_ready = false;
+    let mtcache_latency_metrics_ready = false;
+    let mtcache_class_production_ready = mtcache_class_replacement_policy_ready
+        && mtcache_zero_copy_pinned_handle_ready
+        && mtcache_dram_pmem_ssd_placement_ready
+        && mtcache_async_writeback_backpressure_ready
+        && mtcache_latency_metrics_ready;
+    let production_ready = rust_native_production_ready && mtcache_class_production_ready;
     let mut missing = Vec::new();
-    if !zero_copy_pinned_handle_ready {
-        missing.push("cache zero-copy/pinned handles".to_string());
+    if !rust_native_production_ready {
+        missing.push("Rust-native cache pressure/refill production evidence".to_string());
     }
-    if !dram_pmem_ssd_placement_ready {
-        missing.push("cache DRAM/PMEM/SSD placement semantics".to_string());
+    if !mtcache_class_replacement_policy_ready {
+        missing.push("mtcache-class multi-tier replacement policy".to_string());
     }
-    if !async_writeback_backpressure_ready {
-        missing.push("cache async writeback/backpressure".to_string());
+    if !mtcache_zero_copy_pinned_handle_ready {
+        missing.push("mtcache-class zero-copy pinned handle model".to_string());
     }
-    if !latency_metrics_ready {
-        missing.push("cache mature latency metrics".to_string());
+    if !mtcache_dram_pmem_ssd_placement_ready {
+        missing.push("mtcache-class DRAM/PMEM/SSD placement semantics".to_string());
     }
-    if !cache_pressure_soak_restart_ready {
-        missing.push("cache pressure soak with memory/disk pressure and restart".to_string());
+    if !mtcache_async_writeback_backpressure_ready {
+        missing.push("mtcache-class async writeback and backpressure".to_string());
+    }
+    if !mtcache_latency_metrics_ready {
+        missing.push("mtcache-class mature latency metrics".to_string());
     }
 
     StorageSsdCachePressureReadinessReport {
@@ -866,6 +887,13 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         latency_metrics_ready,
         latency_metrics_evidence,
         local_pressure_ready,
+        rust_native_production_ready,
+        mtcache_class_replacement_policy_ready,
+        mtcache_zero_copy_pinned_handle_ready,
+        mtcache_dram_pmem_ssd_placement_ready,
+        mtcache_async_writeback_backpressure_ready,
+        mtcache_latency_metrics_ready,
+        mtcache_class_production_ready,
         production_ready,
         missing,
     }
@@ -1401,6 +1429,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "cache pressure soak readiness covers memory and disk pressure, hot and pinned survivor checks, disk refill latency samples, and restart refill from the persisted disk cache"
                     .to_string(),
+                "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
+                    .to_string(),
                 "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, and unified storage corpus cases"
                     .to_string(),
             ],
@@ -1698,7 +1728,13 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("zero-copy") || capability.contains("pinned") => {
             "storage_cache_mtcache.zero_copy_pinned_handle_ready"
         }
-        "storage_cache" if capability.contains("DRAM/PMEM/SSD") => {
+        "storage_cache" if capability.contains("multi-tier replacement policy") => {
+            "storage_cache_mtcache.replacement_policy_ready"
+        }
+        "storage_cache" if capability.contains("zero-copy pinned handle") => {
+            "storage_cache_mtcache.zero_copy_pinned_handle_ready"
+        }
+        "storage_cache" if capability.contains("DRAM/PMEM/SSD placement") => {
             "storage_cache_mtcache.dram_pmem_ssd_placement_ready"
         }
         "storage_cache" if capability.contains("async writeback") => {
@@ -1891,18 +1927,18 @@ mod tests {
     #[test]
     fn production_readiness_report_lists_blockers_for_all_major_services() {
         let report = production_readiness_report();
-        assert!(report.production_ready);
-        assert!(report.cpp_parity_ready);
+        assert!(!report.production_ready);
+        assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert_eq!(report.blocker_count, 0);
-        assert!(report.failed_areas.is_empty());
+        assert_eq!(report.blocker_count, 11);
+        assert!(report.failed_areas.contains(&"storage_cache".to_string()));
         let storage_blockers = report
             .failed_capabilities
             .iter()
             .filter(|blocker| blocker.area == "storage_cache")
             .collect::<Vec<_>>();
-        assert!(storage_blockers.is_empty());
+        assert!(!storage_blockers.is_empty());
         let proxy = report
             .areas
             .iter()
@@ -1921,6 +1957,21 @@ mod tests {
             .missing_by_area("scale_testing")
             .expect("scale testing area must exist");
         assert!(scale_missing.is_empty());
+        let storage_missing = report
+            .missing_by_area("storage_cache")
+            .expect("storage cache area must exist");
+        for required in [
+            "mtcache-class multi-tier replacement policy",
+            "mtcache-class zero-copy pinned handle model",
+            "mtcache-class DRAM/PMEM/SSD placement semantics",
+            "mtcache-class async writeback and backpressure",
+            "mtcache-class mature latency metrics",
+        ] {
+            assert!(
+                storage_missing.contains(&required.to_string()),
+                "storage cache should fail closed on {required}"
+            );
+        }
     }
 
     #[test]
@@ -1959,8 +2010,11 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
         )));
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert!(storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("mtcache-class multi-tier replacement policy")));
     }
 
     #[test]
@@ -2147,8 +2201,12 @@ mod tests {
             .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(storage.ready);
-        assert!(storage.failed_capabilities.is_empty());
+        assert!(!storage.ready);
+        assert!(!storage.failed_capabilities.is_empty());
+        assert!(storage
+            .failed_capabilities
+            .iter()
+            .all(|blocker| blocker.evidence_field.starts_with("storage_cache_mtcache.")));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -2253,7 +2311,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_ssd_cache_pressure_report_covers_production_tier_policy() {
+    fn storage_ssd_cache_pressure_report_splits_rust_native_and_mtcache_class_readiness() {
         let report = storage_ssd_cache_pressure_readiness_report();
         assert!(report.memory_read_through_ready);
         assert!(report.disk_block_cache_ready);
@@ -2274,8 +2332,26 @@ mod tests {
         assert!(report.dram_pmem_ssd_placement_ready);
         assert!(report.async_writeback_backpressure_ready);
         assert!(report.latency_metrics_ready);
-        assert!(report.production_ready);
-        assert!(report.missing.is_empty());
+        assert!(report.rust_native_production_ready);
+        assert!(!report.mtcache_class_replacement_policy_ready);
+        assert!(!report.mtcache_zero_copy_pinned_handle_ready);
+        assert!(!report.mtcache_dram_pmem_ssd_placement_ready);
+        assert!(!report.mtcache_async_writeback_backpressure_ready);
+        assert!(!report.mtcache_latency_metrics_ready);
+        assert!(!report.mtcache_class_production_ready);
+        assert!(!report.production_ready);
+        for required in [
+            "mtcache-class multi-tier replacement policy",
+            "mtcache-class zero-copy pinned handle model",
+            "mtcache-class DRAM/PMEM/SSD placement semantics",
+            "mtcache-class async writeback and backpressure",
+            "mtcache-class mature latency metrics",
+        ] {
+            assert!(
+                report.missing.contains(&required.to_string()),
+                "cache pressure report should name {required}"
+            );
+        }
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -2298,8 +2374,8 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert_eq!(storage_cache.missing, report.missing);
     }
 
     #[test]
@@ -2379,8 +2455,11 @@ mod tests {
                 "storage posture evidence should mention {required}"
             );
         }
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert!(storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("mtcache-class zero-copy pinned handle model")));
     }
 
     #[test]
@@ -2487,7 +2566,8 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = !matches!(service, "data_node" | "raft_replication");
+            let expected_ready =
+                !matches!(service, "data_node" | "storage_cache" | "raft_replication");
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -2549,7 +2629,10 @@ mod tests {
             .iter()
             .map(|summary| summary.service.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(blocked_services, vec!["data_node", "raft_replication"]);
+        assert_eq!(
+            blocked_services,
+            vec!["data_node", "storage_cache", "raft_replication"]
+        );
         assert_eq!(
             report.known_services(),
             vec![
@@ -2604,7 +2687,6 @@ mod tests {
                 "proxy",
                 "ingestion",
                 "metaserver",
-                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -2623,7 +2705,6 @@ mod tests {
                 "proxy",
                 "ingestion",
                 "metaserver",
-                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -2649,7 +2730,7 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "critical"),
                 ("metaserver", "ready"),
-                ("storage_cache", "ready"),
+                ("storage_cache", "critical"),
                 ("feature_modules", "ready"),
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
@@ -2708,7 +2789,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("ready"));
+            .contains("finish"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
@@ -2765,7 +2846,7 @@ mod tests {
                 .service_summary("storage_cache")
                 .expect("storage cache summary")
                 .blocker_classes,
-            Vec::<String>::new()
+            vec!["storage_cache_durability".to_string()]
         );
         assert_eq!(
             report
