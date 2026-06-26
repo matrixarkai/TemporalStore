@@ -8416,6 +8416,361 @@
           }
         }
       ]
+    },
+    {
+      "name": "all_family_storage_cache_dynamic_modes_and_faults",
+      "shard_id": 31,
+      "steps": [
+        {
+          "name": "storage_cache_dynamic_modes_fault_matrix_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_storage_parity",
+            "description": "Unified storage/cache case tying per-event async/sync/Raft selection to dump/load, corruption, follower-safe GC, cache refill, and shared-store sync/async replay evidence.",
+            "rust_runner": "cargo test -p temporalstore-rust storage_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin storage_modes_harness -- --async-flush-limit 1",
+            "cpp_runner_contract": "C++ consumes the same case as object/page/slot lifecycle, storage manager, and shared-store replay parity evidence.",
+            "required_paths": [
+              "docs/shared_store_replication.md"
+            ],
+            "acceptance": {
+              "event_replication_modes": [
+                "async_storage",
+                "sync_storage",
+                "raft"
+              ],
+              "recovery_faults": [
+                "orphan_page",
+                "missing_ref",
+                "stale_ref",
+                "corrupt_page",
+                "corrupt_index_log",
+                "corrupt_oplog"
+              ],
+              "cache_paths": [
+                "memory_miss_disk_or_page_refill",
+                "slot_invalidation",
+                "warmup_from_page_index"
+              ],
+              "restart_required": false
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_raft_distributed_process_parity",
+      "shard_id": 32,
+      "steps": [
+        {
+          "name": "raft_datanode_metaserver_process_evidence_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_data_raft_parity",
+            "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, learner add/promote/remove, secondary reads, and lag gates.",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness && cargo run -p temporalstore-rust --bin metaserver_raft_harness",
+            "cpp_runner_contract": "C++ ByteRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
+            "required_paths": [
+              "docs/distributed_raft_readiness.md"
+            ],
+            "acceptance": {
+              "local_fixture_allowed_for_readiness": false,
+              "required_process_paths": [
+                "data_node_openraft",
+                "metaserver_openraft"
+              ],
+              "scenarios": [
+                "election",
+                "failover",
+                "snapshot_install",
+                "restart_recovery",
+                "follower_lag",
+                "membership_add_promote_remove",
+                "secondary_reads"
+              ]
+            },
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <log>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_context_resource_skill_pipeline",
+      "shard_id": 33,
+      "steps": [
+        {
+          "name": "context_resource_skill_model_fanout_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_pipeline_parity",
+            "description": "Unified context case for resource lifecycle, SKILL.md registry semantics, embedding provider metadata, summary-embedding coarse retrieval, secondary indexes, and query debug traces.",
+            "rust_runner": "cargo test -p temporalstore-rust context_resource_skill_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin context_workflow_harness",
+            "cpp_runner_contract": "C++ context pipeline emits the same event/segment/entity/node/child/embedding/summary/compression/index fanout report.",
+            "required_paths": [
+              "docs/matrixark_resource_skill_parsing_pipeline.md"
+            ],
+            "acceptance": {
+              "fanout_models": [
+                "event",
+                "segment",
+                "entity",
+                "node",
+                "child",
+                "embedding",
+                "summary",
+                "compression",
+                "dirty_marker",
+                "secondary_index"
+              ],
+              "resource_lifecycle": [
+                "add",
+                "watch",
+                "refresh",
+                "delete",
+                "stale_invalidate"
+              ],
+              "skill_registry": [
+                "enable_disable",
+                "precedence",
+                "owner_scope",
+                "triggers",
+                "allowed_tools",
+                "version_update"
+              ],
+              "retrieval": [
+                "summary_embedding_coarse",
+                "chunk_expand",
+                "injection_order"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_client_proxy_control_plane_policy",
+      "shard_id": 34,
+      "steps": [
+        {
+          "name": "client_proxy_datanode_metaserver_control_plane_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_client_proxy_control_plane_parity",
+            "description": "Unified control-plane case for topology version changes, stale route invalidation, admission policy, route quarantine/recovery, lifecycle load/reload/unload, and scheduler token rejection.",
+            "rust_runner": "cargo test -p temporalstore-rust client_proxy_control_plane_ -- --test-threads=1",
+            "cpp_runner_contract": "C++ client/proxy/metaserver/data-node tests consume the same topology/admission/lifecycle report contract.",
+            "required_paths": [
+              "docs/client_proxy_control_plane_parity.md"
+            ],
+            "acceptance": {
+              "topology": [
+                "table_version_guard",
+                "shard_version_guard",
+                "stale_route_retry_once"
+              ],
+              "admission": [
+                "readonly",
+                "write_disabled",
+                "drop_percent",
+                "degraded_overload"
+              ],
+              "lifecycle": [
+                "loading",
+                "serving",
+                "readonly",
+                "reloading",
+                "unloading",
+                "failed"
+              ],
+              "scheduler": [
+                "load_token",
+                "generation_check",
+                "stale_rejection"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_ingestion_kafka_flink_idempotence",
+      "shard_id": 35,
+      "steps": [
+        {
+          "name": "ingestion_kafka_flink_deadletter_lag_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_ingestion_parity",
+            "description": "Unified ingestion case for Kafka offset ledger, rebalance/backpressure, Flink precommit/commit/abort, dead letters, lag metrics, and restart/failover idempotence.",
+            "rust_runner": "cargo test -p temporalstore-rust ingestion_ -- --test-threads=1",
+            "cpp_runner_contract": "C++ ingestion runtime emits the same offset/checkpoint/dead-letter/lag/idempotence report contract.",
+            "required_paths": [
+              "docs/ingestion_cpp_rust_parity.md"
+            ],
+            "acceptance": {
+              "kafka": [
+                "consumer_group",
+                "offset_ledger",
+                "rebalance",
+                "backpressure"
+              ],
+              "flink": [
+                "precommit",
+                "commit",
+                "abort"
+              ],
+              "failure": [
+                "dead_letter_export",
+                "lag_metrics",
+                "leader_change_idempotence",
+                "restart_idempotence"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_api_redis_admin_product_models",
+      "shard_id": 36,
+      "steps": [
+        {
+          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_product_api_parity",
+            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
+            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
+            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
+            "required_paths": [
+              "docs/product_api_cpp_rust_parity.md"
+            ],
+            "acceptance": {
+              "redis_admin": [
+                "aliases",
+                "status_codes",
+                "typed_errors"
+              ],
+              "feature": [
+                "nested_points",
+                "replace",
+                "filter",
+                "aggregation"
+              ],
+              "sequence": [
+                "batch_query",
+                "time_ordering",
+                "missing_series"
+              ],
+              "ips": [
+                "snapshot",
+                "stat",
+                "filter_metadata"
+              ],
+              "risk": [
+                "cpc",
+                "fol",
+                "manager",
+                "debug"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "all_family_benchmark_locomo_longmemeval_contract",
+      "shard_id": 37,
+      "steps": [
+        {
+          "name": "locomo_longmemeval_rust_temporalstore_cpp_report_shared_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_benchmark_parity",
+            "description": "Unified benchmark case for LOCOMO and LongMemEval_s report contracts, requiring Rust TemporalStore backend evidence and separate deterministic/live-reader/paper-comparable labels.",
+            "rust_runner": "python3 tools/run_context_benchmarks.py --require-rust-temporalstore",
+            "cpp_runner_contract": "C++ benchmark adapter emits matrixark_vikingmem_context_benchmark_report_v1 for case-by-case comparator use.",
+            "archive_contract": "Reports include dataset hash, case count, model/provider, reader mode, thresholds, p50/p95, token reduction, category breakdown, and JSON path.",
+            "required_paths": [
+              "docs/context_benchmark_truth_and_report_contract.md"
+            ],
+            "report_contract": {
+              "required_fields": [
+                "benchmark_family",
+                "benchmark_hit_at_k",
+                "benchmark_recall_at_k",
+                "benchmark_mean_reciprocal_rank",
+                "benchmark_token_reduction_percent",
+                "benchmark_retrieval_p50_ms",
+                "benchmark_retrieval_p95_ms",
+                "benchmark_reader_p50_ms",
+                "benchmark_reader_p95_ms",
+                "benchmark_quality_ready",
+                "benchmark_threshold_passed",
+                "benchmark_threshold_violation_count",
+                "benchmark_threshold_violations",
+                "benchmark_thresholds",
+                "benchmark_per_query_count",
+                "category_breakdown",
+                "weak_category_count",
+                "weak_categories",
+                "weak_category_policy",
+                "case_count",
+                "hit_rate",
+                "reader_hit_rate",
+                "reader_mode_requested",
+                "reader_mode_effective",
+                "reader_provider_name",
+                "reader_model"
+              ]
+            },
+            "acceptance": {
+              "labels": [
+                "deterministic_engineering",
+                "live_reader",
+                "paper_comparable"
+              ],
+              "production_claim_requires": [
+                "real_dataset",
+                "live_reader_calls",
+                "full_rust_replay",
+                "archived_report"
+              ]
+            },
+            "threshold_profiles": [
+              "fixture",
+              "locomo_full",
+              "longmemeval_full",
+              "oss_reader_full"
+            ],
+            "datasets": [
+              {
+                "name": "LOCOMO",
+                "artifact_kind": "real_or_fixture_json",
+                "threshold_profile": "locomo_full"
+              },
+              {
+                "name": "LongMemEval_s",
+                "artifact_kind": "real_or_fixture_json",
+                "threshold_profile": "longmemeval_full"
+              }
+            ]
+          }
+        }
+      ]
     }
   ],
   "coverage": {
@@ -8530,6 +8885,33 @@
         ],
         "blocker": "native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+      },
+      {
+        "family": "client_proxy_control_plane",
+        "suites": [
+          "cpp_client_proxy_control_plane_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
+        "expected_runner_command": "run_cpp_control_plane_shared_cases --corpus {corpus}"
+      },
+      {
+        "family": "product_api_models",
+        "suites": [
+          "cpp_product_api_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
+        "expected_runner_command": "run_cpp_product_api_shared_cases --corpus {corpus}"
+      },
+      {
+        "family": "context_benchmark_report_contract",
+        "suites": [
+          "cpp_context_benchmark_parity"
+        ],
+        "status": "temporary_static_surface_gate",
+        "blocker": "C++ native benchmark adapter must emit matrixark_vikingmem_context_benchmark_report_v1 before static benchmark report contracts become executable shared cases.",
+        "expected_runner_command": "run_cpp_context_benchmark_shared_cases --corpus {corpus}"
       }
     ],
     "required_case_names": [
@@ -8689,7 +9071,14 @@
       "server_raft_membership_apply_route",
       "server_raft_control_scale_up_down",
       "server_raft_control_accept_leadership",
-      "server_raft_admin_wait_applied"
+      "server_raft_admin_wait_applied",
+      "all_family_storage_cache_dynamic_modes_and_faults",
+      "all_family_raft_distributed_process_parity",
+      "all_family_context_resource_skill_pipeline",
+      "all_family_client_proxy_control_plane_policy",
+      "all_family_ingestion_kafka_flink_idempotence",
+      "all_family_api_redis_admin_product_models",
+      "all_family_benchmark_locomo_longmemeval_contract"
     ],
     "required_command_kinds": [
       "string_set",
