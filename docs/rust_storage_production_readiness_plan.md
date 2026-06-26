@@ -161,6 +161,13 @@ mtcache-class cache blockers until there is evidence for a real multi-tier repla
 zero-copy or pinned-handle access model, DRAM/PMEM/SSD placement semantics, async writeback with
 backpressure, and mature cache latency metrics.
 
+It also fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
+native ObjectManager ownership at runtime, SlotStore layout transitions, stream-backed zones,
+page compaction tied to model layout and tombstones, the continuous StorageManager
+prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load policy. Slot
+summaries, lifecycle reports, and local compaction are useful parity evidence, but they are not
+treated as complete C++ runtime parity.
+
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
 `scale_slo_report.storage_deployment_scale_slo_ready` is present with metaserver, proxy, client,
