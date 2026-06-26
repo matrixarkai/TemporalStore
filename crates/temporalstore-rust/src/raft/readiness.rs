@@ -202,15 +202,27 @@ pub fn raft_openraft_rollout_readiness_from_reports(
         );
     }
     if !data_node_real_process_rollout_validated {
+        let operational_missing = data_node_report
+            .map(|report| report.operational_semantics.missing_requirements())
+            .filter(|items| !items.is_empty())
+            .map(|items| format!("; missing operational fields: {}", items.join(", ")))
+            .unwrap_or_default();
         missing.push(
             "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and ByteRaft-derived operational semantics evidence"
-                .to_string(),
+                .to_string()
+                + &operational_missing,
         );
     }
     if !metaserver_real_process_rollout_validated {
+        let operational_missing = metaserver_report
+            .map(|report| report.operational_semantics.missing_requirements())
+            .filter(|items| !items.is_empty())
+            .map(|items| format!("; missing operational fields: {}", items.join(", ")))
+            .unwrap_or_default();
         missing.push(
             "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, scheduler replay, and ByteRaft-derived operational semantics evidence"
-                .to_string(),
+                .to_string()
+                + &operational_missing,
         );
     }
     if !multi_process_log_store_validation_present {

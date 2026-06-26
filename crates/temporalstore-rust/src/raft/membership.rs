@@ -258,6 +258,60 @@ impl OpenRaftProcessOperationalSemanticsEvidence {
             && self.apply_pipeline_converged
             && self.wal_persistence_observed
     }
+
+    pub fn missing_requirements(&self) -> Vec<String> {
+        let mut missing = Vec::new();
+        for (present, requirement) in [
+            (self.ready, "operational_semantics_ready"),
+            (
+                self.api_presence_only_rejected,
+                "api_presence_only_rejected",
+            ),
+            (self.process_path_validated, "process_path_validated"),
+            (self.read_index_validated, "read_index_validated"),
+            (self.leader_lease_validated, "leader_lease_validated"),
+            (
+                self.lagging_follower_read_rejected,
+                "lagging_follower_read_rejected",
+            ),
+            (
+                self.stale_follower_write_rejected,
+                "stale_follower_write_rejected",
+            ),
+            (
+                self.leader_transfer_under_load_validated,
+                "leader_transfer_under_load_validated",
+            ),
+            (
+                self.snapshot_install_restart_validated,
+                "snapshot_install_restart_validated",
+            ),
+            (
+                self.membership_add_promote_remove_validated,
+                "membership_add_promote_remove_validated",
+            ),
+            (
+                self.follower_rejoin_after_compaction_validated,
+                "follower_rejoin_after_compaction_validated",
+            ),
+            (
+                self.secondary_read_eligibility_validated,
+                "secondary_read_eligibility_validated",
+            ),
+            (self.apply_pipeline_converged, "apply_pipeline_converged"),
+            (self.wal_persistence_observed, "wal_persistence_observed"),
+        ] {
+            if !present {
+                missing.push(requirement.to_string());
+            }
+        }
+        missing.extend(
+            self.blockers
+                .iter()
+                .map(|blocker| format!("blocker:{blocker}")),
+        );
+        missing
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
