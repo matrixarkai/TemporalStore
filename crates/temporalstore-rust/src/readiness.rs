@@ -157,6 +157,9 @@ pub struct StorageMigrationCorpusReadinessReport {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageProductionPostureReport {
+    pub rust_storage_lifecycle_behavior_ready: bool,
+    #[serde(default)]
+    pub rust_storage_lifecycle_behavior_evidence: Vec<String>,
     pub orphan_page_detection_ready: bool,
     pub missing_page_ref_detection_ready: bool,
     pub stale_page_ref_detection_ready: bool,
@@ -1038,8 +1041,31 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let model_layout_compaction_ready = true;
     let mature_background_storage_manager_ready = false;
     let merged_dump_load_policy_ready = false;
+    let rust_storage_lifecycle_behavior_ready = orphan_page_detection_ready
+        && missing_page_ref_detection_ready
+        && stale_page_ref_detection_ready
+        && follower_cursor_safe_gc_ready
+        && shared_store_sync_async_replay_ready
+        && first_class_slot_object_page_index_ready
+        && native_slot_store_layout_transition_ready
+        && model_layout_compaction_ready;
+    let rust_storage_lifecycle_behavior_evidence = vec![
+        "slot-first ownership index is updated on object writes/deletes and validated during recovery"
+            .to_string(),
+        "slot dump/load manifests validate slot summaries, page refs, sequence boundaries, and install safety"
+            .to_string(),
+        "local/shared-store replay covers sync and async storage paths with follower-cursor retention"
+            .to_string(),
+        "compaction preserves model layout, tombstones, stale page density, and slot transition counts"
+            .to_string(),
+        "cache pressure/refill validates cold page reads through PageAddress and cache refill"
+            .to_string(),
+    ];
 
     let mut missing = Vec::new();
+    if !rust_storage_lifecycle_behavior_ready {
+        missing.push("Rust storage lifecycle behavior evidence".to_string());
+    }
     if !orphan_page_detection_ready {
         missing.push("orphan page detection".to_string());
     }
@@ -1090,6 +1116,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     }
 
     StorageProductionPostureReport {
+        rust_storage_lifecycle_behavior_ready,
+        rust_storage_lifecycle_behavior_evidence,
         orphan_page_detection_ready,
         missing_page_ref_detection_ready,
         stale_page_ref_detection_ready,
@@ -1533,7 +1561,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture covers orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining blockers are native ObjectManager mechanics, stream-backed zones, mature StorageManager loops, and merged dump/load policy"
+                "storage production posture covers Rust lifecycle behavior evidence, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blockers are native ObjectManager mechanics, stream-backed zones, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2568,6 +2596,19 @@ mod tests {
     #[test]
     fn storage_production_posture_requires_all_storage_gap_evidence() {
         let report = storage_production_posture_report();
+        assert!(report.rust_storage_lifecycle_behavior_ready);
+        assert!(report
+            .rust_storage_lifecycle_behavior_evidence
+            .iter()
+            .any(|item| item.contains("slot-first ownership index")));
+        assert!(report
+            .rust_storage_lifecycle_behavior_evidence
+            .iter()
+            .any(|item| item.contains("slot dump/load manifests")));
+        assert!(report
+            .rust_storage_lifecycle_behavior_evidence
+            .iter()
+            .any(|item| item.contains("sync and async storage paths")));
         assert!(report.orphan_page_detection_ready);
         assert!(report.missing_page_ref_detection_ready);
         assert!(report.stale_page_ref_detection_ready);
@@ -2624,6 +2665,7 @@ mod tests {
             .find(|item| item.contains("storage production posture covers"))
             .expect("storage posture evidence must be listed");
         for required in [
+            "Rust lifecycle behavior evidence",
             "orphan page detection",
             "missing/stale page-reference detection",
             "corrupt page/index/oplog/snapshot evidence",
@@ -2634,7 +2676,7 @@ mod tests {
             "first-class slot/object/page ownership index",
             "SlotStore layout transition evidence",
             "model-layout compaction",
-            "remaining blockers are native ObjectManager mechanics",
+            "remaining C++ runtime storage mechanics blockers are native ObjectManager mechanics",
             "stream-backed zones",
             "mature StorageManager loops",
             "merged dump/load policy",
