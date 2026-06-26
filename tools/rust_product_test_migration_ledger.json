@@ -9,46 +9,46 @@
     "duplicate/remove": "Redundant tests that should be deleted or folded into a shared case; none explicitly identified in this first ledger."
   },
   "summary": {
-    "grandfathered_tests": 505,
+    "grandfathered_tests": 490,
     "by_classification": {
-      "move_to_shared": 498,
-      "rust_internal": 7
+      "move_to_shared": 484,
+      "rust_internal": 6
     },
     "by_family": {
-      "ops/scale": 22,
-      "control plane": 91,
+      "ops/scale": 20,
+      "control plane": 86,
       "storage/cache": 171,
-      "Redis/admin": 30,
+      "Redis/admin": 26,
       "Raft": 139,
-      "ingestion": 10,
-      "context": 7,
+      "ingestion": 9,
+      "context": 5,
       "Feature": 12,
       "Sequence": 4,
       "Risk": 8,
       "IPS": 4,
-      "rust internals": 7
+      "rust internals": 6
     },
     "by_family_and_classification": {
       "ops/scale": {
-        "move_to_shared": 22
+        "move_to_shared": 20
       },
       "control plane": {
-        "move_to_shared": 91
+        "move_to_shared": 86
       },
       "storage/cache": {
         "move_to_shared": 171
       },
       "Redis/admin": {
-        "move_to_shared": 30
+        "move_to_shared": 26
       },
       "Raft": {
         "move_to_shared": 139
       },
       "ingestion": {
-        "move_to_shared": 10
+        "move_to_shared": 9
       },
       "context": {
-        "move_to_shared": 7
+        "move_to_shared": 5
       },
       "Feature": {
         "move_to_shared": 12
@@ -63,7 +63,7 @@
         "move_to_shared": 4
       },
       "rust internals": {
-        "rust_internal": 7
+        "rust_internal": 6
       }
     },
     "next_migration_target": "Raft ByteRaft-derived process/fault/readiness cases, then storage/cache recovery and context pipeline model cases."
@@ -163,15 +163,6 @@
       "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_scheduler_execute_next_dry_run_preserves_queue",
       "file": "crates/temporalstore-rust/src/bin/metaserver.rs",
       "test_name": "metaserver_scheduler_execute_next_dry_run_preserves_queue",
-      "family": "control plane",
-      "classification": "move_to_shared",
-      "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/metaserver.rs::metaserver_scheduler_execute_next_installs_token_then_loads_node",
-      "file": "crates/temporalstore-rust/src/bin/metaserver.rs",
-      "test_name": "metaserver_scheduler_execute_next_installs_token_then_loads_node",
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
@@ -313,15 +304,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/readiness_gate.rs::readiness_gate_can_filter_one_service",
-      "file": "crates/temporalstore-rust/src/bin/readiness_gate.rs",
-      "test_name": "readiness_gate_can_filter_one_service",
-      "family": "ops/scale",
-      "classification": "move_to_shared",
-      "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/bin/server.rs::startup_load_request_uses_readonly_secondary_env",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
       "test_name": "startup_load_request_uses_readonly_secondary_env",
@@ -439,24 +421,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_ping_routes_match_cpp_ping_rpc",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_ping_routes_match_cpp_ping_rpc",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_aliases_cover_partition_manager_surface",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "cpp_server_service_aliases_cover_partition_manager_surface",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/bin/server.rs::cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
       "test_name": "cpp_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
@@ -484,15 +448,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_ingest_batch_routes_execute_api_kafka_and_flink_records",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_ingest_batch_routes_execute_api_kafka_and_flink_records",
-      "family": "ingestion",
-      "classification": "move_to_shared",
-      "next_migration_target": "ingestion shared cases for Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, and lag metrics",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
       "test_name": "server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop",
@@ -511,66 +466,12 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_raft_status_and_admin_routes",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_exposes_raft_status_and_admin_routes",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
       "file": "crates/temporalstore-rust/src/bin/server.rs",
       "test_name": "server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_raft_apply_health_route",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_exposes_raft_apply_health_route",
-      "family": "control plane",
-      "classification": "move_to_shared",
-      "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_raft_membership_apply_route",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_exposes_raft_membership_apply_route",
-      "family": "control plane",
-      "classification": "move_to_shared",
-      "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_control_scale_up_down_preserves_serving",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_raft_control_scale_up_down_preserves_serving",
-      "family": "ops/scale",
-      "classification": "move_to_shared",
-      "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_control_accept_leadership_matches_raft_node_route",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_raft_control_accept_leadership_matches_raft_node_route",
-      "family": "control plane",
-      "classification": "move_to_shared",
-      "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_admin_wait_applied_reports_lag_and_success_after_catchup",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
-      "test_name": "server_raft_admin_wait_applied_reports_lag_and_success_after_catchup",
-      "family": "Redis/admin",
-      "classification": "move_to_shared",
-      "next_migration_target": "Redis/admin/API shared command-response corpus",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -877,15 +778,6 @@
       "family": "control plane",
       "classification": "move_to_shared",
       "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/context_workflow/tests.rs::context_workflow_extracts_retrieves_and_injects_mock_context",
-      "file": "crates/temporalstore-rust/src/context_workflow/tests.rs",
-      "test_name": "context_workflow_extracts_retrieves_and_injects_mock_context",
-      "family": "context",
-      "classification": "move_to_shared",
-      "next_migration_target": "context shared cases for event/segment/entity/index/embedding/summary/debug-flow pipelines",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -1258,15 +1150,6 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/e2e.rs::e2e_uses_raft_replication_by_default",
-      "file": "crates/temporalstore-rust/src/e2e.rs",
-      "test_name": "e2e_uses_raft_replication_by_default",
-      "family": "control plane",
-      "classification": "move_to_shared",
-      "next_migration_target": "control-plane shared cases for topology, admission, route invalidation, lifecycle, and scheduler tokens",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
       "test_id": "crates/temporalstore-rust/src/e2e.rs::e2e_rejects_shared_store_as_write_replication_path_for_now",
       "file": "crates/temporalstore-rust/src/e2e.rs",
       "test_name": "e2e_rejects_shared_store_as_write_replication_path_for_now",
@@ -1336,15 +1219,6 @@
       "family": "ops/scale",
       "classification": "move_to_shared",
       "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",
-      "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::context_models_match_cpp_keys_timeline_pages_and_filters",
-      "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "context_models_match_cpp_keys_timeline_pages_and_filters",
-      "family": "context",
-      "classification": "move_to_shared",
-      "next_migration_target": "context shared cases for event/segment/entity/index/embedding/summary/debug-flow pipelines",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4559,15 +4433,6 @@
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
-    },
-    {
-      "test_id": "crates/temporalstore-rust/src/types.rs::context_models_round_trip_cpp_wire_payloads_and_type_alias",
-      "file": "crates/temporalstore-rust/src/types.rs",
-      "test_name": "context_models_round_trip_cpp_wire_payloads_and_type_alias",
-      "family": "rust internals",
-      "classification": "rust_internal",
-      "next_migration_target": "remain Rust-local with rust-internal markers when touched",
-      "notes": "Rust helper/corpus-loader mechanics; keep local and add rust-internal marker when touched."
     },
     {
       "test_id": "crates/temporalstore-rust/tests/storage_crash_harness.rs::storage_crash_harness_recovers_after_abrupt_process_abort",

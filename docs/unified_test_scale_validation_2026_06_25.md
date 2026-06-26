@@ -7,11 +7,11 @@ context workflow, and a compact 3-node scale/shared-store run.
 ## What Is Unified Now
 
 - Shared corpus schema: `temporalstore-unified-cpp-rust-corpus`
-- Shared cases: `150`
-- Shared steps: `312`
-- C++ existing-test surfaces tracked: `185`
-- Rust shared-corpus marked tests: `47`
-- Rust grandfathered product-test backlog: `507`
+- Shared cases: `164`
+- Shared steps: `326`
+- C++ existing-test surfaces tracked: `209`
+- Rust shared-corpus marked tests: `52`
+- Rust grandfathered product-test backlog: `490`
 
 The active Rust integration target is now:
 
