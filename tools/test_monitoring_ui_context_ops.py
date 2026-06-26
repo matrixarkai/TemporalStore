@@ -162,6 +162,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-mode",
             "portal-page-size",
             "portal-refresh",
+            "portal-prev-page",
+            "portal-next-page",
             "portal-copy",
             "portal-users",
             "portal-items",
@@ -261,6 +263,19 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("allowed_session_ids", html)
         self.assertIn("expires_at_ms", html)
         self.assertIn("redacted", html)
+        self.assertNotIn("const samplePortal", html)
+        self.assertIn("portal-next-page", html)
+        self.assertIn("portal-prev-page", html)
+        self.assertIn("Refresh Live Portal", html)
+        self.assertIn("offline sample", html)
+        self.assertIn("/api/tools/call", html)
+        self.assertIn("/api/backend_metrics", html)
+        self.assertIn("/api/ingestion_dashboard", html)
+        self.assertIn("/api/management_portal", html)
+        self.assertIn("portalAutoRefresh", html)
+        self.assertIn("loadLivePortal", html)
+        self.assertIn("portalState", html)
+        self.assertIn("fallbackPortal", html)
 
     def test_matrixark_site_has_management_portal(self) -> None:
         html = (SITE_DIR / "management-portal.html").read_text(encoding="utf-8")
@@ -276,6 +291,14 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("bytekv_sql", html)
         self.assertIn("mysql://matrixark", html)
         self.assertIn("matrixark_metadata_records", html)
+        self.assertIn("fallbackPortal", html)
+        self.assertIn("portalState", html)
+        self.assertIn("loadLivePortal", html)
+        self.assertIn("portalAutoRefresh", html)
+        self.assertIn("/api/management_portal", html)
+        self.assertIn("/api/backend_metrics", html)
+        self.assertIn("portal-prev-page", html)
+        self.assertIn("portal-next-page", html)
         self.assertIn("ContextPack Audit Debugger", html)
         self.assertIn("context_pack_debugger", html)
         self.assertIn("portal-topology-records", html)
