@@ -4267,6 +4267,10 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
 
 
 class MatrixArkMcpServer:
+    SERVER_NAME = "matrixark-context"
+    SERVER_VERSION = "0.2.0"
+    DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+
     def __init__(self, adapter: MatrixArkLocalAdapter, *, line_json: bool = False, access_mode: str = "dev") -> None:
         self.adapter = adapter
         self.line_json = line_json
@@ -4306,18 +4310,41 @@ class MatrixArkMcpServer:
             except Exception as exc:
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
 
-    def handle(self, request: Json) -> Json | None:
-        method = request.get("method")
+    def error_response(self, request_id: Any, code: int, message: str, *, data: Json | None = None) -> Json:
+        error: Json = {"code": code, "message": message}
+        if data is not None:
+            error["data"] = data
+        return {"jsonrpc": "2.0", "id": request_id, "error": error}
+
+    def _validate_jsonrpc_request(self, request: Any) -> tuple[Any, str] | Json:
+        if not isinstance(request, dict):
+            return self.error_response(None, -32600, "JSON-RPC request must be an object")
         request_id = request.get("id")
+        jsonrpc = request.get("jsonrpc", "2.0")
+        if jsonrpc != "2.0":
+            return self.error_response(request_id, -32600, "jsonrpc must be '2.0'")
+        method = request.get("method")
+        if not isinstance(method, str) or not method:
+            return self.error_response(request_id, -32600, "method must be a non-empty string")
+        return request_id, method
+
+    def handle(self, request: Json) -> Json | None:
+        validated = self._validate_jsonrpc_request(request)
+        if isinstance(validated, dict):
+            return validated
+        request_id, method = validated
         try:
             if method == "initialize":
-                requested_protocol = (request.get("params") or {}).get("protocolVersion") or "2025-06-18"
+                params = request.get("params") or {}
+                if not isinstance(params, dict):
+                    return self.error_response(request_id, -32602, "initialize params must be an object")
+                requested_protocol = params.get("protocolVersion") or self.DEFAULT_PROTOCOL_VERSION
                 return {
                     "jsonrpc": "2.0",
                     "id": request_id,
                     "result": {
                         "protocolVersion": requested_protocol,
-                        "serverInfo": {"name": "matrixark-context", "version": "0.1.0"},
+                        "serverInfo": {"name": self.SERVER_NAME, "version": self.SERVER_VERSION},
                         "capabilities": {"tools": {"listChanged": False}},
                     },
                 }
@@ -4327,21 +4354,29 @@ class MatrixArkMcpServer:
                 return {"jsonrpc": "2.0", "id": request_id, "result": {"tools": TOOLS}}
             if method == "tools/call":
                 params = request.get("params", {})
+                if not isinstance(params, dict):
+                    return self.error_response(request_id, -32602, "tools/call params must be an object")
                 name = params.get("name")
+                if not isinstance(name, str) or not name:
+                    return self.error_response(request_id, -32602, "tools/call params.name must be a non-empty string")
                 args = params.get("arguments", {})
                 if not isinstance(args, dict):
-                    raise MatrixArkError("tool arguments must be an object")
+                    return self.error_response(request_id, -32602, "tools/call params.arguments must be an object")
                 result = self.call_tool(name, args)
                 return {"jsonrpc": "2.0", "id": request_id, "result": json_text(result)}
-            raise MatrixArkError(f"unsupported method {method!r}")
+            return self.error_response(request_id, -32601, f"method not found: {method}")
+        except MatrixArkError as exc:
+            return self.error_response(request_id, -32000, str(exc), data={"error_type": exc.__class__.__name__})
         except Exception as exc:  # MCP errors should stay JSON-RPC shaped.
-            return {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32000, "message": str(exc)},
-            }
+            _mcp_debug_log(f"handle: internal error for method={method!r}: {exc}")
+            return self.error_response(request_id, -32603, "internal MatrixArk MCP server error", data={"error_type": exc.__class__.__name__})
 
     def call_tool(self, name: str, args: Json) -> Json:
+        if not isinstance(name, str) or not name:
+            raise MatrixArkError("tool name must be a non-empty string")
+        if not isinstance(args, dict):
+            raise MatrixArkError("tool arguments must be an object")
+        args = dict(args)
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
         if name == "matrixark_backend_ready":
@@ -4511,7 +4546,16 @@ class MatrixArkMcpServer:
 
     def serve(self) -> None:
         while True:
-            request = self.read_message()
+            try:
+                request = self.read_message()
+            except json.JSONDecodeError as exc:
+                _mcp_debug_log(f"serve: parse error: {exc}")
+                self.write_response(self.error_response(None, -32700, "parse error", data={"detail": str(exc)}))
+                continue
+            except Exception as exc:
+                _mcp_debug_log(f"serve: invalid request frame: {exc}")
+                self.write_response(self.error_response(None, -32600, "invalid request frame", data={"detail": str(exc)}))
+                continue
             if request is None:
                 return
             if not request:

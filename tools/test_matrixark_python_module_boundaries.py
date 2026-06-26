@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import importlib
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,6 +49,51 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             else:
                 seen[node.name] = node.lineno
         self.assertEqual({}, duplicates)
+
+
+class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
+    def _server(self):
+        server_mod = importlib.import_module("tools.matrixark_mcp_server")
+        tmpdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpdir.cleanup)
+        event_log = Path(tmpdir.name) / "events.jsonl"
+        return server_mod.MatrixArkMcpServer(server_mod.MatrixArkLocalAdapter(event_log), line_json=True)
+
+    def test_jsonrpc_errors_are_specific_and_stable(self) -> None:
+        server = self._server()
+        invalid = server.handle({"jsonrpc": "1.0", "id": 1, "method": "tools/list"})
+        self.assertEqual(-32600, invalid["error"]["code"])
+
+        missing = server.handle({"jsonrpc": "2.0", "id": 2, "method": "unknown/method"})
+        self.assertEqual(-32601, missing["error"]["code"])
+
+        bad_params = server.handle({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": []})
+        self.assertEqual(-32602, bad_params["error"]["code"])
+
+    def test_initialize_reports_server_identity_and_version(self) -> None:
+        server = self._server()
+        response = server.handle({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}})
+        self.assertEqual("matrixark-context", response["result"]["serverInfo"]["name"])
+        self.assertRegex(response["result"]["serverInfo"]["version"], r"^\d+\.\d+\.\d+$")
+        self.assertIn("tools", response["result"]["capabilities"])
+
+    def test_call_tool_does_not_mutate_caller_arguments(self) -> None:
+        server = self._server()
+        args = {
+            "messages": [{"role": "user", "content": "Alice approved the GPU budget."}],
+            "agent_hook": {
+                "hook_id": "hook-1",
+                "hook_type": "before_llm",
+                "source": "codex",
+                "auto_captured": True,
+                "observed_at_ms": 1,
+            },
+        }
+        result = server.call_tool("matrixark_ingest", args)
+        self.assertIn(result["status"], {"accepted", "ok"})
+        self.assertIn("event_id_hash", result)
+        self.assertIn("agent_hook", args)
+
 
 
 if __name__ == "__main__":
