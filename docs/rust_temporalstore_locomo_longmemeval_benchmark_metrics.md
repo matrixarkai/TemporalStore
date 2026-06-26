@@ -11,7 +11,7 @@ Rust TemporalStore was used as the benchmark ingestion, context event storage, r
 backend for both LOCOMO and LongMemEval_s. Python was used only as the dataset conversion, runner,
 reader scoring, and report-emission wrapper.
 
-Run date: 2026-06-21
+Latest run date: 2026-06-26
 
 Native checkout used for faster Rust builds:
 
@@ -23,6 +23,22 @@ Raw reports were written under the ignored local artifact directory:
 
 ```bash
 /home/vj/temporalstore-rust-native/benchmark_reports/full_rust_benchmarks
+```
+
+The 2026-06-26 local run used this checkout directly and wrote compact committed readiness summaries
+to:
+
+```bash
+docs/benchmark_archives/locomo_rust_backend_readiness_20260626_summary.json
+docs/benchmark_archives/longmemeval_s_rust_backend_readiness_20260626_summary.json
+```
+
+The larger raw wrapper reports and Rust backend traces were kept as local run artifacts under:
+
+```bash
+/tmp/ts_rust_backend_readiness_20260626
+docs/benchmark_archives/locomo_rust_backend_readiness_20260626.json
+docs/benchmark_archives/longmemeval_s_rust_backend_readiness_20260626.json
 ```
 
 These reports are deterministic-reader engineering evidence. They are not a VikingMem paper-comparable
@@ -42,6 +58,60 @@ Every benchmark result on this page must be read through one of these labels:
 Unless a table row or report path explicitly says otherwise, the results below are deterministic
 engineering evidence only. They are useful for regression and Rust-vs-C++ behavior checks, but they
 must not be cited as VikingMem paper-comparable scores.
+
+## 2026-06-26 Rust Backend Readiness Report
+
+This run exercised Rust TemporalStore for ingestion, context event storage, retrieval, and full
+dataset replay on both benchmark datasets. Python remained only the conversion, orchestration,
+deterministic reader, scoring, and report-emission wrapper.
+
+The run also fixed the packed-source full-replay scoring path in
+`context_workflow_harness`: packed all-source replay can now score a retrieved block by retrieval
+position when the block matches expected answer terms but no longer maps to one original source row.
+This preserves the strict no-direct-source-scoring requirement while allowing packed Rust
+ContextEvent replay evidence to be judged fairly.
+
+| Evidence field | LOCOMO | LongMemEval_s |
+| --- | ---: | ---: |
+| Dataset path | `/mnt/c/root/matrixark_benchmarks/data/locomo10.json` | `/mnt/c/root/matrixark_benchmarks/data/longmemeval_s_helamem.json` |
+| Dataset bytes | `2,805,274` | `15,388,478` |
+| Dataset SHA-256 | `79fa87e90f04081343b8c8debecb80a9a6842b76a7aa537dc9fdf651ea698ff4` | `821a2034d219ab45846873dd14c14f12cfe7776e73527a483f9dac095d38620c` |
+| `case_count` | `1,542` | `500` |
+| `all_pipelines_use_rust_temporalstore` | `true` | `true` |
+| `python_only_diagnostic` | `false` | `false` |
+| `rust_temporalstore_backend_ready` | `true` | `true` |
+| `rust_temporalstore_context_event_ingest_ready` | `true` | `true` |
+| `rust_temporalstore_full_replay_ready` | `true` | `true` |
+| `rust_temporalstore_direct_source_scoring` | `false` | `false` |
+| `rust_temporalstore_ingested_source_sets` | `10` | `500` |
+| `rust_temporalstore_retrieved_source_sets` | `10` | `500` |
+| `benchmark_threshold_passed` | `true` | `true` |
+| `benchmark_threshold_violation_count` | `0` | `0` |
+| `benchmark_hit_at_k` | `0.9474708171206225` | `1.0` |
+| `benchmark_mean_reciprocal_rank` | `0.5273212063669817` | `1.0` |
+| `reader_hit_rate` | `0.8767833981841764` | `0.996` |
+| `reader_answer_coverage` | `0.8719620628334321` | `0.890840652446675` |
+| `benchmark_token_reduction_percent` | `83.71398170966064` | `81.39026159904991` |
+| `benchmark_retrieval_p50_ms` | `19.423236499278573` | `13.967743499961216` |
+| `benchmark_retrieval_p95_ms` | `34.29777445035143` | `24.74160140081949` |
+| `benchmark_reader_p50_ms` | `3.853079499094747` | `2.3478925013478147` |
+| `benchmark_reader_p95_ms` | `14.121601897932129` | `6.7751251999652595` |
+| `zero_hit_queries` | `81` | `0` |
+| `reader_zero_hit_queries` | `190` | `2` |
+| `reader_mode_effective` | `deterministic` | `deterministic` |
+| `reader_open_source_calls` | `0` | `0` |
+| `paper_comparable_claim_ready` | `false` | `false` |
+
+Remaining blockers are only where evidence is still missing:
+
+- **VikingMem paper-comparable live-reader evidence:** still blocked because this run used
+  `reader_mode_effective=deterministic` and `reader_open_source_calls=0`. A paper-comparable claim
+  still requires the configured GPT-4o-mini/OpenAI-compatible reader endpoint, no deterministic
+  fallback, full Rust replay, archived provider/model/prompt metadata, and
+  `paper_comparable_claim_ready=true`.
+- **No deterministic Rust-backend blocker remains for these two benchmark gates:** both datasets
+  passed full Rust TemporalStore replay with all cases, all sources, no Python-only diagnostic mode,
+  no direct source scoring, and zero threshold violations.
 
 ## Production-Performance Wording
 

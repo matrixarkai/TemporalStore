@@ -1912,11 +1912,21 @@ fn hit_source_rank(
 ) -> Option<usize> {
     blocks
         .iter()
-        .filter(|block| context_benchmark_block_is_hit(case, block))
-        .map(|block| external_block_source_order(case, block))
-        .filter(|source_order| *source_order < case.sources.len())
+        .enumerate()
+        .filter(|(_, block)| context_benchmark_block_is_hit(case, block))
+        .map(|(retrieval_order, block)| {
+            let source_order = external_block_source_order(case, block);
+            if source_order < case.sources.len() {
+                source_order + 1
+            } else {
+                // Packed full-source replay intentionally groups many original
+                // source rows into one ContextEvent. Expected answer terms can
+                // still prove retrieval correctness even when a single block no
+                // longer maps cleanly to one original source ref.
+                retrieval_order + 1
+            }
+        })
         .min()
-        .map(|source_order| source_order + 1)
 }
 
 fn external_direct_relevance_score(query: &str, text: &str) -> u32 {
