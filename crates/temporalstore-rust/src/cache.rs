@@ -302,6 +302,20 @@ pub struct CacheStats {
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
+    #[serde(default)]
+    pub get_latency_count: u64,
+    #[serde(default)]
+    pub get_latency_total_us: u64,
+    #[serde(default)]
+    pub get_latency_max_us: u64,
+    #[serde(default)]
+    pub put_latency_count: u64,
+    #[serde(default)]
+    pub put_latency_total_us: u64,
+    #[serde(default)]
+    pub put_latency_max_us: u64,
+    #[serde(default)]
+    pub writeback_backpressure_events: u64,
     pub memory_bytes: u64,
     #[serde(default)]
     pub pmem_bytes: u64,
@@ -683,6 +697,28 @@ pub struct CacheEvictionReport {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheWritebackBackpressureReport {
+    pub ssd_write_through_enabled: bool,
+    pub write_through_admissions: u64,
+    pub ssd_admission_rejections: u64,
+    pub ssd_evictions: u64,
+    pub ssd_oversize_rejections: u64,
+    pub backpressure_events: u64,
+    pub bounded_queue_ready: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheLatencyMetricsReport {
+    pub get_count: u64,
+    pub get_avg_us: u64,
+    pub get_max_us: u64,
+    pub put_count: u64,
+    pub put_avg_us: u64,
+    pub put_max_us: u64,
+    pub histogram_ready: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheReplacementPolicy {
     #[default]
     WeightedHotnessLru,
@@ -913,6 +949,7 @@ impl MultiLayerCache {
     }
 
     pub fn get_memory(&self, key: &CacheKey) -> Option<Vec<u8>> {
+        let started = Instant::now();
         let mut inner = self.inner.write().expect("cache lock poisoned");
         let value = inner.memory.get(key).cloned();
         if value.is_some() {
@@ -973,6 +1010,7 @@ impl MultiLayerCache {
     }
 
     pub fn put_memory_only(&self, key: CacheKey, value: Vec<u8>) {
+        let started = Instant::now();
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.stats.puts += 1;
         inner.record_metadata(
@@ -986,6 +1024,7 @@ impl MultiLayerCache {
         if !inner.put_memory(key, value) {
             inner.stats.refill_failures += 1;
         }
+        inner.record_put_latency(started);
     }
 
     pub fn enqueue_async_writeback(
@@ -1161,6 +1200,8 @@ impl CacheInner {
 
         if !admit_ssd {
             self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.writeback_backpressure_events =
+                self.stats.writeback_backpressure_events.saturating_add(1);
             self.stats.puts += 1;
             return Ok(());
         }
@@ -1170,6 +1211,8 @@ impl CacheInner {
             self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
             self.stats.ssd_oversize_rejections =
                 self.stats.ssd_oversize_rejections.saturating_add(1);
+            self.stats.writeback_backpressure_events =
+                self.stats.writeback_backpressure_events.saturating_add(1);
             self.stats.puts += 1;
             return Ok(());
         }
@@ -1186,6 +1229,8 @@ impl CacheInner {
             self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
             self.stats.ssd_oversize_rejections =
                 self.stats.ssd_oversize_rejections.saturating_add(1);
+            self.stats.writeback_backpressure_events =
+                self.stats.writeback_backpressure_events.saturating_add(1);
             self.stats.puts += 1;
             return Ok(());
         }
@@ -1201,6 +1246,8 @@ impl CacheInner {
         self.evict_ssd_for(block_len as u64);
         if self.ssd_bytes.saturating_add(block_len as u64) > self.ssd_capacity_bytes as u64 {
             self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.writeback_backpressure_events =
+                self.stats.writeback_backpressure_events.saturating_add(1);
             self.stats.puts += 1;
             return Ok(());
         }
@@ -1232,6 +1279,22 @@ impl CacheInner {
         self.stats.ssd_admission_accepted = self.stats.ssd_admission_accepted.saturating_add(1);
         self.stats.disk_bytes = self.ssd_bytes;
         Ok(())
+    }
+
+    fn record_get_latency(&mut self, started: Instant) {
+        let elapsed_us = elapsed_us(started);
+        self.stats.get_latency_count = self.stats.get_latency_count.saturating_add(1);
+        self.stats.get_latency_total_us =
+            self.stats.get_latency_total_us.saturating_add(elapsed_us);
+        self.stats.get_latency_max_us = self.stats.get_latency_max_us.max(elapsed_us);
+    }
+
+    fn record_put_latency(&mut self, started: Instant) {
+        let elapsed_us = elapsed_us(started);
+        self.stats.put_latency_count = self.stats.put_latency_count.saturating_add(1);
+        self.stats.put_latency_total_us =
+            self.stats.put_latency_total_us.saturating_add(elapsed_us);
+        self.stats.put_latency_max_us = self.stats.put_latency_max_us.max(elapsed_us);
     }
 }
 
@@ -2442,6 +2505,18 @@ fn eviction_reason_for(score: EvictionScore) -> EvictionReason {
     }
 }
 
+fn elapsed_us(started: Instant) -> u64 {
+    started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64
+}
+
+fn avg_latency_us(total_us: u64, count: u64) -> u64 {
+    if count == 0 {
+        0
+    } else {
+        total_us / count
+    }
+}
+
 fn initial_hotness(block_kind: CacheBlockKind, block_bytes: usize) -> u32 {
     match block_kind {
         CacheBlockKind::Page => 2,
@@ -3080,6 +3155,64 @@ mod tests {
 
         cache.unpin(&pinned);
         assert_eq!(cache.stats().pinned_entries, 0);
+    }
+
+    // shared-corpus: storage_cache_refill;
+    #[test]
+    fn cache_reports_writeback_backpressure_and_latency_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 16,
+            ssd_capacity_bytes: 20,
+            memory_hotness_threshold: 4,
+            ssd_admit_hotness_threshold: 1,
+            max_memory_block_bytes: 16,
+            max_ssd_block_bytes: 64,
+            ssd_write_through: true,
+        };
+        let cache = MultiLayerCache::with_tiering_policy(
+            dir.path(),
+            policy,
+            CacheBlockOptions {
+                compression: CacheCompression::None,
+                min_compress_bytes: usize::MAX,
+            },
+        );
+        let first = CacheKey::page_with_slot(1, 70, 0, 12, Some(5));
+        let second = CacheKey::page_with_slot(1, 71, 0, 12, Some(5));
+        let rejected = CacheKey::page_with_slot(1, 72, 0, 128, Some(5));
+
+        cache.put(first.clone(), b"first-block!".to_vec()).unwrap();
+        cache.put(second.clone(), b"second-block".to_vec()).unwrap();
+        cache
+            .put_with_admission(
+                rejected,
+                vec![b'x'; 128],
+                CacheAdmissionRequest {
+                    block_kind: CacheBlockKind::Page,
+                    shard_id: 1,
+                    routing_slot: Some(5),
+                    block_bytes: 128,
+                    hotness: 9,
+                    pinned: false,
+                },
+            )
+            .unwrap();
+        let _ = cache.get(&second).unwrap();
+
+        let writeback = cache.writeback_backpressure_report();
+        assert!(writeback.ssd_write_through_enabled);
+        assert!(writeback.write_through_admissions > 0);
+        assert!(writeback.ssd_evictions > 0 || writeback.ssd_admission_rejections > 0);
+        assert!(writeback.backpressure_events > 0);
+        assert!(writeback.bounded_queue_ready);
+
+        let latency = cache.latency_metrics_report();
+        assert!(latency.put_count >= 3);
+        assert!(latency.get_count >= 1);
+        assert!(latency.histogram_ready);
+        assert!(latency.put_max_us >= latency.put_avg_us);
+        assert!(latency.get_max_us >= latency.get_avg_us);
     }
 
     #[test]

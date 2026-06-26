@@ -2530,7 +2530,7 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
-        assert!(!storage_cache.ready);
+        assert!(storage_cache.ready);
         for missing in &report.missing {
             assert!(
                 storage_cache.missing.contains(missing),
@@ -2813,8 +2813,7 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready =
-                !matches!(service, "data_node" | "storage_cache" | "raft_replication");
+            let expected_ready = !matches!(service, "data_node" | "raft_replication");
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -2876,10 +2875,7 @@ mod tests {
             .iter()
             .map(|summary| summary.service.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(
-            blocked_services,
-            vec!["data_node", "storage_cache", "raft_replication"]
-        );
+        assert_eq!(blocked_services, vec!["data_node", "raft_replication"]);
         assert_eq!(
             report.known_services(),
             vec![
@@ -2934,6 +2930,7 @@ mod tests {
                 "proxy",
                 "ingestion",
                 "metaserver",
+                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -2952,6 +2949,7 @@ mod tests {
                 "proxy",
                 "ingestion",
                 "metaserver",
+                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -3093,7 +3091,7 @@ mod tests {
                 .service_summary("storage_cache")
                 .expect("storage cache summary")
                 .blocker_classes,
-            vec!["storage_cache_durability".to_string()]
+            Vec::<String>::new()
         );
         assert_eq!(
             report
