@@ -137,13 +137,15 @@ For each benchmark source, Rust creates:
   "kind": "1=document, 2=chat, 3=ticket, 4=code, 5=incident, 6=user_event",
   "canonical_name": "<source title, compacted>",
   "l0": "<title>: <body>, truncated to 32 words",
-  "status": 1,
-  "last_event_time_ms": "1000 + source_count - source_index",
-  "summary_dirty": true,
-  "l1_ref": "kind=<source_kind>; title=<title>; key_facts=<body, truncated>",
-  "raw_metadata_ref": "<source_id, compacted>"
+  "last_event_time_ms": "1000 + source_count - source_index"
 }
 ```
+
+Rust still accepts older node JSON fields such as `status`, `summary_dirty`,
+`l1_ref`, and `raw_metadata_ref` for compatibility, but new C++/Rust parity
+payloads keep those out of the hot node record. L1 text belongs in
+`ContextSummary`; dirty state belongs in `ContextSummaryDirtyMarker`; provenance
+belongs in resource/audit sidecars.
 
 The main harness extraction writes the node through:
 
@@ -161,19 +163,19 @@ For each benchmark source, Rust creates:
 {
   "event_id_hash": "stable_hash64(external-event:<source_id>:<body>)",
   "event_time_ms": "1000 + source_count - source_index",
-  "kind": "same numeric source kind as ContextNode.kind",
-  "event_type": 1,
-  "actor_hash": "stable_hash64(<source_id>)",
-  "status": 1,
-  "valid_until_ms": 0,
+  "ingestion_time_ms": "1000 + source_count - source_index",
+  "type": 1,
   "confidence": 1.0,
   "importance": 1.0,
-  "text": "<source body>",
-  "source_ref": "<source_id, compacted>",
-  "related_node_hashes": ["<node_hash>"],
-  "compact_attrs": "UTF-8 bytes of the compact L1 fact string"
+  "text": "<source body>"
 }
 ```
+
+Rust still accepts older event JSON fields such as `kind`, `actor_hash`,
+`status`, `valid_until_ms`, `source_ref`, `related_node_hashes`, and
+`compact_attrs`, but new writes encode only the compact C++ parity event shape.
+Source, status, entity, and event-time-bucket lookups are represented as
+secondary indexes rather than fields embedded in every hot event value.
 
 The event is written through:
 

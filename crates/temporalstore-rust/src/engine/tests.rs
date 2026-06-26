@@ -104,6 +104,13 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
         l1_ref: "l1://summary".to_string(),
         raw_metadata_ref: "raw://node".to_string(),
     };
+    let cpp_node = ContextNode {
+        status: 0,
+        summary_dirty: false,
+        l1_ref: String::new(),
+        raw_metadata_ref: String::new(),
+        ..node.clone()
+    };
     let upsert = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ContextUpsertNode {
@@ -127,7 +134,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     });
     assert!(matches!(
         get.response,
-        CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &node
+        CommandResponse::ContextNode { node: Some(ref stored), .. } if stored == &cpp_node
     ));
     let meta = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -139,7 +146,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     assert!(matches!(
         meta.response,
         CommandResponse::Bytes { value: Some(ref bytes) }
-            if ContextNode::decode_context_value(bytes).as_ref() == Some(&node)
+            if ContextNode::decode_context_value(bytes).as_ref() == Some(&cpp_node)
     ));
 
     let entity = ContextEntity {
@@ -196,6 +203,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     let event_a = ContextEvent {
         event_id_hash: 5,
         event_time_ms: 1_000,
+        ingestion_time_ms: 1_000,
         kind: 9,
         event_type: 2,
         actor_hash: 77,
@@ -253,8 +261,8 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
             limit: Some(10),
             current_valid_only: true,
             as_of_ms: 0,
-            kinds: vec![9],
-            statuses: vec![1],
+            kinds: vec![2],
+            statuses: Vec::new(),
             min_confidence: 0.8,
             min_importance: 0.6,
         },
@@ -308,6 +316,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     let extracted_event = ContextEvent {
         event_id_hash: 445,
         event_time_ms: 1_781_500_000_000,
+        ingestion_time_ms: 1_781_500_000_000,
         kind: 7,
         event_type: 7,
         actor_hash: 0,
@@ -388,6 +397,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
             event: ContextEvent {
                 event_id_hash: 446,
                 event_time_ms: 1_781_500_000_010,
+                ingestion_time_ms: 1_781_500_000_010,
                 kind: 8,
                 event_type: 8,
                 actor_hash: 0,
@@ -783,6 +793,7 @@ fn context_temporal_compression_builds_replayable_summary_without_deleting_sourc
                 event: ContextEvent {
                     event_id_hash: event_id,
                     event_time_ms: START + offset_ms,
+                    ingestion_time_ms: START + offset_ms,
                     kind: 7,
                     event_type: 7,
                     actor_hash: 0,
@@ -4323,6 +4334,7 @@ fn recovery_validates_all_timestamped_kv_page_families() {
                     event: ContextEvent {
                         event_id_hash: 66,
                         event_time_ms: 4_000,
+                        ingestion_time_ms: 4_000,
                         kind: 1,
                         event_type: 2,
                         actor_hash: 77,

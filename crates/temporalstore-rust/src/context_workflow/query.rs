@@ -1019,10 +1019,6 @@ pub(super) fn stable_hash64(value: &str) -> u64 {
     hash
 }
 
-fn context_event_time_key(event_time_ms: u64, event_hash: u64) -> String {
-    format!("{:020}:{event_hash}", event_time_ms.max(1))
-}
-
 pub(super) fn context_event_with_storage_keys(
     node_hash: u64,
     mut event: ContextEvent,
@@ -1030,34 +1026,15 @@ pub(super) fn context_event_with_storage_keys(
     if event.event_time_ms == 0 {
         event.event_time_ms = super::now_ms().max(1);
     }
+    if event.ingestion_time_ms == 0 {
+        event.ingestion_time_ms = event.event_time_ms;
+    }
     if event.event_id_hash == 0 {
         event.event_id_hash = stable_hash64(&format!(
             "context_event:{}:{}:{}",
             node_hash, event.event_time_ms, event.text
         ));
     }
-    if event.parent_segment_hash == 0 {
-        if let Some(parent_segment_hash) = event
-            .parent_segment_hashes
-            .iter()
-            .copied()
-            .find(|hash| *hash != 0)
-        {
-            event.parent_segment_hash = parent_segment_hash;
-        }
-    }
-    let (parent_type, parent_hash) = if event.parent_segment_hash != 0 {
-        ("context_segment", event.parent_segment_hash)
-    } else {
-        ("context_node", node_hash)
-    };
-    event.context_event_parent_type = parent_type.to_string();
-    event.context_event_parent_hash = parent_hash;
-    event.event_time_key = context_event_time_key(event.event_time_ms, event.event_id_hash);
-    event.context_event_key = format!(
-        "context_event:{}:{}:{}",
-        event.context_event_parent_type, event.context_event_parent_hash, event.event_time_key
-    );
     event
 }
 

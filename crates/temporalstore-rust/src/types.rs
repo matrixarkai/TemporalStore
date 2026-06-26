@@ -247,15 +247,19 @@ pub struct ContextNode {
     pub canonical_name: String,
     #[serde(default)]
     pub l0: String,
-    #[serde(default)]
+    // Deprecated hot-schema field: retained for legacy Rust inputs only.
+    #[serde(default, skip_serializing)]
     pub status: u32,
     #[serde(default)]
     pub last_event_time_ms: u64,
-    #[serde(default)]
+    // Deprecated hot-schema field: use ContextSummaryDirtyMarker instead.
+    #[serde(default, skip_serializing)]
     pub summary_dirty: bool,
-    #[serde(default)]
+    // Deprecated hot-schema field: use ContextSummary records instead.
+    #[serde(default, skip_serializing)]
     pub l1_ref: String,
-    #[serde(default)]
+    // Deprecated hot-schema field: use resource/provenance sidecars instead.
+    #[serde(default, skip_serializing)]
     pub raw_metadata_ref: String,
 }
 
@@ -264,26 +268,20 @@ pub struct ContextEvent {
     pub event_id_hash: u64,
     pub event_time_ms: u64,
     #[serde(default)]
-    pub parent_segment_hash: u64,
-    #[serde(default)]
-    pub parent_segment_hashes: Vec<u64>,
-    #[serde(default)]
-    pub context_event_parent_type: String,
-    #[serde(default)]
-    pub context_event_parent_hash: u64,
-    #[serde(default)]
-    pub event_time_key: String,
-    #[serde(default)]
-    pub context_event_key: String,
-    #[serde(default)]
+    pub ingestion_time_ms: u64,
+    // Deprecated hot-schema field: use type/event_type instead.
+    #[serde(default, skip_serializing)]
     pub kind: u32,
     #[serde(default, rename = "type", alias = "event_type")]
     pub event_type: u32,
-    #[serde(default)]
+    // Deprecated hot-schema field: C++ reserves this field.
+    #[serde(default, skip_serializing)]
     pub actor_hash: u64,
-    #[serde(default)]
+    // Deprecated hot-schema field: use secondary index status_hash instead.
+    #[serde(default, skip_serializing)]
     pub status: u32,
-    #[serde(default)]
+    // Deprecated hot-schema field: C++ reserves this field.
+    #[serde(default, skip_serializing)]
     pub valid_until_ms: u64,
     #[serde(default)]
     pub confidence: f32,
@@ -291,12 +289,34 @@ pub struct ContextEvent {
     pub importance: f32,
     #[serde(default)]
     pub text: String,
-    #[serde(default)]
+    // Deprecated hot-schema field: use source/resource secondary indexes instead.
+    #[serde(default, skip_serializing)]
     pub source_ref: String,
-    #[serde(default)]
+    // Deprecated hot-schema field: use ContextChildRef/link sidecars instead.
+    #[serde(default, skip_serializing)]
     pub related_node_hashes: Vec<u64>,
-    #[serde(default)]
+    // Deprecated hot-schema field: use ContextCompressionEvent/debug sidecars instead.
+    #[serde(default, skip_serializing)]
     pub compact_attrs: Vec<u8>,
+}
+
+impl ContextEvent {
+    pub fn primary_time_ms(&self) -> u64 {
+        if self.ingestion_time_ms != 0 {
+            self.ingestion_time_ms
+        } else {
+            self.event_time_ms
+        }
+    }
+
+    pub fn event_type_code(&self) -> u32 {
+        #[allow(deprecated)]
+        if self.event_type != 0 {
+            self.event_type
+        } else {
+            self.kind
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -564,11 +584,7 @@ impl ContextWire for ContextNode {
         encode_varint_field(&mut out, 3, u64::from(self.kind));
         encode_bytes_field(&mut out, 4, self.canonical_name.as_bytes());
         encode_bytes_field(&mut out, 5, self.l0.as_bytes());
-        encode_varint_field(&mut out, 6, u64::from(self.status));
-        encode_varint_field(&mut out, 7, self.last_event_time_ms);
-        encode_varint_field(&mut out, 8, u64::from(self.summary_dirty));
-        encode_bytes_field(&mut out, 9, self.l1_ref.as_bytes());
-        encode_bytes_field(&mut out, 10, self.raw_metadata_ref.as_bytes());
+        encode_varint_field(&mut out, 6, self.last_event_time_ms);
         out
     }
 
@@ -594,7 +610,8 @@ impl ContextWire for ContextNode {
                 (3, 0) => value.kind = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
                 (4, 2) => value.canonical_name = decode_string(bytes, &mut cursor)?,
                 (5, 2) => value.l0 = decode_string(bytes, &mut cursor)?,
-                (6, 0) => value.status = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (6, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
+                // Legacy Rust-only node fields from pre-trim builds.
                 (7, 0) => value.last_event_time_ms = decode_varint(bytes, &mut cursor)?,
                 (8, 0) => value.summary_dirty = decode_varint(bytes, &mut cursor)? != 0,
                 (9, 2) => value.l1_ref = decode_string(bytes, &mut cursor)?,
@@ -611,27 +628,11 @@ impl ContextWire for ContextEvent {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.event_id_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
-        encode_varint_field(&mut out, 14, self.parent_segment_hash);
-        for related in &self.parent_segment_hashes {
-            encode_varint_field(&mut out, 15, *related);
-        }
-        encode_bytes_field(&mut out, 16, self.context_event_parent_type.as_bytes());
-        encode_varint_field(&mut out, 17, self.context_event_parent_hash);
-        encode_bytes_field(&mut out, 18, self.event_time_key.as_bytes());
-        encode_bytes_field(&mut out, 19, self.context_event_key.as_bytes());
-        encode_varint_field(&mut out, 3, u64::from(self.kind));
-        encode_varint_field(&mut out, 4, u64::from(self.event_type));
-        encode_varint_field(&mut out, 5, self.actor_hash);
-        encode_varint_field(&mut out, 6, u64::from(self.status));
-        encode_varint_field(&mut out, 7, self.valid_until_ms);
-        encode_fixed32_field(&mut out, 8, self.confidence.to_bits());
-        encode_fixed32_field(&mut out, 9, self.importance.to_bits());
-        encode_bytes_field(&mut out, 10, self.text.as_bytes());
-        encode_bytes_field(&mut out, 11, self.source_ref.as_bytes());
-        for related in &self.related_node_hashes {
-            encode_varint_field(&mut out, 12, *related);
-        }
-        encode_bytes_field(&mut out, 13, &self.compact_attrs);
+        encode_varint_field(&mut out, 3, u64::from(self.event_type_code()));
+        encode_fixed32_field(&mut out, 6, self.confidence.to_bits());
+        encode_fixed32_field(&mut out, 7, self.importance.to_bits());
+        encode_bytes_field(&mut out, 8, self.text.as_bytes());
+        encode_varint_field(&mut out, 9, self.primary_time_ms());
         out
     }
 
@@ -640,12 +641,7 @@ impl ContextWire for ContextEvent {
         let mut value = Self {
             event_id_hash: 0,
             event_time_ms: 0,
-            parent_segment_hash: 0,
-            parent_segment_hashes: Vec::new(),
-            context_event_parent_type: String::new(),
-            context_event_parent_hash: 0,
-            event_time_key: String::new(),
-            context_event_key: String::new(),
+            ingestion_time_ms: 0,
             kind: 0,
             event_type: 0,
             actor_hash: 0,
@@ -663,14 +659,22 @@ impl ContextWire for ContextEvent {
             match (tag >> 3, tag & 0x7) {
                 (1, 0) => value.event_id_hash = decode_varint(bytes, &mut cursor)?,
                 (2, 0) => value.event_time_ms = decode_varint(bytes, &mut cursor)?,
-                (3, 0) => value.kind = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (3, 0) => {
+                    let event_type = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?;
+                    value.event_type = event_type;
+                }
+                // Legacy Rust-only event fields from pre-trim builds.
                 (4, 0) => {
                     value.event_type = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?
                 }
                 (5, 0) => value.actor_hash = decode_varint(bytes, &mut cursor)?,
                 (6, 0) => value.status = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (6, 5) => value.confidence = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
                 (7, 0) => value.valid_until_ms = decode_varint(bytes, &mut cursor)?,
+                (7, 5) => value.importance = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
+                (8, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (8, 5) => value.confidence = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
+                (9, 0) => value.ingestion_time_ms = decode_varint(bytes, &mut cursor)?,
                 (9, 5) => value.importance = f32::from_bits(decode_fixed32(bytes, &mut cursor)?),
                 (10, 2) => value.text = decode_string(bytes, &mut cursor)?,
                 (11, 2) => value.source_ref = decode_string(bytes, &mut cursor)?,
@@ -687,25 +691,14 @@ impl ContextWire for ContextEvent {
                     }
                 }
                 (13, 2) => value.compact_attrs = decode_bytes(bytes, &mut cursor)?,
-                (14, 0) => value.parent_segment_hash = decode_varint(bytes, &mut cursor)?,
-                (15, 0) => value
-                    .parent_segment_hashes
-                    .push(decode_varint(bytes, &mut cursor)?),
-                (15, 2) => {
-                    let packed = decode_bytes(bytes, &mut cursor)?;
-                    let mut packed_cursor = 0;
-                    while packed_cursor < packed.len() {
-                        value
-                            .parent_segment_hashes
-                            .push(decode_varint(&packed, &mut packed_cursor)?);
-                    }
-                }
-                (16, 2) => value.context_event_parent_type = decode_string(bytes, &mut cursor)?,
-                (17, 0) => value.context_event_parent_hash = decode_varint(bytes, &mut cursor)?,
-                (18, 2) => value.event_time_key = decode_string(bytes, &mut cursor)?,
-                (19, 2) => value.context_event_key = decode_string(bytes, &mut cursor)?,
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
+        }
+        if value.ingestion_time_ms == 0 {
+            value.ingestion_time_ms = value.event_time_ms;
+        }
+        if value.event_type == 0 {
+            value.event_type = value.kind;
         }
         Some(value)
     }
@@ -1991,9 +1984,16 @@ mod tests {
             l1_ref: "l1".to_string(),
             raw_metadata_ref: "raw".to_string(),
         };
+        let cpp_node = ContextNode {
+            status: 0,
+            summary_dirty: false,
+            l1_ref: String::new(),
+            raw_metadata_ref: String::new(),
+            ..node.clone()
+        };
         assert_eq!(
             ContextNode::decode_cpp_context_value(&node.encode_cpp_context_value()),
-            Some(node)
+            Some(cpp_node)
         );
 
         let entity = ContextEntity {
@@ -2060,6 +2060,7 @@ mod tests {
         let event_json = br#"{
             "event_id_hash":5,
             "event_time_ms":1000,
+            "ingestion_time_ms":1001,
             "kind":9,
             "type":2,
             "actor_hash":77,
@@ -2074,9 +2075,21 @@ mod tests {
         }"#;
         let event: ContextEvent = serde_json::from_slice(event_json).unwrap();
         assert_eq!(event.event_type, 2);
+        assert_eq!(event.primary_time_ms(), 1001);
+        let cpp_event = ContextEvent {
+            ingestion_time_ms: 1001,
+            kind: 2,
+            actor_hash: 0,
+            status: 0,
+            valid_until_ms: 0,
+            source_ref: String::new(),
+            related_node_hashes: Vec::new(),
+            compact_attrs: Vec::new(),
+            ..event.clone()
+        };
         assert_eq!(
             ContextEvent::decode_cpp_context_value(&event.encode_cpp_context_value()),
-            Some(event)
+            Some(cpp_event)
         );
 
         let index = ContextIndexRef {
