@@ -16,9 +16,10 @@ if [[ -n "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
 else
   RUST_CLI=""
   for candidate in \
+    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "${ROOT}/target/release/matrixark_record_log" \
     "${ROOT}/target/debug/matrixark_record_log" \
-    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log"; do
+    "${ROOT}/sdk/rust/temporalstore/target/debug/matrixark_record_log"; do
     if [[ -x "$candidate" ]]; then
       RUST_CLI="$candidate"
       break

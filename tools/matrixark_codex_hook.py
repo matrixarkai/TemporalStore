@@ -364,9 +364,9 @@ def build_server(args: argparse.Namespace):
         rust_cli = args.rust_cli
         if not rust_cli:
             for candidate in [
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "debug" / "matrixark_record_log",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_record_log",
             ]:
                 if candidate.exists() and os.access(candidate, os.X_OK):
