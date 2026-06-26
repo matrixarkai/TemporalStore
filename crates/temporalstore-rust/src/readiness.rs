@@ -185,6 +185,10 @@ pub struct StorageProductionPostureReport {
     #[serde(default)]
     pub stream_backed_zone_runtime_blockers: Vec<String>,
     pub model_layout_compaction_ready: bool,
+    #[serde(default)]
+    pub model_layout_compaction_evidence: Vec<String>,
+    #[serde(default)]
+    pub model_layout_compaction_blockers: Vec<String>,
     pub mature_background_storage_manager_ready: bool,
     pub merged_dump_load_policy_ready: bool,
     pub production_ready: bool,
@@ -1064,6 +1068,15 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "distributed/control-plane compression policy remains separate evidence".to_string(),
     ];
     let model_layout_compaction_ready = true;
+    let model_layout_compaction_evidence = vec![
+        "ShardCompactionReport exposes model_layout_compaction_ready".to_string(),
+        "compaction rewrites live page refs by model family".to_string(),
+        "packed timestamped Feature/Sequence/IPS/Context layouts preserve shared page refs"
+            .to_string(),
+        "tombstone object ids are preserved across compaction".to_string(),
+        "stale page density and slot layout transition counts are reported".to_string(),
+    ];
+    let model_layout_compaction_blockers = Vec::new();
     let mature_background_storage_manager_ready = false;
     let merged_dump_load_policy_ready = false;
     let rust_storage_lifecycle_behavior_ready = orphan_page_detection_ready
@@ -1162,6 +1175,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         stream_backed_zone_runtime_evidence,
         stream_backed_zone_runtime_blockers,
         model_layout_compaction_ready,
+        model_layout_compaction_evidence,
+        model_layout_compaction_blockers,
         mature_background_storage_manager_ready,
         merged_dump_load_policy_ready,
         production_ready: missing.is_empty(),
@@ -2678,6 +2693,15 @@ mod tests {
             .iter()
             .any(|item| item.contains("byte-for-byte stream backend layout")));
         assert!(report.model_layout_compaction_ready);
+        assert!(report
+            .model_layout_compaction_evidence
+            .iter()
+            .any(|item| item.contains("rewrites live page refs by model family")));
+        assert!(report
+            .model_layout_compaction_evidence
+            .iter()
+            .any(|item| item.contains("tombstone object ids are preserved")));
+        assert!(report.model_layout_compaction_blockers.is_empty());
         assert!(!report.mature_background_storage_manager_ready);
         assert!(!report.merged_dump_load_policy_ready);
         assert!(!report.production_ready);

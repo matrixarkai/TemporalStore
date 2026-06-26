@@ -9,6 +9,12 @@ use crate::types::ShardId;
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionReport {
     pub shard_id: ShardId,
+    #[serde(default)]
+    pub model_layout_compaction_ready: bool,
+    #[serde(default)]
+    pub model_layout_compaction_evidence: Vec<String>,
+    #[serde(default)]
+    pub model_layout_compaction_blockers: Vec<String>,
     pub previous_page_segment_id: u64,
     pub compacted_page_segment_id: u64,
     pub rewritten_page_refs: usize,
