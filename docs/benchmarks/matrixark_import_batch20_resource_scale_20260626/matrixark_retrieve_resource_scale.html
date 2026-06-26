@@ -1,0 +1,498 @@
+<!doctype html><meta charset='utf-8'><title>MatrixArk Retrieve Resource Scale</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1180px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d7deea;padding:7px 9px;text-align:left}th{background:#eef3fa}pre{background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}code{background:#edf2f7;padding:2px 4px;border-radius:4px}</style><pre># MatrixArk Concurrent Retrieve And Resource Import Scale - 2026-06-26
+
+## Summary
+
+This report runs MatrixArk local-backend scale checks for concurrent retrieval workers and larger resource imports. It is intended to expose MatrixArk MCP pipeline behavior without C++/Rust topology noise.
+
+- backend: `local-jsonl`
+- event log: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl`
+- status: `passed`
+- seed events: `400`
+- resource fixtures: large text-PDF fallback, large CSV, repo directory
+
+## Concurrent Retrieve Workers
+
+| Workers | Status | Ops | QPS | p50 ms | p95 ms | p99 ms | Errors | Avg refs | Avg tokens |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | passed | 1 | 9.179 | 107.716 | 107.716 | 107.716 | 0 | 68 | 697 |
+
+## Resource Import Scale
+
+| Resource | Status | Type | Import ms | Chunks | Fact events | Fact entities | Warnings |
+| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
+| large_pdf | accepted | pdf | 189.356 | 60 | 80 | 80 | 0 |
+| large_csv | accepted | csv | 318.439 | 40 | 112 | 112 | 0 |
+| repo_directory | accepted | directory | 893.187 | 13 | 26 | 26 | 1 |
+| post_resource_summary_refresh | ok |  | 236.875 |  |  |  |  |
+
+## Seed Ingestion
+
+```json
+{
+  "batch_count": 20,
+  "batch_size": 20,
+  "ingest_latency_ms": {
+    "avg": 110.233,
+    "count": 20,
+    "max": 301.453,
+    "p50": 89.269,
+    "p95": 282.667,
+    "p99": 301.453
+  },
+  "scope": {
+    "account_id": "acct_scale",
+    "agent_name": "scale_runner",
+    "session_id": "session_retrieve_scale",
+    "tenant_id": "tenant_scale",
+    "user_id": "user_scale"
+  },
+  "seed_events_requested": 400,
+  "seed_events_written": 400,
+  "summary_refresh": {
+    "access": {
+      "account_id": "acct_scale",
+      "agent_name": "scale_runner",
+      "api_key_id": "dev",
+      "mode": "dev",
+      "role": "dev_admin",
+      "session_id": "session_retrieve_scale",
+      "tenant_id": "tenant_scale",
+      "user_id": "user_scale"
+    },
+    "refreshed": [
+      {
+        "dirty_hash": 3989835293436630630,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 6025066374489355495,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_0"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 6,
+        "summary_generation_policy": {
+          "child_summary_count": 6,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 1098
+        },
+        "summary_version_hash": 2650357658192147906
+      },
+      {
+        "dirty_hash": 1507873666253772234,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 5729357460913547841,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_1"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 6,
+        "summary_generation_policy": {
+          "child_summary_count": 6,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 1098
+        },
+        "summary_version_hash": 9211081581661559515
+      },
+      {
+        "dirty_hash": 2558587894637354235,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 8098084367660167709,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_2"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 6,
+        "summary_generation_policy": {
+          "child_summary_count": 6,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 1098
+        },
+        "summary_version_hash": 9207837301618098842
+      },
+      {
+        "dirty_hash": 3588316991499348539,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 6920081392849965770,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_3"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 3191616983689323955
+      },
+      {
+        "dirty_hash": 5605819605776000066,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 3978937638927381902,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_3",
+          "topic_4"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 2335347524199355705
+      },
+      {
+        "dirty_hash": 4022490593049959412,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 3804848088574246844,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_4"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 3023255960434277512
+      },
+      {
+        "dirty_hash": 4134279537165279090,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 659050807869386877,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_4",
+          "topic_0"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 1423891817559234992
+      },
+      {
+        "dirty_hash": 4927678607787873413,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 1709698789622994577,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_5"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 4537363269785430396
+      },
+      {
+        "dirty_hash": 6874751892090100346,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 7218597861084802334,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_5",
+          "topic_1"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 5042307473935674747
+      },
+      {
+        "dirty_hash": 7202430192472195544,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 5656046992901106490,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_6"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 7357627245116591293
+      },
+      {
+        "dirty_hash": 4618713464956443216,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 6272935213424407752,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_6",
+          "topic_2"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 4245207283936981192
+      },
+      {
+        "dirty_hash": 2566847290911771554,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 3991249014498892849,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_7"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 7188078193235824751
+      },
+      {
+        "dirty_hash": 4676824519400555888,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 8290578843127148872,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_7",
+          "topic_3"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 5224426498796975466
+      },
+      {
+        "dirty_hash": 8515288441630790617,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 7671761716597775914,
+        "node_path": [
+          "context"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 8,
+        "summary_generation_policy": {
+          "child_summary_count": 8,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 1579
+        },
+        "summary_version_hash": 7998859822861114113
+      },
+      {
+        "dirty_hash": 8298238742445795566,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 682485312310361849,
+        "node_path": [
+          "context",
+          "scale_runner"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 8,
+        "summary_generation_policy": {
+          "child_summary_count": 8,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 1579
+        },
+        "summary_version_hash": 5468572293746558471
+      },
+      {
+        "dirty_hash": 2047709827526420135,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 3025646238993786331,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_8"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 4,
+        "summary_generation_policy": {
+          "child_summary_count": 4,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "has_child_summaries",
+          "token_estimate": 812
+        },
+        "summary_version_hash": 5117909331469863179
+      },
+      {
+        "dirty_hash": 6095915211154943442,
+        "generated_summary_types": [
+          "node_l0",
+          "node_l1"
+        ],
+        "node_hash": 5551098312888884107,
+        "node_path": [
+          "context",
+          "scale_runner",
+          "project_8",
+          "topic_4"
+        ],
+        "source_event_count": 8,
+        "source_summary_count": 0,
+        "summary_generation_policy": {
+          "child_summary_count": 0,
+          "event_count": 8,
+          "generate_l1": true,
+          "reason": "event_count_threshold",
+          "token_estimate": 175
+        },
+        "summary_version_hash": 3962358707165305546
+      }
+    ],
+    "refreshed_count": 17,
+    "status": "ok"
+  },
+  "summary_refresh_ms": 273.304
+}
+```
+
+## Record Counts
+
+```json
+{
+  "context_child_ref": 36,
+  "context_embedding": 1304,
+  "context_entity": 338,
+  "context_entity_update_audit": 120,
+  "context_event": 621,
+  "context_extraction_audit": 20,
+  "context_index": 2826,
+  "context_node": 38,
+  "context_pack_audit": 1,
+  "context_segment": 80,
+  "context_summary": 152,
+  "context_summary_dirty": 98,
+  "context_summary_refresh_audit": 63,
+  "matrixark_audit_log": 29,
+  "matrixark_metric": 3,
+  "resource_chunk": 113,
+  "resource_import_task": 9,
+  "resource_manifest": 3,
+  "resource_registry": 3,
+  "session_buffer_event": 3
+}
+```
+
+## Notes
+
+- `large_budget_policy.pdf` is a text-PDF fallback fixture so it exercises the PDF path without requiring binary PDF rendering dependencies.
+- CSV uses row-group chunking, not one tiny chunk per row.
+- Repo directory ingestion preserves relative paths and skips ignored folders through the parser defaults.
+- This is local JSONL backend evidence. C++/Rust storage parity should run the same logical workload through native backends after topology readiness.
+</pre>
