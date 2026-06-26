@@ -1,7 +1,7 @@
 {
   "title": "TemporalStore Production Readiness",
   "schemaVersion": 39,
-  "version": 2,
+  "version": 3,
   "panels": [
     {
       "title": "Production Readiness",
@@ -207,6 +207,30 @@
         },
         {
           "expr": "temporalstore_scale_error_budget_remaining"
+        }
+      ]
+    },
+    {
+      "title": "MatrixArk Backend SLO",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "matrixark_backend_qps"
+        },
+        {
+          "expr": "sum by (backend) (matrixark_backend_commands_total)"
+        },
+        {
+          "expr": "matrixark_backend_command_latency_ms"
+        },
+        {
+          "expr": "sum by (backend) (matrixark_backend_records_written_total)"
+        },
+        {
+          "expr": "sum by (backend) (matrixark_backend_records_read_total)"
+        },
+        {
+          "expr": "matrixark_backend_ready"
         }
       ]
     }

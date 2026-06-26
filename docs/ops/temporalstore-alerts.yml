@@ -177,3 +177,23 @@ groups:
         annotations:
           summary: TemporalStore ingestion dead letters detected
           description: "Dead-letter count is {{ $value }}. Inspect Kafka/Flink checkpoint state, replay idempotence, and dead-letter export."
+
+  - name: matrixark-backend-slo
+    rules:
+      - alert: MatrixArkBackendNotReady
+        expr: matrixark_backend_ready == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: MatrixArk backend is not ready
+          description: "MatrixArk backend {{ $labels.backend }} in {{ $labels.storage_mode }} reports readiness {{ $value }}. Check topology, gateway health, and storage mode."
+
+      - alert: MatrixArkBackendErrorsHigh
+        expr: increase(matrixark_backend_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: MatrixArk backend errors are increasing
+          description: "MatrixArk backend {{ $labels.backend }} has increasing command errors. Inspect C++/Rust gateway logs and backend parity reports."

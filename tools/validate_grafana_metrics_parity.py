@@ -21,6 +21,7 @@ RUST_SOURCES = [
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "server.rs",
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "metaserver.rs",
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "ops_scale_readiness_harness.rs",
+    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
 ]
 
 
@@ -192,6 +193,34 @@ METRIC_FAMILIES = {
             "temporalstore_replica_replay_loop_next_delay_ms",
         ],
     },
+    "matrixark_backend": {
+        "dashboard": [
+            "matrixark_backend_qps",
+            "matrixark_backend_commands_total",
+            "matrixark_backend_command_latency_ms",
+            "matrixark_backend_records_written_total",
+            "matrixark_backend_records_read_total",
+            "matrixark_backend_ready",
+        ],
+        "alerts": [
+            "MatrixArkBackendNotReady",
+            "MatrixArkBackendErrorsHigh",
+        ],
+        "rust": [
+            "matrixark_backend_qps",
+            "matrixark_backend_commands_total",
+            "matrixark_backend_errors_total",
+            "matrixark_backend_timeouts_total",
+            "matrixark_backend_command_latency_ms",
+            "matrixark_backend_command_latency_ms_bucket",
+            "matrixark_backend_records_written_total",
+            "matrixark_backend_records_read_total",
+            "matrixark_context_records_total",
+            "matrixark_backend_audit_buffered_records",
+            "matrixark_backend_audit_flush_failures_total",
+            "matrixark_backend_ready",
+        ],
+    },
     "scale_slo": {
         "dashboard": [
             "temporalstore_scale_write_p99_us",
@@ -221,7 +250,7 @@ def rust_metric_text() -> str:
 
 
 def metric_names(text: str) -> set[str]:
-    return set(re.findall(r"temporalstore_[A-Za-z0-9_]+", text))
+    return set(re.findall(r"(?:temporalstore|matrixark)_[A-Za-z0-9_]+", text))
 
 
 def main() -> int:
