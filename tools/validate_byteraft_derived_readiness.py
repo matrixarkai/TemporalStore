@@ -446,6 +446,16 @@ def read(path: str) -> str:
     return target.read_text(encoding="utf-8")
 
 
+def has_snippet(path: str, text: str, snippet: str) -> bool:
+    if snippet in text:
+        return True
+    if path == "crates/temporalstore-rust/src/raft.rs":
+        tests = ROOT / "crates/temporalstore-rust/src/raft/tests.rs"
+        if tests.exists() and snippet in tests.read_text(encoding="utf-8"):
+            return True
+    return False
+
+
 def main() -> int:
     missing: list[str] = []
     checked_snippets = 0
@@ -454,7 +464,7 @@ def main() -> int:
             text = read(evidence.path)
             for snippet in evidence.snippets:
                 checked_snippets += 1
-                if snippet not in text:
+                if not has_snippet(evidence.path, text, snippet):
                     missing.append(f"{area.name}: {evidence.path}: {snippet}")
 
     if missing:
