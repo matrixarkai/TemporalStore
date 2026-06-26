@@ -1,0 +1,43 @@
+{
+  "backend": "local",
+  "batch_size": 100,
+  "batches": 10,
+  "errors": 0,
+  "events_requested": 1000,
+  "hit_rate": 1.0,
+  "ingest_elapsed_sec": 2.213,
+  "ingest_latency_ms": {
+    "avg": 221.076,
+    "p50": 155.765,
+    "p95": 757.266,
+    "p99": 757.266
+  },
+  "ingest_mode": "batch",
+  "io_timeout_ms": 0,
+  "message_qps": 451.94,
+  "messages_ingested": 1000,
+  "metaserver": "",
+  "queries": 1,
+  "request_timeout_ms": 0,
+  "restart_before_query": false,
+  "retrieve_elapsed_sec": 0.055,
+  "retrieve_latency_ms": {
+    "avg": 54.981,
+    "p50": 54.981,
+    "p95": 54.981,
+    "p99": 54.981
+  },
+  "retrieve_qps": 18.182,
+  "skip_prior_context": true,
+  "status": "passed",
+  "storage_log_mode": "jsonl",
+  "storage_options": {
+    "consistency": "default",
+    "oplog_mode": "async",
+    "raft_mode": false,
+    "replication_mode": "none",
+    "storage_mode": "local"
+  },
+  "storage_prefix": "",
+  "timeouts": 0
+}
