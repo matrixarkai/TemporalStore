@@ -125,6 +125,45 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertIn("event_id_hash", result)
         self.assertIn("agent_hook", args)
 
+    def test_storage_options_are_validated_stored_and_audited(self) -> None:
+        server = self._server()
+        ingest = server.call_tool(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Alice approved the GPU budget."}],
+                "storage_options": {"oplog_mode": "async", "raft_mode": True, "consistency": "linearizable"},
+            },
+        )
+        self.assertEqual("accepted", ingest["status"])
+        records = server.adapter.read_all()
+        event = next(record for record in records if record.get("record_type") == "context_event")
+        self.assertEqual("async", event["storage_options"]["oplog_mode"])
+        self.assertEqual("raft", event["storage_options"]["storage_mode"])
+        self.assertEqual("raft", event["storage_options"]["replication_mode"])
+        self.assertTrue(event["storage_options"]["raft_mode"])
+
+        pack = server.call_tool(
+            "matrixark_retrieve",
+            {
+                "query": "Who approved the GPU budget?",
+                "storage_options": {"storage_mode": "shared_store", "oplog_mode": "sync"},
+            },
+        )
+        self.assertEqual("shared_store", pack["recall_policy"]["storage_options"]["storage_mode"])
+        audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
+        self.assertEqual("sync", audit["storage_options"]["oplog_mode"])
+
+    def test_invalid_storage_options_are_rejected(self) -> None:
+        server = self._server()
+        with self.assertRaises(Exception):
+            server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "storage_options": {"oplog_mode": "fast"},
+                },
+            )
+
 
 
 if __name__ == "__main__":

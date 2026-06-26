@@ -69,6 +69,38 @@ METADATA_SCHEMA: Json = {
     "additionalProperties": True,
 }
 
+STORAGE_OPTIONS_SCHEMA: Json = {
+    "type": "object",
+    "description": "Optional TemporalStore serving-mode request hint. Native deployments still decide the actual topology, but MatrixArk records this policy for routing, audit, replay, and benchmark parity.",
+    "properties": {
+        "storage_mode": {
+            "type": "string",
+            "enum": ["default", "local", "single_node", "multi_node", "shared_store", "raft"],
+            "description": "Requested storage topology/mode for this operation.",
+        },
+        "oplog_mode": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Requested oplog durability behavior. async is the high-throughput default; sync is for stronger durability gates.",
+        },
+        "replication_mode": {
+            "type": "string",
+            "enum": ["default", "none", "shared_store", "raft"],
+            "description": "Requested replication behavior.",
+        },
+        "raft_mode": {
+            "type": "boolean",
+            "description": "Convenience flag. true implies storage_mode=raft and replication_mode=raft unless explicitly supplied.",
+        },
+        "consistency": {
+            "type": "string",
+            "enum": ["default", "eventual", "read_your_writes", "linearizable"],
+            "description": "Requested read/write consistency profile for benchmark and production policy.",
+        },
+    },
+    "additionalProperties": True,
+}
+
 AGENT_HOOK_SCHEMA: Json = {
     "type": "object",
     "description": "Optional auto-capture metadata from a host-agent hook.",
@@ -132,6 +164,11 @@ TOOLS: list[Json] = [
                 },
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
+                "storage_options": STORAGE_OPTIONS_SCHEMA,
+                "temporalstore_storage_mode": {"type": "string", "description": "Convenience alias for storage_options.storage_mode."},
+                "temporalstore_oplog_mode": {"type": "string", "description": "Convenience alias for storage_options.oplog_mode."},
+                "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
+                "temporalstore_raft_mode": {"type": "boolean", "description": "Convenience alias for storage_options.raft_mode."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "raw_uri": {"type": "string", "description": "Optional resource URI/path when kind=resource."},
@@ -251,6 +288,7 @@ TOOLS: list[Json] = [
             "properties": {
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
+                "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "threshold_messages": {
@@ -307,6 +345,7 @@ TOOLS: list[Json] = [
             "properties": {
                 "query": {"type": "string", "description": "Required raw user or agent query."},
                 "scope": SCOPE_SCHEMA,
+                "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "max_context_tokens": {
                     "type": "integer",
@@ -388,6 +427,7 @@ TOOLS: list[Json] = [
                 },
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
+                "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "threshold_messages": {
@@ -445,6 +485,7 @@ TOOLS: list[Json] = [
                 },
                 "scope": SCOPE_SCHEMA,
                 "metadata": METADATA_SCHEMA,
+                "storage_options": STORAGE_OPTIONS_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "context_pack_id": {
                     "type": "string",
@@ -834,4 +875,3 @@ TOOLS: list[Json] = [
         },
     },
 ]
-
