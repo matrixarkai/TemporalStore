@@ -5895,6 +5895,107 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     assert_eq!(reloaded_ownership.max_dirty_generation, 0);
 }
 
+// shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
+#[test]
+fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+
+    for command in [
+        Command::StringSet {
+            key: "object-a".to_string(),
+            value: b"a".to_vec(),
+        },
+        Command::HashSet {
+            key: "hash-a".to_string(),
+            field: "field-a".to_string(),
+            value: b"field".to_vec(),
+        },
+        Command::FeatureReplace {
+            key: "feature-a".to_string(),
+            start_ms: 0,
+            end_ms: 100,
+            points: vec![FeaturePoint {
+                timestamp_ms: 42,
+                value: b"42".to_vec(),
+            }],
+        },
+        Command::StringSet {
+            key: "object-delete".to_string(),
+            value: b"delete".to_vec(),
+        },
+        Command::CommonDelete {
+            key: "object-delete".to_string(),
+        },
+    ] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+
+    let report = engine.object_manager_runtime_report(1);
+    assert!(report.runtime_ready, "{report:?}");
+    assert!(report.routing_slot_count >= 1);
+    assert!(report.object_count >= 4);
+    assert!(report.page_ref_count >= 3);
+    assert!(report.cold_object_count >= 3);
+    assert!(report.tombstone_object_count >= 1);
+    assert!(report.dirty_object_count >= 4);
+    assert!(report.dirty_slot_count >= 1);
+    assert!(report.max_dirty_generation >= 1);
+    assert!(report.object_page_count >= 2);
+    assert!(report.packed_timestamped_page_count >= 1);
+    assert_eq!(report.missing_owner_page_ref_count, 0);
+    assert_eq!(report.owner_mismatch_page_ref_count, 0);
+    assert_eq!(report.reused_object_id_conflict_count, 0);
+    assert!(report.blockers.is_empty());
+    assert!(report
+        .evidence
+        .iter()
+        .any(|item| item.contains("hot/cold/tombstone object state")));
+
+    engine.unload_shard(1);
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 1,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    let reloaded = engine.object_manager_runtime_report(1);
+    assert!(reloaded.runtime_ready, "{reloaded:?}");
+    assert_eq!(reloaded.object_count, report.object_count);
+    assert_eq!(reloaded.page_ref_count, report.page_ref_count);
+    assert_eq!(
+        reloaded.tombstone_object_count,
+        report.tombstone_object_count
+    );
+    assert_eq!(
+        reloaded.packed_timestamped_page_count,
+        report.packed_timestamped_page_count
+    );
+}
+
 #[test]
 fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
     let dir = tempfile::tempdir().unwrap();
