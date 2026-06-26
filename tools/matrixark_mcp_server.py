@@ -8787,6 +8787,63 @@ class MatrixArkAccessManager:
             "context_pack_count": totals.get("context_packs", 0),
             "metadata_backend": self.metadata.backend_info(),
         }
+        try:
+            backend_metrics = self.adapter.backend_metrics()
+        except Exception as exc:
+            backend_metrics = {"backend": "unknown", "health": {"ok": False, "error": str(exc)}, "readiness": {"ok": False, "error": str(exc)}, "metrics": {}}
+        backend_identity = {
+            "backend": backend_metrics.get("backend", "unknown"),
+            "storage_mode": backend_metrics.get("gateway_mode") or backend_metrics.get("production_path") or backend_metrics.get("backend", "unknown"),
+            "metrics_format": backend_metrics.get("metrics_format", "prometheus"),
+            "readiness_status": (backend_metrics.get("readiness") or {}).get("status") or ("ready" if (backend_metrics.get("readiness") or {}).get("ok") else "unknown"),
+            "health_ok": bool((backend_metrics.get("health") or {}).get("ok", True)),
+        }
+        backend_inner_metrics = backend_metrics.get("metrics") if isinstance(backend_metrics.get("metrics"), dict) else {}
+        rust_client_metrics = backend_inner_metrics.get("rust_client") if isinstance(backend_inner_metrics.get("rust_client"), dict) else {}
+        context_pack_audits = [record for record in scoped_records if record.get("record_type") == "context_pack_audit"]
+        import_tasks = [record for record in scoped_records if record.get("record_type") == "resource_import_task"]
+        import_lag_count = len([record for record in import_tasks if record.get("status") not in {"completed", "failed"}])
+        audit_write_failures = int(backend_inner_metrics.get("audit_flush_failures") or rust_client_metrics.get("commands_failed_total") or 0)
+        retrieve_count = len(context_pack_audits)
+        used_tokens = sum(int(record.get("used_context_tokens") or 0) for record in context_pack_audits)
+        max_tokens = sum(int(record.get("max_context_tokens") or 0) for record in context_pack_audits) or max(1, retrieve_count * 2048)
+        token_pressure_pct = round(min(100.0, used_tokens * 100.0 / max_tokens), 2)
+        fallback_count = sum(1 for record in context_pack_audits if (record.get("recall_policy") or {}).get("tree_traversal", {}).get("fallback_to_flat"))
+        fallback_rate_pct = round(fallback_count * 100.0 / max(1, retrieve_count), 2)
+        revoked_key_usage = len([row for row in audit_rows.get("audit_logs", []) if row.get("status") == "denied" and "revoked" in json.dumps(row).lower()])
+        model_fallback_flags = {
+            "embedding_fallback_used": any("hashing" in json.dumps(record).lower() or "fallback" in json.dumps(record).lower() for record in scoped_records if record.get("record_type") in {"context_embedding", "matrixark_metric"}),
+            "oss_model_fallback_used": any("oss" in json.dumps(record).lower() and "fallback" in json.dumps(record).lower() for record in scoped_records if record.get("record_type") == "matrixark_metric"),
+        }
+        observability = {
+            "backend_identity": backend_identity,
+            "prometheus_source": "matrixark_backend_metrics.prometheus plus MatrixArk record-log counters",
+            "prometheus_panels": [
+                {"name": "Ingest QPS", "metric": "matrixark_ingest_qps", "cpp_value": backend_inner_metrics.get("ingest_qps", 0), "rust_value": rust_client_metrics.get("qps", 0), "unit": "ops/s"},
+                {"name": "Retrieve QPS", "metric": "matrixark_retrieve_qps", "cpp_value": backend_inner_metrics.get("retrieve_qps", retrieve_count), "rust_value": rust_client_metrics.get("qps", 0), "unit": "ops/s"},
+                {"name": "p50 latency", "metric": "matrixark_request_latency_ms_p50", "cpp_value": backend_inner_metrics.get("p50_latency_ms", 0), "rust_value": rust_client_metrics.get("p50_latency_ms", 0), "unit": "ms"},
+                {"name": "p95 latency", "metric": "matrixark_request_latency_ms_p95", "cpp_value": backend_inner_metrics.get("p95_latency_ms", 0), "rust_value": rust_client_metrics.get("p95_latency_ms", 0), "unit": "ms"},
+                {"name": "p99 latency", "metric": "matrixark_request_latency_ms_p99", "cpp_value": backend_inner_metrics.get("p99_latency_ms", 0), "rust_value": rust_client_metrics.get("p99_latency_ms", 0), "unit": "ms"},
+                {"name": "Errors", "metric": "matrixark_errors_total", "cpp_value": backend_inner_metrics.get("errors_total", 0), "rust_value": rust_client_metrics.get("commands_failed_total", 0), "unit": "count"},
+                {"name": "Timeouts", "metric": "matrixark_timeouts_total", "cpp_value": backend_inner_metrics.get("timeouts_total", 0), "rust_value": rust_client_metrics.get("timeouts_total", 0), "unit": "count"},
+                {"name": "Token pressure", "metric": "matrixark_token_pressure_ratio", "cpp_value": token_pressure_pct, "rust_value": token_pressure_pct, "unit": "%"},
+                {"name": "Dirty summary lag", "metric": "matrixark_dirty_summary_lag_count", "cpp_value": len(dirty), "rust_value": len(dirty), "unit": "nodes"},
+                {"name": "Resource/skill import lag", "metric": "matrixark_resource_skill_import_lag_count", "cpp_value": import_lag_count, "rust_value": import_lag_count, "unit": "tasks"},
+                {"name": "Audit write failures", "metric": "matrixark_audit_write_failures_total", "cpp_value": audit_write_failures, "rust_value": audit_write_failures, "unit": "count"},
+                {"name": "Backend readiness", "metric": "matrixark_backend_ready", "cpp_value": 1 if backend_identity["readiness_status"] in {"ready", "ok"} else 0, "rust_value": 1 if backend_identity["readiness_status"] in {"ready", "ok"} else 0, "unit": "bool"},
+            ],
+            "model_fallback_flags": model_fallback_flags,
+            "alert_posture": [
+                {"name": "unhealthy_backend", "status": "alert" if not backend_identity["health_ok"] else "ok", "detail": backend_identity["backend"]},
+                {"name": "topology_not_ready", "status": "alert" if backend_identity["readiness_status"] not in {"ready", "ok"} else "ok", "detail": backend_identity["readiness_status"]},
+                {"name": "revoked_key_usage", "status": "alert" if revoked_key_usage else "ok", "detail": revoked_key_usage},
+                {"name": "high_token_pressure", "status": "warning" if token_pressure_pct >= 85 else "ok", "detail": f"{token_pressure_pct}%"},
+                {"name": "stale_summary_lag", "status": "warning" if len(dirty) else "ok", "detail": len(dirty)},
+                {"name": "retrieval_fallback_rate", "status": "warning" if fallback_rate_pct >= 5 else "ok", "detail": f"{fallback_rate_pct}%"},
+                {"name": "audit_gaps", "status": "alert" if audit_write_failures else "ok", "detail": audit_write_failures},
+            ],
+            "backend_metrics": backend_metrics,
+        }
         portal_actions = {
             "register_user": {
                 "tool": "matrixark_admin_create_user",
@@ -8835,6 +8892,7 @@ class MatrixArkAccessManager:
             "dashboard": dashboard,
             "topology": {"nodes": topology_nodes, "count": len(nodes)},
             "metrics": metrics,
+            "observability": observability,
             "metadata_store": self.metadata.backend_info(),
             "portal_actions": portal_actions,
         }

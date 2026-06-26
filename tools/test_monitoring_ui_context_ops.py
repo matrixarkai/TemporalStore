@@ -180,6 +180,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-identity-policy",
             "portal-token-metrics",
             "portal-limit-policy",
+            "portal-backend-identity",
+            "portal-prometheus-panels",
+            "portal-alert-posture",
+            "portal-model-fallbacks",
 
             "portal-metadata-backend",
             "portal-metadata-env",
@@ -199,6 +203,9 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "Quick Start",
             "Registration, SSO, And API Keys",
             "Token And Usage Monitoring",
+            "Prometheus Observability",
+            "Alert Posture",
+            "Model Fallback Flags",
             "Metadata Store",
             "Active Metadata Backend",
             "Agent Install Snippets",
@@ -218,6 +225,12 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("Google / Gmail", html)
         self.assertIn("GitHub", html)
         self.assertIn("Used context tokens", html)
+        self.assertIn("matrixark_backend_metrics", html)
+        self.assertIn("matrixark_ingest_qps", html)
+        self.assertIn("matrixark_retrieve_qps", html)
+        self.assertIn("matrixark_request_latency_ms_p95", html)
+        self.assertIn("matrixark_audit_write_failures_total", html)
+        self.assertIn("topology_not_ready", html)
         self.assertIn("mcpServers", html)
         self.assertIn("MATRIXARK_METADATA_BACKEND", html)
         self.assertIn("bytekv_sql", html)
@@ -237,7 +250,14 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("bytekv_sql", html)
         self.assertIn("mysql://matrixark", html)
         self.assertIn("matrixark_metadata_records", html)
+        self.assertIn("Prometheus Observability", html)
+        self.assertIn("matrixark_backend_metrics", html)
+        self.assertIn("matrixark_ingest_qps", html)
+        self.assertIn("matrixark_retrieve_qps", html)
+        self.assertIn("topology_not_ready", html)
         self.assertIn(".portal-token-grid", css)
+        self.assertIn(".portal-prometheus-grid", css)
+        self.assertIn(".portal-alert-card-list", css)
 
         for page_name in [
             "index.html",

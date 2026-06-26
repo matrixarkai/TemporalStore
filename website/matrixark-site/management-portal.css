@@ -2621,6 +2621,106 @@ a {
   background: #fef2f2;
 }
 
+.alert-alert {
+  border-color: var(--bad-soft);
+  background: #fef2f2;
+}
+
+.portal-backend-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.portal-backend-strip div,
+.portal-prometheus-grid article,
+.portal-alert-card-list article {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.portal-backend-strip span,
+.portal-prometheus-grid span,
+.portal-alert-card-list span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.portal-backend-strip strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.portal-prometheus-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.portal-prometheus-grid article {
+  display: grid;
+  align-content: space-between;
+  gap: 10px;
+  min-height: 124px;
+}
+
+.portal-prometheus-grid article > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.portal-prometheus-grid code {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.portal-backend-values {
+  display: grid;
+  gap: 6px;
+}
+
+.portal-backend-values strong {
+  display: block;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  font-size: 12px;
+}
+
+.portal-alert-card-list {
+  display: grid;
+  gap: 8px;
+}
+
+.portal-alert-card-list article {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 5px 8px;
+}
+
+.portal-alert-card-list strong {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.portal-alert-card-list small {
+  grid-column: 1 / -1;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .portal-debug-kpis,
 .portal-debug-grid {
   display: grid;
@@ -2700,7 +2800,9 @@ a {
   .portal-debug-grid,
   .portal-platform-grid,
   .portal-slo-grid,
-  .portal-ops-grid {
+  .portal-ops-grid,
+  .portal-backend-strip,
+  .portal-prometheus-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -2711,7 +2813,9 @@ a {
   .portal-debug-grid,
   .portal-platform-grid,
   .portal-slo-grid,
-  .portal-ops-grid {
+  .portal-ops-grid,
+  .portal-backend-strip,
+  .portal-prometheus-grid {
     grid-template-columns: 1fr;
   }
 }
