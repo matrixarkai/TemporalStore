@@ -278,6 +278,12 @@ into that slot index incrementally, with slot dirty generations and PageIndex-li
 id, dirty/deleted/log flags, size, and address metadata. Slot layout transition evidence is also
 present for writes, rebuilds, compaction, tombstones, and dump/load validation.
 
+The Rust lifecycle behavior evidence is specifically scoped to: slot-first ownership updates on
+object writes and deletes, recovery validation of owner/page refs, slot-scoped dump/load manifest
+validation, local/shared-store sync and async replay, follower-cursor retention, model-layout
+compaction, tombstone preservation, stale-page-density accounting, and cold PageAddress reads
+through cache refill. These are readiness fields, not informal doc claims.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 native ObjectManager hot-object runtime ownership, stream-backed zones, the continuous
 StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load
