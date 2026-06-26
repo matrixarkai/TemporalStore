@@ -162,8 +162,14 @@ pub struct StorageProductionPostureReport {
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
     pub first_class_slot_object_page_index_ready: bool,
+    #[serde(default)]
+    pub first_class_slot_object_page_index_evidence: Vec<String>,
     pub native_object_manager_runtime_ready: bool,
+    #[serde(default)]
+    pub native_object_manager_runtime_blockers: Vec<String>,
     pub native_slot_store_layout_transition_ready: bool,
+    #[serde(default)]
+    pub native_slot_store_layout_transition_evidence: Vec<String>,
     pub stream_backed_zone_runtime_ready: bool,
     pub model_layout_compaction_ready: bool,
     pub mature_background_storage_manager_ready: bool,
@@ -982,8 +988,33 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let unified_storage_corpus_ready =
         migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
     let first_class_slot_object_page_index_ready = true;
+    let first_class_slot_object_page_index_evidence = vec![
+        "ShardState owns slot_objects as the canonical routing-slot -> object -> page-ref index"
+            .to_string(),
+        "write and delete paths incrementally synchronize changed objects into the slot index"
+            .to_string(),
+        "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
+            .to_string(),
+        "PageAddress carries segment/offset/length plus optional page id, object id, routing slot, zone id, and checksum"
+            .to_string(),
+    ];
     let native_object_manager_runtime_ready = false;
+    let native_object_manager_runtime_blockers = vec![
+        "C++ ObjectManager hot-object memory layout is not byte-for-byte equivalent".to_string(),
+        "stream-backed object pages and full object-page residency transitions are not complete"
+            .to_string(),
+        "full merged dump/load ownership policy remains separate from Rust slot dump manifests"
+            .to_string(),
+    ];
     let native_slot_store_layout_transition_ready = true;
+    let native_slot_store_layout_transition_evidence = vec![
+        "slot objects track layout state transitions across writes, rebuilds, compaction, and tombstones"
+            .to_string(),
+        "compaction reports slot layout transition counts and post-compaction layout state counts"
+            .to_string(),
+        "slot dump/load validates restored slot summaries against the first-class ownership index"
+            .to_string(),
+    ];
     let stream_backed_zone_runtime_ready = false;
     let model_layout_compaction_ready = true;
     let mature_background_storage_manager_ready = false;
@@ -1049,8 +1080,11 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         shared_store_sync_async_replay_ready,
         unified_storage_corpus_ready,
         first_class_slot_object_page_index_ready,
+        first_class_slot_object_page_index_evidence,
         native_object_manager_runtime_ready,
+        native_object_manager_runtime_blockers,
         native_slot_store_layout_transition_ready,
+        native_slot_store_layout_transition_evidence,
         stream_backed_zone_runtime_ready,
         model_layout_compaction_ready,
         mature_background_storage_manager_ready,
@@ -1480,7 +1514,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, native ObjectManager mechanics, SlotStore layout transitions, stream-backed zones, model-layout compaction, mature StorageManager loops, and merged dump/load policy"
+                "storage production posture covers orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining blockers are native ObjectManager mechanics, stream-backed zones, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2504,8 +2538,24 @@ mod tests {
         assert!(report.shared_store_sync_async_replay_ready);
         assert!(report.unified_storage_corpus_ready);
         assert!(report.first_class_slot_object_page_index_ready);
+        assert!(report
+            .first_class_slot_object_page_index_evidence
+            .iter()
+            .any(|item| item.contains("ShardState owns slot_objects")));
+        assert!(report
+            .first_class_slot_object_page_index_evidence
+            .iter()
+            .any(|item| item.contains("PageAddress carries segment/offset/length")));
         assert!(!report.native_object_manager_runtime_ready);
+        assert!(report
+            .native_object_manager_runtime_blockers
+            .iter()
+            .any(|item| item.contains("ObjectManager hot-object memory layout")));
         assert!(report.native_slot_store_layout_transition_ready);
+        assert!(report
+            .native_slot_store_layout_transition_evidence
+            .iter()
+            .any(|item| item.contains("slot objects track layout state transitions")));
         assert!(!report.stream_backed_zone_runtime_ready);
         assert!(report.model_layout_compaction_ready);
         assert!(!report.mature_background_storage_manager_ready);
@@ -2532,7 +2582,7 @@ mod tests {
         let posture = storage_cache
             .covered
             .iter()
-            .find(|item| item.contains("storage production posture requires"))
+            .find(|item| item.contains("storage production posture covers"))
             .expect("storage posture evidence must be listed");
         for required in [
             "orphan page detection",
@@ -2543,10 +2593,10 @@ mod tests {
             "shared-store sync/async replay",
             "unified storage corpus cases",
             "first-class slot/object/page ownership index",
-            "native ObjectManager mechanics",
-            "SlotStore layout transitions",
-            "stream-backed zones",
+            "SlotStore layout transition evidence",
             "model-layout compaction",
+            "remaining blockers are native ObjectManager mechanics",
+            "stream-backed zones",
             "mature StorageManager loops",
             "merged dump/load policy",
         ] {
