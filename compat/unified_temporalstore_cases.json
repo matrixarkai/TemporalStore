@@ -8314,6 +8314,55 @@
           "name": "server_raft_admin_wait_applied_shared"
         }
       ]
+    },
+    {
+      "name": "engine_lifecycle_load_config_membership_unload",
+      "family": "control plane",
+      "shard_id": 7,
+      "description": "Shared C++/Rust engine lifecycle case for direct shard load, duplicate-load rejection, config versioning, info/stats reporting, membership version guards, and unload cleanup. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs so the moved production surface remains tied to the unified corpus.",
+      "steps": [
+        {
+          "name": "engine_lifecycle_load_config_membership_unload_shared",
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_data_node_lifecycle_parity",
+            "description": "Rust executes TemporalEngine load_shard_with, set_config/get_config, update_membership, get_info/get_stats, and unload_shard_with. C++ parity maps to partition/server load/unload, configuration, and membership surfaces.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine/lifecycle.rs",
+              "src/server/partition_manager.cc",
+              "src/partition/partition.h"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust control_api_load_config_info_stats_membership_and_unload --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
+    },
+    {
+      "name": "engine_lifecycle_reload_metadata_readonly_stale_version",
+      "family": "control plane",
+      "shard_id": 7,
+      "description": "Shared C++/Rust engine lifecycle case for reload metadata replacement, stale load-version rejection, membership preservation across reload, and readonly write barriers. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs.",
+      "steps": [
+        {
+          "name": "engine_lifecycle_reload_metadata_readonly_stale_version_shared",
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_data_node_lifecycle_parity",
+            "description": "Rust executes TemporalEngine reload_shard_with and validates stale generation rejection, metadata refresh, preserved replica membership, and readonly write rejection. C++ parity maps to partition reload, load version, and readonly serving behavior.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine/tests.rs",
+              "src/partition/partition.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust engine_reload_shard_updates_metadata_and_rejects_stale_version --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
     }
   ],
   "coverage": {

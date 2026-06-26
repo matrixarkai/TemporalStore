@@ -3459,6 +3459,7 @@ fn risk_count_sums_window() {
     );
 }
 
+// shared-corpus: engine_lifecycle_load_config_membership_unload
 #[test]
 fn control_api_load_config_info_stats_membership_and_unload() {
     let engine = TemporalEngine::default();
@@ -3631,6 +3632,7 @@ fn control_api_load_config_info_stats_membership_and_unload() {
     assert_eq!(second_unload.status.code, "shard_not_found");
 }
 
+// shared-corpus: engine_lifecycle_reload_metadata_readonly_stale_version
 #[test]
 fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
     let engine = TemporalEngine::default();
