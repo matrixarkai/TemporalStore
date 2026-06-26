@@ -1,3 +1,11 @@
+if(NOT TARGET thrift_static)
+    find_library(TEMPORALSTORE_SYSTEM_THRIFT_LIBRARY NAMES libthrift.a thrift PATHS /usr/lib/x86_64-linux-gnu /usr/lib)
+    if(TEMPORALSTORE_SYSTEM_THRIFT_LIBRARY)
+        add_library(thrift_static UNKNOWN IMPORTED GLOBAL)
+        set_target_properties(thrift_static PROPERTIES IMPORTED_LOCATION ${TEMPORALSTORE_SYSTEM_THRIFT_LIBRARY})
+    endif()
+endif()
+
 set(_THRIFT_BIN $<TARGET_FILE:thrift-compiler>)
 set(_THRIFT_GENS_DIR ${CMAKE_CURRENT_BINARY_DIR})
 set(_THRIFT_GEN_INCLUDE_DIR ${CMAKE_BINARY_DIR}/src/thrift)

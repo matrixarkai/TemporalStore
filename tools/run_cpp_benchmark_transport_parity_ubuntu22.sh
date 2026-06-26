@@ -72,7 +72,7 @@ echo "RUN direct SDK oracle parity"
   MS_SNAPSHOT_PORT=18720 \
   SERVER_PORT=18701 \
   CLUSTER_NAME=benchdirectparity \
-  ./tools/run_sdk_smoke_ubuntu22.sh
+  bash ./tools/run_sdk_smoke_ubuntu22.sh
 ) | tee "${RESULT_DIR}/direct_sdk_oracle.out"
 
 stop_cluster_processes benchdirectparity
@@ -99,7 +99,7 @@ echo "RUN live C++ proxy verified parity"
   CPP_PROXY_PRESSURE_VALUE_BYTES="${PROXY_PRESSURE_VALUE_BYTES}" \
   CPP_PROXY_PRESSURE_VERIFY_TIMEOUT_MS=20000 \
   CPP_PROXY_PRESSURE_VERIFY_POLL_MS=20 \
-  ./tools/run_sdk_smoke_ubuntu22.sh
+  bash ./tools/run_sdk_smoke_ubuntu22.sh
 ) | tee "${RESULT_DIR}/live_proxy_verified.out"
 
 stop_cluster_processes benchproxyparity
