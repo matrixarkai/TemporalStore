@@ -38,6 +38,13 @@ Rust follows the C++ operational default here: shared-store writes use async sto
 queues oplog entries for background flush. Callers that need request-path durability can explicitly
 select `SharedStoreStorageMode::Sync`, which publishes the oplog object before returning.
 
+Rust and C++ also expose a request/event-level replication selector so services do not need a
+restart to switch a specific write between `async_storage`, `sync_storage`, and `raft`. In Rust,
+callers use `ReplicatedExecuteRequest` or `ReplicatedBatchExecuteRequest` with
+`EventReplicationMode`. In C++, callers use `client::RequestOptions::event_replication_mode`,
+which is carried through `RequestOption.event_replication_mode`. `raft` requires an initialized
+data-Raft backend; otherwise the request fails closed with the existing failed-precondition status.
+
 The primary can publish:
 
 1. `publish_oplog_entry` for each committed mutation command.
@@ -108,6 +115,8 @@ The harness validates three local paths in one run:
 - sync shared-store storage publishes oplog entries immediately and a follower can replay them
 - async shared-store storage queues entries, flushes them with a bounded limit, then replays them
 - Raft writes committed entries to local WAL segment files and restores the shard from those files
+- dynamic event replication selects sync storage, async storage, and Raft for different events in
+  the same process, with `restart_required=false` in the JSON report
 
 For AWS, point shared-store paths at EFS and keep Raft WAL roots on local disk. Example:
 
@@ -120,7 +129,8 @@ cargo run --release -p temporalstore-rust --bin storage_modes_harness -- \
 ```
 
 The output is JSON and includes per-write publish/queue status, async flush progress, replay
-position, restored read value, and the local WAL segment files used by each Raft replica.
+position, restored read value, dynamic per-event replication decisions, and the local WAL segment
+files used by each Raft replica.
 
 ## What Is Still Missing For Production
 

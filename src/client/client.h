@@ -39,8 +39,16 @@ typedef bcache2::risk::ManagerResponse RiskManagerResponse;
 
 class Pipeline;
 
+enum class EventReplicationMode {
+    kInherit = 0,
+    kAsyncStorage = 1,
+    kSyncStorage = 2,
+    kRaft = 3,
+};
+
 struct RequestOptions {
     uint64_t trace_id = 0;
+    EventReplicationMode event_replication_mode = EventReplicationMode::kInherit;
 };
 
 // NOTE: deprecated, please use swig_client

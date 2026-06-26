@@ -21,10 +21,18 @@ enum PersistentType {
     // PERSISTENT_NONE = 2;
 }
 
+enum EventReplicationMode {
+    EVENT_REPLICATION_INHERIT = 0;
+    EVENT_REPLICATION_ASYNC_STORAGE = 1;
+    EVENT_REPLICATION_SYNC_STORAGE = 2;
+    EVENT_REPLICATION_RAFT = 3;
+}
+
 message RequestOption {
   uint64 trace_id = 1;
   string version  = 2;
   uint64 supported_features = 3;
+  EventReplicationMode event_replication_mode = 4;
 
   // set to supported_features, 1UL<<FeatureBitPos
   enum FeatureBitPos {

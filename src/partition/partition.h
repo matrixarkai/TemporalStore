@@ -266,8 +266,14 @@ inline void Partition::OnExecuteCmdDone(CmdContext* ctx, Closure<void>* callback
         return;
     }
 
-    if (LIKELY(options_.persistent_type == PersistentType::PERSISTENT_ASYNC &&
-               FLAGS_storage_async)) {
+    const bool request_forces_sync =
+        ctx->ctrl->event_replication_mode() == EVENT_REPLICATION_SYNC_STORAGE;
+    const bool request_forces_async =
+        ctx->ctrl->event_replication_mode() == EVENT_REPLICATION_ASYNC_STORAGE;
+    if (LIKELY(!request_forces_sync &&
+               (request_forces_async ||
+                (options_.persistent_type == PersistentType::PERSISTENT_ASYNC &&
+                 FLAGS_storage_async)))) {
         delete ctx;
         if (FLAGS_partition_commit_oplog) {
             // set FLAGS_partition_commit_oplog to false only in test now

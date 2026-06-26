@@ -36,6 +36,24 @@ DECLARE_int32(h2_client_stream_window_size);
 namespace bcache2 {
 namespace client {
 
+namespace {
+
+bcache2::EventReplicationMode ToProtoEventReplicationMode(EventReplicationMode mode) {
+    switch (mode) {
+    case EventReplicationMode::kAsyncStorage:
+        return bcache2::EVENT_REPLICATION_ASYNC_STORAGE;
+    case EventReplicationMode::kSyncStorage:
+        return bcache2::EVENT_REPLICATION_SYNC_STORAGE;
+    case EventReplicationMode::kRaft:
+        return bcache2::EVENT_REPLICATION_RAFT;
+    case EventReplicationMode::kInherit:
+    default:
+        return bcache2::EVENT_REPLICATION_INHERIT;
+    }
+}
+
+}  // namespace
+
 #define SYNC_CALL_CMD(method, ...)         \
     do {                                   \
         Controller ctrl;                   \
@@ -506,7 +524,8 @@ void TableCore::BatchExecute(Controller* ctrl, const std::vector<Request*>& requ
             uint64_t timeout_ms =
                 (ctrl->timeout_ms() == 0) ? options_.io_timeout_ms : ctrl->timeout_ms();
             std::unique_ptr<BCache2ExecuteContext> backend_context(
-                new BCache2ExecuteContext(this, execute_context, trace_id, timeout_ms));
+                new BCache2ExecuteContext(this, execute_context, trace_id, timeout_ms,
+                                          option.event_replication_mode));
             backend_context->batch_request_.set_partition_id(partition_id);
             backend_context->batch_request_.set_load_version(version);
             backend_context->batch_request_.set_pin_primary(force_primary);
@@ -534,10 +553,12 @@ void TableCore::BatchExecute(Controller* ctrl, const std::vector<Request*>& requ
 
 TableCore::BCache2ExecuteContext::BCache2ExecuteContext(TableCore* table,
                                                         BatchExecuteContext* context,
-                                                        uint64_t trace_id, uint64_t timeout_ms)
+                                                        uint64_t trace_id, uint64_t timeout_ms,
+                                                        EventReplicationMode event_replication_mode)
     : trace_id_(trace_id), table_(table), context_(context) {
     auto opt = batch_request_.mutable_opt();
     opt->set_trace_id(trace_id_);
+    opt->set_event_replication_mode(ToProtoEventReplicationMode(event_replication_mode));
     opt->set_version(BCACHE2_VERSION);
     cntl_.set_timeout_ms(timeout_ms);
 }

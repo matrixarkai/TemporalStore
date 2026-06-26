@@ -1786,6 +1786,64 @@ pub struct ExecuteResponse {
     pub response: CommandResponse,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum EventReplicationMode {
+    #[default]
+    Inherit,
+    AsyncStorage,
+    SyncStorage,
+    Raft,
+}
+
+impl EventReplicationMode {
+    pub fn requires_restart(self) -> bool {
+        false
+    }
+
+    pub fn is_explicit(self) -> bool {
+        self != Self::Inherit
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct EventReplicationSelectionReport {
+    pub requested_mode: EventReplicationMode,
+    pub effective_mode: EventReplicationMode,
+    pub write_command: bool,
+    pub accepted: bool,
+    pub restart_required: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplicatedExecuteRequest {
+    pub shard_id: ShardId,
+    pub command: Command,
+    #[serde(default)]
+    pub replication_mode: EventReplicationMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplicatedCommand {
+    pub command: Command,
+    #[serde(default)]
+    pub replication_mode: EventReplicationMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplicatedBatchExecuteRequest {
+    pub shard_id: ShardId,
+    pub commands: Vec<ReplicatedCommand>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ReplicatedBatchExecuteResponse {
+    pub status: Status,
+    pub responses: Vec<ExecuteResponse>,
+    pub replication: Vec<EventReplicationSelectionReport>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BatchExecuteRequest {
     pub shard_id: ShardId,

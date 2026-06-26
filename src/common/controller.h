@@ -19,11 +19,15 @@ class Controller {
 
     void Reset() {
         timeout_ms_ = 5000;  // 5s
+        event_replication_mode_ = 0;
         status_ = Status::OK();
     }
 
     void set_trace_id(uint64_t trace_id) { trace_id_ = trace_id; }
     uint64_t trace_id() const { return trace_id_; }
+
+    void set_event_replication_mode(int mode) { event_replication_mode_ = mode; }
+    int event_replication_mode() const { return event_replication_mode_; }
 
     void set_timeout_ms(uint64_t timeout_ms) { timeout_ms_ = timeout_ms; }
     uint64_t timeout_ms() const { return timeout_ms_; }
@@ -34,6 +38,7 @@ class Controller {
  private:
     uint64_t timeout_ms_ = 5000;  // 5s
     uint64_t trace_id_ = 0;
+    int event_replication_mode_ = 0;
     Status status_;
 };
 

@@ -5,7 +5,7 @@ use crate::engine::golden::{
 use crate::page_store::PageStoreZoneState;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextExtractedEventIndexes,
-    ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
+    ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp, ReplicatedCommand,
 };
 
 fn wait_for_fresh_admission_second() {
@@ -18,6 +18,66 @@ fn wait_for_fresh_admission_second() {
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
+}
+
+// shared-corpus: dynamic_event_replication_mode_selection
+#[test]
+fn replicated_execute_selects_sync_async_or_raft_without_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let request = ReplicatedBatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            ReplicatedCommand {
+                command: Command::StringSet {
+                    key: "sync-event".to_string(),
+                    value: b"sync".to_vec(),
+                },
+                replication_mode: EventReplicationMode::SyncStorage,
+            },
+            ReplicatedCommand {
+                command: Command::StringSet {
+                    key: "async-event".to_string(),
+                    value: b"async".to_vec(),
+                },
+                replication_mode: EventReplicationMode::AsyncStorage,
+            },
+            ReplicatedCommand {
+                command: Command::StringSet {
+                    key: "raft-event".to_string(),
+                    value: b"raft".to_vec(),
+                },
+                replication_mode: EventReplicationMode::Raft,
+            },
+        ],
+    };
+
+    let response = engine.batch_execute_replicated(request);
+    assert!(response.status.ok);
+    assert!(response.responses.iter().all(|response| response.status.ok));
+    assert_eq!(
+        response
+            .replication
+            .iter()
+            .map(|report| report.effective_mode)
+            .collect::<Vec<_>>(),
+        vec![
+            EventReplicationMode::SyncStorage,
+            EventReplicationMode::AsyncStorage,
+            EventReplicationMode::Raft,
+        ]
+    );
+    assert!(response
+        .replication
+        .iter()
+        .all(|report| report.accepted && !report.restart_required));
 }
 
 // shared-corpus: context_events_segments_entities_child_refs context_event_index_audit_dirty_models

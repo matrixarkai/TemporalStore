@@ -98,7 +98,8 @@ class TableCore {
     class BCache2ExecuteContext : public google::protobuf::Closure {
      public:
         BCache2ExecuteContext(TableCore* table, BatchExecuteContext* context, uint64_t trace_id,
-                              uint64_t timeout_ms);
+                              uint64_t timeout_ms,
+                              EventReplicationMode event_replication_mode);
         ~BCache2ExecuteContext();
 
         void Deliver();
