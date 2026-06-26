@@ -1864,11 +1864,13 @@ impl TemporalEngine {
                 ),
             ));
         }
-        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+        let mut restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        rebuild_slot_page_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        let restored_index_bytes = serialize_index(&restored);
         self.persist_slot_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
-        self.persist_index_bytes(manifest.shard_id, &manifest.index_bytes)
+        self.persist_index_bytes(manifest.shard_id, &restored_index_bytes)
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         self.persist_slot_dump_install_marker(manifest, "install")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
@@ -11042,7 +11044,6 @@ fn slot_storage_summaries(
     end_routing_slot: u32,
 ) -> Vec<SlotStorageSummary> {
     let mut slots = BTreeMap::<u32, SlotStorageSummary>::new();
-    let mut objects_by_slot = BTreeMap::<u32, BTreeSet<String>>::new();
     let mut page_segments_by_slot = BTreeMap::<u32, BTreeSet<u64>>::new();
     for entry in collect_live_page_entries(shard) {
         let routing_slot = entry
@@ -11063,14 +11064,6 @@ fn slot_storage_summaries(
                     .map_or(zone_id, |current| current.max(zone_id)),
             );
         }
-        objects_by_slot
-            .entry(routing_slot)
-            .or_default()
-            .insert(entry.object_key);
-        page_segments_by_slot
-            .entry(routing_slot)
-            .or_default()
-            .insert(entry.address.page_segment_id);
     }
     for key in &shard.dirty_objects {
         let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
@@ -11082,10 +11075,6 @@ fn slot_storage_summaries(
         summary.dirty_generation = summary.dirty_generation.saturating_add(1);
     }
     for (routing_slot, summary) in &mut slots {
-        summary.object_count = objects_by_slot
-            .get(routing_slot)
-            .map(|objects| objects.len() as u64)
-            .unwrap_or_default();
         summary.page_segment_ids = page_segments_by_slot
             .get(routing_slot)
             .map(|ids| ids.iter().copied().collect())
