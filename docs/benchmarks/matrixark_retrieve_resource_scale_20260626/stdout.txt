@@ -1,0 +1,407 @@
+{
+  "backend": "local-jsonl",
+  "config": {
+    "batch_size": 50,
+    "csv_rows": 200,
+    "embedding_provider": "hash",
+    "max_context_tokens": 700,
+    "pdf_paragraphs": 60,
+    "repo_files": 20,
+    "resource_repeat": 1,
+    "retrieve_ops_per_worker": 1,
+    "retrieve_workers": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "seed_events": 100,
+    "understanding_provider": "rules"
+  },
+  "event_log": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
+  "record_counts": {
+    "context_child_ref": 9,
+    "context_embedding": 1198,
+    "context_entity": 242,
+    "context_entity_update_audit": 24,
+    "context_event": 321,
+    "context_extraction_audit": 2,
+    "context_index": 2682,
+    "context_node": 11,
+    "context_pack_audit": 60,
+    "context_segment": 8,
+    "context_summary": 514,
+    "context_summary_dirty": 26,
+    "context_summary_refresh_audit": 284,
+    "matrixark_audit_log": 216,
+    "matrixark_metric": 3,
+    "resource_chunk": 113,
+    "resource_import_task": 9,
+    "resource_manifest": 3,
+    "resource_registry": 3,
+    "session_buffer_event": 3
+  },
+  "resource_fixtures": {
+    "large_csv": {
+      "node_path": [
+        "resources",
+        "scale",
+        "csv"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_approvals.csv",
+      "resource_type": "csv",
+      "size_bytes": 14727
+    },
+    "large_pdf": {
+      "node_path": [
+        "resources",
+        "scale",
+        "pdf"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/large_budget_policy.pdf",
+      "resource_type": "pdf",
+      "size_bytes": 8688
+    },
+    "repo_directory": {
+      "file_count": 20,
+      "node_path": [
+        "resources",
+        "scale",
+        "repo"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_retrieve_resource_scale_20260626/fixtures/sample_repo",
+      "resource_type": "directory"
+    }
+  },
+  "resource_imports": [
+    {
+      "elapsed_ms": 167358.627,
+      "file_count": null,
+      "name": "large_pdf",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 60,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 80,
+      "resource_fact_event_count": 80,
+      "resource_original_chunk_count": 60,
+      "resource_parse_warning_count": 0,
+      "resource_type": "pdf",
+      "resource_version": "78c0d86dd17c539c",
+      "size_bytes": 8688,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 190358.574,
+      "file_count": null,
+      "name": "large_csv",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 40,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 112,
+      "resource_fact_event_count": 112,
+      "resource_original_chunk_count": 40,
+      "resource_parse_warning_count": 0,
+      "resource_type": "csv",
+      "resource_version": "d6783cd213ee9f70",
+      "size_bytes": 14727,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 140682.769,
+      "file_count": 20,
+      "name": "repo_directory",
+      "raw_storage_policy": "local_raw_uri_only",
+      "repeat_index": 0,
+      "resource_chunk_count": 13,
+      "resource_deduped_chunk_count": 0,
+      "resource_fact_entity_count": 26,
+      "resource_fact_event_count": 26,
+      "resource_original_chunk_count": 13,
+      "resource_parse_warning_count": 1,
+      "resource_type": "directory",
+      "resource_version": "b7e948a36063385f",
+      "size_bytes": null,
+      "status": "accepted"
+    },
+    {
+      "elapsed_ms": 18479.545,
+      "name": "post_resource_summary_refresh",
+      "refresh": {
+        "access": {
+          "account_id": "acct_scale",
+          "agent_name": "scale_runner",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "session_id": "session_resource_scale",
+          "tenant_id": "tenant_scale",
+          "user_id": "user_scale"
+        },
+        "refreshed": [],
+        "refreshed_count": 0,
+        "status": "ok"
+      },
+      "status": "ok"
+    }
+  ],
+  "retrieve_sweep": [
+    {
+      "avg_selected_refs": 40.5,
+      "avg_used_context_tokens": 519.5,
+      "elapsed_sec": 0.106,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 97.625,
+        "count": 4,
+        "max": 103.411,
+        "p50": 96.496,
+        "p95": 103.411,
+        "p99": 103.411
+      },
+      "max_context_tokens": 700,
+      "qps": 37.854,
+      "status": "passed",
+      "total_ops": 4,
+      "workers": 4
+    },
+    {
+      "avg_selected_refs": 40.5,
+      "avg_used_context_tokens": 519.5,
+      "elapsed_sec": 0.266,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 204.469,
+        "count": 8,
+        "max": 216.97,
+        "p50": 210.598,
+        "p95": 216.97,
+        "p99": 216.97
+      },
+      "max_context_tokens": 700,
+      "qps": 30.037,
+      "status": "passed",
+      "total_ops": 8,
+      "workers": 8
+    },
+    {
+      "avg_selected_refs": 33.875,
+      "avg_used_context_tokens": 432.938,
+      "elapsed_sec": 1.137,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 534.169,
+        "count": 16,
+        "max": 791.923,
+        "p50": 539.405,
+        "p95": 769.652,
+        "p99": 791.923
+      },
+      "max_context_tokens": 700,
+      "qps": 14.074,
+      "status": "passed",
+      "total_ops": 16,
+      "workers": 16
+    },
+    {
+      "avg_selected_refs": 33.75,
+      "avg_used_context_tokens": 432.938,
+      "elapsed_sec": 10.894,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 6335.475,
+        "count": 32,
+        "max": 8256.751,
+        "p50": 6758.193,
+        "p95": 8148.782,
+        "p99": 8256.751
+      },
+      "max_context_tokens": 700,
+      "qps": 2.937,
+      "status": "passed",
+      "total_ops": 32,
+      "workers": 32
+    }
+  ],
+  "seed": {
+    "batch_count": 2,
+    "batch_size": 50,
+    "ingest_latency_ms": {
+      "avg": 29.426,
+      "count": 2,
+      "max": 37.81,
+      "p50": 21.043,
+      "p95": 37.81,
+      "p99": 37.81
+    },
+    "scope": {
+      "account_id": "acct_scale",
+      "agent_name": "scale_runner",
+      "session_id": "session_retrieve_scale",
+      "tenant_id": "tenant_scale",
+      "user_id": "user_scale"
+    },
+    "seed_events_requested": 100,
+    "seed_events_written": 100,
+    "summary_refresh": {
+      "access": {
+        "account_id": "acct_scale",
+        "agent_name": "scale_runner",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "session_id": "session_retrieve_scale",
+        "tenant_id": "tenant_scale",
+        "user_id": "user_scale"
+      },
+      "refreshed": [
+        {
+          "dirty_hash": 8227359972247914220,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 6025066374489355495,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_0"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 351
+          },
+          "summary_version_hash": 2239785489632830388
+        },
+        {
+          "dirty_hash": 308205720954480822,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4335767568383908923,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_0",
+            "topic_0"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 6521946060362909724
+        },
+        {
+          "dirty_hash": 8991636715252044759,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 7671761716597775914,
+          "node_path": [
+            "context"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 2,
+          "summary_generation_policy": {
+            "child_summary_count": 2,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 526
+          },
+          "summary_version_hash": 2495634904187120481
+        },
+        {
+          "dirty_hash": 8199103761385260200,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 682485312310361849,
+          "node_path": [
+            "context",
+            "scale_runner"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 2,
+          "summary_generation_policy": {
+            "child_summary_count": 2,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 526
+          },
+          "summary_version_hash": 2009258946885221749
+        },
+        {
+          "dirty_hash": 6601896699148842973,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5729357460913547841,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_1"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 351
+          },
+          "summary_version_hash": 8331468630297785508
+        },
+        {
+          "dirty_hash": 3404223110478162891,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5109677731576304563,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_1",
+            "topic_1"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 4675382739681240581
+        }
+      ],
+      "refreshed_count": 6,
+      "status": "ok"
+    },
+    "summary_refresh_ms": 16.92
+  },
+  "status": "passed"
+}
