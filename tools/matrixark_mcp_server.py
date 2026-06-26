@@ -14,6 +14,7 @@ so operational behavior remains stable for existing scripts.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import queue as thread_queue
 
 try:
     from tools.matrixark_mcp_core import *
@@ -63,6 +64,11 @@ class MatrixArkLocalAdapter:
     def __post_init__(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
         self._write_batch_local = threading.local()
+        self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
+        self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
+        self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
+        self._resource_import_workers_started = False
+        self._resource_import_worker_lock = threading.RLock()
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -1048,6 +1054,58 @@ class MatrixArkLocalAdapter:
         self.append(update)
         return {"status": "updated", **update}
 
+    def _resource_import_pool_status(self) -> Json:
+        return {
+            "worker_count": self._resource_import_worker_count,
+            "queue_max": self._resource_import_queue_max,
+            "queue_depth": self._resource_import_queue.qsize(),
+            "queue_remaining_capacity": max(0, self._resource_import_queue_max - self._resource_import_queue.qsize()),
+            "bounded": True,
+        }
+
+    def _ensure_resource_import_workers(self) -> None:
+        with self._resource_import_worker_lock:
+            if self._resource_import_workers_started:
+                return
+            for worker_index in range(self._resource_import_worker_count):
+                thread = threading.Thread(
+                    target=self._resource_import_worker_loop,
+                    name=f"matrixark-resource-import-{worker_index}",
+                    daemon=True,
+                )
+                thread.start()
+            self._resource_import_workers_started = True
+
+    def _resource_import_worker_loop(self) -> None:
+        while True:
+            item = self._resource_import_queue.get()
+            try:
+                args = item.get("args", {})
+                hook = item.get("hook")
+                self._run_background_resource_import(args, hook if isinstance(hook, dict) else None)
+            finally:
+                self._resource_import_queue.task_done()
+
+    def _enqueue_resource_import(self, *, args: Json, hook: Json | None, task_hash: int) -> Json:
+        self._ensure_resource_import_workers()
+        queue_before = self._resource_import_queue.qsize()
+        try:
+            self._resource_import_queue.put_nowait(
+                {
+                    "args": args,
+                    "hook": hook,
+                    "task_hash": task_hash,
+                    "queued_at_ms": now_ms(),
+                }
+            )
+        except thread_queue.Full:
+            raise MatrixArkError(
+                f"resource import queue is full; workers={self._resource_import_worker_count} max_queue={self._resource_import_queue_max}"
+            )
+        status = self._resource_import_pool_status()
+        status["queue_depth_before_enqueue"] = queue_before
+        return status
+
     def _run_background_resource_import(self, args: Json, hook: Json | None) -> None:
         task_hash = args.get("_resource_import_task_hash", 0)
         try:
@@ -1183,12 +1241,33 @@ class MatrixArkLocalAdapter:
                     "_background_resource_import": True,
                     "_resource_import_task_hash": resource_import_task_hash,
                 }
-                thread = threading.Thread(
-                    target=self._run_background_resource_import,
-                    args=(background_args, hook),
-                    daemon=True,
-                )
-                thread.start()
+                try:
+                    queue_status = self._enqueue_resource_import(
+                        args=background_args,
+                        hook=hook,
+                        task_hash=resource_import_task_hash,
+                    )
+                except MatrixArkError as exc:
+                    self.append(
+                        {
+                            "record_type": "resource_import_task",
+                            "task_hash": resource_import_task_hash,
+                            "status": "failed",
+                            "kind": envelope["kind"],
+                            "raw_uri": requested_raw_uri,
+                            "requested_raw_uri": requested_raw_uri,
+                            "resource_type": resource_type,
+                            "raw_storage_mode": storage_resolution["storage_mode"],
+                            "raw_storage_policy": raw_storage_policy,
+                            "raw_bytes_stored": False,
+                            "error": str(exc),
+                            "node_hash": node_hash,
+                            "node_path": node_path,
+                            "scope": envelope["scope"],
+                            "updated_at_ms": now_ms(),
+                        }
+                    )
+                    raise
                 return {
                     "status": "queued",
                     "event_id_hash": event_id_hash,
@@ -1204,6 +1283,7 @@ class MatrixArkLocalAdapter:
                         "raw_storage_mode": storage_resolution["storage_mode"],
                         "raw_storage_policy": raw_storage_policy,
                         "raw_bytes_stored": False,
+                        "worker_pool": queue_status,
                     },
                     "node_materialization": node_materialization,
                 }

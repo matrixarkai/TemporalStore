@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer
@@ -99,6 +102,66 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("context_index", record_types)
             self.assertIn("session_buffer_event", record_types)
             self.assertIn("context_summary_dirty", record_types)
+
+    def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
+            os.environ,
+            {
+                "MATRIXARK_RESOURCE_IMPORT_WORKERS": "1",
+                "MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX": "2",
+            },
+        ):
+            event_log = Path(tmp_dir) / "matrixark-resource-queue.jsonl"
+            adapter = MatrixArkLocalAdapter(event_log)
+            server = MatrixArkMcpServer(adapter, line_json=True, access_mode="dev")
+            result = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "kind": "resource",
+                    "raw_uri": "inline://resource-queue.md",
+                    "resource_type": "md",
+                    "wait": False,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "# GPU Runbook\n\nAlice owns the GPU approval checklist. Finance review is required before purchase.",
+                        }
+                    ],
+                    "scope": {
+                        "account_id": "acct_queue",
+                        "tenant_id": "tenant_queue",
+                        "user_id": "user_queue",
+                        "session_id": "session_queue",
+                    },
+                    "metadata": {"node_path": ["users", "user_queue", "resources", "runbooks"]},
+                },
+            )
+            self.assertEqual("queued", result["status"])
+            task = result["resource_import_task"]
+            self.assertFalse(task["wait"])
+            self.assertTrue(task["worker_pool"]["bounded"])
+            self.assertEqual(1, task["worker_pool"]["worker_count"])
+            self.assertEqual(2, task["worker_pool"]["queue_max"])
+
+            task_hash = task["task_hash"]
+            deadline = time.time() + 5.0
+            records: list[dict] = []
+            while time.time() < deadline:
+                records = adapter.read_all()
+                if any(
+                    record.get("record_type") == "resource_import_task"
+                    and record.get("task_hash") == task_hash
+                    and record.get("status") == "completed"
+                    for record in records
+                ):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail("background resource import did not complete")
+
+            self.assertTrue(any(record.get("record_type") == "resource_chunk" for record in records))
+            self.assertTrue(any(record.get("record_type") == "context_embedding" for record in records))
+            self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
 
     def test_codex_hook_ingests_conversation_resource_and_skill_then_retrieves_all(self) -> None:
         repo = Path(__file__).resolve().parents[1]
