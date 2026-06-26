@@ -1,17 +1,53 @@
 // Copyright (c) 2022-present, ByteDance Inc. All rights reserved.
 
-#include <brpc/server.h>
-#include <bthread/timer_thread.h>
-
 #include "common/metrics.h"
+
+#include <algorithm>
+#include <cctype>
+#include <mutex>
+
 #include "common/logging.h"
 
 namespace bcache2 {
+namespace {
 
-const char kCpuMetrics[] = "cpu";
-const char kMemoryMetrics[] = "memory";
-const char kThroughputInputMetrics[] = "throughput.input";
-const char kThroughputOutputMetrics[] = "throughput.output";
+std::mutex g_metrics_mu;
+std::string g_metrics_prefix = "bcache2.default";
+MetricsEnv::MetricsTags g_common_tags;
+
+std::string SanitizeMetricPart(const std::string& value) {
+    std::string out;
+    out.reserve(value.size());
+    bool last_was_underscore = false;
+    for (char ch : value) {
+        const unsigned char c = static_cast<unsigned char>(ch);
+        if (std::isalnum(c)) {
+            out.push_back(static_cast<char>(std::tolower(c)));
+            last_was_underscore = false;
+        } else if (!last_was_underscore) {
+            out.push_back('_');
+            last_was_underscore = true;
+        }
+    }
+    while (!out.empty() && out.front() == '_') {
+        out.erase(out.begin());
+    }
+    while (!out.empty() && out.back() == '_') {
+        out.pop_back();
+    }
+    if (out.empty()) {
+        return "unknown";
+    }
+    return out;
+}
+
+MetricsEnv::MetricsTags MergeCommonTags(const MetricsEnv::MetricsTags& tags) {
+    MetricsEnv::MetricsTags merged = MetricsEnv::CommonTags();
+    merged.insert(merged.end(), tags.begin(), tags.end());
+    return merged;
+}
+
+}  // namespace
 
 void MetricsEnv::Init(const Options& options) {
     bool set_initialized = false;
@@ -20,40 +56,45 @@ void MetricsEnv::Init(const Options& options) {
     }
 
     options_ = options;
-    byte::embedded_metrics::MetricsOptions registry_options;
-    registry_options.enable_logging = false;
-    byte::embedded_metrics::MetricsRegistry::Registry().Initialize(
-        options_.prefix, options_.common_tags, registry_options, nullptr);
-    cpu_metrics_.reset(new GuageHolder(kCpuMetrics, {}));
-    memory_metrics_.reset(new GuageHolder(kMemoryMetrics, {}));
-    input_metrics_.reset(new GuageHolder(kThroughputInputMetrics, {}));
-    output_metrics_.reset(new GuageHolder(kThroughputOutputMetrics, {}));
-    if (options_.background_pool != nullptr) {
-        auto guard = shared_from_this();
-        auto func = [this, guard] { BaseMetricsSchedule(); };
-        options_.background_pool->PushTask(NewFuncClosure(func),
-                                           options_.base_metrics_update_interval_ms);
+    {
+        std::lock_guard<std::mutex> lock(g_metrics_mu);
+        g_metrics_prefix = options_.prefix;
+        g_common_tags = options_.common_tags;
     }
-    LOG_INFO("Init MetricsEnv success").put("prefix", options_.prefix);
+    ready_metrics_.reset(new GuageHolder("process.ready", {}));
+    ready_metrics_->get()->Set(1);
+    LOG_INFO("Init Prometheus/bvar MetricsEnv success").put("prefix", options_.prefix);
 }
 
-void MetricsEnv::BaseMetricsSchedule() {
-    if (stoped_) {
-        return;
+MetricsEnv::MetricsTags MetricsEnv::CommonTags() {
+    std::lock_guard<std::mutex> lock(g_metrics_mu);
+    return g_common_tags;
+}
+
+std::string MetricsEnv::MetricName(const std::string& name, const MetricsTags& tags) {
+    std::string prefix;
+    {
+        std::lock_guard<std::mutex> lock(g_metrics_mu);
+        prefix = g_metrics_prefix;
     }
 
-    double cpu = atof(bvar::Variable::describe_exposed("process_cpu_usage").data()) * 100;
-    int64_t memory = atoll(bvar::Variable::describe_exposed("process_memory_resident").data());
-    int64_t input = atoll(bvar::Variable::describe_exposed("process_io_read_bytes_second").data());
-    int64_t output =
-        atoll(bvar::Variable::describe_exposed("process_io_write_bytes_second").data());
-    cpu_metrics_->get()->Set(cpu);
-    memory_metrics_->get()->Set(memory);
-    input_metrics_->get()->Set(input);
-    output_metrics_->get()->Set(output);
-    auto guard = shared_from_this();
-    options_.background_pool->PushTask(NewFuncClosure([this, guard] { BaseMetricsSchedule(); }),
-                                       options_.base_metrics_update_interval_ms);
+    std::string metric_name = SanitizeMetricPart(prefix) + "_" + SanitizeMetricPart(name);
+    for (const auto& tag : tags) {
+        metric_name += "_" + SanitizeMetricPart(tag.first) + "_" + SanitizeMetricPart(tag.second);
+    }
+    return metric_name;
+}
+
+void MetricsEnv::Counter::Expose(const std::string& name, const MetricsTags& tags) {
+    value_.expose(MetricName(name, MergeCommonTags(tags)));
+}
+
+void MetricsEnv::Guage::Expose(const std::string& name, const MetricsTags& tags) {
+    value_.expose(MetricName(name, MergeCommonTags(tags)));
+}
+
+void MetricsEnv::Histogram::Expose(const std::string& name, const MetricsTags& tags) {
+    latency_.expose(MetricName(name, MergeCommonTags(tags)));
 }
 
 }  // namespace bcache2

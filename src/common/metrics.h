@@ -2,34 +2,87 @@
 
 #pragma once
 
-#include <byte/embedded_metrics/metrics_holder.h>
-#include <sys/resource.h>
-#include <sys/time.h>
-#include <unistd.h>
+#include <byte/include/assert.h>
+#include <byte/include/macros.h>
 
-#include <iostream>
+#include <atomic>
+#include <cstdint>
 #include <memory>
 #include <string>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "common/coclosure.h"
+#include "bvar/bvar.h"
 #include "common/status.h"
 #include "common/time.h"
+
+namespace byte {
+class AsyncThreadPool;
+}  // namespace byte
 
 namespace bcache2 {
 
 class MetricsEnv : public std::enable_shared_from_this<MetricsEnv> {
  public:
-    using Counter = byte::embedded_metrics::Counter;
-    using Guage = byte::embedded_metrics::Guage;
-    using Histogram = byte::embedded_metrics::Histogram;
-    using HistogramType = byte::embedded_metrics::HistogramType;
-    using MetricsTags = byte::embedded_metrics::Tags;
+    using MetricsTags = std::vector<std::pair<std::string, std::string>>;
+
+    class Counter {
+     public:
+        Counter() = default;
+        Counter(const std::string& name, const MetricsTags& tags) { Expose(name, tags); }
+
+        void Expose(const std::string& name, const MetricsTags& tags);
+        void Increment() { value_ << 1; }
+        void Add(uint64_t value) { value_ << static_cast<int64_t>(value); }
+        void Set(double value) { value_ << static_cast<int64_t>(value); }
+
+     private:
+        bvar::Adder<int64_t> value_;
+    };
+
+    class Guage {
+     public:
+        Guage() = default;
+        Guage(const std::string& name, const MetricsTags& tags) { Expose(name, tags); }
+
+        void Expose(const std::string& name, const MetricsTags& tags);
+        void Set(double value) { value_.set_value(value); }
+        void Add(double value) { value_.set_value(value_.get_value() + value); }
+        void Increment() { Add(1); }
+
+     private:
+        bvar::Status<double> value_{0};
+    };
+
+    class Histogram {
+     public:
+        Histogram() = default;
+        Histogram(const std::string& name, const MetricsTags& tags) { Expose(name, tags); }
+
+        void Expose(const std::string& name, const MetricsTags& tags);
+        void Set(double value) { latency_ << static_cast<int64_t>(value); }
+        void Add(double value) { Set(value); }
+        void Increment() { Set(1); }
+
+     private:
+        bvar::LatencyRecorder latency_;
+    };
 
     template <typename MetricClass>
-    using Holder = typename byte::embedded_metrics::MetricHolder<MetricClass>;
+    class Holder {
+     public:
+        Holder() = default;
+        Holder(const std::string& name, const MetricsTags& tags) { Initialize(name, tags); }
+
+        void Initialize(const std::string& name, const MetricsTags& tags) {
+            metric_.reset(new MetricClass(name, tags));
+        }
+        MetricClass* get() { return metric_.get(); }
+        const MetricClass* get() const { return metric_.get(); }
+
+     private:
+        std::unique_ptr<MetricClass> metric_;
+    };
 
     using CounterHolder = Holder<Counter>;
     using GuageHolder = Holder<Guage>;
@@ -38,6 +91,8 @@ class MetricsEnv : public std::enable_shared_from_this<MetricsEnv> {
     struct Options {
         MetricsTags common_tags;
         std::string prefix = "bcache2.default";
+        // Kept for API compatibility. Metrics are exposed through bvar/Prometheus now, so no
+        // background embedded-metrics reporter is started here.
         byte::AsyncThreadPool* background_pool = nullptr;
         int base_metrics_update_interval_ms = 1000;
     };
@@ -46,18 +101,16 @@ class MetricsEnv : public std::enable_shared_from_this<MetricsEnv> {
     ~MetricsEnv() = default;
 
     void Init(const Options& options);
-    void Stop() { stoped_ = true; }
+    void Stop() { stopped_ = true; }
+
+    static std::string MetricName(const std::string& name, const MetricsTags& tags);
+    static MetricsTags CommonTags();
 
  private:
-    void BaseMetricsSchedule();
-
     std::atomic<bool> initialized_{false};
-    std::atomic<bool> stoped_{false};
+    std::atomic<bool> stopped_{false};
     Options options_;
-    std::unique_ptr<GuageHolder> cpu_metrics_;
-    std::unique_ptr<GuageHolder> memory_metrics_;
-    std::unique_ptr<GuageHolder> input_metrics_;
-    std::unique_ptr<GuageHolder> output_metrics_;
+    std::unique_ptr<GuageHolder> ready_metrics_;
 
     DISALLOW_COPY_AND_ASSIGN(MetricsEnv);
 };
@@ -65,7 +118,7 @@ class MetricsEnv : public std::enable_shared_from_this<MetricsEnv> {
 class MetricsManager {
  public:
     MetricsManager(MetricsEnv::MetricsTags common_tags, std::string module_name)
-        : common_tags_(std::move(common_tags)), module_name_(module_name) {}
+        : common_tags_(std::move(common_tags)), module_name_(std::move(module_name)) {}
     ~MetricsManager() {}
 
     template <typename MetricClass>
@@ -88,7 +141,11 @@ class ScopedLatency {
  public:
     explicit ScopedLatency(MetricsEnv::Histogram* histogram) : histogram_(histogram) {}
 
-    ~ScopedLatency() { histogram_->Set(cost_.GetElapsedInUs()); }
+    ~ScopedLatency() {
+        if (histogram_ != nullptr) {
+            histogram_->Set(cost_.GetElapsedInUs());
+        }
+    }
 
  private:
     TimeCost cost_;
@@ -149,7 +206,6 @@ class RequestMetrics {
 };
 
 struct ModuleMetrics {
-    // dummy struct for polymorphism only
     explicit ModuleMetrics(MetricsManager*) {}
     virtual ~ModuleMetrics() {}
 };
