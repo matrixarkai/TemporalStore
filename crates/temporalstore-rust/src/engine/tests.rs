@@ -5471,6 +5471,100 @@ fn slot_storage_summaries_track_live_refs_dirty_slots_and_manifest_sequence() {
         .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
 }
 
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn slot_page_ownership_is_first_class_and_survives_reload() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    for field in ["field-a", "field-b"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "hash-key".to_string(),
+                        field: field.to_string(),
+                        value: field.as_bytes().to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).unwrap();
+        assert_eq!(
+            shard
+                .slot_objects
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>(),
+            2
+        );
+        assert_eq!(
+            shard
+                .slot_objects
+                .values()
+                .flat_map(|objects| objects.values())
+                .map(|object| object.pages.len())
+                .sum::<usize>(),
+            2
+        );
+    }
+    assert_eq!(
+        engine
+            .slot_storage_summaries(1)
+            .iter()
+            .map(|summary| summary.object_count)
+            .sum::<u64>(),
+        2
+    );
+
+    engine.unload_shard(1);
+    engine.load_shard_with(LoadShardRequest {
+        shard_id: 1,
+        load_version: 1,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_slot: 10,
+        end_routing_slot: 12,
+        readonly: false,
+        table_name: String::new(),
+    });
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).unwrap();
+    assert_eq!(
+        shard
+            .slot_objects
+            .values()
+            .map(BTreeMap::len)
+            .sum::<usize>(),
+        2
+    );
+    assert!(shard
+        .slot_objects
+        .values()
+        .flat_map(|objects| objects.values())
+        .all(|object| object.kind == "hash" && !object.pages.is_empty()));
+}
+
 #[test]
 fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
     let dir = tempfile::tempdir().unwrap();
