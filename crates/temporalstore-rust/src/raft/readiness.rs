@@ -148,6 +148,7 @@ pub fn raft_openraft_rollout_readiness_from_reports(
                 && report.membership_change_validated
                 && report.follower_lag_validated
                 && report.secondary_read_validated
+                && report.operational_semantics.proves_runtime_semantics()
                 && report.nodes.len() >= 3
                 && report.nodes.iter().all(|node| {
                     node.restarted
@@ -170,6 +171,7 @@ pub fn raft_openraft_rollout_readiness_from_reports(
                 && report.membership_change_validated
                 && report.follower_lag_validated
                 && report.secondary_read_validated
+                && report.operational_semantics.proves_runtime_semantics()
                 && report.nodes.len() >= 3
                 && report.nodes.iter().all(|node| {
                     node.restarted
@@ -201,13 +203,13 @@ pub fn raft_openraft_rollout_readiness_from_reports(
     }
     if !data_node_real_process_rollout_validated {
         missing.push(
-            "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, and secondary reads"
+            "provide passing OpenRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and ByteRaft-derived operational semantics evidence"
                 .to_string(),
         );
     }
     if !metaserver_real_process_rollout_validated {
         missing.push(
-            "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and scheduler replay"
+            "provide passing OpenRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, scheduler replay, and ByteRaft-derived operational semantics evidence"
                 .to_string(),
         );
     }

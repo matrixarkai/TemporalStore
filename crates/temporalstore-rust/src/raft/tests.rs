@@ -2932,6 +2932,26 @@ fn ready_openraft_process_node(node_id: RaftNodeId) -> OpenRaftProcessNodeEviden
     }
 }
 
+fn ready_openraft_operational_semantics() -> OpenRaftProcessOperationalSemanticsEvidence {
+    OpenRaftProcessOperationalSemanticsEvidence {
+        api_presence_only_rejected: true,
+        process_path_validated: true,
+        read_index_validated: true,
+        leader_lease_validated: true,
+        lagging_follower_read_rejected: true,
+        stale_follower_write_rejected: true,
+        leader_transfer_under_load_validated: true,
+        snapshot_install_restart_validated: true,
+        membership_add_promote_remove_validated: true,
+        follower_rejoin_after_compaction_validated: true,
+        secondary_read_eligibility_validated: true,
+        apply_pipeline_converged: true,
+        wal_persistence_observed: true,
+        ready: true,
+        blockers: Vec::new(),
+    }
+}
+
 fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutReport {
     OpenRaftDataNodeProcessRolloutReport {
         shard_id: 7,
@@ -2953,6 +2973,7 @@ fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutRe
         snapshot_install_validated: true,
         applied_fence_validated: true,
         multi_process_log_store_validated: true,
+        operational_semantics: ready_openraft_operational_semantics(),
         ready: true,
         blockers: Vec::new(),
     }
@@ -2982,6 +3003,7 @@ fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
         recovered_after_restart: true,
         scheduler_task_replay_validated: true,
         multi_process_log_store_validated: true,
+        operational_semantics: ready_openraft_operational_semantics(),
         ready: true,
         blockers: Vec::new(),
     }
@@ -3064,6 +3086,19 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("secondary reads")));
+
+    let mut api_only_data = ready_data_node_openraft_rollout_report();
+    api_only_data.operational_semantics = OpenRaftProcessOperationalSemanticsEvidence::default();
+    let rejected_api_only = raft_openraft_rollout_readiness_from_reports(
+        Some(&api_only_data),
+        Some(&ready_meta_openraft_rollout_report()),
+    );
+    assert!(!rejected_api_only.data_node_real_process_rollout_validated);
+    assert!(!rejected_api_only.production_ready);
+    assert!(rejected_api_only
+        .missing
+        .iter()
+        .any(|item| item.contains("operational semantics evidence")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence

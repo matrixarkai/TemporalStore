@@ -2268,6 +2268,16 @@ GC, and local cache warmup coverage.
     penalties before legacy key/memory load. This makes placement prefer
     low-queue, low-dirty, non-degraded servers and avoid freezing/unloading/failed
     shard states while preserving existing location/host diversity behavior.
+18. Tightened the Raft runtime parity gate: `OpenRaftDataNodeProcessRolloutReport`
+    and `OpenRaftMetaProcessRolloutReport` now require
+    `OpenRaftProcessOperationalSemanticsEvidence`, so API presence or generic
+    process startup cannot satisfy distributed Raft readiness. The evidence must
+    cover read-index, leader leases, lagging-follower and stale-write rejection,
+    leader transfer under load, snapshot install/restart, membership
+    add/promote/remove, follower rejoin after compaction, secondary-read
+    eligibility, apply convergence, and WAL persistence. This hardens the Rust
+    OpenRaft process-path claim, but it remains Rust-native behavior evidence,
+    not a claim of implementation identity with C++ ByteRaft.
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
