@@ -1506,6 +1506,7 @@
               "confidence": 0.75,
               "event_id_hash": 9001,
               "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
               "importance": 0.5,
               "ingestion_time_ms": 9000,
               "text": "context event from shared corpus",
@@ -1528,6 +1529,7 @@
               "confidence": 0.8,
               "event_id_hash": 9002,
               "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
               "importance": 0.6,
               "ingestion_time_ms": 9000,
               "text": "second context event in same millisecond",
@@ -1567,6 +1569,7 @@
                 "confidence": 0.75,
                 "event_id_hash": 9001,
                 "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
                 "importance": 0.5,
                 "ingestion_time_ms": 9000,
                 "text": "context event from shared corpus",
@@ -1576,6 +1579,7 @@
                 "confidence": 0.8,
                 "event_id_hash": 9002,
                 "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
                 "importance": 0.6,
                 "ingestion_time_ms": 9000,
                 "text": "second context event in same millisecond",
@@ -7265,13 +7269,13 @@
         {
           "command": {
             "field": "increment_would_overflow",
-            "increment": 9223372036854776000,
+            "increment": 9223372036854775807,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": 9223372036854776000
+            "value": 9223372036854775807
           },
           "name": "set_max_signed"
         },
@@ -7291,13 +7295,13 @@
         {
           "command": {
             "field": "decrement_would_overflow",
-            "increment": -9223372036854776000,
+            "increment": -9223372036854775808,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": -9223372036854776000
+            "value": -9223372036854775808
           },
           "name": "set_min_signed"
         },
