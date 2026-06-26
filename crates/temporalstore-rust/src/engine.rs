@@ -7792,7 +7792,7 @@ fn execute_on_shard(
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
-            let timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
+            let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
                 let value = context_bytes(&event);
@@ -7829,7 +7829,8 @@ fn execute_on_shard(
         } => {
             let event_object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
-            let event_timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
+            let primary_time_ms = event.primary_time_ms();
+            let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
@@ -7861,7 +7862,7 @@ fn execute_on_shard(
 
             let index_ref = ContextIndexRef {
                 primary_node_hash: node_hash,
-                primary_event_time_ms: event.event_time_ms,
+                primary_event_time_ms: primary_time_ms,
                 event_id_hash: event.event_id_hash,
             };
             let mut index_object_keys = Vec::new();
@@ -7903,14 +7904,14 @@ fn execute_on_shard(
                 write_default_index(
                     "event_kind",
                     context_event_kind_hash(&event),
-                    event.event_time_ms,
+                    primary_time_ms,
                 );
             }
             if !context_index_disabled(&indexes, InternalContextIndex::Status) {
-                write_default_index("status", indexes.status_hash, event.event_time_ms);
+                write_default_index("status", indexes.status_hash, primary_time_ms);
             }
             if !context_index_disabled(&indexes, InternalContextIndex::Source) {
-                write_default_index("source", indexes.source_hash, event.event_time_ms);
+                write_default_index("source", indexes.source_hash, primary_time_ms);
             }
             if !context_index_disabled(&indexes, InternalContextIndex::EventTimeBucket) {
                 write_default_index(
@@ -7921,7 +7922,7 @@ fn execute_on_shard(
             }
             if !context_index_disabled(&indexes, InternalContextIndex::Entity) {
                 for entity_hash in &indexes.entity_hashes {
-                    write_default_index("entity", *entity_hash, event.event_time_ms);
+                    write_default_index("entity", *entity_hash, primary_time_ms);
                 }
             }
             CommandResponse::ContextExtractedEventWrite {

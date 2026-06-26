@@ -1462,13 +1462,9 @@
               "canonical_name": "unified-node",
               "kind": 1,
               "l0": "root",
-              "l1_ref": "l1",
               "last_event_time_ms": 5000,
               "node_hash": 500,
-              "parent_hash": 0,
-              "raw_metadata_ref": "raw",
-              "status": 1,
-              "summary_dirty": true
+              "parent_hash": 0
             },
             "tenant_hash": 99
           },
@@ -1490,13 +1486,9 @@
               "canonical_name": "unified-node",
               "kind": 1,
               "l0": "root",
-              "l1_ref": "l1",
               "last_event_time_ms": 5000,
               "node_hash": 500,
-              "parent_hash": 0,
-              "raw_metadata_ref": "raw",
-              "status": 1,
-              "summary_dirty": true
+              "parent_hash": 0
             },
             "object_key": "ctx:node:99:500"
           },
@@ -1511,26 +1503,13 @@
         {
           "command": {
             "event": {
-              "actor_hash": 55,
-              "compact_attrs": [
-                1,
-                2,
-                3
-              ],
               "confidence": 0.75,
               "event_id_hash": 9001,
               "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
               "importance": 0.5,
-              "kind": 3,
-              "related_node_hashes": [
-                700,
-                701
-              ],
-              "source_ref": "shared-corpus",
-              "status": 1,
               "text": "context event from shared corpus",
-              "type": 4,
-              "valid_until_ms": 9500
+              "type": 4
             },
             "first_write_only": false,
             "kind": "context_write_event",
@@ -1546,24 +1525,13 @@
         {
           "command": {
             "event": {
-              "actor_hash": 55,
-              "compact_attrs": [
-                4,
-                5
-              ],
               "confidence": 0.8,
               "event_id_hash": 9002,
               "event_time_ms": 9000,
+              "ingestion_time_ms": 9000,
               "importance": 0.6,
-              "kind": 3,
-              "related_node_hashes": [
-                700
-              ],
-              "source_ref": "shared-corpus-second",
-              "status": 1,
               "text": "second context event in same millisecond",
-              "type": 4,
-              "valid_until_ms": 9500
+              "type": 4
             },
             "first_write_only": false,
             "kind": "context_write_event",
@@ -1583,27 +1551,19 @@
             "end_time_ms": 9010,
             "kind": "context_query_events",
             "kinds": [
-              3
+              4
             ],
             "limit": 10,
             "min_confidence": 0.7,
             "min_importance": 0.4,
             "node_hash": 700,
             "start_time_ms": 8990,
-            "statuses": [
-              1
-            ],
+            "statuses": [],
             "tenant_hash": 101
           },
           "expect": {
             "events": [
               {
-                "actor_hash": 55,
-                "compact_attrs": [
-                  1,
-                  2,
-                  3
-                ],
                 "confidence": 0.75,
                 "context_event_key": "context_event:context_node:700:00000000000000009000:9001",
                 "context_event_parent_hash": 700,
@@ -1611,24 +1571,12 @@
                 "event_id_hash": 9001,
                 "event_time_key": "00000000000000009000:9001",
                 "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
                 "importance": 0.5,
-                "kind": 3,
-                "related_node_hashes": [
-                  700,
-                  701
-                ],
-                "source_ref": "shared-corpus",
-                "status": 1,
                 "text": "context event from shared corpus",
-                "type": 4,
-                "valid_until_ms": 9500
+                "type": 4
               },
               {
-                "actor_hash": 55,
-                "compact_attrs": [
-                  4,
-                  5
-                ],
                 "confidence": 0.8,
                 "context_event_key": "context_event:context_node:700:00000000000000009000:9002",
                 "context_event_parent_hash": 700,
@@ -1636,16 +1584,10 @@
                 "event_id_hash": 9002,
                 "event_time_key": "00000000000000009000:9002",
                 "event_time_ms": 9000,
+                "ingestion_time_ms": 9000,
                 "importance": 0.6,
-                "kind": 3,
-                "related_node_hashes": [
-                  700
-                ],
-                "source_ref": "shared-corpus-second",
-                "status": 1,
                 "text": "second context event in same millisecond",
-                "type": 4,
-                "valid_until_ms": 9500
+                "type": 4
               }
             ],
             "kind": "context_events",
@@ -2036,13 +1978,9 @@
               "canonical_name": "mixed-node",
               "kind": 2,
               "l0": "mixed root",
-              "l1_ref": "mixed-l1",
               "last_event_time_ms": 6000,
               "node_hash": 600,
-              "parent_hash": 0,
-              "raw_metadata_ref": "mixed-raw",
-              "status": 1,
-              "summary_dirty": false
+              "parent_hash": 0
             },
             "tenant_hash": 100
           },
@@ -2094,13 +2032,9 @@
               "canonical_name": "mixed-node",
               "kind": 2,
               "l0": "mixed root",
-              "l1_ref": "mixed-l1",
               "last_event_time_ms": 6000,
               "node_hash": 600,
-              "parent_hash": 0,
-              "raw_metadata_ref": "mixed-raw",
-              "status": 1,
-              "summary_dirty": false
+              "parent_hash": 0
             },
             "object_key": "ctx:node:100:600"
           },

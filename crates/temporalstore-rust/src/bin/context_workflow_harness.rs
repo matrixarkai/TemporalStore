@@ -1742,12 +1742,7 @@ fn ingest_external_benchmark_sources(
         let event = ContextEvent {
             event_id_hash,
             event_time_ms: timestamp_ms,
-            parent_segment_hash: 0,
-            parent_segment_hashes: Vec::new(),
-            context_event_parent_type: String::new(),
-            context_event_parent_hash: 0,
-            event_time_key: String::new(),
-            context_event_key: String::new(),
+            ingestion_time_ms: timestamp_ms,
             kind: external_source_kind_code(source.source_kind),
             event_type: 1,
             actor_hash: stable_hash64(&source.source_id),

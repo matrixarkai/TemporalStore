@@ -21,13 +21,12 @@ pub(super) fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:event:{tenant_hash}:{node_hash}")
 }
 
-pub(super) fn context_event_time_key(event_time_ms: u64, event_hash: u64) -> String {
-    format!("{:020}:{event_hash}", event_time_ms.max(1))
-}
-
 pub(super) fn normalize_context_event_storage_keys(node_hash: u64, event: &mut ContextEvent) {
     if event.event_time_ms == 0 {
         event.event_time_ms = super::now_ms().max(1);
+    }
+    if event.ingestion_time_ms == 0 {
+        event.ingestion_time_ms = event.event_time_ms;
     }
     if event.event_id_hash == 0 {
         event.event_id_hash = stable_object_hash(&format!(
@@ -35,28 +34,6 @@ pub(super) fn normalize_context_event_storage_keys(node_hash: u64, event: &mut C
             node_hash, event.event_time_ms, event.text
         ));
     }
-    if event.parent_segment_hash == 0 {
-        if let Some(parent_segment_hash) = event
-            .parent_segment_hashes
-            .iter()
-            .copied()
-            .find(|hash| *hash != 0)
-        {
-            event.parent_segment_hash = parent_segment_hash;
-        }
-    }
-    let (parent_type, parent_hash) = if event.parent_segment_hash != 0 {
-        ("context_segment", event.parent_segment_hash)
-    } else {
-        ("context_node", node_hash)
-    };
-    event.context_event_parent_type = parent_type.to_string();
-    event.context_event_parent_hash = parent_hash;
-    event.event_time_key = context_event_time_key(event.event_time_ms, event.event_id_hash);
-    event.context_event_key = format!(
-        "context_event:{}:{}:{}",
-        event.context_event_parent_type, event.context_event_parent_hash, event.event_time_key
-    );
 }
 
 pub(super) fn context_index_key(
@@ -76,11 +53,7 @@ pub(super) fn context_index_disabled(
 }
 
 pub(super) fn context_event_kind_hash(event: &ContextEvent) -> u64 {
-    u64::from(if event.event_type != 0 {
-        event.event_type
-    } else {
-        event.kind
-    })
+    u64::from(event.event_type_code())
 }
 
 pub(super) fn context_audit_key(tenant_hash: u64, session_hash: u64) -> String {
@@ -186,9 +159,10 @@ pub(super) fn context_event_matches_filter(
     min_confidence: f32,
     min_importance: f32,
 ) -> bool {
-    if !kinds.is_empty() && !kinds.contains(&event.kind) {
+    if !kinds.is_empty() && !kinds.contains(&event.event_type_code()) {
         return false;
     }
+    #[allow(deprecated)]
     if !statuses.is_empty() && !statuses.contains(&event.status) {
         return false;
     }
@@ -197,9 +171,10 @@ pub(super) fn context_event_matches_filter(
     }
     if current_valid_only {
         let as_of = if as_of_ms == 0 { end_time_ms } else { as_of_ms };
-        if event.event_time_ms > as_of {
+        if event.primary_time_ms() > as_of {
             return false;
         }
+        #[allow(deprecated)]
         if event.valid_until_ms != 0 && event.valid_until_ms <= as_of {
             return false;
         }
@@ -314,29 +289,37 @@ pub(super) fn validate_context_node(node: &ContextNode) -> Result<(), Status> {
 
 pub(super) fn validate_context_event(event: &ContextEvent) -> Result<(), Status> {
     validate_context_required(
-        event.event_time_ms != 0 && event.event_id_hash != 0,
-        "event_time_ms and event_id_hash must be non-zero",
+        event.primary_time_ms() != 0 && event.event_id_hash != 0,
+        "ingestion_time_ms and event_id_hash must be non-zero",
     )?;
+    #[allow(deprecated)]
     if event.valid_until_ms != 0 && event.valid_until_ms <= event.event_time_ms {
         return Err(Status::error(
             "invalid_argument",
             "valid_until_ms must be greater than event_time_ms",
         ));
     }
-    validate_context_timestamp(event.event_time_ms)?;
+    validate_context_timestamp(event.primary_time_ms())?;
+    if event.event_time_ms != 0 {
+        validate_context_timestamp(event.event_time_ms)?;
+    }
+    #[allow(deprecated)]
     if event.valid_until_ms != 0 {
         validate_context_timestamp(event.valid_until_ms)?;
     }
     validate_context_score("confidence", event.confidence)?;
     validate_context_score("importance", event.importance)?;
     validate_context_byte_len("text", event.text.len(), CONTEXT_MAX_EVENT_TEXT_BYTES)?;
+    #[allow(deprecated)]
     validate_context_byte_len("source_ref", event.source_ref.len(), CONTEXT_MAX_REF_BYTES)?;
+    #[allow(deprecated)]
     if event.related_node_hashes.len() > CONTEXT_MAX_RELATED_NODE_HASHES {
         return Err(Status::error(
             "invalid_argument",
             "related_node_hashes exceeds maximum",
         ));
     }
+    #[allow(deprecated)]
     validate_context_byte_len(
         "compact_attrs",
         event.compact_attrs.len(),

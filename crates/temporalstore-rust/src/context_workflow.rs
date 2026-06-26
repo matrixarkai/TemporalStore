@@ -1672,12 +1672,7 @@ pub fn extract_context(
         ContextEvent {
             event_id_hash,
             event_time_ms: timestamp_ms,
-            parent_segment_hash: 0,
-            parent_segment_hashes: Vec::new(),
-            context_event_parent_type: String::new(),
-            context_event_parent_hash: 0,
-            event_time_key: String::new(),
-            context_event_key: String::new(),
+            ingestion_time_ms: timestamp_ms,
             kind: source_kind_code(request.source_kind),
             event_type: 1,
             actor_hash: stable_hash64(&request.source_id),
@@ -3999,12 +3994,7 @@ fn empty_event() -> ContextEvent {
     ContextEvent {
         event_id_hash: 0,
         event_time_ms: 0,
-        parent_segment_hash: 0,
-        parent_segment_hashes: Vec::new(),
-        context_event_parent_type: String::new(),
-        context_event_parent_hash: 0,
-        event_time_key: String::new(),
-        context_event_key: String::new(),
+        ingestion_time_ms: 0,
         kind: 0,
         event_type: 0,
         actor_hash: 0,
@@ -4286,5 +4276,4 @@ fn redact_context_pii(value: &str) -> String {
 
 #[cfg(test)]
 mod tests;
-
 
