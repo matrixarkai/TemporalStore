@@ -91,10 +91,22 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             },
         )
         server.call_tool("matrixark_replay", {"api_key": admin_key, "context_pack_id": pack["context_pack_id"]})
-        server.call_tool(
+        portal = server.call_tool(
             "matrixark_management_portal",
             {"api_key": admin_key, "scope": {"account_id": "acct_audit", "tenant_id": "tenant_audit", "user_id": "alice"}},
         )
+        self.assertIn("users", portal["dashboard"])
+        self.assertIn("api_keys", portal["dashboard"])
+        self.assertIn("audit_logs", portal["dashboard"])
+        self.assertIn("context_summaries", portal["topology"]["records"])
+        self.assertIn("context_embeddings", portal["topology"]["records"])
+        self.assertIn("dirty_summaries", portal["topology"]["records"])
+        self.assertEqual(pack["context_pack_id"], portal["context_pack_debugger"]["context_pack_id"])
+        self.assertIn("selected_refs", portal["context_pack_debugger"])
+        self.assertIn("dropped_refs", portal["context_pack_debugger"])
+        self.assertIn("replay_link", portal["context_pack_debugger"])
+        self.assertIn("used_local_context_tokens", portal["context_pack_debugger"])
+        self.assertIn("used_remote_context_tokens", portal["context_pack_debugger"])
         audits = server.call_tool("matrixark_admin_audit", {"api_key": admin_key, "account_id": "acct_audit", "tenant_id": "tenant_audit"})["audit_logs"]
         actions = [row.get("action") for row in audits]
         self.assertIn("matrixark_management_portal", actions)

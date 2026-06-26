@@ -180,6 +180,10 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "portal-identity-policy",
             "portal-token-metrics",
             "portal-limit-policy",
+            "portal-table-pager",
+            "portal-topology-records",
+            "portal-contextpack-debugger",
+            "portal-replay-links",
             "portal-backend-identity",
             "portal-prometheus-panels",
             "portal-alert-posture",
@@ -214,6 +218,8 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
             "Identity Resolution",
             "Ingestion And Access History",
             "Context Topology",
+            "Topology Backing Records",
+            "ContextPack Audit Debugger",
             "Metrics And Audit",
         ]:
             self.assertIn(heading, parser.headings)
@@ -227,6 +233,17 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("Google / Gmail", html)
         self.assertIn("GitHub", html)
         self.assertIn("Used context tokens", html)
+        self.assertIn("Live paged table", html)
+        self.assertIn("ContextPack Audit Debugger", html)
+        self.assertIn("context_pack_debugger", html)
+        self.assertIn("selected_refs", html)
+        self.assertIn("dropped_refs", html)
+        self.assertIn("used_local_context_tokens", html)
+        self.assertIn("used_remote_context_tokens", html)
+        self.assertIn("replay_link", html)
+        self.assertIn("context_summaries", html)
+        self.assertIn("context_embeddings", html)
+        self.assertIn("dirty_summaries", html)
         self.assertIn("matrixark_backend_metrics", html)
         self.assertIn("matrixark_ingest_qps", html)
         self.assertIn("matrixark_retrieve_qps", html)
@@ -252,6 +269,9 @@ class MonitoringUiContextOpsTest(unittest.TestCase):
         self.assertIn("bytekv_sql", html)
         self.assertIn("mysql://matrixark", html)
         self.assertIn("matrixark_metadata_records", html)
+        self.assertIn("ContextPack Audit Debugger", html)
+        self.assertIn("context_pack_debugger", html)
+        self.assertIn("portal-topology-records", html)
         self.assertIn("Security And Governance", html)
         self.assertIn("portal:read", html)
         self.assertIn("owner / admin / operator / developer / viewer", html)

@@ -8831,6 +8831,16 @@ class MatrixArkAccessManager:
         page_size = args.get("page_size", 10)
         if not isinstance(page_size, int) or page_size <= 0 or page_size > 50:
             raise MatrixArkError("page_size must be an integer between 1 and 50")
+        page_token = args.get("page_token", 0)
+        if isinstance(page_token, str) and page_token.isdigit():
+            page_token = int(page_token)
+        if not isinstance(page_token, int) or page_token < 0:
+            raise MatrixArkError("page_token must be a non-negative integer offset")
+
+        def page_table_rows(rows: list[Json]) -> Json:
+            page = rows[page_token : page_token + page_size]
+            next_token = page_token + page_size if page_token + page_size < len(rows) else None
+            return {"total": len(rows), "rows": page, "next_page_token": next_token, "page_token": page_token, "page_size": page_size}
         include_revoked = bool(args.get("include_revoked", False))
         records = self.adapter.read_all() + self.metadata.read_all()
         tables = ["messages", "resources", "skills", "events", "entities", "context_packs"]
@@ -8839,11 +8849,7 @@ class MatrixArkAccessManager:
         for table in tables:
             rows = self.adapter._dashboard_rows_for_table(records, table, effective_scope)
             totals[table] = len(rows)
-            dashboard[table] = {
-                "total": len(rows),
-                "rows": rows[:page_size],
-                "next_page_token": page_size if len(rows) > page_size else None,
-            }
+            dashboard[table] = page_table_rows(rows)
         identity_scopes = set(identity.get("scopes", []))
         is_dev_identity = identity.get("mode") == "dev"
         if is_dev_identity or "admin:account" in identity_scopes:
@@ -8875,11 +8881,31 @@ class MatrixArkAccessManager:
             audit_rows = self.audit({"account_id": account_id, "tenant_id": tenant_id, "limit": 50}, identity)
         else:
             audit_rows = {"status": "ok", "audit_logs": [], "count": 0}
+        dashboard["users"] = page_table_rows(user_rows.get("users", []))
+        dashboard["api_keys"] = page_table_rows(api_key_rows.get("api_keys", []))
+        dashboard["audit_logs"] = page_table_rows(audit_rows.get("audit_logs", []))
         scoped_records = [record for record in records if scope_matches(self.adapter._dashboard_record_scope(record), effective_scope)]
         nodes = [record for record in scoped_records if record.get("record_type") == "context_node"]
         summaries = [record for record in scoped_records if record.get("record_type") == "context_summary"]
         embeddings = [record for record in scoped_records if record.get("record_type") == "context_embedding"]
         dirty = [record for record in scoped_records if record.get("record_type") == "context_summary_dirty"]
+        resource_records = [record for record in scoped_records if str(record.get("record_type", "")).startswith("resource_")]
+        skill_records = [record for record in scoped_records if str(record.get("record_type", "")).startswith("skill_")]
+
+        def count_by_node(rows: list[Json]) -> dict[Any, int]:
+            counts: dict[Any, int] = {}
+            for row in rows:
+                node_hash = row.get("node_hash")
+                if node_hash is None:
+                    continue
+                counts[node_hash] = counts.get(node_hash, 0) + 1
+            return counts
+
+        summary_counts = count_by_node(summaries)
+        embedding_counts = count_by_node(embeddings)
+        dirty_counts = count_by_node(dirty)
+        resource_counts = count_by_node(resource_records)
+        skill_counts = count_by_node(skill_records)
         topology_nodes = sorted(
             [
                 {
@@ -8890,11 +8916,24 @@ class MatrixArkAccessManager:
                     "depth": record.get("depth", 0),
                     "status": record.get("status", ""),
                     "updated_at_ms": record.get("updated_at_ms", 0),
+                    "summary_count": summary_counts.get(record.get("node_hash"), 0),
+                    "embedding_count": embedding_counts.get(record.get("node_hash"), 0),
+                    "dirty_summary_count": dirty_counts.get(record.get("node_hash"), 0),
+                    "resource_record_count": resource_counts.get(record.get("node_hash"), 0),
+                    "skill_record_count": skill_counts.get(record.get("node_hash"), 0),
                 }
                 for record in nodes
             ],
             key=lambda row: (int(row.get("depth") or 0), str(row.get("node_path"))),
         )[:100]
+        topology_records = {
+            "context_nodes": page_table_rows(nodes),
+            "context_summaries": page_table_rows(summaries),
+            "context_embeddings": page_table_rows(embeddings),
+            "dirty_summaries": page_table_rows(dirty),
+            "resources": page_table_rows(resource_records),
+            "skills": page_table_rows(skill_records),
+        }
         metrics = {
             "record_count": len(records),
             "scoped_record_count": len(scoped_records),
@@ -8925,7 +8964,30 @@ class MatrixArkAccessManager:
         }
         backend_inner_metrics = backend_metrics.get("metrics") if isinstance(backend_metrics.get("metrics"), dict) else {}
         rust_client_metrics = backend_inner_metrics.get("rust_client") if isinstance(backend_inner_metrics.get("rust_client"), dict) else {}
-        context_pack_audits = [record for record in scoped_records if record.get("record_type") == "context_pack_audit"]
+        context_pack_audits = sorted(
+            [record for record in scoped_records if record.get("record_type") == "context_pack_audit"],
+            key=lambda row: int(row.get("created_at_ms") or 0),
+            reverse=True,
+        )
+        latest_pack_audit = context_pack_audits[0] if context_pack_audits else {}
+        context_pack_debugger = {
+            "context_pack_id": latest_pack_audit.get("context_pack_id", ""),
+            "query": latest_pack_audit.get("query", ""),
+            "selected_refs": latest_pack_audit.get("selected_refs", []),
+            "dropped_refs": latest_pack_audit.get("dropped_refs", {}),
+            "used_context_tokens": latest_pack_audit.get("used_context_tokens", 0),
+            "used_local_context_tokens": latest_pack_audit.get("used_local_context_tokens", 0),
+            "used_remote_context_tokens": latest_pack_audit.get("used_remote_context_tokens", 0),
+            "total_prompt_context_tokens": latest_pack_audit.get("total_prompt_context_tokens", 0),
+            "remote_context_budget_tokens": latest_pack_audit.get("remote_context_budget_tokens", 0),
+            "local_context_policy": latest_pack_audit.get("local_context_policy", {}),
+            "quality_warnings": latest_pack_audit.get("quality_warnings", []),
+            "recall_policy": latest_pack_audit.get("recall_policy", {}),
+            "replay_link": {
+                "tool": "matrixark_replay",
+                "arguments": {"context_pack_id": latest_pack_audit.get("context_pack_id", ""), "scope": effective_scope},
+            } if latest_pack_audit else {},
+        }
         import_tasks = [record for record in scoped_records if record.get("record_type") == "resource_import_task"]
         import_lag_count = len([record for record in import_tasks if record.get("status") not in {"completed", "failed"}])
         audit_write_failures = int(backend_inner_metrics.get("audit_flush_failures") or rust_client_metrics.get("commands_failed_total") or 0)
@@ -9015,7 +9077,8 @@ class MatrixArkAccessManager:
             "api_keys": api_key_rows.get("api_keys", []),
             "audit_logs": audit_rows.get("audit_logs", []),
             "dashboard": dashboard,
-            "topology": {"nodes": topology_nodes, "count": len(nodes)},
+            "topology": {"nodes": topology_nodes, "count": len(nodes), "records": topology_records},
+            "context_pack_debugger": context_pack_debugger,
             "metrics": metrics,
             "observability": observability,
             "metadata_store": self.metadata.backend_info(),
@@ -9557,6 +9620,7 @@ TOOLS: list[Json] = [
                 "account_id": {"type": "string"},
                 "tenant_id": {"type": "string"},
                 "page_size": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+                "page_token": {"type": ["integer", "string"], "default": 0, "description": "Offset for live paged portal tables."},
                 "include_revoked": {"type": "boolean", "default": False},
             },
             "additionalProperties": True,
