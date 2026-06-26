@@ -295,6 +295,13 @@ records, supports logical range reads that skip envelopes and decompress records
 boundaries, rolls segments by sealing the previous zone and opening a new active zone, persists the
 zone manifest across reopen, and tracks active/sealed/delayed-destroy/purged zone states.
 
+Page compaction is tied to model layout and tombstones through `ShardCompactionReport`.
+Compaction now reports `model_layout_compaction_ready`, per-model layout rows, packed timestamped
+page preservation, rewritten object/page counts, stale-page density before and after, slot layout
+transition counts, and tombstone object preservation. Blockers are emitted if compaction rewrites no
+live refs, loses tombstones, lacks model-layout rows, fails to improve or preserve live-ref density,
+or lacks slot-layout transition evidence.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
 continuous StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged
