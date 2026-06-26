@@ -10,6 +10,7 @@ SMOKE_DIR="${SMOKE_DIR:-/tmp/temporalstore-smoke}"
 CLUSTER_NAME="${CLUSTER_NAME:-smoke}"
 NAMESPACE_NAME="${NAMESPACE_NAME:-ns1}"
 TABLE_NAME="${TABLE_NAME:-table1}"
+TABLE_PARTITION_SET_NUM="${TABLE_PARTITION_SET_NUM:-1}"
 MS_PORT="${MS_PORT:-17000}"
 MS_RAFT_PORT="${MS_RAFT_PORT:-17010}"
 MS_SNAPSHOT_PORT="${MS_SNAPSHOT_PORT:-17020}"
@@ -383,7 +384,7 @@ post_json \
     \"id\": ${request_id},
     \"namespace_name\": \"${NAMESPACE_NAME}\",
     \"name\": \"${TABLE_NAME}\",
-    \"partition_set_num\": 1,
+    \"partition_set_num\": ${TABLE_PARTITION_SET_NUM},
     \"partition_units\": [
       {
         \"partition_num\": ${REPLICA_COUNT},
