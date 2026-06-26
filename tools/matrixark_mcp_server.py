@@ -3326,7 +3326,15 @@ class MatrixArkLocalAdapter:
             )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
-        max_children_scored_per_parent = integer_arg(ranking, "max_children_scored_per_parent", 10000, minimum=1)
+        max_children_scored_per_parent = bounded_max_children_scored_per_parent(
+            integer_arg(
+                ranking,
+                "max_children_scored_per_parent",
+                DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT,
+                minimum=1,
+            )
+        )
+        hard_max_children_scored_per_parent = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
         max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", 256, minimum=1)
         max_selected_refs = integer_arg(ranking, "max_selected_refs", max(8, min(256, max_context_tokens)), minimum=1)
         traversal = tree_first_traversal(
@@ -3864,6 +3872,8 @@ class MatrixArkLocalAdapter:
                     "summary_embeddings": ["node_l0", "node_l1"],
                     "top_k_per_layer": top_k_per_layer,
                     "max_children_scored_per_parent": max_children_scored_per_parent,
+                    "hard_max_children_scored_per_parent": hard_max_children_scored_per_parent,
+                    "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
                     "max_candidates_per_node": max_candidates_per_node,
                     "max_selected_refs": max_selected_refs,
                     "selected_node_count": len(selected_node_hashes),

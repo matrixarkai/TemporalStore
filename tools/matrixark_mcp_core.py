@@ -73,6 +73,8 @@ MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDA
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
 MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
 MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
+DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
+HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 SECONDARY_INDEX_PRIORITY_PREFIXES = (
     "source_type:",
     "resource_type:",
@@ -3074,6 +3076,16 @@ def integer_arg(data: Json, field: str, default: int, *, minimum: int = 0) -> in
         raise MatrixArkError(f"{field} must be an integer")
     if value < minimum:
         raise MatrixArkError(f"{field} must be >= {minimum}")
+    return value
+
+
+def bounded_max_children_scored_per_parent(value: int) -> int:
+    hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
+    if value > hard_cap:
+        raise MatrixArkError(
+            "max_children_scored_per_parent must be <= "
+            f"{hard_cap}; split over-wide ContextNode children into deeper node layers"
+        )
     return value
 
 
