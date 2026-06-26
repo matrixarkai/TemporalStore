@@ -3113,6 +3113,8 @@ class MatrixArkLocalAdapter:
             except (TypeError, ValueError):
                 return False
 
+        tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
+        tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
         layer_scores = sorted(
             traversal["trace"] or node_scores.values(),
             key=lambda item: (item.get("depth", 0), -float(item.get("score", 0.0)), item.get("node_hash", 0)),
@@ -3120,7 +3122,7 @@ class MatrixArkLocalAdapter:
         primary_matches = []
         auxiliary_matches = []
         if question_type == "broad_exploration":
-            for record in reversed(records):
+            for record in reversed(tree_candidate_records):
                 if record.get("record_type") != "context_summary":
                     continue
                 if not access_scope_matches_before_scoring(record, scope):
@@ -3173,7 +3175,7 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
-        for record in reversed(records):
+        for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_event":
                 continue
             envelope = record.get("envelope", {})
@@ -3249,7 +3251,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_event_scan",
             )
-        for record in reversed(records):
+        for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_entity":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -3321,7 +3323,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_entity_scan",
             )
-        for record in reversed(records):
+        for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_segment":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -3391,7 +3393,7 @@ class MatrixArkLocalAdapter:
                 records=records,
                 reason="deadline_after_segment_scan",
             )
-        for record in reversed(records):
+        for record in reversed(tree_candidate_records):
             if record.get("record_type") not in {"resource_chunk", "skill_section"}:
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -3482,7 +3484,7 @@ class MatrixArkLocalAdapter:
                 )
             )
 
-        for record in reversed(records):
+        for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_compression_event":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -3592,6 +3594,9 @@ class MatrixArkLocalAdapter:
                     "selected_node_count": len(selected_node_hashes),
                     "selected_path_count": len(selected_paths),
                     "selected_leaf_count": len(traversal.get("leaf_paths", [])),
+                    "candidate_records_after_tree": len(tree_candidate_records),
+                    "records_dropped_by_tree": tree_prefilter_dropped_count,
+                    "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
                     "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
                     "fallback_reason": "missing_or_stale_summary_embeddings" if traversal.get("fallback_to_flat") else "",
                 },
@@ -3669,6 +3674,8 @@ class MatrixArkLocalAdapter:
                 "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
                 "primary_candidate_count": len(primary_matches),
                 "auxiliary_candidate_count": len(auxiliary_matches),
+                "tree_candidate_records": len(tree_candidate_records),
+                "tree_prefilter_dropped_count": tree_prefilter_dropped_count,
                 "created_at_ms": now_ms(),
             }
         )
