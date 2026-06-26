@@ -41,7 +41,7 @@ if [[ "${FORCE_BUILD}" == "1" || ! -x "${BIN}" ]]; then
   EXTRA_CMAKE_ARGS="${EXTRA_CMAKE_ARGS}" \
   BUILD_TYPE="${BUILD_TYPE}" \
   JOBS="${JOBS:-2}" \
-  "${ROOT}/tools/build_ubuntu22.sh" > "${RESULT_DIR}/build.log" 2>&1
+  timeout "${BUILD_TIMEOUT_S:-600}" bash "${ROOT}/tools/build_ubuntu22.sh" > "${RESULT_DIR}/build.log" 2>&1
 else
   echo "reuse_existing_binary=${BIN}" > "${RESULT_DIR}/build.log"
 fi
