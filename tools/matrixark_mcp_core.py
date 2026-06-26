@@ -441,6 +441,139 @@ def scope_key_prefix_for_query(query_scope: Json) -> str:
     return scope_key_from_hashes(tenant_hash, user_hash, session_hash)
 
 
+def canonical_scope_key(scope: Json) -> str:
+    scope_key = str(scope.get("scope_key") or "")
+    if scope_key:
+        return scope_key
+    return scope_key_from_hashes(
+        int(scope.get("tenant_hash") or 0),
+        int(scope.get("user_hash") or 0),
+        int(scope.get("session_hash") or 0),
+    )
+
+
+def serving_scope_ref(scope: Json) -> Json:
+    key = canonical_scope_key(scope)
+    return {"scope_key": key} if key else {}
+
+
+def scope_from_serving_record(record: Json) -> Json:
+    scope = record.get("scope")
+    if isinstance(scope, dict) and scope:
+        return scope
+    scope_key = str(record.get("scope_key") or "")
+    return {"scope_key": scope_key} if scope_key else {}
+
+
+def node_id_ref(node_hash: int) -> Json:
+    return {"node_hash": node_hash, "node_id": node_hash}
+
+
+HOT_SERVING_RECORD_TYPES = {
+    "context_event",
+    "context_entity",
+    "context_segment",
+    "resource_chunk",
+    "skill_section",
+    "context_index",
+    "context_embedding",
+}
+NODE_PATH_HEAVY_RECORD_TYPES = {
+    "context_event",
+    "context_entity",
+    "context_segment",
+    "resource_chunk",
+    "skill_section",
+    "context_index",
+}
+EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options", "summary_embedding"}
+ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
+
+
+def _record_debug_ref(record: Json) -> tuple[str, Any]:
+    record_type = str(record.get("record_type") or "")
+    if record_type == "context_event":
+        return "event", record.get("event_id_hash")
+    if record_type == "context_entity":
+        return "entity", record.get("entity_hash")
+    if record_type == "context_segment":
+        return "segment", record.get("segment_hash")
+    if record_type == "resource_chunk":
+        return "resource_chunk", record.get("chunk_hash")
+    if record_type == "skill_section":
+        return "skill_section", record.get("section_hash")
+    return record_type, record.get("ref_hash")
+
+
+def materialize_serving_records(record: Json) -> list[Json]:
+    """Split bulky provider/debug fields from hot serving records.
+
+    Serving records are optimized for retrieval scans and packing. Replay/debug
+    rows keep provider payloads, raw extraction details, old entity patches, and
+    full path context without forcing every hot read to load them.
+    """
+    record_type = str(record.get("record_type") or "")
+    if record_type not in HOT_SERVING_RECORD_TYPES:
+        return [record]
+
+    serving = dict(record)
+    envelope = serving.get("envelope") if isinstance(serving.get("envelope"), dict) else {}
+    scope = serving.get("scope") if isinstance(serving.get("scope"), dict) else envelope.get("scope", {})
+    scope_key = canonical_scope_key(scope) if isinstance(scope, dict) else str(serving.get("scope_key") or "")
+    if scope_key:
+        serving["scope_key"] = scope_key
+    serving.pop("scope", None)
+
+    node_hash = serving.get("node_hash")
+    if node_hash is not None:
+        serving.setdefault("node_id", node_hash)
+    if record_type in NODE_PATH_HEAVY_RECORD_TYPES:
+        serving.pop("node_path", None)
+
+    debug_payload: Json = {}
+    debug_type = ""
+    if record_type == "context_event":
+        extraction = serving.get("internal_extraction") if isinstance(serving.get("internal_extraction"), dict) else {}
+        serving["classification"] = extraction.get("classification", serving.get("classification", ""))
+        serving["event_type"] = extraction.get("event_type", serving.get("event_type", ""))
+        serving["status"] = extraction.get("status", serving.get("status", "observed"))
+        serving["source_kind"] = envelope.get("kind", serving.get("source_kind", "message")) if isinstance(envelope, dict) else serving.get("source_kind", "message")
+        debug_payload = {field: record[field] for field in EVENT_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
+        debug_type = "event_extraction_detail"
+        for field in EVENT_DEBUG_FIELDS:
+            serving.pop(field, None)
+    elif record_type == "context_entity":
+        debug_payload = {field: record[field] for field in ENTITY_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
+        debug_type = "entity_update_detail"
+        for field in ENTITY_DEBUG_FIELDS:
+            serving.pop(field, None)
+
+    if not debug_payload:
+        return [serving]
+
+    ref_type, ref_hash = _record_debug_ref(record)
+    debug_record: Json = {
+        "record_type": "context_debug_record",
+        "debug_type": debug_type,
+        "ref_type": ref_type,
+        "ref_hash": ref_hash,
+        "node_hash": record.get("node_hash"),
+        "node_id": record.get("node_hash"),
+        "node_path": record.get("node_path", []),
+        "scope_key": scope_key,
+        "debug_payload": debug_payload,
+        "updated_at_ms": record.get("updated_at_ms") or (envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else now_ms()),
+    }
+    return [debug_record, serving]
+
+
+def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
+    materialized: list[Json] = []
+    for record in records:
+        materialized.extend(materialize_serving_records(record))
+    return materialized
+
+
 def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
     account_id = str(identity["account_id"])
     tenant_id = str(identity["tenant_id"])
@@ -1730,7 +1863,6 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     "heading",
     "heading_slug",
     "heading_path",
-    "keywords",
     "citation",
     "source_ref",
     "raw_uri",
@@ -3608,14 +3740,19 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
     explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
     query_scope_key = scope_key_prefix_for_query(query_scope)
     record_scope_key = str(record_scope.get("scope_key") or "")
-    if query_scope_key and record_scope_key and not record_scope_key.startswith(query_scope_key):
-        return False
+    if query_scope_key and record_scope_key:
+        if not record_scope_key.startswith(query_scope_key):
+            return False
+        if set(record_scope.keys()).issubset({"scope_key"}):
+            return True
     for key, value in query_scope.items():
         if str(key).startswith("_"):
             continue
         if key == "scope_key":
             continue
         if key in {"agent_name", "team", "project"} and key not in explicit_keys:
+            continue
+        if key in {"account_id", "tenant_id", "account_hash", "tenant_hash"} and record_scope_key and key not in record_scope:
             continue
         if key in {"user_id", "user_hash"} and "user_id" not in explicit_keys:
             continue
@@ -3628,12 +3765,18 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
 
 def candidate_access_scope(record: Json) -> Json:
     access_scope = record.get("access_scope")
-    if isinstance(access_scope, dict):
+    if isinstance(access_scope, dict) and access_scope:
         return access_scope
     metadata = record.get("metadata")
     if isinstance(metadata, dict) and isinstance(metadata.get("access_scope"), dict):
         return metadata["access_scope"]
-    return record.get("scope", record.get("envelope", {}).get("scope", {}))
+    serving_scope = scope_from_serving_record(record)
+    if serving_scope:
+        return serving_scope
+    envelope = record.get("envelope", {})
+    if isinstance(envelope, dict):
+        return envelope.get("scope", {})
+    return {}
 
 
 def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool:
