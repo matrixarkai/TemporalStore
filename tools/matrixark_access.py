@@ -239,7 +239,7 @@ class MatrixArkAccessManager:
                 raise MatrixArkError("scope.account_id does not match API key account")
             if requested_tenant and requested_tenant != tenant_id:
                 raise MatrixArkError("scope.tenant_id does not match API key tenant")
-            if required_scopes.intersection(MATRIXARK_CONTEXT_SCOPES):
+            if required_scopes.intersection(MATRIXARK_CONTEXT_SCOPES | {"portal:read"}):
                 self.ensure_account_tenant_active(account_id, tenant_id)
             allowed_user_ids = set(key_record.get("allowed_user_ids", []))
             allowed_session_ids = set(key_record.get("allowed_session_ids", []))
@@ -444,11 +444,14 @@ class MatrixArkAccessManager:
             return
         if identity.get("account_id") != account_id or identity.get("tenant_id") != tenant_id:
             raise MatrixArkError("portal scope account/tenant does not match API key")
+        self.ensure_account_tenant_active(account_id, tenant_id)
         scope = scope or {}
-        requested_user = str(scope.get("user_id") or "")
+        requested_user = str(scope.get("user_id") or identity.get("user_id") or "")
         requested_session = str(scope.get("session_id") or "")
         allowed_users = set(identity.get("allowed_user_ids") or [])
         allowed_sessions = set(identity.get("allowed_session_ids") or [])
+        if requested_user:
+            self.ensure_user_active(account_id, tenant_id, requested_user)
         if allowed_users and requested_user and requested_user not in allowed_users:
             raise MatrixArkError("portal scope.user_id is not allowed by API key")
         if allowed_sessions and requested_session and requested_session not in allowed_sessions:
@@ -830,7 +833,18 @@ class MatrixArkAccessManager:
             "scopes": optional_string_list(
                 args,
                 "scopes",
-                ["context:ingest", "context:retrieve", "context:feedback", "context:replay", "resource:read", "skill:read", "portal:read"],
+                [
+                    "context:ingest",
+                    "context:retrieve",
+                    "context:feedback",
+                    "context:replay",
+                    "resource:ingest",
+                    "resource:read",
+                    "resource:manage",
+                    "skill:read",
+                    "skill:manage",
+                    "portal:read",
+                ],
             ),
             "role": normalize_matrixark_role(optional_string(args, "role", "local_agent")),
             "display_name": optional_string(args, "key_display_name", f"{agent_name} local key"),
@@ -1457,6 +1471,28 @@ class MatrixArkAccessManager:
             ],
             "backend_metrics": backend_metrics,
         }
+        security_governance = {
+            "account_id": account_id,
+            "tenant_id": tenant_id,
+            "effective_user_id": effective_scope.get("user_id", ""),
+            "effective_session_id": effective_scope.get("session_id", ""),
+            "role": identity.get("role", ""),
+            "scopes": sorted(identity.get("scopes", [])),
+            "allowed_user_ids": sorted(identity.get("allowed_user_ids", [])),
+            "allowed_session_ids": sorted(identity.get("allowed_session_ids", [])),
+            "api_key_id": identity.get("api_key_id", ""),
+            "api_keys_redacted": True,
+            "raw_oauth_tokens_stored": False,
+            "access_enforcement": {
+                "scope_filter_before_portal_rows": True,
+                "account_tenant_active_required_for_portal": True,
+                "disabled_user_blocked": bool(effective_scope.get("user_id")),
+                "audit_every_portal_read": True,
+                "audit_every_context_replay": True,
+                "secret_storage": "api_key_hash_only",
+            },
+            "metadata_backend": self.metadata.backend_info(),
+        }
         portal_actions = {
             "register_user": {
                 "tool": "matrixark_admin_create_user",
@@ -1507,6 +1543,7 @@ class MatrixArkAccessManager:
             "context_pack_debugger": context_pack_debugger,
             "metrics": metrics,
             "observability": observability,
+            "security_governance": security_governance,
             "metadata_store": self.metadata.backend_info(),
             "portal_actions": portal_actions,
         }
@@ -1527,4 +1564,3 @@ class MatrixArkAccessManager:
         ][:limit]
         self.append_audit("admin.audit", identity, status="ok", details={"account_id": account_id, "tenant_id": tenant_id, "count": len(rows)})
         return {"status": "ok", "audit_logs": rows, "count": len(rows)}
-
