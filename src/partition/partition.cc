@@ -1521,9 +1521,10 @@ void Partition::ScanPartitionStream(Controller* ctrl, const ScanPartitionStreamR
 Status Partition::ApplyDataRaftLog(uint64_t raft_index, const std::string& committed_log,
                                    uint64_t* applied_raft_index,
                                    uint64_t* applied_oplog_sequence) {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft apply requires data_replication_mode=raft_consensus");
+            "data raft apply requires data_replication_mode=raft_consensus or an initialized "
+            "data raft backend");
     }
     if (!IsLoaded()) {
         return Status::FailedPrecondition("Partition not loaded");
@@ -1545,9 +1546,10 @@ Status Partition::ApplyDataRaftLog(uint64_t raft_index, const std::string& commi
 }
 
 Status Partition::ApplyDataRaftCommand(uint64_t raft_index, const std::string& committed_command) {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft command apply requires data_replication_mode=raft_consensus");
+            "data raft command apply requires data_replication_mode=raft_consensus or an "
+            "initialized data raft backend");
     }
     if (!IsLoaded()) {
         return Status::FailedPrecondition("Partition not loaded");
@@ -1694,9 +1696,10 @@ Status Partition::ApplyDataRaftEntryOnOwnerThread(uint64_t raft_index,
 Status Partition::ProposeDataRaftCommand(const BatchExecuteCmdRequest& request,
                                          uint64_t request_id, uint64_t* committed_index,
                                          BatchExecuteCmdResponse* response) {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft command propose requires data_replication_mode=raft_consensus");
+            "data raft command propose requires data_replication_mode=raft_consensus or an "
+            "initialized data raft backend");
     }
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");
@@ -1869,9 +1872,10 @@ Status Partition::ProposeDataRaftCommand(const BatchExecuteCmdRequest& request,
 }
 
 Status Partition::DataRaftReadIndex(uint64_t timeout_ms) {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft read index requires data_replication_mode=raft_consensus");
+            "data raft read index requires data_replication_mode=raft_consensus or an "
+            "initialized data raft backend");
     }
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");
@@ -1880,9 +1884,10 @@ Status Partition::DataRaftReadIndex(uint64_t timeout_ms) {
 }
 
 Status Partition::CanServeDataRaftBoundedStaleRead(uint64_t max_stale_index_lag) const {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "bounded stale read requires data_replication_mode=raft_consensus");
+            "bounded stale read requires data_replication_mode=raft_consensus or an initialized "
+            "data raft backend");
     }
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");
@@ -1894,9 +1899,10 @@ Status Partition::GetDataRaftStatus(DataRaftStatus* status) const {
     if (status == nullptr) {
         return Status::InvalidArgument("missing data raft status output");
     }
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft status requires data_replication_mode=raft_consensus");
+            "data raft status requires data_replication_mode=raft_consensus or an initialized "
+            "data raft backend");
     }
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");
@@ -1905,9 +1911,10 @@ Status Partition::GetDataRaftStatus(DataRaftStatus* status) const {
 }
 
 Status Partition::TriggerDataRaftSnapshot(uint64_t* snapshot_index) {
-    if (!IsDataRaftConsensusMode()) {
+    if (!IsDataRaftConsensusMode() && data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition(
-            "data raft snapshot requires data_replication_mode=raft_consensus");
+            "data raft snapshot requires data_replication_mode=raft_consensus or an initialized "
+            "data raft backend");
     }
     if (data_raft_consensus_ == nullptr) {
         return Status::FailedPrecondition("data raft consensus backend is not initialized");

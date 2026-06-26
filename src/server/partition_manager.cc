@@ -104,6 +104,10 @@ bool IsDataRaftConsensusMode() {
     return ::FLAGS_data_replication_mode == "raft_consensus";
 }
 
+bool RequestForcesDataRaft(const BatchExecuteCmdRequest& request) {
+    return request.opt().event_replication_mode() == EVENT_REPLICATION_RAFT;
+}
+
 std::string ResolvePartitionUriForDataRaft(uint64_t partition_id, const std::string& logical_uri) {
     if (!IsDataRaftConsensusMode()) {
         return logical_uri;
@@ -390,6 +394,7 @@ PartitionManager::BatchExecuteContext* PartitionManager::NewBatchExecuteContext(
     context->responses.resize(request->request_size());
     for (int i = 0; i < request->request_size(); ++i) {
         context->ctrls[i].set_trace_id(ctrl->trace_id());
+        context->ctrls[i].set_event_replication_mode(request->opt().event_replication_mode());
         const CmdRequest& cmd_request = request->request(i);
         if (cmd_request.module_id() == 0) {  // For compatibility, request from old clients
             continue;
@@ -437,7 +442,7 @@ void PartitionManager::BatchExecuteCmdInternal(BatchExecuteContext* context) {
         return;
     }
 
-    if (has_write_cmd && IsDataRaftConsensusMode() &&
+    if (has_write_cmd && (IsDataRaftConsensusMode() || RequestForcesDataRaft(*context->request)) &&
         !FLAGS_data_raft_enable_experimental_direct_writes) {
         LOG_INFO("Data raft write batch received")
             .put("PartitionId", context->request->partition_id())

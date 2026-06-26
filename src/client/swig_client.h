@@ -44,6 +44,7 @@ class Bytes {
 struct Controller {
     uint64_t trace_id = 0;
     int64_t timeout_ms = 5000;  // 5s
+    int event_replication_mode = 0;  // client::EventReplicationMode numeric value.
     Status status;
 };
 

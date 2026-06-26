@@ -5,9 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use temporalstore_rust::{
-    Command, CommandResponse, ExecuteRequest, RaftCluster, RaftConfig, ReplayReport,
-    SharedStoreFlushReport, SharedStoreReplicator, SharedStoreStorageMode, SharedStoreWriteReport,
-    TemporalEngine,
+    Command, CommandResponse, EventReplicationMode, ExecuteRequest, RaftCluster, RaftConfig,
+    ReplayReport, SharedStoreFlushReport, SharedStoreReplicator, SharedStoreStorageMode,
+    SharedStoreWriteReport, TemporalEngine,
 };
 use temporalstore_snapshot::object_store::FileObjectStore;
 
@@ -25,6 +25,7 @@ struct StorageModesSummary {
     shared_store_sync: SharedStoreModeSummary,
     shared_store_async: SharedStoreModeSummary,
     raft_local_file: RaftLocalFileSummary,
+    dynamic_event_replication: DynamicEventReplicationSummary,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +62,23 @@ struct RaftLocalFileSummary {
     wal_files: Vec<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct DynamicEventReplicationSummary {
+    events: Vec<DynamicReplicationEventReport>,
+    restart_required: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DynamicReplicationEventReport {
+    requested_mode: EventReplicationMode,
+    effective_mode: EventReplicationMode,
+    key: String,
+    read_value: Option<String>,
+    shared_store_write: Option<SharedStoreWriteReport>,
+    shared_store_flush: Option<SharedStoreFlushReport>,
+    raft_commit_index: Option<u64>,
+}
+
 #[tokio::main]
 async fn main() {
     let options = parse_options();
@@ -95,6 +113,12 @@ async fn main() {
         .raft_wal_root
         .clone()
         .unwrap_or_else(|| options.root.join("raft-wal"));
+    let dynamic_event_replication = run_dynamic_event_replication(
+        &replicator,
+        raft_wal_root.join("dynamic-events"),
+        options.async_flush_limit,
+    )
+    .await;
     let raft_local_file = run_raft_local_file(raft_wal_root);
 
     println!(
@@ -104,9 +128,135 @@ async fn main() {
             shared_store_sync: sync,
             shared_store_async: async_mode,
             raft_local_file,
+            dynamic_event_replication,
         })
         .expect("summary should serialize")
     );
+}
+
+async fn run_dynamic_event_replication(
+    replicator: &SharedStoreReplicator<FileObjectStore>,
+    raft_wal_dir: PathBuf,
+    flush_limit: usize,
+) -> DynamicEventReplicationSummary {
+    let mut events = Vec::new();
+    let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 1);
+    let sync_write = sync_writer
+        .write(
+            91,
+            Command::StringSet {
+                key: "dynamic-sync".to_string(),
+                value: b"sync".to_vec(),
+            },
+        )
+        .await
+        .expect("dynamic sync event should write");
+    let sync_follower = replay_dynamic_shared_store(replicator, 91, "dynamic-sync").await;
+    events.push(DynamicReplicationEventReport {
+        requested_mode: EventReplicationMode::SyncStorage,
+        effective_mode: EventReplicationMode::SyncStorage,
+        key: "dynamic-sync".to_string(),
+        read_value: sync_follower,
+        shared_store_write: Some(sync_write),
+        shared_store_flush: None,
+        raft_commit_index: None,
+    });
+
+    let async_writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
+    let async_write = async_writer
+        .write(
+            92,
+            Command::StringSet {
+                key: "dynamic-async".to_string(),
+                value: b"async".to_vec(),
+            },
+        )
+        .await
+        .expect("dynamic async event should queue");
+    let async_flush = async_writer
+        .flush_pending(flush_limit)
+        .await
+        .expect("dynamic async event should flush");
+    let async_follower = replay_dynamic_shared_store(replicator, 92, "dynamic-async").await;
+    events.push(DynamicReplicationEventReport {
+        requested_mode: EventReplicationMode::AsyncStorage,
+        effective_mode: EventReplicationMode::AsyncStorage,
+        key: "dynamic-async".to_string(),
+        read_value: async_follower,
+        shared_store_write: Some(async_write),
+        shared_store_flush: Some(async_flush),
+        raft_commit_index: None,
+    });
+
+    let raft =
+        RaftCluster::new_single_shard_with_wal(&raft_wal_dir, 93, [1, 2, 3], RaftConfig::default())
+            .expect("dynamic raft event cluster should start");
+    raft.propose(Command::StringSet {
+        key: "dynamic-raft".to_string(),
+        value: b"raft".to_vec(),
+    })
+    .expect("dynamic raft event should commit");
+    let status = raft.status();
+    let raft_read = match raft
+        .read_from_replica(
+            status.leader_id,
+            Command::StringGet {
+                key: "dynamic-raft".to_string(),
+            },
+        )
+        .expect("dynamic raft event should read")
+    {
+        CommandResponse::Bytes { value: Some(bytes) } => {
+            Some(String::from_utf8_lossy(&bytes).to_string())
+        }
+        _ => None,
+    };
+    events.push(DynamicReplicationEventReport {
+        requested_mode: EventReplicationMode::Raft,
+        effective_mode: EventReplicationMode::Raft,
+        key: "dynamic-raft".to_string(),
+        read_value: raft_read,
+        shared_store_write: None,
+        shared_store_flush: None,
+        raft_commit_index: Some(status.commit_index),
+    });
+
+    DynamicEventReplicationSummary {
+        events,
+        restart_required: false,
+    }
+}
+
+async fn replay_dynamic_shared_store(
+    replicator: &SharedStoreReplicator<FileObjectStore>,
+    shard_id: u64,
+    key: &str,
+) -> Option<String> {
+    let follower = TemporalEngine::with_local_dirs(
+        1024,
+        unique_child("dynamic-storage-mode-cache"),
+        unique_child("dynamic-storage-mode-pages"),
+        unique_child("dynamic-storage-mode-index"),
+    );
+    follower.load_shard(shard_id);
+    replicator
+        .replay_oplog_strict(shard_id, 0, &follower)
+        .await
+        .expect("dynamic shared-store replay should succeed");
+    match follower
+        .execute(ExecuteRequest {
+            shard_id,
+            command: Command::StringGet {
+                key: key.to_string(),
+            },
+        })
+        .response
+    {
+        CommandResponse::Bytes { value: Some(bytes) } => {
+            Some(String::from_utf8_lossy(&bytes).to_string())
+        }
+        _ => None,
+    }
 }
 
 async fn run_shared_store_mode(

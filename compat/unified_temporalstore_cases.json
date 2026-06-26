@@ -3102,6 +3102,35 @@
       ]
     },
     {
+      "name": "dynamic_event_replication_mode_selection",
+      "shard_id": 11,
+      "steps": [
+        {
+          "name": "rust_engine_accepts_per_event_sync_async_and_raft_modes",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "rust_test": "replicated_execute_selects_sync_async_or_raft_without_restart",
+            "cpp_contract": "RequestOptions.event_replication_mode and RequestOption.event_replication_mode carry inherit/async_storage/sync_storage/raft without restart",
+            "required_paths": [
+              "crates/temporalstore-rust/src/types.rs",
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/bin/storage_modes_harness.rs",
+              "src/protocol/base.proto",
+              "src/client/client.h"
+            ],
+            "expected_modes": [
+              "async_storage",
+              "sync_storage",
+              "raft"
+            ],
+            "restart_required": false
+          }
+        }
+      ]
+    },
+    {
       "name": "storage_shared_store_sync_replay",
       "shard_id": 11,
       "steps": [

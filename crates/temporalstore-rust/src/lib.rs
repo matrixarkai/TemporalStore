@@ -204,6 +204,8 @@ pub use types::{
     ContextEntity, ContextEvent, ContextEventModel, ContextExtractedEventIndexes,
     ContextIndexModel, ContextIndexRef, ContextNode, ContextNodeModel, ContextPackAudit,
     ContextSegment, ContextSummary, ContextSummaryDirtyMarker, ContextSummaryModel,
-    ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse, FeaturePoint,
-    InternalContextIndex, IpsSnapshotReport, IpsStats, ShardId, Status,
+    ContextTraversedNode, ContextWire, EventReplicationMode, EventReplicationSelectionReport,
+    ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex, IpsSnapshotReport,
+    IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
+    ReplicatedExecuteRequest, ShardId, Status,
 };

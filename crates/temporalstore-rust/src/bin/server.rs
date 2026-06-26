@@ -28,7 +28,10 @@ use temporalstore_rust::raft::{
     DataRaftCommittedLogApplier, DataRaftReadMode, DataRaftReadPolicy, RaftReplicaBootstrapPlan,
     RaftSnapshotPublishReport, RaftSnapshotTriggerReport, ReadIndexResponse,
 };
-use temporalstore_rust::types::{BatchExecuteRequest, ExecuteRequest, ExecuteResponse, Status};
+use temporalstore_rust::types::{
+    BatchExecuteRequest, ExecuteRequest, ExecuteResponse, ReplicatedBatchExecuteRequest,
+    ReplicatedExecuteRequest, Status,
+};
 use temporalstore_rust::{
     handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
     CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse, CompactionRequest,
@@ -495,6 +498,18 @@ fn main() {
                 Ok(req) => json_response(200, &runtime.batch_execute(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/execute_replicated") => {
+                match parse_json::<ReplicatedExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &engine.execute_replicated(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
+            ("POST", "/batch_execute_replicated") => {
+                match parse_json::<ReplicatedBatchExecuteRequest>(&request.body) {
+                    Ok(req) => json_response(200, &engine.batch_execute_replicated(req)),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/ingest/batch") => ingest_batch_route(&engine, &request.body),
             ("GET", "/ingest/state") => json_response(200, &engine.ingestion_state_report()),
             ("POST", "/context/extract") => {

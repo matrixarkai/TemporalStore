@@ -80,6 +80,8 @@ class TableImpl : public Table {
         bcache2::CoSyncClosure sync;
         context->callback = callback != nullptr ? callback : &sync;
         client::RequestOptions options;
+        options.event_replication_mode =
+            static_cast<client::EventReplicationMode>(ctrl->event_replication_mode);
         table_->BatchExecute(&context->internal_ctrl, context->requests, context->responses,
                              NewClosure(this, &TableImpl::OnBatchExecuteDone, context, executions),
                              options);

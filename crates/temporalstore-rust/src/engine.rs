@@ -46,9 +46,11 @@ use crate::types::{
     ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
     ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
     ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
-    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
-    FeatureWritePolicy, InternalContextIndex, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType,
-    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
+    EventReplicationMode, EventReplicationSelectionReport, ExecuteRequest, ExecuteResponse,
+    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
+    IpsSnapshotReport, IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
+    ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
+    ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -71,6 +73,50 @@ impl TemporalEngine {
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
         self.execute_with_storage_override(request, Some(false))
+    }
+
+    pub fn execute_replicated(&self, request: ReplicatedExecuteRequest) -> ExecuteResponse {
+        let replication_mode = request.replication_mode;
+        let request = ExecuteRequest {
+            shard_id: request.shard_id,
+            command: request.command,
+        };
+        match replication_mode {
+            EventReplicationMode::SyncStorage => {
+                self.execute_with_storage_override(request, Some(false))
+            }
+            EventReplicationMode::AsyncStorage => {
+                self.execute_with_storage_override(request, Some(true))
+            }
+            EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
+        }
+    }
+
+    pub fn replication_selection_report(
+        &self,
+        command: &Command,
+        requested_mode: EventReplicationMode,
+    ) -> EventReplicationSelectionReport {
+        let write_command = is_write_command(command);
+        let effective_mode = if write_command {
+            requested_mode
+        } else {
+            EventReplicationMode::Inherit
+        };
+        EventReplicationSelectionReport {
+            requested_mode,
+            effective_mode,
+            write_command,
+            accepted: true,
+            restart_required: requested_mode.requires_restart(),
+            reason: if !write_command {
+                "read_command_does_not_replicate".to_string()
+            } else if requested_mode == EventReplicationMode::Inherit {
+                "using_current_runtime_default_without_restart".to_string()
+            } else {
+                "event_selected_replication_mode_without_restart".to_string()
+            },
+        }
     }
 
     fn execute_with_storage_override(
@@ -4622,6 +4668,29 @@ impl TemporalEngine {
         BatchExecuteResponse {
             status: Status::ok(),
             responses,
+        }
+    }
+
+    pub fn batch_execute_replicated(
+        &self,
+        request: ReplicatedBatchExecuteRequest,
+    ) -> ReplicatedBatchExecuteResponse {
+        let mut responses = Vec::with_capacity(request.commands.len());
+        let mut replication = Vec::with_capacity(request.commands.len());
+        for command in request.commands {
+            replication.push(
+                self.replication_selection_report(&command.command, command.replication_mode),
+            );
+            responses.push(self.execute_replicated(ReplicatedExecuteRequest {
+                shard_id: request.shard_id,
+                command: command.command,
+                replication_mode: command.replication_mode,
+            }));
+        }
+        ReplicatedBatchExecuteResponse {
+            status: Status::ok(),
+            responses,
+            replication,
         }
     }
 
