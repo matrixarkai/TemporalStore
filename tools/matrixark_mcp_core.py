@@ -216,58 +216,6 @@ def make_api_key(prefix: str = "mk_test") -> str:
     return f"{prefix}_{secrets.token_urlsafe(32)}"
 
 
-def is_retryable_temporalstore_error(error: BaseException | str) -> bool:
-    text = str(error).lower()
-    retryable_terms = [
-        "slot not found",
-        "partition info not found",
-        "partition no primary",
-        "no primary",
-        "leader not found",
-        "not ready",
-        "unavailable",
-        "timed out",
-        "timeout",
-        "temporarily",
-        "connection refused",
-        "connection reset",
-        "broken pipe",
-        "server failure",
-        "server error",
-        "try again",
-        "eagain",
-        "transport",
-    ]
-    return any(term in text for term in retryable_terms)
-
-
-def parse_host_port(address: str) -> tuple[str, int] | None:
-    value = address.strip()
-    if not value:
-        return None
-    if value.startswith("[") and "]" in value:
-        host, _, rest = value[1:].partition("]")
-        if rest.startswith(":") and rest[1:].isdigit():
-            return host, int(rest[1:])
-        return None
-    host, sep, port = value.rpartition(":")
-    if not sep or not host or not port.isdigit():
-        return None
-    return host, int(port)
-
-
-def metaserver_reachable(address: str, *, timeout_ms: int = BACKEND_READINESS_CONNECT_TIMEOUT_MS) -> tuple[bool, str]:
-    parsed = parse_host_port(address)
-    if parsed is None:
-        return False, f"invalid metaserver address: {address!r}"
-    host, port = parsed
-    try:
-        with socket.create_connection((host, port), timeout=max(0.05, timeout_ms / 1000.0)):
-            return True, "ok"
-    except OSError as exc:
-        return False, str(exc)
-
-
 def now_ms() -> int:
     return int(time.time() * 1000)
 
