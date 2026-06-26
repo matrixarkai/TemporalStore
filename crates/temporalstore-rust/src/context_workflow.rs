@@ -836,16 +836,37 @@ pub struct ContextRetrieveReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ContextQueryUnderstandingDebug {
+    #[serde(default)]
+    pub debug_schema: String,
+    #[serde(default)]
+    pub query_hash: u64,
+    #[serde(default)]
+    pub normalized_query_terms: Vec<String>,
     pub question_type: String,
     pub secondary_index_filter_groups: Vec<Vec<String>>,
     #[serde(default)]
     pub verbose_filter_groups: Vec<ContextQueryFilterGroupDebug>,
+    #[serde(default)]
+    pub filter_group_summary: ContextQueryFilterGroupSummaryDebug,
     pub candidates_passing_prefilter: usize,
     pub candidates_dropped_before_scoring: usize,
     pub tree_traversal_summary: ContextTreeTraversalDebug,
     pub prefilter_candidate_sample: Vec<ContextPrefilterCandidateDebug>,
     #[serde(default)]
     pub selected_refs: Vec<ContextSelectedRefDebug>,
+    #[serde(default)]
+    pub injection_ordering: Vec<ContextInjectionOrderingDebug>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextQueryFilterGroupSummaryDebug {
+    pub total_groups: usize,
+    pub secondary_index_group_count: usize,
+    pub lexical_group_count: usize,
+    pub total_candidate_count: usize,
+    pub total_matched_count: usize,
+    pub total_dropped_count: usize,
+    pub total_selected_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -893,6 +914,8 @@ pub struct ContextPrefilterCandidateDebug {
     pub node_path: Vec<String>,
     pub candidate_terms: Vec<String>,
     pub passes_secondary_index_prefilter: bool,
+    #[serde(default)]
+    pub drop_reason: String,
     pub text: String,
 }
 
@@ -907,6 +930,16 @@ pub struct ContextSelectedRefDebug {
     pub event_time_ms: u64,
     pub relevance_score: u32,
     pub matched_filter_groups: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextInjectionOrderingDebug {
+    pub prompt_rank: usize,
+    pub source_ref: String,
+    pub tier: ContextTier,
+    pub ref_hash: u64,
+    pub token_estimate: u32,
+    pub selection_reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

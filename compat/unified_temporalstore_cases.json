@@ -8363,6 +8363,30 @@
           }
         }
       ]
+    },
+    {
+      "name": "context_query_debug_filter_group_cpp_parity",
+      "family": "context",
+      "shard_id": 42,
+      "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, candidate drop reasons, summary traversal evidence, selected refs, and prompt injection ordering.",
+      "steps": [
+        {
+          "name": "context_query_debug_filter_group_cpp_parity_shared",
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_context_query_debug_parity",
+            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, dropped candidate reasons, summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow/query.rs",
+              "src/model/model_manager.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+          }
+        }
+      ]
     }
   ],
   "coverage": {
@@ -8465,6 +8489,18 @@
         "suites": [
           "redis_admin_product_parity"
         ]
+      },
+      {
+        "suite": "cpp_context_query_debug_parity",
+        "mode": "static_surface_gate",
+        "status": "temporary_static_surface_gate",
+        "description": "C++ Context query/index debug-flow surfaces are mapped through context_model/model_manager files until a native shared corpus runner emits matrixark_context_query_debug_v1.",
+        "family": "context",
+        "suites": [
+          "cpp_context_query_debug_parity"
+        ],
+        "blocker": "native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
       }
     ],
     "required_case_names": [

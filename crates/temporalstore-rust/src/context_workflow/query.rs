@@ -2,7 +2,8 @@ use crate::types::{ContextEvent, Status};
 
 use super::{
     context_embeddings_for_extract, normalize_provider, truncate_words, ContextBlock,
-    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryFilterGroupDebug,
+    ContextInjectionOrderingDebug, ContextModelProviderConfig, ContextPrefilterCandidateDebug,
+    ContextQueryFilterGroupDebug, ContextQueryFilterGroupSummaryDebug,
     ContextQueryUnderstandingDebug, ContextRetrieveRequest, ContextSelectedRefDebug, ContextTier,
     ContextTreeTraversalDebug,
 };
@@ -43,9 +44,24 @@ pub(super) fn context_query_understanding_debug(
     let terms = context_query_terms(&request.query);
     let filter_groups = context_query_secondary_index_filter_groups(&terms);
     ContextQueryUnderstandingDebug {
+        debug_schema: "matrixark_context_query_debug_v1".to_string(),
+        query_hash: stable_hash64(&request.query),
+        normalized_query_terms: terms.clone(),
         question_type: context_query_question_type(&terms),
         secondary_index_filter_groups: filter_groups.clone(),
         verbose_filter_groups: context_query_verbose_filter_groups(&filter_groups),
+        filter_group_summary: ContextQueryFilterGroupSummaryDebug {
+            total_groups: filter_groups.len(),
+            secondary_index_group_count: filter_groups
+                .iter()
+                .filter(|group| group.iter().any(|term| !term.starts_with("query_term:")))
+                .count(),
+            lexical_group_count: filter_groups
+                .iter()
+                .filter(|group| group.iter().all(|term| term.starts_with("query_term:")))
+                .count(),
+            ..ContextQueryFilterGroupSummaryDebug::default()
+        },
         candidates_passing_prefilter: 0,
         candidates_dropped_before_scoring: 0,
         tree_traversal_summary: ContextTreeTraversalDebug {
@@ -65,6 +81,7 @@ pub(super) fn context_query_understanding_debug(
         },
         prefilter_candidate_sample: Vec::new(),
         selected_refs: Vec::new(),
+        injection_ordering: Vec::new(),
     }
 }
 
@@ -115,6 +132,11 @@ pub(super) fn context_query_debug_record_candidate(
             node_path: vec![format!("tenant:{tenant_hash}"), format!("node:{node_hash}")],
             candidate_terms,
             passes_secondary_index_prefilter: passes_prefilter,
+            drop_reason: if passes_prefilter {
+                String::new()
+            } else {
+                "secondary_index_prefilter_miss".to_string()
+            },
             text: truncate_words(&event.text, 32),
         });
 }
@@ -180,6 +202,50 @@ pub(super) fn context_query_debug_finalize(
             }
         })
         .collect();
+    debug.injection_ordering = blocks
+        .iter()
+        .take(debug.selected_refs.len())
+        .enumerate()
+        .map(|(index, block)| {
+            let selected = &debug.selected_refs[index];
+            ContextInjectionOrderingDebug {
+                prompt_rank: index + 1,
+                source_ref: block.source_ref.clone(),
+                tier: block.tier,
+                ref_hash: selected.ref_hash,
+                token_estimate: block.estimated_tokens,
+                selection_reason: if selected.matched_filter_groups.is_empty() {
+                    "selected by tree traversal and semantic score".to_string()
+                } else {
+                    format!(
+                        "selected by tree traversal, semantic score, and {} matched filter groups",
+                        selected.matched_filter_groups.len()
+                    )
+                },
+            }
+        })
+        .collect();
+    debug.filter_group_summary = summarize_context_filter_groups(&debug.verbose_filter_groups);
+}
+
+fn summarize_context_filter_groups(
+    groups: &[ContextQueryFilterGroupDebug],
+) -> ContextQueryFilterGroupSummaryDebug {
+    ContextQueryFilterGroupSummaryDebug {
+        total_groups: groups.len(),
+        secondary_index_group_count: groups
+            .iter()
+            .filter(|group| group.group_kind == "secondary_index_prefilter")
+            .count(),
+        lexical_group_count: groups
+            .iter()
+            .filter(|group| group.group_kind == "lexical_prefilter")
+            .count(),
+        total_candidate_count: groups.iter().map(|group| group.candidate_count).sum(),
+        total_matched_count: groups.iter().map(|group| group.matched_count).sum(),
+        total_dropped_count: groups.iter().map(|group| group.dropped_count).sum(),
+        total_selected_count: groups.iter().map(|group| group.selected_count).sum(),
+    }
 }
 
 pub(super) fn context_query_question_type(terms: &[String]) -> String {
