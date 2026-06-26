@@ -190,6 +190,10 @@ pub struct StorageProductionPostureReport {
     #[serde(default)]
     pub model_layout_compaction_blockers: Vec<String>,
     pub mature_background_storage_manager_ready: bool,
+    #[serde(default)]
+    pub mature_background_storage_manager_evidence: Vec<String>,
+    #[serde(default)]
+    pub mature_background_storage_manager_blockers: Vec<String>,
     pub merged_dump_load_policy_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -1077,7 +1081,19 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "stale page density and slot layout transition counts are reported".to_string(),
     ];
     let model_layout_compaction_blockers = Vec::new();
-    let mature_background_storage_manager_ready = false;
+    let mature_background_storage_manager_ready = true;
+    let mature_background_storage_manager_evidence = vec![
+        "StorageManager loop report executes prepare/reclaim/evict/expire/compact/index-GC phases"
+            .to_string(),
+        "prepare phase builds dirty-slot, live/stale segment, delayed-destroy, and manifest/index-log plans"
+            .to_string(),
+        "reclaim phase ranks stale and delayed-destroy candidates by pressure and utility".to_string(),
+        "evict phase performs shard-scoped cache invalidation with entry/byte accounting".to_string(),
+        "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
+        "compact phase calls model-layout/tombstone page compaction".to_string(),
+        "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
+    ];
+    let mature_background_storage_manager_blockers = Vec::new();
     let merged_dump_load_policy_ready = false;
     let rust_storage_lifecycle_behavior_ready = orphan_page_detection_ready
         && missing_page_ref_detection_ready
@@ -1178,6 +1194,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         model_layout_compaction_evidence,
         model_layout_compaction_blockers,
         mature_background_storage_manager_ready,
+        mature_background_storage_manager_evidence,
+        mature_background_storage_manager_blockers,
         merged_dump_load_policy_ready,
         production_ready: missing.is_empty(),
         missing,
@@ -1604,7 +1622,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed zone runtime, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blockers are mature StorageManager loops and merged dump/load policy"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed zone runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction; remaining C++ runtime storage mechanics blocker is merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -2702,13 +2720,19 @@ mod tests {
             .iter()
             .any(|item| item.contains("tombstone object ids are preserved")));
         assert!(report.model_layout_compaction_blockers.is_empty());
-        assert!(!report.mature_background_storage_manager_ready);
+        assert!(report.mature_background_storage_manager_ready);
+        assert!(report
+            .mature_background_storage_manager_evidence
+            .iter()
+            .any(|item| item.contains("prepare/reclaim/evict/expire/compact/index-GC")));
+        assert!(report
+            .mature_background_storage_manager_evidence
+            .iter()
+            .any(|item| item.contains("index-GC phase")));
+        assert!(report.mature_background_storage_manager_blockers.is_empty());
         assert!(!report.merged_dump_load_policy_ready);
         assert!(!report.production_ready);
-        for required in [
-            "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
-            "full C++ merged dump/load policy",
-        ] {
+        for required in ["full C++ merged dump/load policy"] {
             assert!(
                 report.missing.contains(&required.to_string()),
                 "storage production posture should name {required}"
@@ -2730,6 +2754,7 @@ mod tests {
             "Rust lifecycle behavior evidence",
             "native ObjectManager runtime mechanics",
             "stream-backed zone runtime",
+            "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "orphan page detection",
             "missing/stale page-reference detection",
             "corrupt page/index/oplog/snapshot evidence",
@@ -2740,8 +2765,7 @@ mod tests {
             "first-class slot/object/page ownership index",
             "SlotStore layout transition evidence",
             "model-layout compaction",
-            "remaining C++ runtime storage mechanics blockers are mature StorageManager loops",
-            "mature StorageManager loops",
+            "remaining C++ runtime storage mechanics blocker is merged dump/load policy",
             "merged dump/load policy",
         ] {
             assert!(

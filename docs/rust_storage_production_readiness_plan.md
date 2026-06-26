@@ -197,12 +197,17 @@ transition counts, and tombstone object preservation. Blockers are emitted if co
 live refs, loses tombstones, lacks model-layout rows, fails to improve or preserve live-ref density,
 or lacks slot-layout transition evidence.
 
+Rust now has a StorageManager-style background loop report that covers prepare, reclaim, evict,
+expire, compact, and index-GC phases in one readiness surface. The loop builds dirty-slot and
+live/stale segment plans, ranks reclaim candidates, invalidates cache entries with byte accounting,
+sweeps TTL metadata, runs model-layout compaction, and prunes or rolls forward slot dump manifest
+state.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
-continuous StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged
-dump/load policy. The slot-first index, ObjectManager runtime report, stream-backed zone report,
-and layout evidence are real readiness evidence, but they are not treated as complete C++ runtime
-parity.
+full merged dump/load policy, and C++ byte-for-byte cleaner internals. The slot-first index,
+ObjectManager runtime report, stream-backed zone report, StorageManager loop report, and layout
+evidence are real readiness evidence, but they are not treated as complete C++ runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
