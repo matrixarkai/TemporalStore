@@ -118,9 +118,13 @@ pub struct StorageSsdCachePressureReadinessReport {
     #[serde(default)]
     pub latency_metrics_evidence: Vec<String>,
     pub rust_native_weighted_eviction_ready: bool,
+    #[serde(default)]
+    pub rust_native_weighted_eviction_evidence: Vec<String>,
     pub local_pressure_ready: bool,
     pub rust_native_production_ready: bool,
     pub mtcache_class_replacement_policy_ready: bool,
+    #[serde(default)]
+    pub mtcache_class_replacement_policy_blockers: Vec<String>,
     pub mtcache_zero_copy_pinned_handle_ready: bool,
     pub mtcache_dram_pmem_ssd_placement_ready: bool,
     pub mtcache_async_writeback_backpressure_ready: bool,
@@ -832,6 +836,12 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
             .to_string(),
     ];
     let rust_native_weighted_eviction_ready = true;
+    let rust_native_weighted_eviction_evidence = vec![
+        "memory and disk cache entries carry hotness and routing-slot metadata".to_string(),
+        "pressure eviction chooses victims with weighted hotness/LRU scoring".to_string(),
+        "pin-aware eviction skip counters preserve active page/block handles".to_string(),
+        "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
+    ];
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
         && admission_eviction_counters_ready
@@ -850,6 +860,13 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && latency_metrics_ready
         && rust_native_weighted_eviction_ready;
     let mtcache_class_replacement_policy_ready = false;
+    let mtcache_class_replacement_policy_blockers = vec![
+        "no mtcache-compatible multi-tier replacement policy runtime".to_string(),
+        "no mtcache zero-copy or pinned-handle API contract".to_string(),
+        "no DRAM/PMEM/SSD placement semantics equivalent to C++ mtcache".to_string(),
+        "no async writeback/backpressure pipeline equivalent to mtcache".to_string(),
+        "no mature mtcache latency histogram/percentile surface".to_string(),
+    ];
     let mtcache_zero_copy_pinned_handle_ready = false;
     let mtcache_dram_pmem_ssd_placement_ready = false;
     let mtcache_async_writeback_backpressure_ready = false;
@@ -903,9 +920,11 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         latency_metrics_ready,
         latency_metrics_evidence,
         rust_native_weighted_eviction_ready,
+        rust_native_weighted_eviction_evidence,
         local_pressure_ready,
         rust_native_production_ready,
         mtcache_class_replacement_policy_ready,
+        mtcache_class_replacement_policy_blockers,
         mtcache_zero_copy_pinned_handle_ready,
         mtcache_dram_pmem_ssd_placement_ready,
         mtcache_async_writeback_backpressure_ready,
@@ -2437,8 +2456,20 @@ mod tests {
         assert!(report.async_writeback_backpressure_ready);
         assert!(report.latency_metrics_ready);
         assert!(report.rust_native_weighted_eviction_ready);
+        assert!(report
+            .rust_native_weighted_eviction_evidence
+            .iter()
+            .any(|item| item.contains("weighted hotness/LRU scoring")));
+        assert!(report
+            .rust_native_weighted_eviction_evidence
+            .iter()
+            .any(|item| item.contains("pin-aware eviction skip counters")));
         assert!(report.rust_native_production_ready);
         assert!(!report.mtcache_class_replacement_policy_ready);
+        assert!(report
+            .mtcache_class_replacement_policy_blockers
+            .iter()
+            .any(|item| item.contains("no mtcache-compatible multi-tier replacement policy")));
         assert!(!report.mtcache_zero_copy_pinned_handle_ready);
         assert!(!report.mtcache_dram_pmem_ssd_placement_ready);
         assert!(!report.mtcache_async_writeback_backpressure_ready);
@@ -2468,6 +2499,14 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("storage SSD cache pressure readiness")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("Rust-native weighted hotness/LRU eviction evidence")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("mtcache-class replacement policy")));
         assert!(storage_cache
             .covered
             .iter()

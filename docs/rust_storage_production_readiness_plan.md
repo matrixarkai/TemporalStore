@@ -160,10 +160,12 @@ deployment-scale evidence remain separately tracked blockers.
 The local Rust-native storage target has evidence for migration replay, slot dump/load,
 cache pressure, shared-store sync/async replay, and the storage production/fault harnesses.
 That evidence is sufficient for the Rust-native local/shared-store storage path, but it is not a
-global production-readiness claim. The `storage_cache` readiness area now fails closed on
-mtcache-class cache blockers until there is evidence for a real multi-tier replacement policy,
-zero-copy or pinned-handle access model, DRAM/PMEM/SSD placement semantics, async writeback with
-backpressure, and mature cache latency metrics.
+global production-readiness claim. The Rust-native cache path now has weighted hotness/LRU
+eviction evidence, admission/eviction counters, pin-aware eviction skip accounting, warmup,
+invalidation, and tiny-cache pressure coverage. The `storage_cache` readiness area still fails
+closed on mtcache-class cache blockers until there is evidence for a real multi-tier replacement
+policy, zero-copy or pinned-handle access model, DRAM/PMEM/SSD placement semantics, async
+writeback with backpressure, and mature cache latency metrics.
 
 Rust now persists a first-class slot/object/page ownership index and exposes whether reports are
 using that core index or falling back to model-map derivation. Changed objects are synchronized
