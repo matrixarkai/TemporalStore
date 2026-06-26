@@ -160,6 +160,12 @@ pub struct StorageProductionPostureReport {
     pub cache_pressure_and_refill_ready: bool,
     pub shared_store_sync_async_replay_ready: bool,
     pub unified_storage_corpus_ready: bool,
+    pub native_object_manager_runtime_ready: bool,
+    pub native_slot_store_layout_transition_ready: bool,
+    pub stream_backed_zone_runtime_ready: bool,
+    pub model_layout_compaction_ready: bool,
+    pub mature_background_storage_manager_ready: bool,
+    pub merged_dump_load_policy_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
 }
@@ -970,6 +976,12 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         migration.shared_store_sync_replay_ready && migration.shared_store_async_replay_ready;
     let unified_storage_corpus_ready =
         migration.unified_runner_ready && migration.external_cpp_binary_exporter_ready;
+    let native_object_manager_runtime_ready = false;
+    let native_slot_store_layout_transition_ready = false;
+    let stream_backed_zone_runtime_ready = false;
+    let model_layout_compaction_ready = false;
+    let mature_background_storage_manager_ready = false;
+    let merged_dump_load_policy_ready = false;
 
     let mut missing = Vec::new();
     if !orphan_page_detection_ready {
@@ -996,6 +1008,27 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !unified_storage_corpus_ready {
         missing.push("unified storage corpus evidence".to_string());
     }
+    if !native_object_manager_runtime_ready {
+        missing.push("native ObjectManager runtime mechanics".to_string());
+    }
+    if !native_slot_store_layout_transition_ready {
+        missing.push("native SlotStore slot layout transitions".to_string());
+    }
+    if !stream_backed_zone_runtime_ready {
+        missing.push("stream-backed zone runtime".to_string());
+    }
+    if !model_layout_compaction_ready {
+        missing.push("page compaction tied to model layout and tombstones".to_string());
+    }
+    if !mature_background_storage_manager_ready {
+        missing.push(
+            "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop"
+                .to_string(),
+        );
+    }
+    if !merged_dump_load_policy_ready {
+        missing.push("full C++ merged dump/load policy".to_string());
+    }
 
     StorageProductionPostureReport {
         orphan_page_detection_ready,
@@ -1006,6 +1039,12 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         cache_pressure_and_refill_ready,
         shared_store_sync_async_replay_ready,
         unified_storage_corpus_ready,
+        native_object_manager_runtime_ready,
+        native_slot_store_layout_transition_ready,
+        stream_backed_zone_runtime_ready,
+        model_layout_compaction_ready,
+        mature_background_storage_manager_ready,
+        merged_dump_load_policy_ready,
         production_ready: missing.is_empty(),
         missing,
     }
@@ -1431,7 +1470,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
                     .to_string(),
-                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, and unified storage corpus cases"
+                "storage production posture requires orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, native ObjectManager mechanics, SlotStore layout transitions, stream-backed zones, model-layout compaction, mature StorageManager loops, and merged dump/load policy"
                     .to_string(),
             ],
             missing: {
@@ -1743,6 +1782,26 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("latency metrics") => {
             "storage_cache_mtcache.latency_metrics_ready"
         }
+        "storage_cache" if capability.contains("ObjectManager") => {
+            "storage_runtime_object_manager.native_runtime_ready"
+        }
+        "storage_cache" if capability.contains("SlotStore") => {
+            "storage_runtime_slot_store.layout_transition_ready"
+        }
+        "storage_cache" if capability.contains("stream-backed zone") => {
+            "storage_runtime_zones.stream_backed_zone_runtime_ready"
+        }
+        "storage_cache"
+            if capability.contains("model layout") || capability.contains("tombstones") =>
+        {
+            "storage_runtime_compaction.model_layout_compaction_ready"
+        }
+        "storage_cache" if capability.contains("StorageManager") => {
+            "storage_runtime_manager.background_loop_ready"
+        }
+        "storage_cache" if capability.contains("merged dump/load") => {
+            "storage_runtime_dump_load.merged_policy_ready"
+        }
         "client" => "client_migration_contract.compatibility_result",
         "proxy" => "proxy_migration_contract.compatibility_result",
         "scale_testing" if capability.contains("workload") || capability.contains("corpus") => {
@@ -1931,7 +1990,7 @@ mod tests {
         assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert_eq!(report.blocker_count, 11);
+        assert_eq!(report.blocker_count, 17);
         assert!(report.failed_areas.contains(&"storage_cache".to_string()));
         let storage_blockers = report
             .failed_capabilities
@@ -2206,7 +2265,7 @@ mod tests {
         assert!(storage
             .failed_capabilities
             .iter()
-            .all(|blocker| blocker.evidence_field.starts_with("storage_cache_mtcache.")));
+            .all(|blocker| blocker.evidence_field.starts_with("storage_")));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -2375,7 +2434,12 @@ mod tests {
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
         assert!(!storage_cache.ready);
-        assert_eq!(storage_cache.missing, report.missing);
+        for missing in &report.missing {
+            assert!(
+                storage_cache.missing.contains(missing),
+                "storage cache area should include cache-pressure blocker {missing}"
+            );
+        }
     }
 
     #[test]
@@ -2427,8 +2491,26 @@ mod tests {
         assert!(report.cache_pressure_and_refill_ready);
         assert!(report.shared_store_sync_async_replay_ready);
         assert!(report.unified_storage_corpus_ready);
-        assert!(report.production_ready);
-        assert!(report.missing.is_empty());
+        assert!(!report.native_object_manager_runtime_ready);
+        assert!(!report.native_slot_store_layout_transition_ready);
+        assert!(!report.stream_backed_zone_runtime_ready);
+        assert!(!report.model_layout_compaction_ready);
+        assert!(!report.mature_background_storage_manager_ready);
+        assert!(!report.merged_dump_load_policy_ready);
+        assert!(!report.production_ready);
+        for required in [
+            "native ObjectManager runtime mechanics",
+            "native SlotStore slot layout transitions",
+            "stream-backed zone runtime",
+            "page compaction tied to model layout and tombstones",
+            "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
+            "full C++ merged dump/load policy",
+        ] {
+            assert!(
+                report.missing.contains(&required.to_string()),
+                "storage production posture should name {required}"
+            );
+        }
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -2449,6 +2531,12 @@ mod tests {
             "cache pressure/refill",
             "shared-store sync/async replay",
             "unified storage corpus cases",
+            "native ObjectManager mechanics",
+            "SlotStore layout transitions",
+            "stream-backed zones",
+            "model-layout compaction",
+            "mature StorageManager loops",
+            "merged dump/load policy",
         ] {
             assert!(
                 posture.contains(required),
