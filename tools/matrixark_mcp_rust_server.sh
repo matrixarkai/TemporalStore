@@ -17,9 +17,10 @@ export MATRIXARK_LOCAL_MODE="${MATRIXARK_LOCAL_MODE:-cluster}"
 export MATRIXARK_TEMPORALSTORE_LOCAL_STORE="${MATRIXARK_TEMPORALSTORE_LOCAL_STORE:-/tmp/matrixark-mcp-temporalstore-local-rust.jsonl}"
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
   for candidate in \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "$ROOT/target/release/matrixark_record_log" \
     "$ROOT/target/debug/matrixark_record_log" \
-    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log"; do
+    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_record_log"; do
     if [[ -x "$candidate" ]]; then
       export MATRIXARK_TEMPORALSTORE_RUST_CLI="$candidate"
       break
