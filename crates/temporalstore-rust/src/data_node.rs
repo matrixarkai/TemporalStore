@@ -15,10 +15,11 @@ use crate::control::{
     UnloadShardResponse,
 };
 use crate::engine::reports::{
-    ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
-    StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
-    StorageManagerPressureSnapshot, StorageManagerStageReport, StorageProductionReadinessPolicy,
-    StorageProductionReadinessReport,
+    ShardCompactionModelLayoutReport, ShardCompactionUtilityReport, SlotDumpManifest,
+    StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
+    StorageManagerCycleReport, StorageManagerCycleRequest,
+    StorageManagerPressureSnapshot, StorageManagerStageReport,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -373,6 +374,14 @@ pub struct CompactionResponse {
     pub status: Status,
     pub shard_id: ShardId,
     pub compacted_objects: usize,
+    #[serde(default)]
+    pub rewritten_object_pages: usize,
+    #[serde(default)]
+    pub tombstoned_object_ids_before: u64,
+    #[serde(default)]
+    pub tombstoned_object_ids_after: u64,
+    #[serde(default)]
+    pub model_layouts: Vec<ShardCompactionModelLayoutReport>,
     #[serde(default)]
     pub previous_page_segment_id: u64,
     #[serde(default)]
@@ -3007,6 +3016,10 @@ fn run_compaction_inner(
     let (
         status,
         compacted_objects,
+        rewritten_object_pages,
+        tombstoned_object_ids_before,
+        tombstoned_object_ids_after,
+        model_layouts,
         previous_page_segment_id,
         compacted_page_segment_id,
         stale_page_segment_ids,
@@ -3016,6 +3029,10 @@ fn run_compaction_inner(
         Ok(report) => (
             Status::ok(),
             report.rewritten_page_refs,
+            report.rewritten_object_pages,
+            report.tombstoned_object_ids_before,
+            report.tombstoned_object_ids_after,
+            report.model_layouts,
             report.previous_page_segment_id,
             report.compacted_page_segment_id,
             report.stale_page_segment_ids,
@@ -3025,6 +3042,10 @@ fn run_compaction_inner(
         Err(status) => (
             status,
             0,
+            0,
+            0,
+            0,
+            Vec::new(),
             0,
             0,
             Vec::new(),
@@ -3041,6 +3062,10 @@ fn run_compaction_inner(
         status,
         shard_id: request.shard_id,
         compacted_objects,
+        rewritten_object_pages,
+        tombstoned_object_ids_before,
+        tombstoned_object_ids_after,
+        model_layouts,
         previous_page_segment_id,
         compacted_page_segment_id,
         stale_page_segment_ids,
@@ -3198,6 +3223,10 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             status,
             shard_id: 0,
             compacted_objects: 0,
+            rewritten_object_pages: 0,
+            tombstoned_object_ids_before: 0,
+            tombstoned_object_ids_after: 0,
+            model_layouts: Vec::new(),
             previous_page_segment_id: 0,
             compacted_page_segment_id: 0,
             stale_page_segment_ids: Vec::new(),
@@ -3259,6 +3288,10 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             status,
             shard_id,
             compacted_objects: 0,
+            rewritten_object_pages: 0,
+            tombstoned_object_ids_before: 0,
+            tombstoned_object_ids_after: 0,
+            model_layouts: Vec::new(),
             previous_page_segment_id: 0,
             compacted_page_segment_id: 0,
             stale_page_segment_ids: Vec::new(),
