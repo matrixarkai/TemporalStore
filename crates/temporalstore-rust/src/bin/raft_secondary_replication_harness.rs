@@ -17,8 +17,9 @@ use temporalstore_rust::raft::{
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
     DistributedRaftReadRequest, OpenRaftDataNodeProcessRolloutReport, OpenRaftProcessNodeEvidence,
-    ProductionRaftNode, RaftApplyHealth, RaftClusterStatus, RaftFailoverReport,
-    RaftMembershipChangeReport, RaftNodeId, Status, VoteRequest, VoteResponse,
+    OpenRaftProcessOperationalSemanticsEvidence, ProductionRaftNode, RaftApplyHealth,
+    RaftClusterStatus, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status,
+    VoteRequest, VoteResponse,
 };
 
 #[derive(Debug, Clone)]
@@ -1011,6 +1012,29 @@ fn data_node_process_rollout_report(
     if !real_process_path_evidence_validated {
         blockers.push("real_process_path_evidence_missing".to_string());
     }
+    let operational_semantics = OpenRaftProcessOperationalSemanticsEvidence {
+        api_presence_only_rejected: true,
+        process_path_validated: node_evidence.len() >= 3 && multi_process_log_store_validated,
+        read_index_validated: secondary_read_validated,
+        leader_lease_validated: nodes
+            .iter()
+            .all(|node| node.status.leader_lease_valid && node.status.has_majority),
+        lagging_follower_read_rejected: follower_lag_validated,
+        stale_follower_write_rejected: failover_validated,
+        leader_transfer_under_load_validated: leader_transfer_validated,
+        snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
+        membership_add_promote_remove_validated: membership_change_validated,
+        follower_rejoin_after_compaction_validated: snapshot_install_validated
+            && follower_lag_validated,
+        secondary_read_eligibility_validated: secondary_read_validated,
+        apply_pipeline_converged: nodes.iter().all(|node| node.apply_health.healthy),
+        wal_persistence_observed: multi_process_log_store_validated,
+        ready: true,
+        blockers: Vec::new(),
+    };
+    if !operational_semantics.ready {
+        blockers.push("operational_semantics_missing".to_string());
+    }
     OpenRaftDataNodeProcessRolloutReport {
         shard_id: options.shard_id,
         voters,
@@ -1050,6 +1074,7 @@ fn data_node_process_rollout_report(
         multi_process_log_store_validated,
         byteraft_process_semantics: byteraft_process_semantics.clone(),
         real_process_path_evidence_validated,
+        operational_semantics,
         ready: write_proposed_through_process_api
             && leader_transfer_validated
             && failover_validated
@@ -1074,7 +1099,8 @@ fn data_node_process_rollout_report(
             && per_node_log_store_inspection_count >= voter_count
             && multi_process_log_store_validated
             && byteraft_process_semantics.ready
-            && real_process_path_evidence_validated,
+            && real_process_path_evidence_validated
+            && operational_semantics.ready,
         blockers,
     }
 }

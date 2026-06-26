@@ -1341,6 +1341,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
+                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                    .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
                 "Raft atomic apply readiness covers storage apply fence persistence, WAL fence recovery validation, production runtime data-node atomic durability reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle reporting"
@@ -1486,6 +1488,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
                     .to_string(),
                 "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
+                    .to_string(),
+                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),

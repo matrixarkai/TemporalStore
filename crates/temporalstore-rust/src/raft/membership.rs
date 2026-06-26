@@ -206,6 +206,60 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     pub blockers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct OpenRaftProcessOperationalSemanticsEvidence {
+    #[serde(default)]
+    pub api_presence_only_rejected: bool,
+    #[serde(default)]
+    pub process_path_validated: bool,
+    #[serde(default)]
+    pub read_index_validated: bool,
+    #[serde(default)]
+    pub leader_lease_validated: bool,
+    #[serde(default)]
+    pub lagging_follower_read_rejected: bool,
+    #[serde(default)]
+    pub stale_follower_write_rejected: bool,
+    #[serde(default)]
+    pub leader_transfer_under_load_validated: bool,
+    #[serde(default)]
+    pub snapshot_install_restart_validated: bool,
+    #[serde(default)]
+    pub membership_add_promote_remove_validated: bool,
+    #[serde(default)]
+    pub follower_rejoin_after_compaction_validated: bool,
+    #[serde(default)]
+    pub secondary_read_eligibility_validated: bool,
+    #[serde(default)]
+    pub apply_pipeline_converged: bool,
+    #[serde(default)]
+    pub wal_persistence_observed: bool,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+}
+
+impl OpenRaftProcessOperationalSemanticsEvidence {
+    pub fn proves_runtime_semantics(&self) -> bool {
+        self.ready
+            && self.blockers.is_empty()
+            && self.api_presence_only_rejected
+            && self.process_path_validated
+            && self.read_index_validated
+            && self.leader_lease_validated
+            && self.lagging_follower_read_rejected
+            && self.stale_follower_write_rejected
+            && self.leader_transfer_under_load_validated
+            && self.snapshot_install_restart_validated
+            && self.membership_add_promote_remove_validated
+            && self.follower_rejoin_after_compaction_validated
+            && self.secondary_read_eligibility_validated
+            && self.apply_pipeline_converged
+            && self.wal_persistence_observed
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRaftDataNodeProcessRolloutReport {
     pub shard_id: ShardId,
@@ -273,6 +327,8 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
     #[serde(default)]
     pub real_process_path_evidence_validated: bool,
+    #[serde(default)]
+    pub operational_semantics: OpenRaftProcessOperationalSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
@@ -336,6 +392,8 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
     #[serde(default)]
     pub real_process_path_evidence_validated: bool,
+    #[serde(default)]
+    pub operational_semantics: OpenRaftProcessOperationalSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }

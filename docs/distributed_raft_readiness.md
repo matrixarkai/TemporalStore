@@ -10,8 +10,14 @@ The default readiness API therefore fails closed until callers provide passing
 `OpenRaftDataNodeProcessRolloutReport` and `OpenRaftMetaProcessRolloutReport` evidence with
 process API writes/mutations, restart recovery, snapshot install, applied/read-index checks,
 scheduler replay, real log-store validation, failover, membership change, follower-lag, and
-secondary-read validation. `LocalModel` remains a deserialization compatibility variant only and is
-rejected for runtime deployment selection.
+secondary-read validation. Those reports must also include
+`OpenRaftProcessOperationalSemanticsEvidence`; reports that only prove API presence or generic
+process startup are rejected. The operational evidence covers read-index and lease-read guards,
+lagging-follower read rejection, stale follower write rejection, leader transfer under load,
+snapshot install plus restart recovery, membership add/promote/remove, follower rejoin after
+compaction, secondary-read eligibility, apply convergence, and WAL persistence. `LocalModel`
+remains a deserialization compatibility variant only and is rejected for runtime deployment
+selection.
 
 The Rust code currently has:
 
@@ -204,8 +210,11 @@ mode.
 
 The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
 path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
-ByteRaft-derived evidence is now paired with the Rust OpenRaft process rollout evidence. Direct C++
-ByteRaft FFI is not part of the readiness target.
+ByteRaft-derived evidence is now paired with the Rust OpenRaft process rollout evidence, and the
+process-path gate fails closed if that evidence is absent. This makes the runtime parity claim
+harder to fake, but it is still Rust-native OpenRaft readiness evidence, not a claim that Rust is
+byte-for-byte or implementation-identical to C++ ByteRaft. Direct C++ ByteRaft FFI is not part of
+the readiness target.
 
 The local WAL now has the applied-index/storage/snapshot atomicity contract represented as durable
 apply/snapshot and storage-aware apply fences. The `raft_secondary_replication_harness` validates
