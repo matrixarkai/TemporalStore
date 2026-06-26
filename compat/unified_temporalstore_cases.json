@@ -6151,6 +6151,28 @@
       ]
     },
     {
+      "description": "Shared C++/Rust storage stream case: stream-backed zones roll, read logical ranges, persist manifests, and track delayed destroy lifecycle.",
+      "family": "storage/cache",
+      "name": "storage_stream_backed_zone_runtime",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Writes compressed page stream records, reads logical ranges across envelopes, rolls active zones, reopens from the zone manifest, and verifies delayed-destroy accounting.",
+            "kind": "storage_stream_backed_zone_runtime",
+            "expect_logical_stream_read": true,
+            "expect_append_roll": true,
+            "expect_zone_manifest": true,
+            "expect_envelope_checksum": true,
+            "expect_compression_stream": true,
+            "expect_delayed_destroy": true
+          },
+          "name": "stream_backed_zones_roll_read_reopen_and_delay_destroy",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage stream case: large cross-block values survive reopen and page stream chunk reads preserve byte boundaries.",
       "family": "storage/cache",
       "name": "storage_stream_cross_block_large_values",
@@ -9110,6 +9132,7 @@
       "storage_byteraft_shared_store_async_replay",
       "storage_stream_cross_block_large_values",
       "storage_stream_random_size_reopen_scan",
+      "storage_stream_backed_zone_runtime",
       "context_events_segments_entities_child_refs",
       "context_cpp_wire_model_descriptor_roundtrip",
       "context_embeddings_summaries_l0_l1_pipeline",
