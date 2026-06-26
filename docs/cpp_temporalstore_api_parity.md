@@ -304,8 +304,9 @@ Partially covered, but still materially smaller than C++:
   logical object/page-ref/dirty-object/dirty-slot stats. Rust still does not clone the full C++
   `ObjectManager` memory layout with stable object ids, page ids, slot ownership, and lifecycle.
 - Cache is a Rust multi-layer read-through cache over memory, local page files, and page-address
-  blocks. It is not blockcache/mtcache-compatible and does not provide CacheLib-style SSD admission,
-  eviction, warmup, pinning, and observability.
+  blocks. It now provides Rust-native mtcache-like SSD tier behavior: policy admission,
+  write-through accounting, bounded SSD capacity eviction, hotness metadata, warmup, pinning, and
+  observability. It is still not blockcache/mtcache binary/API compatibility.
 - Shared-store replication exists for file/object-store checkpoint, page, index, and oplog flows.
   There is still no production ByteStore stream backend parity.
 - Raft has local/distributed model coverage, HTTP transport contracts, WAL persistence, snapshots,

@@ -124,6 +124,22 @@ pub struct CacheStats {
     #[serde(default)]
     pub disk_fills: u64,
     #[serde(default)]
+    pub ssd_admission_accepted: u64,
+    #[serde(default)]
+    pub ssd_admission_rejected: u64,
+    #[serde(default)]
+    pub ssd_evictions: u64,
+    #[serde(default)]
+    pub ssd_eviction_capacity: u64,
+    #[serde(default)]
+    pub ssd_eviction_pinned_skips: u64,
+    #[serde(default)]
+    pub ssd_oversize_rejections: u64,
+    #[serde(default)]
+    pub ssd_write_through_admissions: u64,
+    #[serde(default)]
+    pub hotness_promotions: u64,
+    #[serde(default)]
     pub refill_failures: u64,
     #[serde(default)]
     pub eviction_capacity: u64,
@@ -311,6 +327,8 @@ pub struct CacheTieringPolicy {
     #[serde(default)]
     pub max_pmem_block_bytes: usize,
     pub max_ssd_block_bytes: usize,
+    #[serde(default = "default_ssd_write_through")]
+    pub ssd_write_through: bool,
 }
 
 impl Default for CacheTieringPolicy {
@@ -325,8 +343,13 @@ impl Default for CacheTieringPolicy {
             max_memory_block_bytes: 1024 * 1024,
             max_pmem_block_bytes: 4 * 1024 * 1024,
             max_ssd_block_bytes: 16 * 1024 * 1024,
+            ssd_write_through: true,
         }
     }
+}
+
+fn default_ssd_write_through() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -424,6 +447,10 @@ pub struct CachePressureValidationReport {
     pub rejected: u64,
     pub observed_evictions: u64,
     pub observed_disk_refills: u64,
+    #[serde(default)]
+    pub observed_ssd_evictions: u64,
+    #[serde(default)]
+    pub observed_hotness_promotions: u64,
     pub passed: bool,
     pub reasons: Vec<String>,
 }
@@ -465,6 +492,8 @@ pub fn validate_cache_pressure_policy(
         iterations: requests.len(),
         observed_evictions: stats.memory_evictions,
         observed_disk_refills: stats.disk_hits,
+        observed_ssd_evictions: stats.ssd_evictions,
+        observed_hotness_promotions: stats.hotness_promotions,
         ..CachePressureValidationReport::default()
     };
     for request in requests {
@@ -545,6 +574,18 @@ pub struct CacheEntryInfo {
     pub disk_bytes: u64,
     #[serde(default)]
     pub pinned: bool,
+    #[serde(default)]
+    pub block_kind: Option<CacheBlockKind>,
+    #[serde(default)]
+    pub routing_slot: Option<u32>,
+    #[serde(default)]
+    pub hotness: u32,
+    #[serde(default)]
+    pub hits: u64,
+    #[serde(default)]
+    pub last_access_epoch: u64,
+    #[serde(default)]
+    pub admission_reason: Option<CacheAdmissionReason>,
 }
 
 #[derive(Debug, Clone)]
@@ -581,15 +622,31 @@ pub struct MultiLayerCache {
 struct CacheInner {
     memory_capacity_bytes: usize,
     memory_bytes: usize,
+    ssd_capacity_bytes: usize,
+    ssd_bytes: u64,
     disk_dir: PathBuf,
+    tiering_policy: CacheTieringPolicy,
     block_options: CacheBlockOptions,
     memory: HashMap<CacheKey, Arc<[u8]>>,
     disk_index: HashMap<CacheKey, u64>,
+    disk_order: VecDeque<CacheKey>,
     pinned: HashSet<CacheKey>,
     order: VecDeque<CacheKey>,
     async_writeback_queue: VecDeque<CacheWritebackJob>,
     max_async_writeback_queue: usize,
+    metadata: HashMap<CacheKey, CacheEntryMeta>,
+    access_epoch: u64,
     stats: CacheStats,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CacheEntryMeta {
+    block_kind: CacheBlockKind,
+    routing_slot: Option<u32>,
+    hotness: u32,
+    hits: u64,
+    last_access_epoch: u64,
+    admission_reason: CacheAdmissionReason,
 }
 
 impl MultiLayerCache {
@@ -606,20 +663,38 @@ impl MultiLayerCache {
         disk_dir: impl Into<PathBuf>,
         block_options: CacheBlockOptions,
     ) -> Self {
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes,
+            ..CacheTieringPolicy::default()
+        };
+        Self::with_tiering_policy(disk_dir, policy, block_options)
+    }
+
+    pub fn with_tiering_policy(
+        disk_dir: impl Into<PathBuf>,
+        tiering_policy: CacheTieringPolicy,
+        block_options: CacheBlockOptions,
+    ) -> Self {
         let disk_dir = disk_dir.into();
         let _ = fs::create_dir_all(&disk_dir);
         Self {
             inner: Arc::new(RwLock::new(CacheInner {
-                memory_capacity_bytes,
+                memory_capacity_bytes: tiering_policy.memory_capacity_bytes,
                 memory_bytes: 0,
+                ssd_capacity_bytes: tiering_policy.ssd_capacity_bytes,
+                ssd_bytes: 0,
                 disk_dir,
+                tiering_policy,
                 block_options,
                 memory: HashMap::new(),
                 disk_index: HashMap::new(),
+                disk_order: VecDeque::new(),
                 pinned: HashSet::new(),
                 order: VecDeque::new(),
                 async_writeback_queue: VecDeque::new(),
                 max_async_writeback_queue: 1024,
+                metadata: HashMap::new(),
+                access_epoch: 0,
                 stats: CacheStats::default(),
             })),
         }
@@ -632,6 +707,7 @@ impl MultiLayerCache {
             if let Some(value) = inner.memory.get(key).cloned() {
                 inner.stats.memory_hits += 1;
                 inner.touch_key(key);
+                inner.record_hit(key, value.len());
                 inner.record_get_latency(started);
                 inner.record_read_through_latency(started);
                 return Ok(Some(value.to_vec()));
@@ -651,6 +727,7 @@ impl MultiLayerCache {
                 if is_encoded_compressed_block(&block) {
                     inner.stats.compressed_hits += 1;
                 }
+                inner.record_hit(key, decoded.len());
                 if !inner.put_memory(key.clone(), decoded.clone()) {
                     inner.stats.refill_failures += 1;
                 }
@@ -676,6 +753,10 @@ impl MultiLayerCache {
         if value.is_some() {
             inner.stats.memory_hits += 1;
             inner.touch_key(key);
+            inner.record_hit(
+                key,
+                value.as_ref().map(|bytes| bytes.len()).unwrap_or_default(),
+            );
         } else {
             inner.stats.misses += 1;
         }
@@ -708,30 +789,34 @@ impl MultiLayerCache {
     pub fn put(&self, key: CacheKey, value: Vec<u8>) -> Result<(), CacheError> {
         let started = Instant::now();
         let mut inner = self.inner.write().expect("cache lock poisoned");
-        let path = inner.disk_path(&key);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let block = encode_cache_block(&value, inner.block_options)?;
-        let compressed = is_encoded_compressed_block(&block);
-        if compressed {
-            inner.stats.compressed_puts += 1;
-            inner.stats.compression_bytes_saved += value.len().saturating_sub(block.len()) as u64;
-        }
-        let block_len = block.len();
-        write_cache_block_atomic(&path, &block)?;
-        inner.stats.puts += 1;
-        inner.stats.disk_fills += 1;
-        inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_add(block_len as u64);
-        inner.disk_index.insert(key.clone(), block_len as u64);
-        inner.put_memory(key, value);
+        let result = inner.put_with_request(key, value, None);
         inner.record_put_latency(started);
-        Ok(())
+        result
+    }
+
+    pub fn put_with_admission(
+        &self,
+        key: CacheKey,
+        value: Vec<u8>,
+        request: CacheAdmissionRequest,
+    ) -> Result<(), CacheError> {
+        let started = Instant::now();
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        let result = inner.put_with_request(key, value, Some(request));
+        inner.record_put_latency(started);
+        result
     }
 
     pub fn put_memory_only(&self, key: CacheKey, value: Vec<u8>) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.stats.puts += 1;
+        inner.record_metadata(
+            &key,
+            CacheBlockKind::Other,
+            extract_routing_slot(&key),
+            value.len(),
+            CacheAdmissionReason::MemoryOnly,
+        );
         if !inner.put_memory(key, value) {
             inner.stats.refill_failures += 1;
         }
@@ -824,15 +909,7 @@ impl MultiLayerCache {
 
     pub fn invalidate(&self, key: &CacheKey) -> Result<(), CacheError> {
         let mut inner = self.inner.write().expect("cache lock poisoned");
-        if let Some(value) = inner.memory.remove(key) {
-            inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
-        }
-        let _ = fs::remove_file(inner.disk_path(key));
-        inner.disk_index.remove(key);
-        inner.pinned.remove(key);
-        inner.stats.invalidations += 1;
-        inner.stats.memory_bytes = inner.memory_bytes as u64;
-        inner.refresh_pin_stats();
+        inner.invalidate_key_locked(key, true);
         Ok(())
     }
 
@@ -841,12 +918,123 @@ impl MultiLayerCache {
         if let Some(value) = inner.memory.remove(key) {
             inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
         }
+        inner.order.retain(|candidate| candidate != key);
         inner.pinned.remove(key);
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
         inner.refresh_pin_stats();
     }
 
+    pub fn production_tiering_policy(&self) -> CacheTieringPolicy {
+        let inner = self.inner.read().expect("cache lock poisoned");
+        inner.tiering_policy
+    }
+
+    pub fn update_production_tiering_policy(&self, policy: CacheTieringPolicy) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        inner.memory_capacity_bytes = policy.memory_capacity_bytes;
+        inner.ssd_capacity_bytes = policy.ssd_capacity_bytes;
+        inner.tiering_policy = policy;
+        inner.evict_memory_to_capacity();
+        inner.evict_ssd_to_capacity();
+        inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.disk_bytes = inner.ssd_bytes;
+        inner.refresh_pin_stats();
+    }
+}
+
+impl CacheInner {
+    fn put_with_request(
+        &mut self,
+        key: CacheKey,
+        value: Vec<u8>,
+        request: Option<CacheAdmissionRequest>,
+    ) -> Result<(), CacheError> {
+        let request = request.unwrap_or_else(|| self.default_request(&key, value.len()));
+        let decision = self.tiering_policy.decide(&request);
+        let admit_ssd = decision.admit_ssd || self.tiering_policy.ssd_write_through;
+        let admit_memory = decision.admit_memory;
+
+        if admit_memory {
+            self.record_metadata(
+                &key,
+                request.block_kind,
+                request.routing_slot,
+                value.len(),
+                decision.reason,
+            );
+            let _ = self.put_memory(key.clone(), value.clone());
+        } else {
+            self.stats.memory_admission_rejected += 1;
+        }
+
+        if !admit_ssd {
+            self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.puts += 1;
+            return Ok(());
+        }
+        if value.len() > self.tiering_policy.max_ssd_block_bytes
+            || value.len() > self.ssd_capacity_bytes
+        {
+            self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.ssd_oversize_rejections =
+                self.stats.ssd_oversize_rejections.saturating_add(1);
+            self.stats.puts += 1;
+            return Ok(());
+        }
+        if self.tiering_policy.ssd_write_through && !decision.admit_ssd {
+            self.stats.ssd_write_through_admissions =
+                self.stats.ssd_write_through_admissions.saturating_add(1);
+        }
+        let block = encode_cache_block(&value, self.block_options)?;
+        let compressed = is_encoded_compressed_block(&block);
+        let block_len = block.len();
+        if block_len > self.tiering_policy.max_ssd_block_bytes
+            || block_len > self.ssd_capacity_bytes
+        {
+            self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.ssd_oversize_rejections =
+                self.stats.ssd_oversize_rejections.saturating_add(1);
+            self.stats.puts += 1;
+            return Ok(());
+        }
+        self.evict_ssd_for(block_len as u64);
+        if self.ssd_bytes.saturating_add(block_len as u64) > self.ssd_capacity_bytes as u64 {
+            self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.puts += 1;
+            return Ok(());
+        }
+        let path = self.disk_path(&key);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if compressed {
+            self.stats.compressed_puts += 1;
+            self.stats.compression_bytes_saved += value.len().saturating_sub(block.len()) as u64;
+        }
+        write_cache_block_atomic(&path, &block)?;
+        if let Some(old_len) = self.disk_index.insert(key.clone(), block_len as u64) {
+            self.ssd_bytes = self.ssd_bytes.saturating_sub(old_len);
+            self.disk_order.retain(|candidate| candidate != &key);
+        }
+        self.disk_order.push_back(key.clone());
+        self.ssd_bytes = self.ssd_bytes.saturating_add(block_len as u64);
+        self.record_metadata(
+            &key,
+            request.block_kind,
+            request.routing_slot,
+            value.len(),
+            decision.reason,
+        );
+        self.stats.puts += 1;
+        self.stats.disk_fills += 1;
+        self.stats.ssd_admission_accepted = self.stats.ssd_admission_accepted.saturating_add(1);
+        self.stats.disk_bytes = self.ssd_bytes;
+        Ok(())
+    }
+}
+
+impl MultiLayerCache {
     pub fn invalidate_record(
         &self,
         shard_id: ShardId,
@@ -890,7 +1078,9 @@ impl MultiLayerCache {
             }
         }
         inner.order.retain(|key| key.shard_id != shard_id);
+        inner.disk_order.retain(|key| key.shard_id != shard_id);
         inner.disk_index.retain(|key, _| key.shard_id != shard_id);
+        inner.metadata.retain(|key, _| key.shard_id != shard_id);
         inner.pinned.retain(|key| key.shard_id != shard_id);
 
         let shard_disk_dir = inner.disk_dir.join(format!("shard-{shard_id}"));
@@ -902,7 +1092,8 @@ impl MultiLayerCache {
         }
         inner.stats.invalidations += memory_entries_removed as u64;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
-        inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_sub(disk_bytes_before);
+        inner.ssd_bytes = inner.ssd_bytes.saturating_sub(disk_bytes_before);
+        inner.stats.disk_bytes = inner.ssd_bytes;
         inner.refresh_pin_stats();
         Ok(CacheGcReport {
             shard_id,
@@ -946,16 +1137,21 @@ impl MultiLayerCache {
             );
             let _ = fs::remove_file(path);
             inner.pinned.remove(key);
+            inner.metadata.remove(key);
         }
         inner
             .order
+            .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
+        inner
+            .disk_order
             .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
         inner.stats.invalidations = inner
             .stats
             .invalidations
             .saturating_add(memory_entries_removed as u64);
         inner.stats.memory_bytes = inner.memory_bytes as u64;
-        inner.stats.disk_bytes = dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes);
+        inner.ssd_bytes = inner.ssd_bytes.saturating_sub(disk_bytes_removed);
+        inner.stats.disk_bytes = inner.ssd_bytes;
         inner.refresh_pin_stats();
         Ok(CacheGcReport {
             shard_id,
@@ -989,6 +1185,7 @@ impl MultiLayerCache {
                         .map(|metadata| metadata.len())
                         .unwrap_or_default()
                 });
+                let meta = inner.metadata.get(&key).copied();
                 CacheEntryInfo {
                     shard_id: key.shard_id,
                     namespace: key.namespace,
@@ -997,6 +1194,12 @@ impl MultiLayerCache {
                     memory_bytes,
                     disk_bytes,
                     pinned,
+                    block_kind: meta.map(|meta| meta.block_kind),
+                    routing_slot: meta.and_then(|meta| meta.routing_slot),
+                    hotness: meta.map(|meta| meta.hotness).unwrap_or_default(),
+                    hits: meta.map(|meta| meta.hits).unwrap_or_default(),
+                    last_access_epoch: meta.map(|meta| meta.last_access_epoch).unwrap_or_default(),
+                    admission_reason: meta.map(|meta| meta.admission_reason),
                 }
             })
             .collect::<Vec<_>>();
@@ -1013,7 +1216,7 @@ impl MultiLayerCache {
         let inner = self.inner.read().expect("cache lock poisoned");
         CacheStats {
             memory_bytes: inner.memory_bytes as u64,
-            disk_bytes: dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes),
+            disk_bytes: inner.ssd_bytes,
             pinned_entries: inner.pinned.len() as u64,
             pinned_bytes: inner.pinned_memory_bytes(),
             async_writeback_queue_depth: inner.async_writeback_queue.len() as u64,
@@ -1286,6 +1489,77 @@ impl CacheInner {
             .join(key.disk_name())
     }
 
+    fn default_request(&self, key: &CacheKey, block_bytes: usize) -> CacheAdmissionRequest {
+        let existing = self.metadata.get(key).copied();
+        CacheAdmissionRequest {
+            block_kind: existing
+                .map(|meta| meta.block_kind)
+                .unwrap_or_else(|| infer_block_kind(key)),
+            shard_id: key.shard_id,
+            routing_slot: existing
+                .and_then(|meta| meta.routing_slot)
+                .or_else(|| extract_routing_slot(key)),
+            block_bytes,
+            hotness: existing.map(|meta| meta.hotness).unwrap_or_default(),
+            pinned: self.pinned.contains(key),
+        }
+    }
+
+    fn record_metadata(
+        &mut self,
+        key: &CacheKey,
+        block_kind: CacheBlockKind,
+        routing_slot: Option<u32>,
+        block_bytes: usize,
+        admission_reason: CacheAdmissionReason,
+    ) {
+        self.access_epoch = self.access_epoch.saturating_add(1);
+        let current = self.metadata.get(key).copied();
+        self.metadata.insert(
+            key.clone(),
+            CacheEntryMeta {
+                block_kind,
+                routing_slot,
+                hotness: current
+                    .map(|meta| meta.hotness)
+                    .unwrap_or_else(|| initial_hotness(block_kind, block_bytes)),
+                hits: current.map(|meta| meta.hits).unwrap_or_default(),
+                last_access_epoch: self.access_epoch,
+                admission_reason,
+            },
+        );
+    }
+
+    fn record_hit(&mut self, key: &CacheKey, block_bytes: usize) {
+        self.access_epoch = self.access_epoch.saturating_add(1);
+        let block_kind = infer_block_kind(key);
+        let entry = self.metadata.entry(key.clone()).or_insert(CacheEntryMeta {
+            block_kind,
+            routing_slot: extract_routing_slot(key),
+            hotness: initial_hotness(block_kind, block_bytes),
+            hits: 0,
+            last_access_epoch: 0,
+            admission_reason: CacheAdmissionReason::MemoryOnly,
+        });
+        entry.hits = entry.hits.saturating_add(1);
+        let before = entry.hotness;
+        entry.hotness = entry.hotness.saturating_add(1);
+        entry.last_access_epoch = self.access_epoch;
+        if before < self.tiering_policy.memory_hotness_threshold
+            && entry.hotness >= self.tiering_policy.memory_hotness_threshold
+        {
+            self.stats.hotness_promotions = self.stats.hotness_promotions.saturating_add(1);
+        }
+        self.disk_order.retain(|candidate| candidate != key);
+        if self.disk_index.contains_key(key) {
+            self.disk_order.push_back(key.clone());
+        }
+        self.order.retain(|candidate| candidate != key);
+        if self.memory.contains_key(key) {
+            self.order.push_back(key.clone());
+        }
+    }
+
     fn put_memory(&mut self, key: CacheKey, value: Vec<u8>) -> bool {
         let eviction_started = Instant::now();
         if self.memory_capacity_bytes == 0 || value.len() > self.memory_capacity_bytes {
@@ -1341,6 +1615,109 @@ impl CacheInner {
         if self.memory.contains_key(key) {
             self.order.push_back(key.clone());
         }
+    }
+
+    fn evict_memory_to_capacity(&mut self) {
+        while self.memory_bytes > self.memory_capacity_bytes {
+            let before = self.memory_bytes;
+            self.evict_one_memory_entry();
+            if self.memory_bytes == before {
+                break;
+            }
+        }
+    }
+
+    fn evict_one_memory_entry(&mut self) {
+        let order_len = self.order.len();
+        for _ in 0..order_len {
+            let Some(oldest) = self.order.pop_front() else {
+                break;
+            };
+            if self.pinned.contains(&oldest) {
+                self.stats.eviction_pinned_skips =
+                    self.stats.eviction_pinned_skips.saturating_add(1);
+                self.order.push_back(oldest);
+                continue;
+            }
+            if let Some(old_value) = self.memory.remove(&oldest) {
+                self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
+                self.stats.memory_evictions = self.stats.memory_evictions.saturating_add(1);
+                self.stats.eviction_capacity = self.stats.eviction_capacity.saturating_add(1);
+                break;
+            }
+        }
+        self.stats.memory_bytes = self.memory_bytes as u64;
+    }
+
+    fn evict_ssd_for(&mut self, incoming_bytes: u64) {
+        while self.ssd_bytes.saturating_add(incoming_bytes) > self.ssd_capacity_bytes as u64 {
+            if !self.evict_one_ssd_entry() {
+                break;
+            }
+        }
+    }
+
+    fn evict_ssd_to_capacity(&mut self) {
+        while self.ssd_bytes > self.ssd_capacity_bytes as u64 {
+            if !self.evict_one_ssd_entry() {
+                break;
+            }
+        }
+    }
+
+    fn evict_one_ssd_entry(&mut self) -> bool {
+        let order_len = self.disk_order.len();
+        for _ in 0..order_len {
+            let Some(oldest) = self.disk_order.pop_front() else {
+                return false;
+            };
+            if self.pinned.contains(&oldest) {
+                self.stats.ssd_eviction_pinned_skips =
+                    self.stats.ssd_eviction_pinned_skips.saturating_add(1);
+                self.disk_order.push_back(oldest);
+                continue;
+            }
+            let path = self.disk_path(&oldest);
+            let removed_bytes = self
+                .disk_index
+                .remove(&oldest)
+                .or_else(|| path.metadata().ok().map(|metadata| metadata.len()))
+                .unwrap_or_default();
+            let _ = fs::remove_file(path);
+            self.ssd_bytes = self.ssd_bytes.saturating_sub(removed_bytes);
+            self.stats.ssd_evictions = self.stats.ssd_evictions.saturating_add(1);
+            self.stats.ssd_eviction_capacity = self.stats.ssd_eviction_capacity.saturating_add(1);
+            self.stats.disk_bytes = self.ssd_bytes;
+            if !self.memory.contains_key(&oldest) {
+                self.metadata.remove(&oldest);
+            }
+            return true;
+        }
+        false
+    }
+
+    fn invalidate_key_locked(&mut self, key: &CacheKey, remove_disk: bool) {
+        if let Some(value) = self.memory.remove(key) {
+            self.memory_bytes = self.memory_bytes.saturating_sub(value.len());
+        }
+        self.order.retain(|candidate| candidate != key);
+        if remove_disk {
+            let path = self.disk_path(key);
+            let disk_bytes = self
+                .disk_index
+                .remove(key)
+                .or_else(|| path.metadata().ok().map(|metadata| metadata.len()))
+                .unwrap_or_default();
+            let _ = fs::remove_file(path);
+            self.disk_order.retain(|candidate| candidate != key);
+            self.ssd_bytes = self.ssd_bytes.saturating_sub(disk_bytes);
+        }
+        self.metadata.remove(key);
+        self.pinned.remove(key);
+        self.stats.invalidations += 1;
+        self.stats.memory_bytes = self.memory_bytes as u64;
+        self.stats.disk_bytes = self.ssd_bytes;
+        self.refresh_pin_stats();
     }
 
     fn pinned_memory_bytes(&self) -> u64 {
@@ -1500,6 +1877,33 @@ fn observe_latency_bucket(
     }
 }
 
+fn infer_block_kind(key: &CacheKey) -> CacheBlockKind {
+    match key.namespace.as_str() {
+        "page" => CacheBlockKind::Page,
+        "index" => CacheBlockKind::Index,
+        "oplog" => CacheBlockKind::Oplog,
+        "string" | "hash" | "set" | "feature" => CacheBlockKind::Object,
+        _ => CacheBlockKind::Other,
+    }
+}
+
+fn initial_hotness(block_kind: CacheBlockKind, block_bytes: usize) -> u32 {
+    match block_kind {
+        CacheBlockKind::Page => 2,
+        CacheBlockKind::Index => 3,
+        CacheBlockKind::Oplog => 1,
+        CacheBlockKind::Object if block_bytes <= 4096 => 2,
+        CacheBlockKind::Object => 1,
+        CacheBlockKind::Other => 0,
+    }
+}
+
+fn extract_routing_slot(key: &CacheKey) -> Option<u32> {
+    let suffix = key.selector.strip_prefix("slot-")?;
+    let (slot, _) = suffix.split_once(':')?;
+    slot.parse::<u32>().ok()
+}
+
 fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
     if !path.exists() {
         return Ok(0);
@@ -1600,6 +2004,7 @@ mod tests {
             max_memory_block_bytes: 32,
             max_pmem_block_bytes: 96,
             max_ssd_block_bytes: 256,
+            ssd_write_through: true,
         };
         let hot_page = CacheAdmissionRequest {
             block_kind: CacheBlockKind::Page,
@@ -1674,6 +2079,7 @@ mod tests {
             max_memory_block_bytes: 32,
             max_pmem_block_bytes: 128,
             max_ssd_block_bytes: 256,
+            ssd_write_through: true,
         };
         let requests = vec![
             CacheAdmissionRequest {
@@ -1757,6 +2163,88 @@ mod tests {
         assert!(report.writeback_latency_samples > 0);
         assert!(report.eviction_latency_samples > 0);
         assert!(report.compaction_latency_samples > 0);
+    }
+
+    // shared-corpus: storage_cache_refill;
+    #[test]
+    fn production_cache_tier_enforces_ssd_capacity_and_reports_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 16,
+            ssd_capacity_bytes: 90,
+            memory_hotness_threshold: 4,
+            ssd_admit_hotness_threshold: 1,
+            max_memory_block_bytes: 16,
+            max_ssd_block_bytes: 64,
+            ssd_write_through: true,
+        };
+        let cache = MultiLayerCache::with_tiering_policy(
+            dir.path(),
+            policy,
+            CacheBlockOptions {
+                compression: CacheCompression::None,
+                min_compress_bytes: usize::MAX,
+            },
+        );
+        let first = CacheKey::page_with_slot(1, 10, 0, 16, Some(3));
+        let second = CacheKey::page_with_slot(1, 11, 0, 16, Some(3));
+        let third = CacheKey::page_with_slot(1, 12, 0, 16, Some(4));
+
+        cache
+            .put(first.clone(), b"first-page-0000".to_vec())
+            .unwrap();
+        cache
+            .put(second.clone(), b"second-page-000".to_vec())
+            .unwrap();
+        cache
+            .put(third.clone(), b"third-page-0000".to_vec())
+            .unwrap();
+
+        let stats = cache.stats();
+        assert!(stats.ssd_admission_accepted >= 3);
+        assert!(stats.ssd_evictions >= 1);
+        assert!(stats.ssd_eviction_capacity >= 1);
+        assert!(stats.disk_bytes <= policy.ssd_capacity_bytes as u64);
+        assert_eq!(cache.get(&first).unwrap(), None);
+
+        let entries = cache.entries_for_shard(1);
+        assert!(entries.iter().any(|entry| {
+            entry.routing_slot == Some(3)
+                && entry.block_kind == Some(CacheBlockKind::Page)
+                && entry.admission_reason.is_some()
+        }));
+    }
+
+    // shared-corpus: storage_cache_refill;
+    #[test]
+    fn cache_hotness_promotes_entries_and_updates_lru_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 64,
+            ssd_capacity_bytes: 512,
+            memory_hotness_threshold: 4,
+            ssd_admit_hotness_threshold: 1,
+            max_memory_block_bytes: 64,
+            max_ssd_block_bytes: 128,
+            ssd_write_through: true,
+        };
+        let cache =
+            MultiLayerCache::with_tiering_policy(dir.path(), policy, CacheBlockOptions::default());
+        let key = CacheKey::page_with_slot(1, 20, 0, 4, Some(8));
+
+        cache.put(key.clone(), b"page".to_vec()).unwrap();
+        cache.clear_memory_for_test();
+        assert_eq!(cache.get(&key).unwrap(), Some(b"page".to_vec()));
+        assert_eq!(cache.get(&key).unwrap(), Some(b"page".to_vec()));
+
+        let entry = cache
+            .entries_for_shard(1)
+            .into_iter()
+            .find(|entry| entry.routing_slot == Some(8))
+            .expect("cache entry should exist");
+        assert!(entry.hotness >= policy.memory_hotness_threshold);
+        assert!(entry.hits >= 2);
+        assert!(cache.stats().hotness_promotions >= 1);
     }
 
     #[test]
