@@ -39,6 +39,23 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
     from matrixark_mcp_schemas import TOOLS
+
+
+RETRIEVAL_HOT_RECORD_TYPES = {
+    "context_compression_event",
+    "context_embedding",
+    "context_entity",
+    "context_event",
+    "context_index",
+    "context_segment",
+    "context_summary",
+    "resource_chunk",
+    "resource_manifest",
+    "skill_registry_update",
+    "skill_section",
+}
+
+
 @dataclass
 class MatrixArkLocalAdapter:
     event_log: Path
@@ -143,6 +160,57 @@ class MatrixArkLocalAdapter:
                 if line:
                     records.append(json.loads(line))
         return records
+
+    def retrieval_records(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str] | None = None,
+        secondary_index_groups: list[set[str]] | None = None,
+        selected_node_hashes: set[int] | None = None,
+    ) -> Json:
+        """Return records eligible for retrieval hot-path scan/filter/pack.
+
+        C++/Rust backends override this seam with native prefix scans and
+        secondary-index prefiltering. The local adapter keeps the reference
+        behavior by filtering the JSONL record log before Python scoring.
+        """
+
+        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        raw_records = self.read_all()
+        filtered: list[Json] = []
+        scanned = 0
+        dropped_type = 0
+        dropped_scope = 0
+        for record in raw_records:
+            scanned += 1
+            record_type = str(record.get("record_type") or "")
+            if record_type not in allowed_types:
+                dropped_type += 1
+                continue
+            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
+                if not scope_matches(record.get("scope", {}), scope):
+                    dropped_scope += 1
+                    continue
+            elif not access_scope_matches_before_scoring(record, scope):
+                dropped_scope += 1
+                continue
+            filtered.append(record)
+        return {
+            "records": filtered,
+            "scan_stats": {
+                "backend": getattr(self, "_backend_label", lambda: "local")(),
+                "execution_mode": "adapter_prefilter",
+                "native_pushdown": False,
+                "record_types": sorted(allowed_types),
+                "scanned_records": scanned,
+                "returned_records": len(filtered),
+                "dropped_by_type": dropped_type,
+                "dropped_by_scope": dropped_scope,
+                "secondary_index_groups_supplied": len(secondary_index_groups or []),
+                "selected_node_hashes_supplied": len(selected_node_hashes or set()),
+            },
+        }
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
         entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
@@ -2516,7 +2584,12 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("reference_time_ms must be an integer")
         reference_time_ms = raw_reference_time_ms
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
-        records = self.read_all()
+        retrieval_record_result = self.retrieval_records(
+            scope=scope,
+            secondary_index_groups=secondary_index_filter_groups,
+        )
+        records = retrieval_record_result["records"]
+        retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
         latest_resource_version_by_uri: dict[str, str] = {}
@@ -3113,6 +3186,7 @@ class MatrixArkLocalAdapter:
             "embedding_execution_mode": embedding_execution_mode_name(),
             "embedding_fallback_used": embedding_fallback_used(),
             "recall_policy": {
+                "backend_retrieval_pushdown": retrieval_scan_stats,
                 "tree_traversal": {
                     "enabled": True,
                     "summary_embeddings": ["node_l0", "node_l1"],
@@ -4812,5 +4886,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
 

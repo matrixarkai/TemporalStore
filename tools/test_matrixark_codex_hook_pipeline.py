@@ -16,12 +16,17 @@ class CountingLocalAdapter(MatrixArkLocalAdapter):
     def __post_init__(self) -> None:
         super().__post_init__()
         self.flushed_batch_sizes: list[int] = []
+        self.retrieval_call_count = 0
 
     def append_many(self, records: list[dict]) -> None:
         active_batch = self._current_write_batch()
         super().append_many(records)
         if active_batch is None and records:
             self.flushed_batch_sizes.append(len(records))
+
+    def retrieval_records(self, **kwargs):
+        self.retrieval_call_count += 1
+        return super().retrieval_records(**kwargs)
 
 
 class MatrixArkCodexHookPipelineTest(unittest.TestCase):
@@ -182,6 +187,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(pack["selected_ref_counts"].get("resource_chunk", 0), 1)
             self.assertGreaterEqual(pack["selected_ref_counts"].get("skill_section", 0), 1)
             self.assertTrue(pack["context_assembly_policy"]["skill_selection"], "skill_section_only")
+            pushdown = pack["recall_policy"]["backend_retrieval_pushdown"]
+            self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
+            self.assertGreater(pushdown["dropped_by_type"], 0)
             replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"]})
             audits = [row for row in replay["events"] if row.get("record_type") == "context_pack_audit"]
             self.assertTrue(any(row.get("context_pack_id") == pack["context_pack_id"] for row in audits))
