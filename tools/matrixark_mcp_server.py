@@ -69,6 +69,11 @@ MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().l
 MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
+
+MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
+MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", "8"))
+MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", "8"))
+MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "16"))
 MAX_CONTEXT_REF_CHARS = 4096
 DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
@@ -2046,13 +2051,17 @@ def context_index_name(kind: str, value: Any) -> str:
     return f"{kind}:{normalized}" if normalized else ""
 
 
-def metadata_index_terms(metadata: Json) -> list[str]:
+def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK) -> list[str]:
     terms: list[str] = []
     for field in ["unit_kind", "heading_slug", "relative_path"]:
         terms.append(context_index_name(field, metadata.get(field)))
-    for keyword in metadata.get("keywords", [])[:12]:
+    for keyword in metadata.get("keywords", [])[: max(0, keyword_limit)]:
         terms.append(context_index_name("keyword", keyword))
     return ordered_unique(terms)
+
+
+def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
+    return ordered_unique([term for term in terms if term])[: max(0, limit)]
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(
@@ -4953,7 +4962,7 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                chunk_index_terms = ordered_unique(
+                chunk_index_terms = limited_index_terms(
                     [
                         context_index_name("source_type", "skill" if skill_hash is not None else "resource"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
@@ -4965,7 +4974,8 @@ class MatrixArkLocalAdapter:
                         + [context_index_name("skill_tool", tool) for tool in parsed_skill.metadata.get("allowed_tools", [])]
                         if skill_hash is not None and parsed_skill is not None
                         else []
-                    )
+                    ),
+                    limit=MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
                 )
                 for index_name in chunk_index_terms:
                     self.append(
@@ -4984,7 +4994,7 @@ class MatrixArkLocalAdapter:
                         }
                     )
             resource_fact_records: list[Json] = []
-            fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:32]
+            fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
             for chunk in fact_chunks:
                 chunk_metadata = sanitize_resource_metadata(chunk.metadata)
                 for fact_extraction in extract_resource_facts(
@@ -5074,13 +5084,13 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    for index_name in ordered_unique([
+                    for index_name in limited_index_terms([
                         context_index_name("source_type", "resource_fact"),
                         context_index_name("event_type", fact_event_type),
                         context_index_name("entity_type", fact_entity_type),
                         context_index_name("entity_type", "resource_fact"),
                         context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
-                    ] + metadata_index_terms(chunk_metadata)):
+                    ] + metadata_index_terms(chunk_metadata), limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT):
                         resource_fact_records.append(
                             {
                                 "record_type": "context_index",
