@@ -2,6 +2,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MATRIXARK_CONTEXT_STORAGE_BENCHMARK="${ROOT}/third_party/TemporalStoreTestCorpus/tools/run_matrixark_context_storage_benchmark.py"
+if [[ ! -f "${MATRIXARK_CONTEXT_STORAGE_BENCHMARK}" && -f "${ROOT}/../TemporalStoreTestCorpus/tools/run_matrixark_context_storage_benchmark.py" ]]; then
+  MATRIXARK_CONTEXT_STORAGE_BENCHMARK="${ROOT}/../TemporalStoreTestCorpus/tools/run_matrixark_context_storage_benchmark.py"
+fi
+if [[ ! -f "${MATRIXARK_CONTEXT_STORAGE_BENCHMARK}" ]]; then
+  echo "MatrixArk context storage benchmark is shared in TemporalStoreTestCorpus; initialize third_party/TemporalStoreTestCorpus or check it out as a sibling repo." >&2
+  exit 2
+fi
 IMAGE="${IMAGE:-temporalstore-context-oss:local}"
 BASE_IMAGE="${BASE_IMAGE:-python:3.12-slim}"
 BUILD_IMAGE="${BUILD_IMAGE:-0}"
@@ -56,7 +64,6 @@ require_file() {
 require_file "${TEMPORALSTORE_LIB}"
 require_file "${ROOT}/tools/deploy_local_ubuntu22.sh"
 require_file "${ROOT}/tools/run_context_pipeline_scale_e2e.py"
-require_file "${ROOT}/tools/run_matrixark_context_storage_benchmark.py"
 
 if [[ ! -f "${EMBEDDING_MODEL_PATH}/modules.json" ]]; then
   log "missing local OSS embedding model at ${EMBEDDING_MODEL_PATH}"
@@ -185,7 +192,7 @@ docker run --rm --name "${CONTAINER_NAME}" --network host \
       --embedding-model /models/sentence-transformers/all-MiniLM-L6-v2 \
       --write-results ${CONTAINER_OSS_RESULT}
     LD_LIBRARY_PATH=/work/output-ubuntu22/release/sdk/lib:/tmp/ts-libs \
-    python3 tools/run_matrixark_context_storage_benchmark.py \
+    python3 "${MATRIXARK_CONTEXT_STORAGE_BENCHMARK}" \
       --backend temporalstore-direct \
       --metaserver 127.0.0.1:${MS_PORT} \
       --namespace ${NAMESPACE_NAME} \
