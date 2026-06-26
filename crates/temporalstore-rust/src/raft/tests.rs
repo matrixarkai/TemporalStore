@@ -3099,6 +3099,31 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("operational semantics evidence")));
+    assert!(rejected_api_only
+        .missing
+        .iter()
+        .any(|item| item.contains("process_path_validated")));
+
+    let mut missing_read_safety = ready_data_node_openraft_rollout_report();
+    missing_read_safety
+        .operational_semantics
+        .read_index_validated = false;
+    missing_read_safety
+        .operational_semantics
+        .leader_lease_validated = false;
+    let rejected_read_safety = raft_openraft_rollout_readiness_from_reports(
+        Some(&missing_read_safety),
+        Some(&ready_meta_openraft_rollout_report()),
+    );
+    assert!(!rejected_read_safety.data_node_real_process_rollout_validated);
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("read_index_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("leader_lease_validated")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence

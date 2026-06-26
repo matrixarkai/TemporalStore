@@ -19,6 +19,10 @@ compaction, secondary-read eligibility, apply convergence, and WAL persistence. 
 remains a deserialization compatibility variant only and is rejected for runtime deployment
 selection.
 
+When a process report lacks those semantics, the readiness blocker includes the exact missing field
+names, for example `process_path_validated`, `read_index_validated`, or
+`leader_lease_validated`, rather than a vague "Raft API present" failure.
+
 The Rust code currently has:
 
 - production data-node Raft runtime options with OpenRaft/raft-rs engine selection
