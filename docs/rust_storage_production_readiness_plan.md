@@ -272,15 +272,17 @@ real readiness evidence, but they are not treated as byte-for-byte C++ runtime p
 mtcache/cachelib-equivalent integration remains optional later work unless direct C++ cache binary/API
 compatibility is re-scoped into the Rust-native target.
 
-It also fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
-native ObjectManager ownership at runtime, SlotStore layout transitions, stream-backed zones,
-page compaction tied to model layout and tombstones, the continuous StorageManager
-prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load policy. Rust now
-persists a first-class slot/object/page ownership index and exposes whether reports are using that
-core index or falling back to model-map derivation. Changed objects are synchronized into that slot
-index incrementally, with slot dirty generations and PageIndex-like model id, page id,
-dirty/deleted/log flags, size, and address metadata. That is still not treated as complete C++
-runtime parity.
+Rust now persists a first-class slot/object/page ownership index and exposes whether reports are
+using that core index or falling back to model-map derivation. Changed objects are synchronized
+into that slot index incrementally, with slot dirty generations and PageIndex-like model id, page
+id, dirty/deleted/log flags, size, and address metadata. Slot layout transition evidence is also
+present for writes, rebuilds, compaction, tombstones, and dump/load validation.
+
+The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
+native ObjectManager hot-object runtime ownership, stream-backed zones, the continuous
+StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load
+policy. The slot-first index and layout evidence are real readiness evidence, but they are not
+treated as complete C++ runtime parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
