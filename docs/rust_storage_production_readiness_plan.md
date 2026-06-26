@@ -290,11 +290,17 @@ layout classes, layout transition counters, missing owner refs, owner mismatches
 reuse conflicts. That makes native Rust ObjectManager runtime mechanics readiness-backed rather
 than only doc-described.
 
+Rust also has stream-backed zone runtime evidence. The page store appends self-describing stream
+records, supports logical range reads that skip envelopes and decompress records across page
+boundaries, rolls segments by sealing the previous zone and opening a new active zone, persists the
+zone manifest across reopen, and tracks active/sealed/delayed-destroy/purged zone states.
+
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
-C++ byte-for-byte ObjectManager hot-object memory layout, stream-backed zones, the continuous
-StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged dump/load
-policy. The slot-first index, ObjectManager runtime report, and layout evidence are real readiness
-evidence, but they are not treated as complete C++ runtime parity.
+C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
+continuous StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, and the full merged
+dump/load policy. The slot-first index, ObjectManager runtime report, stream-backed zone report,
+and layout evidence are real readiness evidence, but they are not treated as complete C++ runtime
+parity.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
