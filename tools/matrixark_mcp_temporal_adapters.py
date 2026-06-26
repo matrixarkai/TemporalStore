@@ -109,6 +109,37 @@ def _native_scope_with_hashes(scope: Json) -> Json:
     return enriched
 
 
+
+def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
+    if total <= 0:
+        return 0.0
+    target = max(1, math.ceil(total * quantile))
+    previous_bound = 0.0
+    for count, bound in zip(buckets, bucket_bounds):
+        if int(count) >= target:
+            return previous_bound if bound == float("inf") else float(bound)
+        if bound != float("inf"):
+            previous_bound = float(bound)
+    return previous_bound
+
+
+def _latency_quantile_from_bucket_map(buckets: dict[str, Any], total: int, quantile: float) -> float:
+    if total <= 0:
+        return 0.0
+    parsed: list[tuple[float, int]] = []
+    for key, value in buckets.items():
+        bound = float("inf") if str(key) == "+Inf" else float(key)
+        parsed.append((bound, int(value or 0)))
+    parsed.sort(key=lambda item: item[0])
+    target = max(1, math.ceil(total * quantile))
+    previous = 0.0
+    for bound, count in parsed:
+        if count >= target:
+            return previous if bound == float("inf") else bound
+        if bound != float("inf"):
+            previous = bound
+    return previous
+
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     """MatrixArk storage adapter backed by the native C++ TemporalStore SDK.
 
