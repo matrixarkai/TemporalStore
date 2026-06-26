@@ -539,6 +539,34 @@ pub struct SlotObjectPageOwnershipReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObjectManagerRuntimeReport {
+    pub shard_id: ShardId,
+    pub runtime_ready: bool,
+    pub routing_slot_count: u64,
+    pub object_count: u64,
+    pub page_ref_count: u64,
+    pub hot_object_count: u64,
+    pub cold_object_count: u64,
+    pub mixed_residency_object_count: u64,
+    pub tombstone_object_count: u64,
+    pub dirty_object_count: u64,
+    pub loading_object_count: u64,
+    pub meta_object_count: u64,
+    pub ttl_object_count: u64,
+    pub dirty_slot_count: u64,
+    pub max_dirty_generation: u64,
+    pub layout_transition_count: u64,
+    pub object_page_count: u64,
+    pub packed_timestamped_page_count: u64,
+    pub multi_page_object_count: u64,
+    pub missing_owner_page_ref_count: usize,
+    pub owner_mismatch_page_ref_count: usize,
+    pub reused_object_id_conflict_count: u64,
+    pub evidence: Vec<String>,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpManifest {
     pub version: u32,
     pub shard_id: ShardId,
