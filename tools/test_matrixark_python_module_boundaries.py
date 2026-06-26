@@ -50,6 +50,37 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 seen[node.name] = node.lineno
         self.assertEqual({}, duplicates)
 
+    def test_token_selector_stops_on_hard_deadline(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        calls = {"count": 0}
+
+        def deadline_after_first_candidate() -> bool:
+            calls["count"] += 1
+            return calls["count"] > 1
+
+        candidates = [
+            {
+                "ref_type": "event",
+                "ref_hash": index,
+                "score": 0.9 - (index * 0.01),
+                "text": f"important answer-bearing context {index}",
+            }
+            for index in range(5)
+        ]
+        selected, used_tokens, dropped = core_mod.select_token_budgeted_refs(
+            candidates,
+            [],
+            max_context_tokens=200,
+            auxiliary_quota=0,
+            deadline_exceeded=deadline_after_first_candidate,
+            deadline_reason="test_deadline",
+        )
+        self.assertEqual(1, len(selected))
+        self.assertGreater(used_tokens, 0)
+        self.assertTrue(dropped["deadline_exceeded"])
+        self.assertEqual("test_deadline", dropped["deadline_reason"])
+        self.assertEqual(4, dropped["deadline"])
+
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
     def _server(self):

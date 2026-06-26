@@ -3162,7 +3162,13 @@ class MatrixArkLocalAdapter:
             question_type=question_type,
             reserved_tokens=local_budget["token_estimate"],
             duplicate_text_hashes=local_budget["text_hashes"],
+            deadline_exceeded=deadline_exceeded,
+            deadline_reason="deadline_during_context_pack",
         )
+        partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
+        quality_warnings = []
+        if partial_context_pack:
+            quality_warnings.append(f"retrieval_deadline_exceeded:{dropped_over_budget.get('deadline_reason', 'deadline_during_context_pack')}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
         pack_summary = summarize_text(
@@ -3218,6 +3224,12 @@ class MatrixArkLocalAdapter:
                     "business": optional_object(ranking, "weights").get("business", DEFAULT_BUSINESS_WEIGHT),
                 },
                 "auxiliary_quota": auxiliary_quota,
+                "hard_deadline": {
+                    "deadline_ms": deadline_ms,
+                    "elapsed_ms": round((time.perf_counter() - started_perf) * 1000.0, 3),
+                    "partial_context_pack": partial_context_pack,
+                    "fallback_reason": dropped_over_budget.get("deadline_reason", "") if partial_context_pack else "",
+                },
             },
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
@@ -3234,8 +3246,9 @@ class MatrixArkLocalAdapter:
                 "remote_is_additive_only_within_remaining_budget": True,
             },
             "dropped_refs": dropped_over_budget,
-            "quality_warnings": [],
+            "quality_warnings": quality_warnings,
             "insufficient_context": not selected,
+            "partial_context_pack": partial_context_pack,
         }
         self.append_audit(
             {
@@ -3248,6 +3261,8 @@ class MatrixArkLocalAdapter:
                 "selected_ref_counts": selected_context_counts,
                 "context_assembly_policy": pack["context_assembly_policy"],
                 "dropped_refs": dropped_over_budget,
+                "quality_warnings": quality_warnings,
+                "partial_context_pack": partial_context_pack,
                 "layer_scores": layer_scores[:24],
                 "tree_traversal": pack["recall_policy"]["tree_traversal"],
                 "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],

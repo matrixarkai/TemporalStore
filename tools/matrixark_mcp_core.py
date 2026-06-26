@@ -27,7 +27,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     from tools.matrixark_resource_parser import ResourceParserError, content_hash, embedding_text_for_chunk, normalize_parse_warnings, parse_resource, summarize_resource_chunks
@@ -3050,6 +3050,8 @@ def select_token_budgeted_refs(
     question_type: str = "fact",
     reserved_tokens: int = 0,
     duplicate_text_hashes: set[int] | None = None,
+    deadline_exceeded: Callable[[], bool] | None = None,
+    deadline_reason: str = "deadline_during_pack",
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -3070,6 +3072,7 @@ def select_token_budgeted_refs(
         "stale": 0,
         "summary": 0,
         "raw_l2": 0,
+        "deadline": 0,
         "estimated_tokens": {
             "over_budget": 0,
             "duplicate": 0,
@@ -3077,6 +3080,7 @@ def select_token_budgeted_refs(
             "stale": 0,
             "summary": 0,
             "raw_l2": 0,
+            "deadline": 0,
         },
         "reason_descriptions": {
             "over_budget": "candidate was relevant but exceeded the remaining remote context token budget",
@@ -3085,11 +3089,24 @@ def select_token_budgeted_refs(
             "stale": "candidate was stale or superseded for the query policy",
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
             "raw_l2": "raw L2 content was dropped because a smaller cited chunk or summary was enough",
+            "deadline": "candidate was not packed because the hard retrieval deadline was reached",
         },
         "refs": [],
+        "deadline_exceeded": False,
+        "deadline_reason": "",
     }
     seen_text_hashes: set[int] = set()
-    for candidate in candidates:
+    for index, candidate in enumerate(candidates):
+        if deadline_exceeded is not None and deadline_exceeded():
+            dropped["deadline_exceeded"] = True
+            dropped["deadline_reason"] = deadline_reason
+            remaining = max(0, len(candidates) - index)
+            dropped["deadline"] += remaining
+            for skipped in candidates[index:]:
+                skipped_tokens = max(1, token_count(str(skipped.get("text", ""))))
+                dropped["estimated_tokens"]["deadline"] += skipped_tokens
+                record_dropped_candidate(dropped, skipped, reason="deadline", token_estimate=skipped_tokens)
+            break
         ref_tokens = max(1, token_count(str(candidate.get("text", ""))))
         candidate_text_hashes = context_text_hashes(str(candidate.get("text", "")))
         if candidate_text_hashes.intersection(duplicate_text_hashes):
@@ -3423,4 +3440,3 @@ def candidate_access_scope(record: Json) -> Json:
 def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool:
     """Gate candidate eligibility before semantic scoring."""
     return scope_matches(candidate_access_scope(record), query_scope)
-
