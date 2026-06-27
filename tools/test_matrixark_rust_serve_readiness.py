@@ -31,7 +31,7 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
             timeout=5,
         )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("single-shot mode is debug-only", completed.stderr)
+        self.assertIn("unsupported op health", completed.stdout + completed.stderr)
 
     def test_rust_serve_mode_round_trips_readiness_hset_and_hget(self) -> None:
         cli_path = self._cli_path()
@@ -95,7 +95,7 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 metrics = client.metrics_prometheus()
                 self.assertIn("matrixark_rust_record_log_commands_total", metrics)
                 self.assertIn("matrixark_rust_record_log_records_written_total", metrics)
-                self.assertIn("matrixark_rust_record_log_cached_clients", metrics)
+                self.assertIn("matrixark_rust_record_log_clients_created_total", metrics)
                 self.assertIn('matrixark_backend_cached_clients{backend="rust"}', metrics)
                 self.assertIn('matrixark_backend_qps{backend="rust"}', metrics)
                 self.assertIn('matrixark_backend_errors_total{backend="rust"}', metrics)

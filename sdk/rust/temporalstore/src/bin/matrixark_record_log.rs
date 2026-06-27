@@ -262,6 +262,138 @@ impl MetricsSnapshot {
             "",
             self.commands_failed,
         );
+        metric_header(
+            &mut out,
+            "matrixark_backend_info",
+            "gauge",
+            "MatrixArk storage backend identity and storage mode.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_info",
+            "{backend=\"rust\",storage_mode=\"rust-gateway\"}",
+            1,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_qps",
+            "gauge",
+            "MatrixArk storage backend command QPS.",
+        );
+        let elapsed_seconds = ((unix_ms().saturating_sub(self.started_at_unix_ms)) as f64 / 1000.0).max(0.001);
+        line(
+            &mut out,
+            "matrixark_backend_qps",
+            "{backend=\"rust\"}",
+            format!("{:.6}", self.commands_total as f64 / elapsed_seconds),
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_commands_total",
+            "counter",
+            "MatrixArk storage backend command count.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_commands_total",
+            "{backend=\"rust\"}",
+            self.commands_total,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_errors_total",
+            "counter",
+            "MatrixArk storage backend command errors.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_errors_total",
+            "{backend=\"rust\"}",
+            self.commands_failed,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_records_written_total",
+            "counter",
+            "MatrixArk storage backend records written.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_records_written_total",
+            "{backend=\"rust\"}",
+            self.records_written,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_records_read_total",
+            "counter",
+            "MatrixArk storage backend records read.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_records_read_total",
+            "{backend=\"rust\"}",
+            self.records_read,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_cached_clients",
+            "gauge",
+            "MatrixArk storage backend cached clients.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_cached_clients",
+            "{backend=\"rust\"}",
+            self.clients_created,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_timeouts_total",
+            "counter",
+            "MatrixArk storage backend command timeouts.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_timeouts_total",
+            "{backend=\"rust\"}",
+            0,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_command_latency_ms_bucket",
+            "counter",
+            "MatrixArk storage backend command latency buckets.",
+        );
+        let le_100 = self
+            .op
+            .values()
+            .map(|metrics| if metrics.latency_ms_max <= 100 { metrics.ok + metrics.failed } else { 0 })
+            .sum::<u64>();
+        line(
+            &mut out,
+            "matrixark_backend_command_latency_ms_bucket",
+            "{backend=\"rust\",le=\"100\"}",
+            le_100,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_command_latency_max_ms",
+            "gauge",
+            "MatrixArk storage backend maximum command latency in milliseconds.",
+        );
+        let max_latency = self
+            .op
+            .values()
+            .map(|metrics| metrics.latency_ms_max)
+            .max()
+            .unwrap_or(0);
+        line(
+            &mut out,
+            "matrixark_backend_command_latency_max_ms",
+            "{backend=\"rust\"}",
+            max_latency,
+        );
         out
     }
 }
