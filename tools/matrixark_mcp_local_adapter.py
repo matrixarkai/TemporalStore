@@ -251,12 +251,42 @@ class MatrixArkLocalAdapter:
             "created_at_ms": now_ms(),
         }
 
-    def append_context_pack_visibility(self, *, pack: Json, audit_record: Json, query: str, scope: Json, audit_mode: str) -> None:
+    def append_context_pack_visibility(
+        self,
+        *,
+        pack: Json,
+        audit_record: Json,
+        query: str,
+        scope: Json,
+        audit_mode: str,
+        audit_sample_rate: float = 1.0,
+    ) -> Json:
+        force_rich_audit = bool(
+            pack.get("partial_context_pack")
+            or pack.get("insufficient_context")
+            or pack.get("quality_warnings")
+        )
+        sample_basis = stable_hash(f"{pack.get('context_pack_id', '')}:{query}") % 1_000_000
+        sample_value = sample_basis / 1_000_000.0
+        rich_audit_sampled = bool(audit_mode == "full" and (force_rich_audit or sample_value < audit_sample_rate))
+        visibility_decision = {
+            "audit_mode": audit_mode,
+            "audit_sample_rate": round(audit_sample_rate, 6),
+            "audit_sample_value": round(sample_value, 6),
+            "rich_replay_audit": rich_audit_sampled,
+            "rich_replay_audit_force_reason": (
+                "partial_or_warning" if force_rich_audit and audit_mode == "full" else "sampled" if rich_audit_sampled else "not_sampled"
+            ),
+            "telemetry_record": audit_mode != "off",
+        }
         telemetry = self.telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
+        telemetry["visibility_decision"] = visibility_decision
         if audit_mode != "off":
             self.append(telemetry)
-        if audit_mode == "full":
+        if rich_audit_sampled:
+            audit_record["operational_visibility_policy"] = visibility_decision
             self.append_audit(audit_record)
+        return visibility_decision
 
     def flush_audits(self) -> None:
         return
@@ -3575,6 +3605,11 @@ class MatrixArkLocalAdapter:
         audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "full")).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
+        raw_audit_sample_rate = args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 1.0))
+        try:
+            audit_sample_rate = clamp01(float(raw_audit_sample_rate))
+        except (TypeError, ValueError):
+            raise MatrixArkError("audit_sample_rate must be a number between 0 and 1")
         raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
         try:
             deadline_ms = int(raw_deadline_ms or 0)
@@ -4505,8 +4540,10 @@ class MatrixArkLocalAdapter:
             "partial_context_pack": partial_context_pack,
             "operational_visibility_policy": {
                 "audit_mode": audit_mode,
+                "audit_sample_rate": audit_sample_rate,
                 "telemetry_record": audit_mode != "off",
-                "rich_replay_audit": audit_mode == "full",
+                "rich_replay_audit": audit_mode == "full" and audit_sample_rate > 0,
+                "rich_replay_audit_force_on_partial_or_warning": True,
             },
         }
         finish_retrieval_stage("pack", stage_started_perf)
@@ -4557,7 +4594,15 @@ class MatrixArkLocalAdapter:
             "max_selected_refs": max_selected_refs,
             "created_at_ms": now_ms(),
         }
-        self.append_context_pack_visibility(pack=pack, audit_record=audit_record, query=query, scope=scope, audit_mode=audit_mode)
+        visibility_decision = self.append_context_pack_visibility(
+            pack=pack,
+            audit_record=audit_record,
+            query=query,
+            scope=scope,
+            audit_mode=audit_mode,
+            audit_sample_rate=audit_sample_rate,
+        )
+        pack["operational_visibility_policy"] = visibility_decision
         finish_retrieval_stage("audit", audit_started_perf)
         pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
         over_budget_stages = pack["recall_policy"]["stage_latency_budgets"].get("over_budget_stages", [])
