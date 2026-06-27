@@ -122,13 +122,13 @@
           "expr": "temporalstore_cache_bytes"
         },
         {
-          "expr": "sum by (kind) (temporalstore_page_store_operations_total)"
+          "expr": "sum by (kind) (temporalstore_block_store_operations_total)"
         },
         {
-          "expr": "temporalstore_page_store_zone_bytes"
+          "expr": "temporalstore_block_store_zone_bytes"
         },
         {
-          "expr": "temporalstore_page_store_zone_oldest_age_ms"
+          "expr": "temporalstore_block_store_zone_oldest_age_ms"
         }
       ]
     },

@@ -23,7 +23,7 @@ The main Rust crate exposes the following public modules from
 | --- | --- |
 | `types` | Shared command, response, table, shard, feature, sequence, IPS, risk, context, storage, and readiness types. |
 | `engine` | Core execution engine, shard state, command dispatch, durable writes, storage/cache integration, admin reports. |
-| `page_store` | Page envelopes, page addresses, packed timestamp/value page records, slot dump/load and recovery helpers. |
+| `lock_store` | Page envelopes, page addresses, packed timestamp/value page records, slot dump/load and recovery helpers. |
 | `cache` | Memory and disk block cache accounting, admission/eviction stats, cache refill behavior. |
 | `index_log` | Durable index-log append/replay path used by engine recovery. |
 | `oplog` | Durable operation-log append/replay path. |
@@ -60,7 +60,7 @@ flowchart LR
     Server --> DataNode
     DataNode --> Engine["TemporalEngine"]
     Engine --> Cache["Memory/disk cache"]
-    Engine --> PageStore["Page store / packed pages"]
+    Engine --> BlockStore["Block store / packed pages"]
     Engine --> IndexLog["Index log"]
     Engine --> OpLog["Oplog"]
     Engine --> SharedStore["Local shared-store replay"]
@@ -76,9 +76,9 @@ The common request path is:
 3. The data-node runtime checks lifecycle state and request admission.
 4. `TemporalEngine` dispatches a `Command` to the target shard.
 5. Mutating commands update in-memory indexes and append durable state through
-   index-log, oplog, page store, shared-store, and Raft evidence paths where
+   index-log, oplog, block store, shared-store, and Raft evidence paths where
    enabled.
-6. Reads use index state first, then cache/page-store/shared-store refill paths.
+6. Reads use index state first, then cache/block-store/shared-store refill paths.
 7. Admin/readiness endpoints expose the current evidence and blockers.
 
 ## Command And Data Model Core
@@ -128,7 +128,7 @@ layout parity.
 
 Important files:
 
-- `page_store.rs`: page segments, page addresses, page envelopes, packed
+- `block_store.rs`: page segments, page addresses, page envelopes, packed
   timestamp/value records, slot dump/load metadata, corruption/recovery helpers.
 - `cache.rs`: block-cache stats, hit/miss/fill counters, admission and eviction
   accounting.

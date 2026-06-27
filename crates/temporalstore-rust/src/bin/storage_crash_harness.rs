@@ -42,7 +42,7 @@ fn write_then_abort(root: PathBuf) -> ! {
     let engine = open_engine(&root);
     engine.load_shard(1);
     write_string(&engine, "before", "before-value");
-    engine.page_store().roll_segment().expect("segment roll");
+    engine.block_store().roll_segment().expect("segment roll");
     write_string(&engine, "after", "after-value");
 
     // Simulate abrupt process loss after durable appends and index/log syncs.

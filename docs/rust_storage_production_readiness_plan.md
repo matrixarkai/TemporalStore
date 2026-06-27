@@ -178,7 +178,7 @@ present for writes, rebuilds, compaction, tombstones, and dump/load validation.
 The Rust lifecycle behavior evidence is specifically scoped to: slot-first ownership updates on
 object writes and deletes, recovery validation of owner/page refs, slot-scoped dump/load manifest
 validation, local/shared-store sync and async replay, follower-cursor retention, model-layout
-compaction, tombstone preservation, stale-page-density accounting, and cold PageAddress reads
+compaction, tombstone preservation, stale-page-density accounting, and cold BlockAddress reads
 through cache refill. These are readiness fields, not informal doc claims.
 
 Rust now also exposes a Rust-native ObjectManager runtime report. It covers hot/cold/mixed

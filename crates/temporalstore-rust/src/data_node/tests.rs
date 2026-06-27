@@ -1748,8 +1748,8 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             value: Some(b"a".to_vec())
         }
     );
-    engine.page_store().install_segment(1, b"old").unwrap();
-    engine.page_store().install_segment(2, b"new").unwrap();
+    engine.block_store().install_segment(1, b"old").unwrap();
+    engine.block_store().install_segment(2, b"new").unwrap();
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -1784,7 +1784,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.page_segments_retained_live_physical_bytes > 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
-    assert_eq!(engine.page_store().segment_ids().unwrap(), vec![0, 2]);
+    assert_eq!(engine.block_store().segment_ids().unwrap(), vec![0, 2]);
 }
 
 #[test]

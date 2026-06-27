@@ -1034,7 +1034,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
             .to_string(),
-        "PageAddress carries segment/offset/length plus optional page id, object id, routing slot, zone id, and checksum"
+        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, zone id, and checksum"
             .to_string(),
     ];
     let native_object_manager_runtime_ready = true;
@@ -1062,7 +1062,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     ];
     let stream_backed_zone_runtime_ready = true;
     let stream_backed_zone_runtime_evidence = vec![
-        "LocalPageStore exposes stream-backed zone runtime reports".to_string(),
+        "LocalBlockStore exposes stream-backed zone runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
         "segment roll seals previous zones and opens a new active stream zone".to_string(),
@@ -1122,7 +1122,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "compaction preserves model layout, tombstones, stale page density, and slot transition counts"
             .to_string(),
-        "cache pressure/refill validates cold page reads through PageAddress and cache refill"
+        "cache pressure/refill validates cold page reads through BlockAddress and cache refill"
             .to_string(),
     ];
 
@@ -1606,7 +1606,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "memory cache supports pinned hot/page blocks with eviction skip accounting, inspection, and Prometheus metrics"
                     .to_string(),
-                "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, page-store read count, and warmed bytes"
+                "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, block-store read count, and warmed bytes"
                     .to_string(),
                 "storage production report exposes Rust JSONL WAL/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
                     .to_string(),
@@ -2704,7 +2704,7 @@ mod tests {
         assert!(report
             .first_class_slot_object_page_index_evidence
             .iter()
-            .any(|item| item.contains("PageAddress carries segment/offset/length")));
+            .any(|item| item.contains("BlockAddress carries segment/offset/length")));
         assert!(report.native_object_manager_runtime_ready);
         assert!(report
             .native_object_manager_runtime_evidence

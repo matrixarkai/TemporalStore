@@ -300,7 +300,7 @@ Partially covered, but still materially smaller than C++:
   `FeatureAdd`, `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen`, all delegated through the
   normal table-routed client execution path. This is API-shape coverage, not legacy C++ wire wire
   compatibility.
-- Hot object state is represented by per-type maps of key/field/timestamp to `PageAddress`, with
+- Hot object state is represented by per-type maps of key/field/timestamp to `BlockAddress`, with
   logical object/page-ref/dirty-object/dirty-slot stats. Rust still does not clone the full C++
   `ObjectManager` memory layout with stable object ids, page ids, slot ownership, and lifecycle.
 - Cache is a Rust multi-layer read-through cache over memory, local page files, and page-address

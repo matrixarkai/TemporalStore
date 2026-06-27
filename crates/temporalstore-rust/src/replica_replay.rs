@@ -5,13 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::block_store::BlockStoreError;
 use crate::control::{
     ScanStreamRequest, ScanStreamResponse, StreamKind, StreamReadRequest, StreamReadResponse,
 };
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
 use crate::index_log::IndexLogRecord;
-use crate::page_store::PageStoreError;
 use crate::types::{ExecuteRequest, ShardId, Status};
 use crate::wal::WriteAheadLogRecord;
 
@@ -26,7 +26,7 @@ pub enum ReplicaReplayError {
     #[error("stream {kind:?} failed: {status:?}")]
     StreamFailed { kind: StreamKind, status: Status },
     #[error("page store error: {0}")]
-    PageStore(#[from] PageStoreError),
+    BlockStore(#[from] BlockStoreError),
     #[error("oplog replay gap: expected sequence {expected}, got {actual}")]
     OplogGap { expected: u64, actual: u64 },
     #[error("index-log replay gap: expected sequence {expected}, got {actual}")]
@@ -281,19 +281,19 @@ impl ReplicaReplayLoop {
         for page_segment_id in follower.live_page_segment_ids(self.options.shard_id) {
             let response = primary.read_stream(StreamReadRequest {
                 shard_id: self.options.shard_id,
-                stream_kind: StreamKind::Page,
+                stream_kind: StreamKind::Block,
                 page_segment_id,
                 offset: 0,
                 size: self.options.max_stream_bytes,
             })?;
             if !response.status.ok {
                 return Err(ReplicaReplayError::StreamFailed {
-                    kind: StreamKind::Page,
+                    kind: StreamKind::Block,
                     status: response.status,
                 });
             }
             follower
-                .page_store()
+                .block_store()
                 .install_segment(page_segment_id, &response.data)?;
             installed.push(page_segment_id);
         }

@@ -1,8 +1,8 @@
 use super::*;
+use crate::block_store::BlockStoreZoneState;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };
-use crate::page_store::PageStoreZoneState;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextExtractedEventIndexes,
     ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp, ReplicatedCommand,
@@ -865,7 +865,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
     shard.strings.insert(
         "string".to_string(),
-        PageAddress {
+        BlockAddress {
             page_segment_id: 7,
             offset: 0,
             length: 1,
@@ -878,7 +878,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     );
     shard.hashes.entry("hash".to_string()).or_default().insert(
         "field".to_string(),
-        PageAddress {
+        BlockAddress {
             page_segment_id: 8,
             offset: 0,
             length: 1,
@@ -891,7 +891,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     );
     shard.sets.entry("set".to_string()).or_default().insert(
         b"member".to_vec(),
-        PageAddress {
+        BlockAddress {
             page_segment_id: 9,
             offset: 0,
             length: 1,
@@ -908,7 +908,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             10,
-            PageAddress {
+            BlockAddress {
                 page_segment_id: 10,
                 offset: 0,
                 length: 1,
@@ -925,7 +925,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         .or_default()
         .insert(
             11,
-            PageAddress {
+            BlockAddress {
                 page_segment_id: 11,
                 offset: 0,
                 length: 1,
@@ -938,7 +938,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
         );
     shard.ips.entry("ips".to_string()).or_default().insert(
         12,
-        PageAddress {
+        BlockAddress {
             page_segment_id: 12,
             offset: 0,
             length: 1,
@@ -952,7 +952,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
     shard.ips_meta.entry("ips".to_string()).or_default().insert(
         13,
         IpsPointMeta {
-            address: PageAddress {
+            address: BlockAddress {
                 page_segment_id: 13,
                 offset: 0,
                 length: 1,
@@ -983,10 +983,10 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
 fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
     let page_dir = unique_temp_path("compact-pages");
     let index_dir = unique_temp_path("compact-index");
-    let page_store = LocalPageStore::new(&page_dir);
-    let engine = TemporalEngine::with_cache_page_store_and_index_dir(
+    let block_store = LocalBlockStore::new(&page_dir);
+    let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         MultiLayerCache::default(),
-        page_store.clone(),
+        block_store.clone(),
         &index_dir,
     );
     engine.load_shard(1);
@@ -1073,15 +1073,15 @@ fn page_compaction_rewrites_live_addresses_and_allows_old_segment_gc() {
         );
     }
 
-    let gc = page_store
+    let gc = block_store
         .gc_segments_before_with_live_refs(1, engine.live_page_segment_ids(1))
         .unwrap();
     assert_eq!(gc.removed_page_segment_ids, vec![0]);
-    assert_eq!(page_store.segment_ids().unwrap(), vec![1]);
+    assert_eq!(block_store.segment_ids().unwrap(), vec![1]);
 
-    let restarted = TemporalEngine::with_cache_page_store_and_index_dir(
+    let restarted = TemporalEngine::with_cache_block_store_and_index_dir(
         MultiLayerCache::default(),
-        page_store,
+        block_store,
         &index_dir,
     );
     restarted.load_shard(1);
@@ -1513,7 +1513,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_zone_manifest() {
             .status
             .ok
     );
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {
@@ -1548,8 +1548,14 @@ fn crash_recovery_report_covers_oplog_index_page_and_zone_manifest() {
     assert_eq!(report.segment_integrity.live_page_segment_count, 2);
     assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
     assert_eq!(report.zone_descriptors.len(), 2);
-    assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
-    assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+    assert_eq!(
+        report.zone_descriptors[0].state,
+        BlockStoreZoneState::Sealed
+    );
+    assert_eq!(
+        report.zone_descriptors[1].state,
+        BlockStoreZoneState::Active
+    );
     assert_eq!(report.zone_summary.sealed_zones, 1);
     assert_eq!(report.zone_summary.active_zones, 1);
     assert_eq!(report.zone_summary.delayed_destroy_zones, 0);
@@ -1673,7 +1679,7 @@ fn crash_recovery_report_marks_stale_segment_density_after_overwrite() {
 
 #[test]
 // shared-corpus: storage_cache_refill storage_byteraft_cache_refill_pressure;
-fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memory() {
+fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory() {
     let root = tempfile::tempdir().unwrap();
     let cache_dir = root.path().join("cache");
     let page_dir = root.path().join("pages");
@@ -1720,7 +1726,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memor
             value: Some(b"cold-value".to_vec())
         }
     );
-    assert_eq!(engine.page_store().stats().reads, 1);
+    assert_eq!(engine.block_store().stats().reads, 1);
     assert!(engine.cache().stats().misses >= 2);
     assert!(engine.cache().stats().puts >= 2);
     assert_eq!(
@@ -1731,7 +1737,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memor
     let _ = engine.cache().invalidate(&CacheKey::string(1, "cold-key"));
     engine.cache().clear_memory_for_test();
     assert_eq!(engine.cache().get_memory(&page_key), None);
-    let reads_before_disk_cache = engine.page_store().stats().reads;
+    let reads_before_disk_cache = engine.block_store().stats().reads;
     let disk_cache_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -1744,7 +1750,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memor
             value: Some(b"cold-value".to_vec())
         }
     );
-    assert_eq!(engine.page_store().stats().reads, reads_before_disk_cache);
+    assert_eq!(engine.block_store().stats().reads, reads_before_disk_cache);
     assert!(engine.cache().stats().disk_hits >= 1);
     assert_eq!(
         engine.cache().get_memory(&page_key),
@@ -1770,7 +1776,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_page_store_and_refills_memor
             value: Some(b"cold-value".to_vec())
         }
     );
-    assert_eq!(cold_restart.page_store().stats().reads, 1);
+    assert_eq!(cold_restart.block_store().stats().reads, 1);
     assert!(cold_restart.cache().stats().misses >= 2);
     assert!(cold_restart.cache().stats().puts >= 2);
 }
@@ -1795,7 +1801,7 @@ fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
             .status
             .ok
     );
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {
@@ -1821,8 +1827,14 @@ fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
     assert_eq!(report.zone_descriptors.len(), 2);
-    assert_eq!(report.zone_descriptors[0].state, PageStoreZoneState::Sealed);
-    assert_eq!(report.zone_descriptors[1].state, PageStoreZoneState::Active);
+    assert_eq!(
+        report.zone_descriptors[0].state,
+        BlockStoreZoneState::Sealed
+    );
+    assert_eq!(
+        report.zone_descriptors[1].state,
+        BlockStoreZoneState::Active
+    );
     assert_eq!(report.zone_summary.sealed_zones, 1);
     assert_eq!(report.zone_summary.active_zones, 1);
     assert!(report.zone_summary.live_physical_bytes > 0);
@@ -2053,7 +2065,7 @@ fn memory_miss_reads_local_page_file_using_index_address() {
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
-    let page_store = engine.page_store();
+    let block_store = engine.block_store();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2062,7 +2074,7 @@ fn memory_miss_reads_local_page_file_using_index_address() {
             value: b"v".to_vec(),
         },
     });
-    assert_eq!(page_store.stats().writes, 1);
+    assert_eq!(block_store.stats().writes, 1);
 
     let first = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2076,7 +2088,7 @@ fn memory_miss_reads_local_page_file_using_index_address() {
             value: Some(b"v".to_vec())
         }
     );
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
 
     let second = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2090,7 +2102,7 @@ fn memory_miss_reads_local_page_file_using_index_address() {
             value: Some(b"v".to_vec())
         }
     );
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
     assert_eq!(cache.stats().memory_hits, 1);
 
     cache.clear_memory_for_test();
@@ -2106,7 +2118,7 @@ fn memory_miss_reads_local_page_file_using_index_address() {
             value: Some(b"v".to_vec())
         }
     );
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
     assert_eq!(cache.stats().disk_hits, 1);
 }
 
@@ -2120,7 +2132,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
-    let page_store = engine.page_store();
+    let block_store = engine.block_store();
     engine.load_shard(1);
 
     engine.execute(ExecuteRequest {
@@ -2143,7 +2155,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
             value: Some(b"v".to_vec())
         }
     );
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
     assert_eq!(cache.stats().puts, 2);
     assert!(cache.stats().memory_bytes > 0);
     assert!(cache.stats().disk_bytes > 0);
@@ -2161,7 +2173,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         }
     );
     assert!(cache.stats().memory_hits >= 1);
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
 
     cache.clear_memory_for_test();
     let block_cache = engine.execute(ExecuteRequest {
@@ -2177,7 +2189,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         }
     );
     assert_eq!(cache.stats().disk_hits, 1);
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
 
     cache.invalidate_shard(1).unwrap();
     let local_file = engine.execute(ExecuteRequest {
@@ -2192,7 +2204,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
             value: Some(b"v".to_vec())
         }
     );
-    assert_eq!(page_store.stats().reads, 2);
+    assert_eq!(block_store.stats().reads, 2);
     assert!(cache.stats().puts >= 4);
     assert!(cache.stats().memory_bytes > 0);
     assert!(cache.stats().disk_bytes > 0);
@@ -2218,7 +2230,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
-    let page_store = engine.page_store();
+    let block_store = engine.block_store();
     engine.load_shard(1);
 
     let target_value = b"target-value-0123456789".to_vec();
@@ -2248,7 +2260,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             value: Some(target_value.clone())
         }
     );
-    assert_eq!(page_store.stats().reads, 1);
+    assert_eq!(block_store.stats().reads, 1);
 
     for key in ["evict-a", "evict-b"] {
         let response = engine.execute(ExecuteRequest {
@@ -2294,7 +2306,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     );
 
     let disk_hits_before = cache.stats().disk_hits;
-    let file_reads_before_block_hit = page_store.stats().reads;
+    let file_reads_before_block_hit = block_store.stats().reads;
     let second_read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -2308,9 +2320,9 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         }
     );
     assert_eq!(
-        page_store.stats().reads,
+        block_store.stats().reads,
         file_reads_before_block_hit,
-        "memory miss should hit disk block cache instead of rereading page store"
+        "memory miss should hit disk block cache instead of rereading block store"
     );
     assert!(
         cache.stats().disk_hits > disk_hits_before,
@@ -2340,13 +2352,13 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
         },
     });
     assert!(write.status.ok, "{write:?}");
-    assert_eq!(original.page_store().stats().writes, 1);
+    assert_eq!(original.block_store().stats().writes, 1);
 
     let restarted =
         TemporalEngine::with_local_dirs(32, dir.path().join("cache-b"), &page_dir, &index_dir);
     restarted.load_shard(1);
     let restarted_cache = restarted.cache();
-    let restarted_page_store = restarted.page_store();
+    let restarted_block_store = restarted.block_store();
     let target_page_key = {
         let shards = restarted.shards.read().expect("shards lock poisoned");
         let address = shards
@@ -2378,7 +2390,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
         }
     );
     assert_eq!(
-        restarted_page_store.stats().reads,
+        restarted_block_store.stats().reads,
         1,
         "restart should miss memory and load the persisted page once"
     );
@@ -2395,7 +2407,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     restarted_cache.clear_memory_for_test();
     assert_eq!(restarted_cache.get_memory(&target_page_key), None);
     let disk_hits_before = restarted_cache.stats().disk_hits;
-    let page_reads_before = restarted_page_store.stats().reads;
+    let page_reads_before = restarted_block_store.stats().reads;
     let second_read = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -2409,7 +2421,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
         }
     );
     assert_eq!(
-        restarted_page_store.stats().reads,
+        restarted_block_store.stats().reads,
         page_reads_before,
         "memory miss after restart should use the disk block cache"
     );
@@ -2435,9 +2447,9 @@ fn page_reads_fill_compressed_block_cache() {
             min_compress_bytes: 16,
         },
     );
-    let engine = TemporalEngine::with_cache_page_store_and_index_dir(
+    let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         cache.clone(),
-        LocalPageStore::new(dir.path().join("pages")),
+        LocalBlockStore::new(dir.path().join("pages")),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2474,16 +2486,16 @@ fn page_reads_fill_compressed_block_cache() {
 }
 
 #[test]
-fn local_dirs_constructor_applies_page_store_compression_options() {
+fn local_dirs_constructor_applies_block_store_compression_options() {
     let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs_and_page_store_options(
+    let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         1024 * 1024,
         dir.path().join("cache"),
         dir.path().join("pages"),
         dir.path().join("indexes"),
-        PageStoreOptions {
+        BlockStoreOptions {
             compression_enabled: false,
-            ..PageStoreOptions::default()
+            ..BlockStoreOptions::default()
         },
     );
     engine.load_shard(1);
@@ -2496,8 +2508,8 @@ fn local_dirs_constructor_applies_page_store_compression_options() {
         },
     });
 
-    let page_store = engine.page_store();
-    let stats = page_store.stats();
+    let block_store = engine.block_store();
+    let stats = block_store.stats();
     assert_eq!(stats.writes, 1);
     assert_eq!(stats.compressed_records_written, 0);
     assert_eq!(stats.compression_bytes_saved, 0);
@@ -2583,7 +2595,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
         },
     });
     assert!(write.status.ok);
-    assert_eq!(engine.page_store().stats().writes, 0);
+    assert_eq!(engine.block_store().stats().writes, 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
@@ -2599,7 +2611,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
             value: Some(b"value".to_vec())
         }
     );
-    assert_eq!(engine.page_store().stats().reads, 0);
+    assert_eq!(engine.block_store().stats().reads, 0);
     assert!(engine.cache().stats().memory_hits >= 1);
 }
 
@@ -2634,7 +2646,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
         },
     });
     assert!(write.status.ok);
-    assert_eq!(engine.page_store().stats().writes, 1);
+    assert_eq!(engine.block_store().stats().writes, 1);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
     assert_eq!(engine.index_log_store().stats(1).writes, 1);
 
@@ -2683,7 +2695,7 @@ fn durable_index_survives_restart_and_points_to_page_file() {
             value: Some(b"persisted".to_vec())
         }
     );
-    assert_eq!(restarted.page_store().stats().reads, 1);
+    assert_eq!(restarted.block_store().stats().reads, 1);
 }
 
 #[test]
@@ -2788,7 +2800,7 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
         first_address.object_id,
         Some(stable_page_object_id(1, "feature", "packed-feature", None))
     );
-    let packed_bytes = engine.page_store().read(&first_address).unwrap();
+    let packed_bytes = engine.block_store().read(&first_address).unwrap();
     let packed_points = decode_feature_page(&packed_bytes).expect("packed feature page");
     assert_eq!(packed_points.len(), 2);
     assert_eq!(packed_points[0].timestamp_ms, 10);
@@ -2893,7 +2905,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_pages() {
             address.object_id,
             Some(stable_page_object_id(1, "feature", "chunked-feature", None))
         );
-        let bytes = engine.page_store().read(address).unwrap();
+        let bytes = engine.block_store().read(address).unwrap();
         let chunk = decode_feature_page(&bytes).expect("persisted packed page chunk");
         assert!(!chunk.is_empty());
         assert!(bytes.len() <= TIMESTAMPED_KV_PAGE_TARGET_BYTES + 12 * 1024);
@@ -2946,7 +2958,7 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
         unique_timestamped_kv_page_addresses(series)
     };
     assert_eq!(addresses.len(), 1);
-    let bytes = engine.page_store().read(&addresses[0]).unwrap();
+    let bytes = engine.block_store().read(&addresses[0]).unwrap();
     assert!(bytes.len() > TIMESTAMPED_KV_PAGE_TARGET_BYTES);
     assert_eq!(decode_feature_page(&bytes).unwrap(), points);
 
@@ -3124,7 +3136,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_page() {
         },
     ]);
     let address = engine
-        .page_store()
+        .block_store()
         .append_with_page_metadata(
             &duplicate_page,
             Some(stable_page_object_id(1, "feature", "layout-feature", None)),
@@ -3175,7 +3187,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_page() {
     let mut corrupt_page = FEATURE_PAGE_MAGIC.to_vec();
     corrupt_page.extend_from_slice(br#"{"version":1,"points":"not-a-point-list"}"#);
     let address = engine
-        .page_store()
+        .block_store()
         .append_with_page_metadata(
             &corrupt_page,
             Some(stable_page_object_id(1, "feature", "corrupt-feature", None)),
@@ -3234,7 +3246,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_page_version() {
     let mut bytes = FEATURE_PAGE_MAGIC.to_vec();
     bytes.extend_from_slice(&serde_json::to_vec(&page).unwrap());
     let address = engine
-        .page_store()
+        .block_store()
         .append_with_page_metadata(
             &bytes,
             Some(stable_page_object_id(
@@ -4073,7 +4085,7 @@ fn control_api_load_config_info_stats_membership_and_unload() {
     assert_eq!(stats.load_version, 42);
     assert!(!stats.readonly);
     assert!(stats.storage_bytes > 0);
-    assert_eq!(stats.page_store.writes, 1);
+    assert_eq!(stats.block_store.writes, 1);
 
     assert!(
         engine
@@ -4191,7 +4203,7 @@ fn control_api_reads_page_and_index_streams() {
 
     let page = engine.read_stream(StreamReadRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         page_segment_id: 0,
         offset: 0,
         size: 12,
@@ -4210,7 +4222,7 @@ fn control_api_reads_page_and_index_streams() {
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         page_segment_id: 0,
         start_offset: 0,
         end_offset: 12,
@@ -4221,7 +4233,7 @@ fn control_api_reads_page_and_index_streams() {
 
     let invalid = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Page,
+        stream_kind: StreamKind::Block,
         page_segment_id: 0,
         start_offset: 12,
         end_offset: 1,
@@ -4615,7 +4627,7 @@ fn ips_pages_store_timestamp_keys_with_values() {
         Some(stable_page_object_id(1, "ips", "packed-ips", None))
     );
 
-    let bytes = engine.page_store().read(&first_address).unwrap();
+    let bytes = engine.block_store().read(&first_address).unwrap();
     let packed_points = decode_feature_page(&bytes).expect("packed IPS page");
     assert_eq!(
         packed_points,
@@ -4959,7 +4971,7 @@ fn ips_compaction_rewrites_shared_timestamped_page_once() {
     };
     assert_eq!(first_address, second_address);
     assert_eq!(second_address, meta_address);
-    let bytes = engine.page_store().read(&first_address).unwrap();
+    let bytes = engine.block_store().read(&first_address).unwrap();
     assert_eq!(
         decode_feature_page(&bytes).expect("packed IPS page"),
         vec![
@@ -5742,11 +5754,12 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     assert_eq!(stats.partition_info.start_routing_slot, 10);
     assert_eq!(stats.partition_info.end_routing_slot, 20);
     assert_eq!(stats.partition_info.object_manager, stats.object_manager);
-    assert!(stats.page_store_zones.active_zones >= 1);
-    assert!(stats.page_store_zones.active_physical_bytes > 0);
+    assert!(stats.block_store_zones.active_zones >= 1);
+    assert!(stats.block_store_zones.active_physical_bytes > 0);
     assert_eq!(
-        stats.page_store_zones.live_physical_bytes,
-        stats.page_store_zones.active_physical_bytes + stats.page_store_zones.sealed_physical_bytes
+        stats.block_store_zones.live_physical_bytes,
+        stats.block_store_zones.active_physical_bytes
+            + stats.block_store_zones.sealed_physical_bytes
     );
 }
 
@@ -5767,7 +5780,7 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
             key: "k".to_string(),
         },
     });
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
 
     let metrics = engine.prometheus_metrics();
     assert!(metrics.contains("temporalstore_shard_records{shard_id=\"1\",kind=\"string\"} 1"));
@@ -5775,21 +5788,21 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
     assert!(metrics.contains(
         "temporalstore_cache_operations_total{shard_id=\"1\",kind=\"memory_evictions\"}"
     ));
-    assert!(metrics.contains("temporalstore_page_store_operations_total"));
+    assert!(metrics.contains("temporalstore_block_store_operations_total"));
     assert!(
-        metrics.contains("temporalstore_page_store_zone_count{shard_id=\"1\",state=\"sealed\"} 1")
+        metrics.contains("temporalstore_block_store_zone_count{shard_id=\"1\",state=\"sealed\"} 1")
     );
-    assert!(metrics.contains("temporalstore_page_store_zone_bytes{shard_id=\"1\",kind=\"live\"}"));
+    assert!(metrics.contains("temporalstore_block_store_zone_bytes{shard_id=\"1\",kind=\"live\"}"));
     assert!(metrics
-        .contains("temporalstore_page_store_zone_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+        .contains("temporalstore_block_store_zone_bytes{shard_id=\"1\",kind=\"total_known\"}"));
     assert!(metrics
-        .contains("temporalstore_page_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"));
+        .contains("temporalstore_block_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"));
     assert!(metrics
-        .contains("temporalstore_page_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"));
+        .contains("temporalstore_block_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics
-        .contains("temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"));
+        .contains("temporalstore_block_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"));
     assert!(metrics
-        .contains("temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+        .contains("temporalstore_block_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
@@ -6173,9 +6186,9 @@ fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
         .create_slot_dump_manifest(1, Vec::new())
         .expect("manifest should persist");
     let segment_id = corrupt.page_segment_ids[0];
-    let mut segment = engine.page_store().read_segment(segment_id).unwrap();
+    let mut segment = engine.block_store().read_segment(segment_id).unwrap();
     *segment.last_mut().unwrap() ^= 0xff;
-    let _ = engine.page_store().install_segment(segment_id, &segment);
+    let _ = engine.block_store().install_segment(segment_id, &segment);
     let corrupt_preflight = engine.slot_dump_install_preflight_report(&corrupt);
     assert!(!corrupt_preflight.install_safe);
     assert!(corrupt_preflight
@@ -7143,7 +7156,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() 
             value: b"v1".to_vec(),
         },
     });
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -7275,7 +7288,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     );
     assert!(report.page_format_compatibility.checksum_protected);
     assert!(report.page_format_compatibility.object_ids_embedded);
-    assert!(report.page_store_bytes_written > 0);
+    assert!(report.block_store_bytes_written > 0);
 }
 
 #[test]
@@ -7354,7 +7367,7 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
             .status
             .ok
     );
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
 
     let report = engine.storage_page_format_compatibility_report(1);
     assert_eq!(report.shard_id, 1);
@@ -7374,8 +7387,8 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert_eq!(report.sealed_zones, 1);
     assert_eq!(report.active_zones, 1);
     assert!(report.live_physical_bytes > 0);
-    assert!(report.page_store_writes > 0);
-    assert!(report.page_store_bytes_written > 0);
+    assert!(report.block_store_writes > 0);
+    assert!(report.block_store_bytes_written > 0);
     assert!(report.logical_bytes_written >= 512);
     assert!(report.compressed_records_written > 0);
     assert!(report
@@ -7503,11 +7516,11 @@ fn storage_production_readiness_blocks_corrupt_live_page_segments() {
             .ok
     );
     let segment_id = engine.live_page_segment_ids(1)[0];
-    let mut bytes = engine.page_store().read_segment(segment_id).unwrap();
+    let mut bytes = engine.block_store().read_segment(segment_id).unwrap();
     let last = bytes.len() - 1;
     bytes[last] ^= 0xff;
     engine
-        .page_store()
+        .block_store()
         .install_segment(segment_id, &bytes)
         .unwrap();
 
@@ -7577,7 +7590,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         report.cache_warmup_page_refs
     );
     assert!(report.cache_warmup.considered_page_refs >= 1);
-    assert!(report.cache_warmup.page_store_reads >= 1);
+    assert!(report.cache_warmup.block_store_reads >= 1);
     assert!(report.cache_warmup.warmed_bytes >= 128);
     assert_eq!(report.cache_warmup.failed_page_refs, 0);
     assert!(engine.cache().stats().puts >= 1);
@@ -7620,7 +7633,7 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
     assert_eq!(first.selected_slots, vec![slot]);
     assert_eq!(first.considered_page_refs, 1);
     assert_eq!(first.skipped_page_refs, 1);
-    assert_eq!(first.page_store_reads, 1);
+    assert_eq!(first.block_store_reads, 1);
     assert_eq!(first.already_cached_page_refs, 0);
     assert_eq!(first.failed_page_refs, 0);
     assert!(first.warmed_bytes > 0);
@@ -7628,7 +7641,7 @@ fn storage_cache_warmup_report_filters_slots_and_counts_cache_hits() {
     let second = engine.storage_cache_warmup_report(1, [slot]);
     assert_eq!(second.considered_page_refs, 1);
     assert_eq!(second.skipped_page_refs, 1);
-    assert_eq!(second.page_store_reads, 0);
+    assert_eq!(second.block_store_reads, 0);
     assert_eq!(second.already_cached_page_refs, 1);
     assert_eq!(second.warmed_page_refs, 1);
 }
@@ -7780,7 +7793,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     restored
         .install_slot_dump_manifest(&manifest)
         .expect("slot dump should install after restart");
-    let page_reads_before = restored.page_store().stats().reads;
+    let page_reads_before = restored.block_store().stats().reads;
     let disk_hits_before = restored.cache().stats().disk_hits;
     let response = restored.execute(ExecuteRequest {
         shard_id: 1,
@@ -7795,9 +7808,9 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
         }
     );
     assert_eq!(
-        restored.page_store().stats().reads,
+        restored.block_store().stats().reads,
         page_reads_before,
-        "restored engine should refill from disk block cache before page store"
+        "restored engine should refill from disk block cache before block store"
     );
     assert!(restored.cache().stats().disk_hits > disk_hits_before);
 

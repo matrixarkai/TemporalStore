@@ -34,17 +34,17 @@ use temporalstore_rust::types::{
 };
 use temporalstore_rust::{
     handle_authenticated_raft_http, production_raft_security_from_env, production_readiness_report,
-    CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse, CompactionRequest,
-    DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
+    BlockStoreOptions, CheckedBatchExecuteRequest, CheckedExecuteRequest, Command, CommandResponse,
+    CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
-    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, PageStoreOptions,
-    ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftRuntime,
-    ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest, RaftFailoverReport,
-    RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, RaftTransport,
-    ReplicaReplayLoop, ReplicaReplayOptions, ReplicaReplayRequest, ReplicaReplayResponse,
-    RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
-    SlotDumpManifest, StorageCacheInvalidateSlotRequest, StorageLifecycleRequest,
-    StorageProductionReadinessRequest, StreamReadRequest, UnloadShardRequest,
+    HttpReplicaStreamSource, LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind,
+    ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig,
+    RaftControlLeadershipRequest, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId,
+    RaftRpcRuntimeOptions, RaftTransport, ReplicaReplayLoop, ReplicaReplayOptions,
+    ReplicaReplayRequest, ReplicaReplayResponse, RequestController, ScanStreamRequest,
+    SchedulerLifecycleToken, SetConfigRequest, SlotDumpManifest, StorageCacheInvalidateSlotRequest,
+    StorageLifecycleRequest, StorageProductionReadinessRequest, StreamReadRequest,
+    UnloadShardRequest,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
 
@@ -79,7 +79,7 @@ fn main() {
         .unwrap_or(1);
     let cache_dir =
         std::env::var("TS_CACHE_DIR").unwrap_or_else(|_| "target/temporalstore-cache".to_string());
-    let page_store_dir = std::env::var("TS_PAGE_STORE_DIR")
+    let block_store_dir = std::env::var("TS_PAGE_STORE_DIR")
         .unwrap_or_else(|_| "target/temporalstore-pages".to_string());
     let index_dir = std::env::var("TS_INDEX_DIR")
         .unwrap_or_else(|_| "target/temporalstore-indexes".to_string());
@@ -93,13 +93,13 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or_default();
-    let page_store_options = page_store_options_from_env();
-    let engine = TemporalEngine::with_local_dirs_and_page_store_options(
+    let block_store_options = block_store_options_from_env();
+    let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_memory_bytes,
         cache_dir,
-        page_store_dir,
+        block_store_dir,
         index_dir,
-        page_store_options,
+        block_store_options,
     );
     let startup_load = startup_load_shard_request(shard_id, node_id);
     let load_response = engine.load_shard_with(startup_load);
@@ -1099,9 +1099,9 @@ fn env_bool(name: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
-fn page_store_options_from_env() -> PageStoreOptions {
-    let defaults = PageStoreOptions::default();
-    PageStoreOptions {
+fn block_store_options_from_env() -> BlockStoreOptions {
+    let defaults = BlockStoreOptions::default();
+    BlockStoreOptions {
         compression_enabled: env_bool(
             "TS_PAGE_STORE_COMPRESSION_ENABLED",
             defaults.compression_enabled,
@@ -2948,7 +2948,7 @@ mod tests {
     }
 
     #[test]
-    fn page_store_options_read_compression_policy_env() {
+    fn block_store_options_read_compression_policy_env() {
         let keys = [
             "TS_PAGE_STORE_COMPRESSION_ENABLED",
             "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
@@ -2958,13 +2958,13 @@ mod tests {
             std::env::remove_var(key);
         }
 
-        let defaults = page_store_options_from_env();
+        let defaults = block_store_options_from_env();
         assert!(defaults.compression_enabled);
 
         std::env::set_var("TS_PAGE_STORE_COMPRESSION_ENABLED", "false");
         std::env::set_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES", "4096");
         std::env::set_var("TS_PAGE_STORE_COMPRESSION_LEVEL", "3");
-        let options = page_store_options_from_env();
+        let options = block_store_options_from_env();
 
         assert!(!options.compression_enabled);
         assert_eq!(options.compression_min_bytes, 4096);

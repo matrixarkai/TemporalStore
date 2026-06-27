@@ -2,22 +2,25 @@ use super::*;
 
 impl Default for TemporalEngine {
     fn default() -> Self {
-        Self::with_cache_and_page_store(MultiLayerCache::default(), LocalPageStore::default())
+        Self::with_cache_and_block_store(MultiLayerCache::default(), LocalBlockStore::default())
     }
 }
 
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
-        Self::with_cache_and_page_store(cache, LocalPageStore::default())
+        Self::with_cache_and_block_store(cache, LocalBlockStore::default())
     }
 
-    pub fn with_cache_and_page_store(cache: MultiLayerCache, page_store: LocalPageStore) -> Self {
-        Self::with_cache_page_store_and_index_dir(cache, page_store, unique_temp_path("indexes"))
-    }
-
-    pub fn with_cache_page_store_and_index_dir(
+    pub fn with_cache_and_block_store(
         cache: MultiLayerCache,
-        page_store: LocalPageStore,
+        block_store: LocalBlockStore,
+    ) -> Self {
+        Self::with_cache_block_store_and_index_dir(cache, block_store, unique_temp_path("indexes"))
+    }
+
+    pub fn with_cache_block_store_and_index_dir(
+        cache: MultiLayerCache,
+        block_store: LocalBlockStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
         let index_dir = index_dir.into();
@@ -26,7 +29,7 @@ impl TemporalEngine {
         Self {
             shards: Arc::default(),
             cache,
-            page_store,
+            block_store,
             wal_store,
             index_log_store,
             index_dir,
@@ -40,8 +43,16 @@ impl TemporalEngine {
         self.cache.clone()
     }
 
-    pub fn page_store(&self) -> LocalPageStore {
-        self.page_store.clone()
+    pub fn block_store(&self) -> LocalBlockStore {
+        self.block_store.clone()
+    }
+
+    #[deprecated(
+        since = "0.1.0",
+        note = "use block_store; page naming remains only for legacy compatibility"
+    )]
+    pub fn page_store(&self) -> LocalBlockStore {
+        self.block_store()
     }
 
     pub fn write_ahead_log_store(&self) -> LocalWriteAheadLogStore {
@@ -67,28 +78,28 @@ impl TemporalEngine {
     pub fn with_local_dirs(
         memory_capacity_bytes: usize,
         cache_dir: impl Into<PathBuf>,
-        page_store_dir: impl Into<PathBuf>,
+        block_store_dir: impl Into<PathBuf>,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
-        Self::with_local_dirs_and_page_store_options(
+        Self::with_local_dirs_and_block_store_options(
             memory_capacity_bytes,
             cache_dir,
-            page_store_dir,
+            block_store_dir,
             index_dir,
-            PageStoreOptions::default(),
+            BlockStoreOptions::default(),
         )
     }
 
-    pub fn with_local_dirs_and_page_store_options(
+    pub fn with_local_dirs_and_block_store_options(
         memory_capacity_bytes: usize,
         cache_dir: impl Into<PathBuf>,
-        page_store_dir: impl Into<PathBuf>,
+        block_store_dir: impl Into<PathBuf>,
         index_dir: impl Into<PathBuf>,
-        page_store_options: PageStoreOptions,
+        block_store_options: BlockStoreOptions,
     ) -> Self {
-        Self::with_cache_page_store_and_index_dir(
+        Self::with_cache_block_store_and_index_dir(
             MultiLayerCache::new(memory_capacity_bytes, cache_dir),
-            LocalPageStore::with_options(page_store_dir, page_store_options),
+            LocalBlockStore::with_options(block_store_dir, block_store_options),
             index_dir,
         )
     }

@@ -1,3 +1,4 @@
+pub mod block_store;
 pub mod cache;
 pub mod client;
 pub mod context_workflow;
@@ -9,7 +10,6 @@ pub mod http;
 pub mod index_log;
 pub mod ingestion;
 pub mod meta;
-pub mod page_store;
 pub mod partition_id;
 pub mod proxy;
 pub mod raft;
@@ -23,10 +23,31 @@ pub mod types;
 pub mod wal;
 
 #[allow(deprecated)]
+pub mod page_store {
+    pub use crate::block_store::{
+        BlockAddress as PageAddress,
+        BlockStoreDelayedDestroySegmentReport as PageStoreDelayedDestroySegmentReport,
+        BlockStoreError as PageStoreError, BlockStoreGcPolicy as PageStoreGcPolicy,
+        BlockStoreGcPolicyPlan as PageStoreGcPolicyPlan, BlockStoreGcReport as PageStoreGcReport,
+        BlockStoreGcUtilityCandidate as PageStoreGcUtilityCandidate,
+        BlockStoreOptions as PageStoreOptions,
+        BlockStorePurgeDelayedDestroyReport as PageStorePurgeDelayedDestroyReport,
+        BlockStoreRollReport as PageStoreRollReport,
+        BlockStoreSegmentReport as PageStoreSegmentReport, BlockStoreStats as PageStoreStats,
+        BlockStoreZoneDescriptor as PageStoreZoneDescriptor,
+        BlockStoreZoneState as PageStoreZoneState, BlockStoreZoneSummary as PageStoreZoneSummary,
+        LocalBlockStore as LocalPageStore,
+    };
+}
+
+#[allow(deprecated)]
 pub mod oplog {
     pub use crate::wal::{LocalOplogStore, OplogError, OplogGcReport, OplogRecord, OplogStats};
 }
 
+pub use block_store::{
+    BlockAddress, BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
+};
 pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
     crc64_jones, key_is_dropped_by_percent, shard_id_for_key, slot_id_for_key, stable_key_hash,
@@ -76,8 +97,7 @@ pub use data_node::{
     DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeShardLifecycleState,
     DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest,
     DumpShardResponse, GcRequest, GcResponse, RequestController, ShardWorkerInfo,
-    StorageLifecycleResponse, StorageLifecycleScheduler, StorageManagerRuntime,
-    StorageManagerRuntimeOptions, StorageManagerRuntimeReport,
+    StorageLifecycleResponse, StorageLifecycleScheduler,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, EndToEndWorkflowOptions, KillSwitches, RaftWriteMode,
@@ -96,11 +116,11 @@ pub use engine::reports::{
     StorageCacheSlotSummary, StorageCacheWarmupReport, StorageFeaturePageError,
     StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch, StorageLifecyclePlan,
     StorageLifecycleReport, StorageLifecycleRequest, StorageLogCompatibilityReport,
-    StorageManagerPressureSnapshot, StorageObjectLifecycleReport,
-    StoragePageFormatCompatibilityReport, StorageProductionReadinessPolicy,
-    StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
-    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch,
-    StorageRecoveryReport, StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
+    StorageObjectLifecycleReport, StoragePageFormatCompatibilityReport,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
+    StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch, StorageRecoveryReport,
+    StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
     StorageTimestampedPageFamilyReport,
 };
 pub use engine::TemporalEngine;
@@ -132,6 +152,7 @@ pub use wal::{
     LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
     WalStats,
 };
+#[allow(deprecated)]
 pub use page_store::{
     LocalPageStore, PageAddress, PageStoreOptions, PageStoreSegmentReport, PageStoreStats,
 };
@@ -199,8 +220,7 @@ pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
-    SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWalEntry, SharedStoreWalObject,
-    SharedStoreWriteReport,
+    SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,

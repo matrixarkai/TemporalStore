@@ -28,7 +28,7 @@ use record::{
 };
 
 #[derive(Debug, Error)]
-pub enum PageStoreError {
+pub enum BlockStoreError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error(
@@ -50,7 +50,7 @@ pub enum PageStoreError {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct PageAddress {
+pub struct BlockAddress {
     pub page_segment_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -67,7 +67,7 @@ pub struct PageAddress {
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreStats {
+pub struct BlockStoreStats {
     pub writes: u64,
     pub reads: u64,
     pub bytes_written: u64,
@@ -85,7 +85,7 @@ pub struct PageStoreStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreOptions {
+pub struct BlockStoreOptions {
     #[serde(default = "default_page_record_compression_enabled")]
     pub compression_enabled: bool,
     #[serde(default = "default_page_record_compression_min_bytes")]
@@ -94,7 +94,7 @@ pub struct PageStoreOptions {
     pub compression_level: i32,
 }
 
-impl Default for PageStoreOptions {
+impl Default for BlockStoreOptions {
     fn default() -> Self {
         Self {
             compression_enabled: default_page_record_compression_enabled(),
@@ -105,7 +105,7 @@ impl Default for PageStoreOptions {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreGcReport {
+pub struct BlockStoreGcReport {
     pub retain_from_page_segment_id: u64,
     pub removed_page_segment_ids: Vec<u64>,
     pub retained_page_segment_ids: Vec<u64>,
@@ -128,7 +128,7 @@ pub struct PageStoreGcReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreGcUtilityCandidate {
+pub struct BlockStoreGcUtilityCandidate {
     pub page_segment_id: u64,
     pub bytes: u64,
     pub utility_score: u64,
@@ -141,7 +141,7 @@ pub struct PageStoreGcUtilityCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreGcPolicy {
+pub struct BlockStoreGcPolicy {
     #[serde(default)]
     pub max_destroy_segments: usize,
     #[serde(default)]
@@ -152,7 +152,7 @@ pub struct PageStoreGcPolicy {
     pub min_age_ms: Option<u64>,
 }
 
-impl PageStoreGcPolicy {
+impl BlockStoreGcPolicy {
     pub fn max_segments(max_destroy_segments: usize) -> Self {
         Self {
             max_destroy_segments,
@@ -164,7 +164,7 @@ impl PageStoreGcPolicy {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreGcPolicyPlan {
+pub struct BlockStoreGcPolicyPlan {
     pub retain_from_page_segment_id: u64,
     pub selected_page_segment_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
@@ -174,11 +174,11 @@ pub struct PageStoreGcPolicyPlan {
     pub skipped_by_policy_physical_bytes: u64,
     pub skipped_by_budget_count: usize,
     pub skipped_by_budget_physical_bytes: u64,
-    pub candidates: Vec<PageStoreGcUtilityCandidate>,
+    pub candidates: Vec<BlockStoreGcUtilityCandidate>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreDelayedDestroySegmentReport {
+pub struct BlockStoreDelayedDestroySegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,14 +186,14 @@ pub struct PageStoreDelayedDestroySegmentReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStorePurgeDelayedDestroyReport {
+pub struct BlockStorePurgeDelayedDestroyReport {
     pub purged_page_segment_ids: Vec<u64>,
     pub purged_physical_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum PageStoreZoneState {
+pub enum BlockStoreZoneState {
     Active,
     Sealed,
     DelayedDestroy,
@@ -201,10 +201,10 @@ pub enum PageStoreZoneState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreZoneDescriptor {
+pub struct BlockStoreZoneDescriptor {
     pub zone_id: u64,
     pub page_segment_id: u64,
-    pub state: PageStoreZoneState,
+    pub state: BlockStoreZoneState,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,7 +218,7 @@ pub struct PageStoreZoneDescriptor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreZoneSummary {
+pub struct BlockStoreZoneSummary {
     pub active_zones: u64,
     pub sealed_zones: u64,
     pub delayed_destroy_zones: u64,
@@ -266,7 +266,7 @@ pub struct StreamBackedZoneRuntimeReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreSegmentReport {
+pub struct BlockStoreSegmentReport {
     pub page_segment_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -295,39 +295,39 @@ pub struct PageStoreSegmentReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PageStoreZoneManifest {
+struct BlockStoreZoneManifest {
     version: u32,
-    zones: Vec<PageStoreZoneDescriptor>,
+    zones: Vec<BlockStoreZoneDescriptor>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PageStoreRollReport {
+pub struct BlockStoreRollReport {
     pub previous_page_segment_id: u64,
     pub new_page_segment_id: u64,
 }
 
 #[derive(Debug, Clone)]
-pub struct LocalPageStore {
-    inner: Arc<Mutex<PageStoreInner>>,
+pub struct LocalBlockStore {
+    inner: Arc<Mutex<BlockStoreInner>>,
 }
 
 #[derive(Debug)]
-struct PageStoreInner {
+struct BlockStoreInner {
     root: PathBuf,
     page_segment_id: u64,
     write_offset: u64,
     next_page_id: u64,
-    options: PageStoreOptions,
-    zones: BTreeMap<u64, PageStoreZoneDescriptor>,
-    stats: PageStoreStats,
+    options: BlockStoreOptions,
+    zones: BTreeMap<u64, BlockStoreZoneDescriptor>,
+    stats: BlockStoreStats,
 }
 
-impl LocalPageStore {
+impl LocalBlockStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self::with_options(root, PageStoreOptions::default())
+        Self::with_options(root, BlockStoreOptions::default())
     }
 
-    pub fn with_options(root: impl Into<PathBuf>, options: PageStoreOptions) -> Self {
+    pub fn with_options(root: impl Into<PathBuf>, options: BlockStoreOptions) -> Self {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         let page_segment_id = latest_segment_id_at(&root).unwrap_or_default();
@@ -348,25 +348,25 @@ impl LocalPageStore {
             &mut zones,
             &root,
             page_segment_id,
-            PageStoreZoneState::Active,
+            BlockStoreZoneState::Active,
         );
         if !manifest_exists {
             let _ = persist_zone_manifest(&root, &zones);
         }
         Self {
-            inner: Arc::new(Mutex::new(PageStoreInner {
+            inner: Arc::new(Mutex::new(BlockStoreInner {
                 root,
                 page_segment_id,
                 write_offset,
                 next_page_id,
                 options,
                 zones,
-                stats: PageStoreStats::default(),
+                stats: BlockStoreStats::default(),
             })),
         }
     }
 
-    pub fn append(&self, bytes: &[u8]) -> Result<PageAddress, PageStoreError> {
+    pub fn append(&self, bytes: &[u8]) -> Result<BlockAddress, BlockStoreError> {
         self.append_with_object_id(bytes, None)
     }
 
@@ -374,7 +374,7 @@ impl LocalPageStore {
         &self,
         bytes: &[u8],
         object_id: Option<u64>,
-    ) -> Result<PageAddress, PageStoreError> {
+    ) -> Result<BlockAddress, BlockStoreError> {
         self.append_with_page_metadata(bytes, object_id, None)
     }
 
@@ -383,8 +383,8 @@ impl LocalPageStore {
         bytes: &[u8],
         object_id: Option<u64>,
         routing_slot: Option<u32>,
-    ) -> Result<PageAddress, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<BlockAddress, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
@@ -398,7 +398,7 @@ impl LocalPageStore {
             zone_id,
             inner.options,
         )?;
-        let address = PageAddress {
+        let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
             length: record.bytes.len() as u64,
@@ -434,8 +434,8 @@ impl LocalPageStore {
         Ok(address)
     }
 
-    pub fn roll_segment(&self) -> Result<PageStoreRollReport, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    pub fn roll_segment(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let previous_page_segment_id = inner.page_segment_id;
         let next_from_current = inner.page_segment_id.saturating_add(1);
@@ -452,13 +452,13 @@ impl LocalPageStore {
         sync_parent_dir(&path)?;
         let transition_unix_ms = now_unix_ms();
         if let Some(previous) = inner.zones.get_mut(&previous_page_segment_id) {
-            previous.state = PageStoreZoneState::Sealed;
+            previous.state = BlockStoreZoneState::Sealed;
             previous.updated_unix_ms = Some(transition_unix_ms);
         }
-        let new_zone = PageStoreZoneDescriptor {
+        let new_zone = BlockStoreZoneDescriptor {
             zone_id: zone_id_for_segment(inner.page_segment_id),
             page_segment_id: inner.page_segment_id,
-            state: PageStoreZoneState::Active,
+            state: BlockStoreZoneState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
             created_unix_ms: Some(transition_unix_ms),
@@ -469,14 +469,14 @@ impl LocalPageStore {
         let page_segment_id = inner.page_segment_id;
         inner.zones.insert(page_segment_id, new_zone);
         persist_zone_manifest(&inner.root, &inner.zones)?;
-        Ok(PageStoreRollReport {
+        Ok(BlockStoreRollReport {
             previous_page_segment_id,
             new_page_segment_id: inner.page_segment_id,
         })
     }
 
-    pub fn read(&self, address: &PageAddress) -> Result<Vec<u8>, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, address.page_segment_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(address.offset))?;
@@ -487,7 +487,7 @@ impl LocalPageStore {
         if let Some(expected) = &address.sha256 {
             let actual = sha256_hex(&bytes);
             if &actual != expected {
-                return Err(PageStoreError::ChecksumMismatch {
+                return Err(BlockStoreError::ChecksumMismatch {
                     page_segment_id: address.page_segment_id,
                     offset: address.offset,
                     length: address.length,
@@ -510,8 +510,8 @@ impl LocalPageStore {
         page_segment_id: u64,
         offset: u64,
         size: u64,
-    ) -> Result<Vec<u8>, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<Vec<u8>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, page_segment_id);
         let mut file = File::open(path)?;
         file.seek(SeekFrom::Start(offset))?;
@@ -528,8 +528,8 @@ impl LocalPageStore {
         page_segment_id: u64,
         offset: u64,
         size: u64,
-    ) -> Result<Vec<u8>, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<Vec<u8>, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         let path = segment_path(&inner.root, page_segment_id);
         let segment = fs::read(path)?;
         let range = logical_range_from_segment(&segment, page_segment_id, offset, size)?;
@@ -541,11 +541,11 @@ impl LocalPageStore {
         Ok(bytes)
     }
 
-    pub fn read_segment(&self, page_segment_id: u64) -> Result<Vec<u8>, PageStoreError> {
+    pub fn read_segment(&self, page_segment_id: u64) -> Result<Vec<u8>, BlockStoreError> {
         let root = self
             .inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .root
             .clone();
         Ok(fs::read(segment_path(&root, page_segment_id))?)
@@ -555,8 +555,8 @@ impl LocalPageStore {
         &self,
         page_segment_id: u64,
         bytes: &[u8],
-    ) -> Result<(), PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<(), BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = segment_path(&inner.root, page_segment_id);
         let temp_path = path.with_extension(format!(
@@ -586,13 +586,13 @@ impl LocalPageStore {
         let now = now_unix_ms();
         inner.zones.insert(
             page_segment_id,
-            PageStoreZoneDescriptor {
+            BlockStoreZoneDescriptor {
                 zone_id: zone_id_for_segment(page_segment_id),
                 page_segment_id,
                 state: if is_current_segment {
-                    PageStoreZoneState::Active
+                    BlockStoreZoneState::Active
                 } else {
-                    PageStoreZoneState::Sealed
+                    BlockStoreZoneState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: zone_summary.logical_bytes,
@@ -609,9 +609,9 @@ impl LocalPageStore {
         if is_current_segment {
             for zone in inner.zones.values_mut() {
                 if zone.page_segment_id != page_segment_id
-                    && zone.state == PageStoreZoneState::Active
+                    && zone.state == BlockStoreZoneState::Active
                 {
-                    zone.state = PageStoreZoneState::Sealed;
+                    zone.state = BlockStoreZoneState::Sealed;
                 }
             }
         }
@@ -619,11 +619,11 @@ impl LocalPageStore {
         Ok(())
     }
 
-    pub fn segment_ids(&self) -> Result<Vec<u64>, PageStoreError> {
+    pub fn segment_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         let root = self
             .inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .root
             .clone();
         let mut ids = Vec::new();
@@ -650,7 +650,7 @@ impl LocalPageStore {
     pub fn gc_segments_before(
         &self,
         retain_from_page_segment_id: u64,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         self.gc_segments_before_with_live_refs(retain_from_page_segment_id, std::iter::empty())
     }
 
@@ -658,7 +658,7 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         self.gc_segments_before_with_live_refs_mode(
             retain_from_page_segment_id,
             live_page_segment_ids,
@@ -670,7 +670,7 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         self.gc_segments_before_with_live_refs_mode(
             retain_from_page_segment_id,
             live_page_segment_ids,
@@ -684,7 +684,7 @@ impl LocalPageStore {
         live_page_segment_ids: impl IntoIterator<Item = u64>,
         max_destroy_segments: usize,
         delayed_destroy: bool,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         if max_destroy_segments == 0 {
             return self.gc_segments_before_with_live_refs_selected(
                 retain_from_page_segment_id,
@@ -696,7 +696,7 @@ impl LocalPageStore {
         self.gc_segments_before_with_live_refs_policy(
             retain_from_page_segment_id,
             live_page_segment_ids,
-            PageStoreGcPolicy::max_segments(max_destroy_segments),
+            BlockStoreGcPolicy::max_segments(max_destroy_segments),
             delayed_destroy,
         )
     }
@@ -705,9 +705,9 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
-        policy: PageStoreGcPolicy,
+        policy: BlockStoreGcPolicy,
         delayed_destroy: bool,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let selected = self
             .gc_policy_plan(
@@ -730,8 +730,8 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
-        policy: &PageStoreGcPolicy,
-    ) -> Result<PageStoreGcPolicyPlan, PageStoreError> {
+        policy: &BlockStoreGcPolicy,
+    ) -> Result<BlockStoreGcPolicyPlan, BlockStoreError> {
         let candidates =
             self.gc_utility_candidates(retain_from_page_segment_id, live_page_segment_ids)?;
         let mut selected_page_segment_ids = Vec::new();
@@ -780,7 +780,7 @@ impl LocalPageStore {
             selected_physical_bytes = selected_physical_bytes.saturating_add(candidate.bytes);
         }
 
-        Ok(PageStoreGcPolicyPlan {
+        Ok(BlockStoreGcPolicyPlan {
             retain_from_page_segment_id,
             selected_page_segment_ids,
             selected_physical_bytes,
@@ -798,8 +798,8 @@ impl LocalPageStore {
         &self,
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
-    ) -> Result<Vec<PageStoreGcUtilityCandidate>, PageStoreError> {
-        let inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<Vec<BlockStoreGcUtilityCandidate>, BlockStoreError> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
         let current_page_segment_id = inner.page_segment_id;
         let live_page_segment_ids = live_page_segment_ids.into_iter().collect::<BTreeSet<_>>();
         let mut candidates = Vec::new();
@@ -819,7 +819,7 @@ impl LocalPageStore {
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
-                candidates.push(PageStoreGcUtilityCandidate {
+                candidates.push(BlockStoreGcUtilityCandidate {
                     page_segment_id,
                     bytes,
                     utility_score: page_segment_utility_score(
@@ -853,7 +853,7 @@ impl LocalPageStore {
         retain_from_page_segment_id: u64,
         live_page_segment_ids: impl IntoIterator<Item = u64>,
         delayed_destroy: bool,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
         self.gc_segments_before_with_live_refs_selected(
             retain_from_page_segment_id,
             live_page_segment_ids,
@@ -868,8 +868,8 @@ impl LocalPageStore {
         live_page_segment_ids: impl IntoIterator<Item = u64>,
         delayed_destroy: bool,
         selected_page_segment_ids: Option<BTreeSet<u64>>,
-    ) -> Result<PageStoreGcReport, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<BlockStoreGcReport, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
         if delayed_destroy {
             fs::create_dir_all(delayed_destroy_dir(&inner.root))?;
@@ -905,7 +905,7 @@ impl LocalPageStore {
                     set_zone_state(
                         &mut inner.zones,
                         page_segment_id,
-                        PageStoreZoneState::DelayedDestroy,
+                        BlockStoreZoneState::DelayedDestroy,
                     );
                     delayed_destroy_ids.push(page_segment_id);
                     delayed_destroy_physical_bytes += segment_physical_bytes;
@@ -914,7 +914,7 @@ impl LocalPageStore {
                     set_zone_state(
                         &mut inner.zones,
                         page_segment_id,
-                        PageStoreZoneState::Purged,
+                        BlockStoreZoneState::Purged,
                     );
                 }
                 removed.push(page_segment_id);
@@ -932,7 +932,7 @@ impl LocalPageStore {
             }
         }
         persist_zone_manifest(&inner.root, &inner.zones)?;
-        Ok(PageStoreGcReport {
+        Ok(BlockStoreGcReport {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
             retained_page_segment_ids: retained,
@@ -947,11 +947,11 @@ impl LocalPageStore {
         })
     }
 
-    pub fn delayed_destroy_segment_ids(&self) -> Result<Vec<u64>, PageStoreError> {
+    pub fn delayed_destroy_segment_ids(&self) -> Result<Vec<u64>, BlockStoreError> {
         let root = self
             .inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .root
             .clone();
         delayed_destroy_segment_ids_at(&root)
@@ -959,17 +959,17 @@ impl LocalPageStore {
 
     pub fn delayed_destroy_segment_reports(
         &self,
-    ) -> Result<Vec<PageStoreDelayedDestroySegmentReport>, PageStoreError> {
+    ) -> Result<Vec<BlockStoreDelayedDestroySegmentReport>, BlockStoreError> {
         let root = self
             .inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .root
             .clone();
         delayed_destroy_segment_reports_at(&root)
     }
 
-    pub fn purge_delayed_destroy_segments(&self) -> Result<Vec<u64>, PageStoreError> {
+    pub fn purge_delayed_destroy_segments(&self) -> Result<Vec<u64>, BlockStoreError> {
         Ok(self
             .purge_delayed_destroy_segments_with_report()?
             .purged_page_segment_ids)
@@ -977,13 +977,13 @@ impl LocalPageStore {
 
     pub fn purge_delayed_destroy_segments_with_report(
         &self,
-    ) -> Result<PageStorePurgeDelayedDestroyReport, PageStoreError> {
-        let mut inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
         let trash_dir = delayed_destroy_dir(&inner.root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
         if !trash_dir.exists() {
-            return Ok(PageStorePurgeDelayedDestroyReport::default());
+            return Ok(BlockStorePurgeDelayedDestroyReport::default());
         }
         for entry in fs::read_dir(&trash_dir)? {
             let entry = entry?;
@@ -995,36 +995,36 @@ impl LocalPageStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             fs::remove_file(entry.path())?;
-            set_zone_state(&mut inner.zones, id, PageStoreZoneState::Purged);
+            set_zone_state(&mut inner.zones, id, BlockStoreZoneState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
         persist_zone_manifest(&inner.root, &inner.zones)?;
-        Ok(PageStorePurgeDelayedDestroyReport {
+        Ok(BlockStorePurgeDelayedDestroyReport {
             purged_page_segment_ids: purged,
             purged_physical_bytes,
         })
     }
 
-    pub fn zone_descriptors(&self) -> Vec<PageStoreZoneDescriptor> {
+    pub fn zone_descriptors(&self) -> Vec<BlockStoreZoneDescriptor> {
         self.inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .zones
             .values()
             .cloned()
             .collect()
     }
 
-    pub fn zone_summary(&self) -> PageStoreZoneSummary {
-        summarize_zones(&self.inner.lock().expect("page store lock poisoned").zones)
+    pub fn zone_summary(&self) -> BlockStoreZoneSummary {
+        summarize_zones(&self.inner.lock().expect("block store lock poisoned").zones)
     }
 
     pub fn stream_backed_zone_runtime_report(
         &self,
-    ) -> Result<StreamBackedZoneRuntimeReport, PageStoreError> {
-        let inner = self.inner.lock().expect("page store lock poisoned");
+    ) -> Result<StreamBackedZoneRuntimeReport, BlockStoreError> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
         let zones = inner.zones.clone();
         let root = inner.root.clone();
         let options = inner.options;
@@ -1115,11 +1115,11 @@ impl LocalPageStore {
         })
     }
 
-    pub fn segment_reports(&self) -> Result<Vec<PageStoreSegmentReport>, PageStoreError> {
+    pub fn segment_reports(&self) -> Result<Vec<BlockStoreSegmentReport>, BlockStoreError> {
         let root = self
             .inner
             .lock()
-            .expect("page store lock poisoned")
+            .expect("block store lock poisoned")
             .root
             .clone();
         let mut reports = Vec::new();
@@ -1130,27 +1130,123 @@ impl LocalPageStore {
         Ok(reports)
     }
 
-    pub fn stats(&self) -> PageStoreStats {
-        self.inner.lock().expect("page store lock poisoned").stats
+    pub fn stats(&self) -> BlockStoreStats {
+        self.inner.lock().expect("block store lock poisoned").stats
     }
 }
 
-impl Default for LocalPageStore {
+impl Default for LocalBlockStore {
     fn default() -> Self {
         Self::new(unique_temp_path("pages"))
     }
 }
 
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreError; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreError = BlockStoreError;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockAddress; page naming remains only for legacy compatibility"
+)]
+pub type PageAddress = BlockAddress;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreStats; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreStats = BlockStoreStats;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreOptions; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreOptions = BlockStoreOptions;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreGcReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreGcReport = BlockStoreGcReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreGcUtilityCandidate; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreGcUtilityCandidate = BlockStoreGcUtilityCandidate;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreGcPolicy; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreGcPolicy = BlockStoreGcPolicy;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreGcPolicyPlan; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreGcPolicyPlan = BlockStoreGcPolicyPlan;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreDelayedDestroySegmentReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreDelayedDestroySegmentReport = BlockStoreDelayedDestroySegmentReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStorePurgeDelayedDestroyReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStorePurgeDelayedDestroyReport = BlockStorePurgeDelayedDestroyReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreZoneState; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreZoneState = BlockStoreZoneState;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreZoneDescriptor; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreZoneDescriptor = BlockStoreZoneDescriptor;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreZoneSummary; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreZoneSummary = BlockStoreZoneSummary;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreSegmentReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreSegmentReport = BlockStoreSegmentReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreRollReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreRollReport = BlockStoreRollReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use LocalBlockStore; page naming remains only for legacy compatibility"
+)]
+pub type LocalPageStore = LocalBlockStore;
+
 fn load_zone_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, PageStoreZoneDescriptor>, PageStoreError> {
+) -> Result<BTreeMap<u64, BlockStoreZoneDescriptor>, BlockStoreError> {
     let path = zone_manifest_path(root);
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let manifest: PageStoreZoneManifest =
+    let manifest: BlockStoreZoneManifest =
         serde_json::from_slice(&fs::read(path)?).map_err(|err| {
-            PageStoreError::CorruptPageEnvelope {
+            BlockStoreError::CorruptPageEnvelope {
                 page_segment_id: 0,
                 offset: 0,
                 reason: format!("corrupt zone manifest: {err}"),
@@ -1165,7 +1261,7 @@ fn load_zone_manifest_at(
 
 fn rebuild_zone_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, PageStoreZoneDescriptor>, PageStoreError> {
+) -> Result<BTreeMap<u64, BlockStoreZoneDescriptor>, BlockStoreError> {
     let mut zones = BTreeMap::new();
     let latest = latest_segment_id_at(root)?;
     for page_segment_id in segment_ids_at(root)? {
@@ -1174,13 +1270,13 @@ fn rebuild_zone_manifest_at(
         let summary = summarize_segment(&bytes, page_segment_id)?;
         zones.insert(
             page_segment_id,
-            PageStoreZoneDescriptor {
+            BlockStoreZoneDescriptor {
                 zone_id: zone_id_for_segment(page_segment_id),
                 page_segment_id,
                 state: if page_segment_id == latest {
-                    PageStoreZoneState::Active
+                    BlockStoreZoneState::Active
                 } else {
-                    PageStoreZoneState::Sealed
+                    BlockStoreZoneState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: summary.logical_bytes,
@@ -1197,14 +1293,14 @@ fn rebuild_zone_manifest_at(
         zones
             .entry(delayed.page_segment_id)
             .and_modify(|zone| {
-                zone.state = PageStoreZoneState::DelayedDestroy;
+                zone.state = BlockStoreZoneState::DelayedDestroy;
                 zone.updated_unix_ms = delayed.modified_unix_ms;
                 zone.physical_bytes = delayed.physical_bytes;
             })
-            .or_insert(PageStoreZoneDescriptor {
+            .or_insert(BlockStoreZoneDescriptor {
                 zone_id: zone_id_for_segment(delayed.page_segment_id),
                 page_segment_id: delayed.page_segment_id,
-                state: PageStoreZoneState::DelayedDestroy,
+                state: BlockStoreZoneState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
@@ -1218,8 +1314,8 @@ fn rebuild_zone_manifest_at(
 
 fn persist_zone_manifest(
     root: &Path,
-    zones: &BTreeMap<u64, PageStoreZoneDescriptor>,
-) -> Result<(), PageStoreError> {
+    zones: &BTreeMap<u64, BlockStoreZoneDescriptor>,
+) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
     let path = zone_manifest_path(root);
     let temp_path = path.with_extension(format!(
@@ -1229,14 +1325,14 @@ fn persist_zone_manifest(
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     ));
-    let manifest = PageStoreZoneManifest {
+    let manifest = BlockStoreZoneManifest {
         version: 1,
         zones: zones.values().cloned().collect(),
     };
     {
         let mut temp = File::create(&temp_path)?;
         serde_json::to_writer_pretty(&mut temp, &manifest).map_err(|err| {
-            PageStoreError::CorruptPageEnvelope {
+            BlockStoreError::CorruptPageEnvelope {
                 page_segment_id: 0,
                 offset: 0,
                 reason: format!("serialize zone manifest: {err}"),
@@ -1251,8 +1347,8 @@ fn persist_zone_manifest(
     Ok(())
 }
 
-fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZoneSummary {
-    let mut summary = PageStoreZoneSummary::default();
+fn summarize_zones(zones: &BTreeMap<u64, BlockStoreZoneDescriptor>) -> BlockStoreZoneSummary {
+    let mut summary = BlockStoreZoneSummary::default();
     let now = now_unix_ms();
     for zone in zones.values() {
         update_oldest_zone_timestamp(&mut summary.oldest_known_zone_unix_ms, zone);
@@ -1260,7 +1356,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
             .total_known_physical_bytes
             .saturating_add(zone.physical_bytes);
         match zone.state {
-            PageStoreZoneState::Active => {
+            BlockStoreZoneState::Active => {
                 update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
                 summary.active_zones = summary.active_zones.saturating_add(1);
                 summary.active_physical_bytes = summary
@@ -1270,7 +1366,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
                     .live_physical_bytes
                     .saturating_add(zone.physical_bytes);
             }
-            PageStoreZoneState::Sealed => {
+            BlockStoreZoneState::Sealed => {
                 update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
                 summary.sealed_zones = summary.sealed_zones.saturating_add(1);
                 summary.sealed_physical_bytes = summary
@@ -1280,7 +1376,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
                     .live_physical_bytes
                     .saturating_add(zone.physical_bytes);
             }
-            PageStoreZoneState::DelayedDestroy => {
+            BlockStoreZoneState::DelayedDestroy => {
                 update_oldest_zone_timestamp(&mut summary.oldest_reclaimable_zone_unix_ms, zone);
                 summary.delayed_destroy_zones = summary.delayed_destroy_zones.saturating_add(1);
                 summary.delayed_destroy_physical_bytes = summary
@@ -1290,7 +1386,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
                     .reclaimable_physical_bytes
                     .saturating_add(zone.physical_bytes);
             }
-            PageStoreZoneState::Purged => {
+            BlockStoreZoneState::Purged => {
                 summary.purged_zones = summary.purged_zones.saturating_add(1);
                 summary.purged_physical_bytes = summary
                     .purged_physical_bytes
@@ -1310,7 +1406,7 @@ fn summarize_zones(zones: &BTreeMap<u64, PageStoreZoneDescriptor>) -> PageStoreZ
     summary
 }
 
-fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &PageStoreZoneDescriptor) {
+fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &BlockStoreZoneDescriptor) {
     let Some(timestamp) = zone.updated_unix_ms.or(zone.created_unix_ms) else {
         return;
     };
@@ -1320,17 +1416,17 @@ fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &PageStoreZoneDe
 }
 
 fn ensure_zone_descriptor(
-    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
     root: &Path,
     page_segment_id: u64,
-    state: PageStoreZoneState,
+    state: BlockStoreZoneState,
 ) {
     zones.entry(page_segment_id).or_insert_with(|| {
         let physical_bytes = segment_path(root, page_segment_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        PageStoreZoneDescriptor {
+        BlockStoreZoneDescriptor {
             zone_id: zone_id_for_segment(page_segment_id),
             page_segment_id,
             state,
@@ -1348,15 +1444,15 @@ fn ensure_zone_descriptor(
         if zone.page_segment_id == page_segment_id {
             zone.state = state;
             zone.updated_unix_ms = Some(transition_unix_ms);
-        } else if zone.state == PageStoreZoneState::Active {
-            zone.state = PageStoreZoneState::Sealed;
+        } else if zone.state == BlockStoreZoneState::Active {
+            zone.state = BlockStoreZoneState::Sealed;
             zone.updated_unix_ms = Some(transition_unix_ms);
         }
     }
 }
 
 fn upsert_zone_after_append(
-    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
     page_segment_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
@@ -1364,10 +1460,10 @@ fn upsert_zone_after_append(
 ) {
     let zone = zones
         .entry(page_segment_id)
-        .or_insert(PageStoreZoneDescriptor {
+        .or_insert(BlockStoreZoneDescriptor {
             zone_id: zone_id_for_segment(page_segment_id),
             page_segment_id,
-            state: PageStoreZoneState::Active,
+            state: BlockStoreZoneState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
@@ -1376,7 +1472,7 @@ fn upsert_zone_after_append(
             last_page_id: Some(page_id),
         });
     let updated_unix_ms = now_unix_ms();
-    zone.state = PageStoreZoneState::Active;
+    zone.state = BlockStoreZoneState::Active;
     zone.physical_bytes = physical_bytes;
     zone.logical_bytes = zone.logical_bytes.saturating_add(logical_bytes_written);
     if zone.created_unix_ms.is_none() {
@@ -1391,9 +1487,9 @@ fn upsert_zone_after_append(
 }
 
 fn set_zone_state(
-    zones: &mut BTreeMap<u64, PageStoreZoneDescriptor>,
+    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
     page_segment_id: u64,
-    state: PageStoreZoneState,
+    state: BlockStoreZoneState,
 ) {
     zones
         .entry(page_segment_id)
@@ -1401,7 +1497,7 @@ fn set_zone_state(
             zone.state = state;
             zone.updated_unix_ms = Some(now_unix_ms());
         })
-        .or_insert(PageStoreZoneDescriptor {
+        .or_insert(BlockStoreZoneDescriptor {
             zone_id: zone_id_for_segment(page_segment_id),
             page_segment_id,
             state,
@@ -1427,7 +1523,7 @@ fn page_segment_utility_score(below_retention_floor: bool, is_current: bool, is_
 fn move_segment_to_delayed_destroy(
     root: &Path,
     page_segment_id: u64,
-) -> Result<(), PageStoreError> {
+) -> Result<(), BlockStoreError> {
     let source = segment_path(root, page_segment_id);
     let trash_dir = delayed_destroy_dir(root);
     fs::create_dir_all(&trash_dir)?;
@@ -1438,7 +1534,7 @@ fn move_segment_to_delayed_destroy(
     Ok(())
 }
 
-fn delayed_destroy_segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
+fn delayed_destroy_segment_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     Ok(delayed_destroy_segment_reports_at(root)?
         .into_iter()
         .map(|report| report.page_segment_id)
@@ -1447,7 +1543,7 @@ fn delayed_destroy_segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreErro
 
 fn delayed_destroy_segment_reports_at(
     root: &Path,
-) -> Result<Vec<PageStoreDelayedDestroySegmentReport>, PageStoreError> {
+) -> Result<Vec<BlockStoreDelayedDestroySegmentReport>, BlockStoreError> {
     let trash_dir = delayed_destroy_dir(root);
     let mut reports = Vec::new();
     if !trash_dir.exists() {
@@ -1457,7 +1553,7 @@ fn delayed_destroy_segment_reports_at(
         let entry = entry?;
         if let Some(id) = delayed_destroy_segment_id_from_name(&entry.file_name()) {
             let metadata = entry.metadata().ok();
-            reports.push(PageStoreDelayedDestroySegmentReport {
+            reports.push(BlockStoreDelayedDestroySegmentReport {
                 page_segment_id: id,
                 physical_bytes: metadata
                     .as_ref()
@@ -1487,7 +1583,7 @@ fn zone_id_for_segment(page_segment_id: u64) -> u64 {
     page_segment_id
 }
 
-fn segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
+fn segment_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     let mut ids = Vec::new();
     if !root.exists() {
         return Ok(ids);
@@ -1509,11 +1605,11 @@ fn segment_ids_at(root: &Path) -> Result<Vec<u64>, PageStoreError> {
     Ok(ids)
 }
 
-fn latest_segment_id_at(root: &Path) -> Result<u64, PageStoreError> {
+fn latest_segment_id_at(root: &Path) -> Result<u64, BlockStoreError> {
     Ok(segment_ids_at(root)?.into_iter().max().unwrap_or_default())
 }
 
-fn next_page_id_at(root: &Path) -> Result<u64, PageStoreError> {
+fn next_page_id_at(root: &Path) -> Result<u64, BlockStoreError> {
     let mut max_page_id = None;
     for page_segment_id in segment_ids_at(root)? {
         let bytes = fs::read(segment_path(root, page_segment_id))?;
@@ -1534,7 +1630,7 @@ mod tests {
     #[test]
     fn gc_segments_removes_old_non_current_segments() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(0, b"current").unwrap();
         store.install_segment(1, b"old").unwrap();
         store.install_segment(2, b"keep").unwrap();
@@ -1555,7 +1651,7 @@ mod tests {
     #[test]
     fn roll_segment_moves_future_appends_to_fresh_segment() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         assert_eq!(first.page_segment_id, 0);
 
@@ -1572,13 +1668,13 @@ mod tests {
     #[test]
     fn reopened_store_appends_to_latest_existing_segment() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         let roll = store.roll_segment().unwrap();
         let second = store.append(b"second").unwrap();
         assert_eq!(roll.new_page_segment_id, second.page_segment_id);
 
-        let reopened = LocalPageStore::new(dir.path());
+        let reopened = LocalBlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
         assert_eq!(third.page_segment_id, second.page_segment_id);
@@ -1591,7 +1687,7 @@ mod tests {
     #[test]
     fn installed_higher_segment_becomes_current_for_future_appends() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(3, b"restored-segment").unwrap();
 
         let next = store.append(b"after-restore").unwrap();
@@ -1604,7 +1700,7 @@ mod tests {
     #[test]
     fn page_address_checksum_rejects_corrupt_segment_bytes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"verified-page").unwrap();
         assert_eq!(address.sha256, Some(sha256_hex(b"verified-page")));
         assert_eq!(store.read(&address).unwrap(), b"verified-page");
@@ -1614,14 +1710,14 @@ mod tests {
         *segment.last_mut().unwrap() ^= 0xff;
         fs::write(path, segment).unwrap();
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::ChecksumMismatch { .. }));
+        assert!(matches!(err, BlockStoreError::ChecksumMismatch { .. }));
     }
 
     // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
     #[test]
     fn page_address_matches_cpp_metadata_contract_and_checksum_alias() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let address = store
             .append_with_page_metadata(b"address-contract", Some(4242), Some(17))
             .unwrap();
@@ -1646,7 +1742,7 @@ mod tests {
             "zone_id": address.zone_id,
             "checksum": address.sha256,
         });
-        let from_checksum_alias: PageAddress = serde_json::from_value(cpp_style_json).unwrap();
+        let from_checksum_alias: BlockAddress = serde_json::from_value(cpp_style_json).unwrap();
         assert_eq!(from_checksum_alias, address);
         assert_eq!(
             serde_json::to_value(&address).unwrap()["sha256"],
@@ -1657,7 +1753,7 @@ mod tests {
     #[test]
     fn page_segment_records_have_self_describing_envelope() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"enveloped-page").unwrap();
         let raw = store.read_segment(address.page_segment_id).unwrap();
 
@@ -1670,13 +1766,13 @@ mod tests {
     #[test]
     fn page_ids_are_persisted_and_continue_after_reopen() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first").unwrap();
         let second = store.append(b"second").unwrap();
         assert_eq!(first.page_id, Some(0));
         assert_eq!(second.page_id, Some(1));
 
-        let reopened = LocalPageStore::new(dir.path());
+        let reopened = LocalBlockStore::new(dir.path());
         let third = reopened.append(b"third").unwrap();
 
         assert_eq!(third.page_id, Some(2));
@@ -1687,12 +1783,12 @@ mod tests {
     fn installed_segment_page_ids_advance_future_allocations() {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = tempfile::tempdir().unwrap();
-        let source = LocalPageStore::new(source_dir.path());
+        let source = LocalBlockStore::new(source_dir.path());
         let _ = source.append(b"first").unwrap();
         let restored = source.append(b"restored").unwrap();
         let restored_bytes = source.read_segment(restored.page_segment_id).unwrap();
 
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(4, &restored_bytes).unwrap();
         let next = store.append(b"next").unwrap();
 
@@ -1703,18 +1799,18 @@ mod tests {
     #[test]
     fn page_id_mismatch_rejects_corrupt_address_metadata() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let mut address = store.append(b"identity-checked-page").unwrap();
         address.page_id = Some(address.page_id.unwrap() + 1);
 
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
     fn object_ids_are_persisted_and_checked_in_page_envelopes() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let mut address = store
             .append_with_page_metadata(b"object-page", Some(42), Some(7))
             .unwrap();
@@ -1726,23 +1822,23 @@ mod tests {
 
         address.object_id = Some(43);
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
         address.object_id = Some(42);
         address.routing_slot = Some(8);
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
         address.routing_slot = Some(7);
         address.zone_id = Some(1);
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
     fn rolled_segments_stamp_new_zone_ids() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-zone").unwrap();
         let roll = store.roll_segment().unwrap();
         let second = store.append(b"second-zone").unwrap();
@@ -1756,7 +1852,7 @@ mod tests {
     #[test]
     fn zone_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-zone").unwrap();
         store.roll_segment().unwrap();
         let second = store.append(b"second-zone").unwrap();
@@ -1764,13 +1860,13 @@ mod tests {
         let zones = store.zone_descriptors();
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].page_segment_id, first.page_segment_id);
-        assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(zones[0].state, BlockStoreZoneState::Sealed);
         assert_eq!(zones[0].first_page_id, first.page_id);
         assert_eq!(zones[0].last_page_id, first.page_id);
         assert!(zones[0].created_unix_ms.is_some());
         assert!(zones[0].updated_unix_ms.is_some());
         assert_eq!(zones[1].page_segment_id, second.page_segment_id);
-        assert_eq!(zones[1].state, PageStoreZoneState::Active);
+        assert_eq!(zones[1].state, BlockStoreZoneState::Active);
         assert_eq!(zones[1].first_page_id, second.page_id);
         assert_eq!(zones[1].last_page_id, second.page_id);
         assert!(zones[1].created_unix_ms.is_some());
@@ -1801,7 +1897,7 @@ mod tests {
         assert!(initial_summary.oldest_reclaimable_zone_unix_ms.is_none());
         assert!(initial_summary.oldest_reclaimable_zone_age_ms.is_none());
 
-        let reopened = LocalPageStore::new(dir.path());
+        let reopened = LocalBlockStore::new(dir.path());
         let reopened_zones = reopened.zone_descriptors();
         assert_eq!(reopened_zones.len(), zones.len());
         assert_eq!(reopened_zones[0], zones[0]);
@@ -1817,11 +1913,11 @@ mod tests {
             .unwrap();
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
         let delayed = reopened.zone_descriptors();
-        assert_eq!(delayed[0].state, PageStoreZoneState::DelayedDestroy);
+        assert_eq!(delayed[0].state, BlockStoreZoneState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
         assert_eq!(delayed[0].created_unix_ms, zones[0].created_unix_ms);
         assert!(delayed[0].updated_unix_ms >= zones[0].updated_unix_ms);
-        assert_eq!(delayed[1].state, PageStoreZoneState::Active);
+        assert_eq!(delayed[1].state, BlockStoreZoneState::Active);
         let delayed_summary = reopened.zone_summary();
         assert_eq!(delayed_summary.delayed_destroy_zones, 1);
         assert_eq!(delayed_summary.active_zones, 1);
@@ -1850,12 +1946,12 @@ mod tests {
             .unwrap();
         assert_eq!(purge.purged_page_segment_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
-        let purged = LocalPageStore::new(dir.path()).zone_descriptors();
-        assert_eq!(purged[0].state, PageStoreZoneState::Purged);
+        let purged = LocalBlockStore::new(dir.path()).zone_descriptors();
+        assert_eq!(purged[0].state, BlockStoreZoneState::Purged);
         assert_eq!(purged[0].created_unix_ms, zones[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
-        assert_eq!(purged[1].state, PageStoreZoneState::Active);
-        let purged_summary = LocalPageStore::new(dir.path()).zone_summary();
+        assert_eq!(purged[1].state, BlockStoreZoneState::Active);
+        let purged_summary = LocalBlockStore::new(dir.path()).zone_summary();
         assert_eq!(purged_summary.purged_zones, 1);
         assert_eq!(purged_summary.active_zones, 1);
         assert_eq!(
@@ -1873,24 +1969,24 @@ mod tests {
     #[test]
     fn missing_zone_manifest_rebuilds_from_existing_segments() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"first-zone").unwrap();
         store.roll_segment().unwrap();
         let second = store.append(b"second-zone").unwrap();
         fs::remove_file(zone_manifest_path(dir.path())).unwrap();
 
-        let rebuilt = LocalPageStore::new(dir.path());
+        let rebuilt = LocalBlockStore::new(dir.path());
         let zones = rebuilt.zone_descriptors();
 
         assert_eq!(zones.len(), 2);
         assert_eq!(zones[0].page_segment_id, first.page_segment_id);
-        assert_eq!(zones[0].state, PageStoreZoneState::Sealed);
+        assert_eq!(zones[0].state, BlockStoreZoneState::Sealed);
         assert_eq!(zones[0].first_page_id, first.page_id);
         assert_eq!(zones[0].last_page_id, first.page_id);
         assert!(zones[0].created_unix_ms.is_some());
         assert!(zones[0].updated_unix_ms.is_some());
         assert_eq!(zones[1].page_segment_id, second.page_segment_id);
-        assert_eq!(zones[1].state, PageStoreZoneState::Active);
+        assert_eq!(zones[1].state, BlockStoreZoneState::Active);
         assert_eq!(zones[1].first_page_id, second.page_id);
         assert_eq!(zones[1].last_page_id, second.page_id);
         assert!(zones[1].created_unix_ms.is_some());
@@ -1900,7 +1996,7 @@ mod tests {
     #[test]
     fn logical_page_range_skips_record_envelopes_across_pages() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.append(b"abc").unwrap();
         store.append(b"def").unwrap();
 
@@ -1910,7 +2006,7 @@ mod tests {
     #[test]
     fn compressed_page_records_round_trip_and_remain_logical() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first_payload = b"prefix-".repeat(80);
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
@@ -1950,7 +2046,7 @@ mod tests {
     #[test]
     fn stream_backed_zone_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first_payload = b"zone-stream-first-".repeat(96);
         let second_payload = b"zone-stream-second-".repeat(96);
         let first = store
@@ -1988,7 +2084,7 @@ mod tests {
             vec![roll.previous_page_segment_id]
         );
 
-        let reopened = LocalPageStore::new(dir.path());
+        let reopened = LocalBlockStore::new(dir.path());
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
         let report = reopened.stream_backed_zone_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
@@ -2013,7 +2109,7 @@ mod tests {
     #[test]
     fn segment_reports_describe_page_counts_bytes_and_compression() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first_payload = b"prefix-".repeat(80);
         let second_payload = b"suffix-".repeat(80);
         let first = store.append(&first_payload).unwrap();
@@ -2044,7 +2140,7 @@ mod tests {
     #[test]
     fn segment_reports_describe_object_and_routing_slot_ownership() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store
             .append_with_page_metadata(b"slot-7-object-100", Some(100), Some(7))
             .unwrap();
@@ -2074,7 +2170,7 @@ mod tests {
     #[test]
     fn segment_reports_capture_first_corrupt_record_error() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let first = store.append(b"healthy").unwrap();
         let second = store.append(b"damaged").unwrap();
         let path = segment_path(dir.path(), second.page_segment_id);
@@ -2104,11 +2200,11 @@ mod tests {
         let payload = b"policy-controlled-".repeat(80);
 
         let disabled_dir = tempfile::tempdir().unwrap();
-        let disabled_store = LocalPageStore::with_options(
+        let disabled_store = LocalBlockStore::with_options(
             disabled_dir.path(),
-            PageStoreOptions {
+            BlockStoreOptions {
                 compression_enabled: false,
-                ..PageStoreOptions::default()
+                ..BlockStoreOptions::default()
             },
         );
         let disabled_address = disabled_store.append(&payload).unwrap();
@@ -2126,11 +2222,11 @@ mod tests {
         assert_eq!(disabled_store.stats().compression_bytes_saved, 0);
 
         let threshold_dir = tempfile::tempdir().unwrap();
-        let threshold_store = LocalPageStore::with_options(
+        let threshold_store = LocalBlockStore::with_options(
             threshold_dir.path(),
-            PageStoreOptions {
+            BlockStoreOptions {
                 compression_min_bytes: payload.len() + 1,
-                ..PageStoreOptions::default()
+                ..BlockStoreOptions::default()
             },
         );
         let threshold_address = threshold_store.append(&payload).unwrap();
@@ -2151,7 +2247,7 @@ mod tests {
     #[test]
     fn page_envelope_rejects_corrupt_compressed_payload() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let address = store.append(&b"compress-me-".repeat(80)).unwrap();
         let path = segment_path(dir.path(), address.page_segment_id);
         let mut segment = fs::read(&path).unwrap();
@@ -2161,14 +2257,14 @@ mod tests {
         let err = store.read(&address).unwrap_err();
         assert!(matches!(
             err,
-            PageStoreError::ChecksumMismatch { .. } | PageStoreError::CorruptPageEnvelope { .. }
+            BlockStoreError::ChecksumMismatch { .. } | BlockStoreError::CorruptPageEnvelope { .. }
         ));
     }
 
     #[test]
     fn page_envelope_rejects_corrupt_header_lengths() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         let address = store.append(b"header-checked-page").unwrap();
         let path = segment_path(dir.path(), address.page_segment_id);
         let mut segment = fs::read(&path).unwrap();
@@ -2177,14 +2273,14 @@ mod tests {
         fs::write(path, segment).unwrap();
 
         let err = store.read(&address).unwrap_err();
-        assert!(matches!(err, PageStoreError::CorruptPageEnvelope { .. }));
+        assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
     fn page_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
-        let legacy_address = PageAddress {
+        let store = LocalBlockStore::new(dir.path());
+        let legacy_address = BlockAddress {
             page_segment_id: 0,
             offset: 0,
             length: b"alteredpage".len() as u64,
@@ -2206,7 +2302,7 @@ mod tests {
     #[test]
     fn gc_segments_retains_live_index_references_below_floor() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(0, b"current").unwrap();
         store.install_segment(1, b"live").unwrap();
         store.install_segment(2, b"stale").unwrap();
@@ -2232,7 +2328,7 @@ mod tests {
     #[test]
     fn delayed_destroy_gc_quarantines_stale_segments_before_purge() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(0, b"current").unwrap();
         store.install_segment(1, b"stale").unwrap();
         store.install_segment(2, b"live").unwrap();
@@ -2280,7 +2376,7 @@ mod tests {
     #[test]
     fn utility_gc_selects_low_utility_stale_segments_with_bound() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(0, b"small").unwrap();
         store.install_segment(1, b"largest-stale-segment").unwrap();
         store.install_segment(2, b"live-segment").unwrap();
@@ -2348,13 +2444,13 @@ mod tests {
     #[test]
     fn policy_gc_plans_and_applies_byte_bounded_destroy() {
         let dir = tempfile::tempdir().unwrap();
-        let store = LocalPageStore::new(dir.path());
+        let store = LocalBlockStore::new(dir.path());
         store.install_segment(0, b"small").unwrap();
         store.install_segment(1, b"largest-stale-segment").unwrap();
         store.install_segment(2, b"live-segment").unwrap();
         store.install_segment(3, b"current-segment").unwrap();
 
-        let policy = PageStoreGcPolicy {
+        let policy = BlockStoreGcPolicy {
             max_destroy_segments: 2,
             max_destroy_physical_bytes: b"small".len() as u64,
             max_utility_score: Some(0),
