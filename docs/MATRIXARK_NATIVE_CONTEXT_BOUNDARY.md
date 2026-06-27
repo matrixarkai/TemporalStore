@@ -20,6 +20,8 @@ Both C++ and Rust should implement the same behavior behind the shared test corp
 `sdk/rust/temporalstore/src/bin/matrixark_record_log.rs` supports the original string/hash operations plus MatrixArk-native record envelope operations:
 
 - `batch_hset`
+- `matrixark_append_records`
+- `matrixark_batch_append_records`
 - `write_matrixark_record`
 - `write_matrixark_records`
 - `read_matrixark_record`
@@ -38,6 +40,38 @@ value = JSON record
 ```
 
 This lets the Python MCP server keep its model-facing code while Rust and C++ share the same persisted record identity.
+
+## MatrixArk Batch Append Contract
+
+The production hot path now has a named MatrixArk append boundary:
+
+```json
+{
+  "op": "matrixark_batch_append_records",
+  "entries": [
+    {"key": "matrixark:mcp:records:000000", "field": "00000000000000000001", "value": "{...record bundle...}"},
+    {"key": "matrixark:mcp:context_event_by_ingestion_time:123", "field": "1780000000000:456", "value": "{...context event...}"}
+  ],
+  "key": "matrixark:mcp:record_count",
+  "value": "42"
+}
+```
+
+Python still owns MCP envelopes, extraction, parsing, and record materialization.
+After materialization, Python sends one batch to TemporalStore. The native
+backend handles routing, sync/async storage behavior, oplog/persistence, and
+backpressure. The existing compact record-log layout remains compatible because
+the batch contains the same sharded record fields plus the optional count update.
+
+Backend status:
+
+- Rust long-lived gateway: implements `matrixark_append_records` and
+  `matrixark_batch_append_records` as first-class ops.
+- C++ Python direct SDK: exposes the same Python client method and currently
+  lowers to `hset` operations through the C API. A true C++ native multi-field
+  append API below the C API remains the next storage-engine optimization.
+- Python adapter: prefers `matrixark_batch_append_records` when the backend
+  client exposes it, otherwise falls back to `batch_hset` / `hset`.
 
 ## Current C++ Shared Gate
 

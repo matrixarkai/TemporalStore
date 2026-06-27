@@ -795,8 +795,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
                 sequence += 1
-            self._hset_many_with_backoff(event_time_entries + entries)
-            self._put_string_with_backoff(self._count_key, str(sequence))
+            append_records = getattr(self._client, "matrixark_batch_append_records", None)
+            if callable(append_records):
+                self._write_with_backoff(
+                    lambda: append_records(event_time_entries + entries, count_key=self._count_key, count_value=str(sequence)),
+                    op="matrixark_batch_append_records",
+                )
+                if self._write_throttle_s > 0:
+                    time.sleep(self._write_throttle_s)
+            else:
+                self._hset_many_with_backoff(event_time_entries + entries)
+                self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             if self._records_cache is not None:
                 self._records_cache.extend(records)
@@ -1339,7 +1348,7 @@ class MatrixArkRustCliClient:
                 if op in {"put_string", "hset"}:
                     self._records_written_total += 1
                     self._count_context_record(kwargs.get("value"))
-                elif op == "batch_hset":
+                elif op in {"batch_hset", "matrixark_append_records", "matrixark_batch_append_records"}:
                     self._records_written_total += count or len(kwargs.get("entries") or [])
                     for entry in kwargs.get("entries") or []:
                         if isinstance(entry, dict):
@@ -1428,6 +1437,14 @@ class MatrixArkRustCliClient:
         if not entries:
             return
         self._call_json("batch_hset", entries=entries)
+
+    def matrixark_batch_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
+        if not entries and not count_key:
+            return
+        self._call_json("matrixark_batch_append_records", entries=entries, key=count_key or "", value=count_value or "")
+
+    def matrixark_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
+        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:
