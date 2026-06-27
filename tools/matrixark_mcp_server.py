@@ -123,6 +123,7 @@ try:
         MatrixArkRustCliClient,
         MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -132,6 +133,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         MatrixArkRustCliClient,
         MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
 
@@ -708,7 +710,7 @@ def production_profile_enabled() -> bool:
 def backend_ready_required(backend: str) -> bool:
     if MATRIXARK_REQUIRE_BACKEND_READY:
         return MATRIXARK_REQUIRE_BACKEND_READY in {"1", "true", "yes"}
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"}
+    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
 
 
 def default_mcp_backend() -> str:
@@ -722,8 +724,9 @@ def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
     local_backends = {"local", "temporalstore-local"}
     if production_profile_enabled() and args.backend in local_backends and not MATRIXARK_ALLOW_LOCAL_BACKEND:
         raise MatrixArkError(
-            "MatrixArk MCP production/benchmark profile requires --backend temporalstore-direct "
-            "or --backend temporalstore-rust. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+            "MatrixArk MCP production/benchmark profile requires --backend temporalstore-direct, "
+            "--backend temporalstore-rust, or --backend temporalstore-rust-direct. "
+            "Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
         )
 
 

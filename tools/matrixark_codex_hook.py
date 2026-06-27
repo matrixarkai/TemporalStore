@@ -109,10 +109,17 @@ def load_matrixark(root: Path):
         MatrixArkLocalAdapter,
         MatrixArkMcpServer,
         MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
 
-    return MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter
+    return (
+        MatrixArkLocalAdapter,
+        MatrixArkMcpServer,
+        MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
+    )
 
 
 def production_profile_enabled() -> bool:
@@ -133,8 +140,9 @@ def default_hook_backend() -> str:
 def validate_hook_backend_policy(backend: str) -> None:
     if production_profile_enabled() and backend == "local" and not local_backend_allowed():
         raise RuntimeError(
-            "MatrixArk hook production/benchmark profile requires --backend temporalstore-direct "
-            "or --backend temporalstore-rust. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+            "MatrixArk hook production/benchmark profile requires --backend temporalstore-direct, "
+            "--backend temporalstore-rust, or --backend temporalstore-rust-direct. "
+            "Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
         )
 
 
@@ -151,7 +159,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
     parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_CODEX_EVENT_LOG", "/tmp/matrixark-codex-hook.jsonl")))
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct", "temporalstore-rust"], default=default_hook_backend())
+    parser.add_argument(
+        "--backend",
+        choices=["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
+        default=default_hook_backend(),
+    )
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
@@ -519,7 +531,13 @@ def call_tool(server: Any, name: str, arguments: Json) -> Json:
 
 
 def build_server(args: argparse.Namespace):
-    MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter = load_matrixark(args.repo_root)
+    (
+        MatrixArkLocalAdapter,
+        MatrixArkMcpServer,
+        MatrixArkTemporalStoreDirectAdapter,
+        MatrixArkTemporalStoreRustAdapter,
+        MatrixArkTemporalStoreRustDirectAdapter,
+    ) = load_matrixark(args.repo_root)
     if args.backend == "temporalstore-direct":
         adapter = MatrixArkTemporalStoreDirectAdapter(
             metaserver=args.metaserver,
@@ -543,6 +561,28 @@ def build_server(args: argparse.Namespace):
                     rust_proxy = str(candidate)
                     break
         adapter = MatrixArkTemporalStoreRustAdapter(
+            rust_cli=args.rust_cli,
+            rust_proxy=rust_proxy,
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    elif args.backend == "temporalstore-rust-direct":
+        rust_proxy = args.rust_proxy or args.rust_cli
+        if not rust_proxy:
+            for candidate in [
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
+                args.repo_root / "target" / "release" / "matrixark_record_log",
+                args.repo_root / "target" / "debug" / "matrixark_record_log",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_record_log",
+            ]:
+                if candidate.exists() and os.access(candidate, os.X_OK):
+                    rust_proxy = str(candidate)
+                    break
+        adapter = MatrixArkTemporalStoreRustDirectAdapter(
             rust_cli=args.rust_cli,
             rust_proxy=rust_proxy,
             metaserver=args.metaserver,
