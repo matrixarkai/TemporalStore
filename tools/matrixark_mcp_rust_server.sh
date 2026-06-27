@@ -19,9 +19,9 @@ if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" && -n "${MATRIXARK_TEMPORALST
 fi
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" ]]; then
   for candidate in \
-    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "$ROOT/target/release/matrixark_record_log" \
     "$ROOT/target/debug/matrixark_record_log" \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_record_log"; do
     if [[ -x "$candidate" ]]; then
       export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$candidate"

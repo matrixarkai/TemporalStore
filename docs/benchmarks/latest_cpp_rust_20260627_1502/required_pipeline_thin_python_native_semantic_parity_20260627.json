@@ -1,0 +1,1231 @@
+{
+  "all_ok": true,
+  "comparison": {
+    "checks": {
+      "cpp_semantic_retrieval_parity": true,
+      "embedding_types_equal": true,
+      "required_embedding_types_present": true,
+      "required_record_types_present": true,
+      "required_summary_types_present": true,
+      "rust_semantic_retrieval_parity": true,
+      "summary_types_equal": true
+    },
+    "cpp_semantic_checks": {
+      "memory_has_entity": true,
+      "memory_has_event_or_segment_or_summary": true,
+      "resource_has_fact_or_chunk": true,
+      "secondary_index_prefilter_enabled": true,
+      "skill_has_skill_section": true,
+      "tree_traversal_enabled": true
+    },
+    "exact_selected_ref_counts_match": false,
+    "ranking_telemetry_note": "Selected ref counts are telemetry, not a byte-identical parity gate. C++ and Rust pass when both satisfy required semantic retrieval coverage, tree traversal, secondary-index prefilter, ContextPack, audit, and replay.",
+    "rust_semantic_checks": {
+      "memory_has_entity": true,
+      "memory_has_event_or_segment_or_summary": true,
+      "resource_has_fact_or_chunk": true,
+      "secondary_index_prefilter_enabled": true,
+      "skill_has_skill_section": true,
+      "tree_traversal_enabled": true
+    },
+    "selected_ref_count_deltas": {
+      "memory": {
+        "entity": {
+          "cpp": 1,
+          "delta_rust_minus_cpp": 0,
+          "rust": 1
+        },
+        "event": {
+          "cpp": 2,
+          "delta_rust_minus_cpp": 1,
+          "rust": 3
+        },
+        "segment": {
+          "cpp": 1,
+          "delta_rust_minus_cpp": 0,
+          "rust": 1
+        },
+        "summary": {
+          "cpp": 10,
+          "delta_rust_minus_cpp": 1,
+          "rust": 11
+        }
+      },
+      "resource": {
+        "entity": {
+          "cpp": 6,
+          "delta_rust_minus_cpp": 1,
+          "rust": 7
+        },
+        "event": {
+          "cpp": 1,
+          "delta_rust_minus_cpp": -1,
+          "rust": 0
+        },
+        "resource_chunk": {
+          "cpp": 0,
+          "delta_rust_minus_cpp": 1,
+          "rust": 1
+        },
+        "resource_fact": {
+          "cpp": 3,
+          "delta_rust_minus_cpp": -3,
+          "rust": 0
+        },
+        "summary": {
+          "cpp": 5,
+          "delta_rust_minus_cpp": 2,
+          "rust": 7
+        }
+      },
+      "skill": {
+        "entity": {
+          "cpp": 2,
+          "delta_rust_minus_cpp": -1,
+          "rust": 1
+        },
+        "event": {
+          "cpp": 0,
+          "delta_rust_minus_cpp": 1,
+          "rust": 1
+        },
+        "resource_chunk": {
+          "cpp": 1,
+          "delta_rust_minus_cpp": 0,
+          "rust": 1
+        },
+        "resource_fact": {
+          "cpp": 2,
+          "delta_rust_minus_cpp": -2,
+          "rust": 0
+        },
+        "skill_section": {
+          "cpp": 1,
+          "delta_rust_minus_cpp": 0,
+          "rust": 1
+        },
+        "summary": {
+          "cpp": 5,
+          "delta_rust_minus_cpp": 0,
+          "rust": 5
+        }
+      }
+    },
+    "status": "passed"
+  },
+  "failures": [],
+  "required_pipeline": [
+    "ingest",
+    "extraction",
+    "async_summary_refresh",
+    "tree_traversal_node_l0_l1",
+    "secondary_index_prefilter",
+    "retrieve_events_entities_resources_skills",
+    "context_pack",
+    "audit_replay"
+  ],
+  "required_record_types": [
+    "context_child_ref",
+    "context_embedding",
+    "context_entity",
+    "context_event",
+    "context_index",
+    "context_node",
+    "context_pack_audit",
+    "context_segment",
+    "context_summary",
+    "context_summary_dirty",
+    "context_summary_refresh_audit",
+    "resource_chunk",
+    "resource_import_task",
+    "resource_manifest",
+    "resource_registry",
+    "session_buffer_event",
+    "skill_manifest",
+    "skill_registry",
+    "skill_section"
+  ],
+  "results": [
+    {
+      "audit": {
+        "actions": [
+          "context.batch_extract",
+          "context.ingest",
+          "context.refresh_summaries",
+          "context.replay",
+          "context.retrieve"
+        ],
+        "count": 12
+      },
+      "backend": "cpp",
+      "checks": {
+        "admin_audit_ingest_refresh_retrieve_replay": true,
+        "audit_replay_memory": true,
+        "audit_replay_resource": true,
+        "audit_replay_skill": true,
+        "batch_extraction_wrote_entities": true,
+        "batch_extraction_wrote_segments": true,
+        "context_packs_written": true,
+        "memory_secondary_index_prefilter": true,
+        "memory_tree_traversal_l0_l1": true,
+        "online_ingest_extracted_event": true,
+        "required_embedding_types_present": true,
+        "required_record_types_present": true,
+        "required_summary_types_present": true,
+        "resource_ingest_extracted_facts": true,
+        "resource_ingest_wrote_chunks": true,
+        "resource_secondary_index_prefilter": true,
+        "resource_tree_traversal_l0_l1": true,
+        "retrieve_events_or_entities": true,
+        "retrieve_resources": true,
+        "retrieve_skills": true,
+        "secondary_indexes_present": true,
+        "skill_ingest_wrote_skill_hash": true,
+        "skill_secondary_index_prefilter": true,
+        "skill_tree_traversal_l0_l1": true,
+        "summary_refresh_completed": true
+      },
+      "elapsed_ms": 1642.34,
+      "ingest": {
+        "batch": {
+          "entities_written": 9,
+          "events_written": 20,
+          "indexes_written": 8,
+          "segments_written": 4,
+          "status": "accepted"
+        },
+        "online": {
+          "classification": "NEW_EVENT",
+          "status": "accepted"
+        },
+        "resource": {
+          "chunks": [
+            31000,
+            31001
+          ],
+          "entities": 8,
+          "facts": 8,
+          "status": "accepted"
+        },
+        "skill": {
+          "skill_hash": 3018039475135307322,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-direct",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "required_pipeline_parity:cpp:thin_python_native_semantic_parity_20260627",
+        "status": "ready",
+        "storage_prefix": "matrixark:required-pipeline:cpp:thin_python_native_semantic_parity_20260627",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:required-pipeline:cpp:thin_python_native_semantic_parity_20260627",
+          "table": "deploy_table",
+          "warmup_field": "1148715:1782604513385:562030333516339931",
+          "warmup_key": "matrixark:required-pipeline:cpp:thin_python_native_semantic_parity_20260627:readiness"
+        },
+        "warmup_key": "matrixark:required-pipeline:cpp:thin_python_native_semantic_parity_20260627:readiness"
+      },
+      "replay": {
+        "memory": {
+          "context_pack_id": "cpp-native-1782604513-76",
+          "event_count": 439
+        },
+        "resource": {
+          "context_pack_id": "cpp-native-1782604513-76",
+          "event_count": 440
+        },
+        "skill": {
+          "context_pack_id": "cpp-native-1782604513-73",
+          "event_count": 441
+        }
+      },
+      "retrieval": {
+        "memory": {
+          "context_pack_id": "cpp-native-1782604513-76",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 6,
+            "enabled": true,
+            "matched_candidate_count": 57,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 1,
+            "event": 2,
+            "segment": 1,
+            "summary": 10
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 76,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 6,
+            "selected_node_count": 6,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "resource": {
+          "context_pack_id": "cpp-native-1782604513-76",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 6,
+            "enabled": true,
+            "matched_candidate_count": 57,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 6,
+            "event": 1,
+            "resource_fact": 3,
+            "summary": 5
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 76,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 3,
+            "selected_node_count": 3,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "skill": {
+          "context_pack_id": "cpp-native-1782604513-73",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 9,
+            "enabled": true,
+            "matched_candidate_count": 54,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 2,
+            "resource_chunk": 1,
+            "resource_fact": 2,
+            "skill_section": 1,
+            "summary": 5
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 73,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 5,
+            "selected_node_count": 5,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        }
+      },
+      "storage_prefix": "matrixark:required-pipeline:cpp:thin_python_native_semantic_parity_20260627",
+      "storage_records": {
+        "embedding_types": [
+          "batch_l0",
+          "entity_state",
+          "event_text",
+          "node_l0",
+          "node_l1",
+          "resource_chunk",
+          "resource_l0",
+          "segment_text",
+          "session_l0",
+          "skill_l0",
+          "skill_section",
+          "skill_summary"
+        ],
+        "index_name_sample": [
+          "classification:batch_memory",
+          "classification:new_event",
+          "entity_type:job_status",
+          "entity_type:location",
+          "entity_type:preference",
+          "entity_type:relationship",
+          "entity_type:resource_api_contract",
+          "entity_type:resource_approval",
+          "entity_type:resource_cost",
+          "entity_type:resource_deadline",
+          "entity_type:resource_fact",
+          "entity_type:resource_owner",
+          "entity_type:resource_troubleshooting",
+          "event_type:confirmation",
+          "event_type:dialogue_batch",
+          "event_type:resource_api_contract",
+          "event_type:resource_approval",
+          "event_type:resource_cost",
+          "event_type:resource_deadline",
+          "event_type:resource_owner",
+          "event_type:resource_troubleshooting_step",
+          "heading_slug:context-pack-debugger",
+          "heading_slug:gpu-runbook",
+          "heading_slug:steps",
+          "heading_slug:troubleshooting",
+          "keyword:approval",
+          "keyword:budget",
+          "keyword:context",
+          "keyword:evidence",
+          "keyword:finance",
+          "keyword:gpu",
+          "keyword:inspect",
+          "keyword:missing",
+          "keyword:requests",
+          "keyword:require",
+          "keyword:runbook",
+          "keyword:steps",
+          "keyword:troubleshooting",
+          "resource_type:md",
+          "resource_type:skill",
+          "skill_name:context-pack-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_context_pack",
+          "skill_trigger:replay_evidence",
+          "source_type:message",
+          "source_type:resource",
+          "source_type:resource_fact",
+          "source_type:skill",
+          "status:observed",
+          "unit_kind:markdown_section"
+        ],
+        "missing_embedding_types": [],
+        "missing_record_types": [],
+        "missing_summary_types": [],
+        "record_counts": {
+          "context_child_ref": 7,
+          "context_debug_record": 45,
+          "context_embedding": 83,
+          "context_entity": 17,
+          "context_entity_update_audit": 9,
+          "context_event": 31,
+          "context_extraction_audit": 1,
+          "context_index": 149,
+          "context_node": 10,
+          "context_pack_audit": 3,
+          "context_segment": 4,
+          "context_summary": 24,
+          "context_summary_dirty": 16,
+          "context_summary_refresh_audit": 10,
+          "matrixark_audit_log": 12,
+          "matrixark_metric": 2,
+          "resource_chunk": 4,
+          "resource_import_task": 6,
+          "resource_manifest": 1,
+          "resource_registry": 1,
+          "session_buffer_event": 3,
+          "skill_manifest": 1,
+          "skill_registry": 1,
+          "skill_section": 2
+        },
+        "record_types": [
+          "context_child_ref",
+          "context_debug_record",
+          "context_embedding",
+          "context_entity",
+          "context_entity_update_audit",
+          "context_event",
+          "context_extraction_audit",
+          "context_index",
+          "context_node",
+          "context_pack_audit",
+          "context_segment",
+          "context_summary",
+          "context_summary_dirty",
+          "context_summary_refresh_audit",
+          "matrixark_audit_log",
+          "matrixark_metric",
+          "resource_chunk",
+          "resource_import_task",
+          "resource_manifest",
+          "resource_registry",
+          "session_buffer_event",
+          "skill_manifest",
+          "skill_registry",
+          "skill_section"
+        ],
+        "summary_types": [
+          "batch_l0",
+          "node_l0",
+          "node_l1",
+          "resource_l0",
+          "session_l0",
+          "skill_l0"
+        ]
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_required_pipeline",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=7793525581527636093|u=3029598273137875271|s=3668109007234785072|",
+          "session_hash": 3668109007234785072,
+          "session_id": "session_cpp_thin_python_native_semantic_parity_20260627",
+          "tenant_hash": 7793525581527636093,
+          "tenant_id": "tenant_required_pipeline",
+          "user_hash": 3029598273137875271,
+          "user_id": "user_cpp"
+        },
+        "compression_created_count": 0,
+        "refreshed": [
+          {
+            "dirty_hash": 5225019194395309575,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8469443316281102029,
+            "node_path": [
+              "memory",
+              "approvals"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 2498552049510813902,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 8185407418316415389,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 6203580366243551195,
+            "node_path": [
+              "memory",
+              "approvals",
+              "gpu"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 7524957840338933643,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 5527884872231415842,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4640110363744790749,
+            "node_path": [
+              "memory"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 191
+            },
+            "summary_version_hash": 8872439083196461182,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 4695536266967073569,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6481239486833258144,
+            "node_path": [
+              "memory",
+              "profile"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 175
+            },
+            "summary_version_hash": 3370505332075911889,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 2171883216021822753,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6374091839316063018,
+            "node_path": [
+              "memory",
+              "profile",
+              "session_batch"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 106
+            },
+            "summary_version_hash": 94221307843115863,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 20,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 4341856981974201544,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4743154237302771655,
+            "node_path": [
+              "resources"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 125
+            },
+            "summary_version_hash": 2619139763546627517,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6452759549154533721,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 5687419598181529931,
+            "node_path": [
+              "resources",
+              "runbooks"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 125
+            },
+            "summary_version_hash": 4788086433111831595,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 1723101612440117114,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8224798363037858282,
+            "node_path": [
+              "resources",
+              "runbooks",
+              "gpu"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 188
+            },
+            "summary_version_hash": 6837004247265101838,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 9,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 8316003850106493909,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 3657432287575731750,
+            "node_path": [
+              "skills"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 187
+            },
+            "summary_version_hash": 6000710677571424825,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 8758735225482122029,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 1442724107412651879,
+            "node_path": [
+              "skills",
+              "context-pack-debugger"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 8
+            },
+            "summary_version_hash": 2749863318077021942,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          }
+        ],
+        "refreshed_count": 10,
+        "status": "ok"
+      }
+    },
+    {
+      "audit": {
+        "actions": [
+          "context.batch_extract",
+          "context.ingest",
+          "context.refresh_summaries",
+          "context.replay",
+          "context.retrieve"
+        ],
+        "count": 12
+      },
+      "backend": "rust",
+      "checks": {
+        "admin_audit_ingest_refresh_retrieve_replay": true,
+        "audit_replay_memory": true,
+        "audit_replay_resource": true,
+        "audit_replay_skill": true,
+        "batch_extraction_wrote_entities": true,
+        "batch_extraction_wrote_segments": true,
+        "context_packs_written": true,
+        "memory_secondary_index_prefilter": true,
+        "memory_tree_traversal_l0_l1": true,
+        "online_ingest_extracted_event": true,
+        "required_embedding_types_present": true,
+        "required_record_types_present": true,
+        "required_summary_types_present": true,
+        "resource_ingest_extracted_facts": true,
+        "resource_ingest_wrote_chunks": true,
+        "resource_secondary_index_prefilter": true,
+        "resource_tree_traversal_l0_l1": true,
+        "retrieve_events_or_entities": true,
+        "retrieve_resources": true,
+        "retrieve_skills": true,
+        "secondary_indexes_present": true,
+        "skill_ingest_wrote_skill_hash": true,
+        "skill_secondary_index_prefilter": true,
+        "skill_tree_traversal_l0_l1": true,
+        "summary_refresh_completed": true
+      },
+      "elapsed_ms": 81689.05,
+      "ingest": {
+        "batch": {
+          "entities_written": 9,
+          "events_written": 20,
+          "indexes_written": 8,
+          "segments_written": 4,
+          "status": "accepted"
+        },
+        "online": {
+          "classification": "NEW_EVENT",
+          "status": "accepted"
+        },
+        "resource": {
+          "chunks": [
+            31000,
+            31001
+          ],
+          "entities": 8,
+          "facts": 8,
+          "status": "accepted"
+        },
+        "skill": {
+          "skill_hash": 5508001140924899897,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-rust",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "required_pipeline_parity:rust:thin_python_native_semantic_parity_20260627",
+        "status": "ready",
+        "storage_prefix": "matrixark:required-pipeline:rust:thin_python_native_semantic_parity_20260627",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:required-pipeline:rust:thin_python_native_semantic_parity_20260627",
+          "table": "deploy_table",
+          "warmup_field": "1148793:1782604528020:4971853883812211106",
+          "warmup_key": "matrixark:required-pipeline:rust:thin_python_native_semantic_parity_20260627:readiness"
+        },
+        "warmup_key": "matrixark:required-pipeline:rust:thin_python_native_semantic_parity_20260627:readiness"
+      },
+      "replay": {
+        "memory": {
+          "context_pack_id": "rust-native-1782604592819-16",
+          "event_count": 478
+        },
+        "resource": {
+          "context_pack_id": "rust-native-1782604593076-15",
+          "event_count": 479
+        },
+        "skill": {
+          "context_pack_id": "rust-native-1782604593334-9",
+          "event_count": 480
+        }
+      },
+      "retrieval": {
+        "memory": {
+          "context_pack_id": "rust-native-1782604592819-16",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 51,
+            "enabled": true,
+            "matched_candidate_count": 242,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 1,
+            "event": 3,
+            "segment": 1,
+            "summary": 11
+          },
+          "tree_traversal": {
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 5,
+            "selected_node_count": 5,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "resource": {
+          "context_pack_id": "rust-native-1782604593076-15",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 51,
+            "enabled": true,
+            "matched_candidate_count": 242,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 7,
+            "resource_chunk": 1,
+            "summary": 7
+          },
+          "tree_traversal": {
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 4,
+            "selected_node_count": 4,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "skill": {
+          "context_pack_id": "rust-native-1782604593334-9",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 44,
+            "enabled": true,
+            "matched_candidate_count": 249,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 1,
+            "event": 1,
+            "resource_chunk": 1,
+            "skill_section": 1,
+            "summary": 5
+          },
+          "tree_traversal": {
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 4,
+            "selected_node_count": 4,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        }
+      },
+      "storage_prefix": "matrixark:required-pipeline:rust:thin_python_native_semantic_parity_20260627",
+      "storage_records": {
+        "embedding_types": [
+          "batch_l0",
+          "entity_state",
+          "event_text",
+          "node_l0",
+          "node_l1",
+          "resource_chunk",
+          "resource_l0",
+          "segment_text",
+          "session_l0",
+          "skill_l0",
+          "skill_section",
+          "skill_summary"
+        ],
+        "index_name_sample": [
+          "classification:batch_memory",
+          "classification:new_event",
+          "entity_type:job_status",
+          "entity_type:location",
+          "entity_type:preference",
+          "entity_type:relationship",
+          "entity_type:resource_api_contract",
+          "entity_type:resource_approval",
+          "entity_type:resource_cost",
+          "entity_type:resource_deadline",
+          "entity_type:resource_fact",
+          "entity_type:resource_owner",
+          "entity_type:resource_troubleshooting",
+          "event_type:confirmation",
+          "event_type:dialogue_batch",
+          "event_type:resource_api_contract",
+          "event_type:resource_approval",
+          "event_type:resource_cost",
+          "event_type:resource_deadline",
+          "event_type:resource_owner",
+          "event_type:resource_troubleshooting_step",
+          "heading_slug:context-pack-debugger",
+          "heading_slug:gpu-runbook",
+          "heading_slug:steps",
+          "heading_slug:troubleshooting",
+          "keyword:approval",
+          "keyword:budget",
+          "keyword:context",
+          "keyword:evidence",
+          "keyword:finance",
+          "keyword:gpu",
+          "keyword:inspect",
+          "keyword:missing",
+          "keyword:requests",
+          "keyword:require",
+          "keyword:runbook",
+          "keyword:steps",
+          "keyword:troubleshooting",
+          "resource_type:md",
+          "resource_type:skill",
+          "skill_name:context-pack-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_context_pack",
+          "skill_trigger:replay_evidence",
+          "source_type:message",
+          "source_type:resource",
+          "source_type:resource_fact",
+          "source_type:skill",
+          "status:observed",
+          "unit_kind:markdown_section"
+        ],
+        "missing_embedding_types": [],
+        "missing_record_types": [],
+        "missing_summary_types": [],
+        "record_counts": {
+          "context_child_ref": 7,
+          "context_debug_record": 45,
+          "context_embedding": 96,
+          "context_entity": 17,
+          "context_entity_update_audit": 9,
+          "context_event": 31,
+          "context_extraction_audit": 1,
+          "context_index": 149,
+          "context_node": 10,
+          "context_pack_audit": 3,
+          "context_segment": 4,
+          "context_summary": 37,
+          "context_summary_dirty": 16,
+          "context_summary_refresh_audit": 18,
+          "matrixark_audit_log": 17,
+          "matrixark_metric": 2,
+          "resource_chunk": 4,
+          "resource_import_task": 6,
+          "resource_manifest": 1,
+          "resource_registry": 1,
+          "session_buffer_event": 3,
+          "skill_manifest": 1,
+          "skill_registry": 1,
+          "skill_section": 2
+        },
+        "record_types": [
+          "context_child_ref",
+          "context_debug_record",
+          "context_embedding",
+          "context_entity",
+          "context_entity_update_audit",
+          "context_event",
+          "context_extraction_audit",
+          "context_index",
+          "context_node",
+          "context_pack_audit",
+          "context_segment",
+          "context_summary",
+          "context_summary_dirty",
+          "context_summary_refresh_audit",
+          "matrixark_audit_log",
+          "matrixark_metric",
+          "resource_chunk",
+          "resource_import_task",
+          "resource_manifest",
+          "resource_registry",
+          "session_buffer_event",
+          "skill_manifest",
+          "skill_registry",
+          "skill_section"
+        ],
+        "summary_types": [
+          "batch_l0",
+          "node_l0",
+          "node_l1",
+          "resource_l0",
+          "session_l0",
+          "skill_l0"
+        ]
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_required_pipeline",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=7793525581527636093|u=1286033426559290006|s=823496978053548961|",
+          "session_hash": 823496978053548961,
+          "session_id": "session_rust_thin_python_native_semantic_parity_20260627",
+          "tenant_hash": 7793525581527636093,
+          "tenant_id": "tenant_required_pipeline",
+          "user_hash": 1286033426559290006,
+          "user_id": "user_rust"
+        },
+        "compression_created_count": 0,
+        "refreshed": [
+          {
+            "dirty_hash": 4302903665485267031,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 3657432287575731750,
+            "node_path": [
+              "skills"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 3,
+            "summary_generation_policy": {
+              "child_summary_count": 3,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 203
+            },
+            "summary_version_hash": 7573380708718922965,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 3192790630099518446,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 1442724107412651879,
+            "node_path": [
+              "skills",
+              "context-pack-debugger"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 8
+            },
+            "summary_version_hash": 8615398651100375004,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          }
+        ],
+        "refreshed_count": 2,
+        "status": "ok"
+      }
+    }
+  ],
+  "run_id": "thin_python_native_semantic_parity_20260627"
+}
