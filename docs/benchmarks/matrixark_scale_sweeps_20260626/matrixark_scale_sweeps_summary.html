@@ -1,0 +1,100 @@
+<!doctype html><meta charset="utf-8"><title>MatrixArk Scale Sweeps</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;line-height:1.5;color:#172033}pre{background:#f6f8fb;border:1px solid #dde5f0;border-radius:8px;padding:14px;overflow:auto}code{background:#eef3f8;padding:2px 4px;border-radius:4px}</style><pre># MatrixArk Scale Sweeps 2026-06-26
+
+## Result
+
+- status: `completed_with_blockers`
+- shared C++/Rust context pipeline: `passed`
+- C++ unified contract seconds: `6.118957975995727`
+- Rust unified mock seconds: `1.8898360169987427`
+- total expected events in shared pipeline: `43`
+- context-pack/audit records in partial retrieval trace: `116` packs, `221` audit logs
+- partial ContextPack count: `104`
+
+## What Ran
+
+1. Shared C++/Rust full context pipeline scale E2E: passed.
+2. Live C++ raw SDK 1K hset/hget sweep: attempted, timed out before report.
+3. Live C++ vs Rust scale comparison: attempted, timed out before report.
+4. Local retrieval/resource 4/8/16/32 worker sweep: attempted, wrote partial JSONL trace, timed out before final report.
+
+## Retrieval Trace Summary
+
+```json
+{
+  &quot;context_pack_audit_count&quot;: 116,
+  &quot;fallback_reasons&quot;: {
+    &quot;deadline_after_embedding_index_scan&quot;: 1,
+    &quot;deadline_after_event_scan&quot;: 6,
+    &quot;deadline_after_record_load&quot;: 97
+  },
+  &quot;jsonl_bytes&quot;: 6187663,
+  &quot;jsonl_path&quot;: &quot;/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl&quot;,
+  &quot;matrixark_audit_log_count&quot;: 221,
+  &quot;partial_context_pack_count&quot;: 104,
+  &quot;record_counts&quot;: {
+    &quot;context_child_ref&quot;: 21,
+    &quot;context_debug_record&quot;: 1120,
+    &quot;context_embedding&quot;: 1534,
+    &quot;context_entity&quot;: 120,
+    &quot;context_entity_update_audit&quot;: 120,
+    &quot;context_event&quot;: 1000,
+    &quot;context_extraction_audit&quot;: 10,
+    &quot;context_index&quot;: 80,
+    &quot;context_node&quot;: 22,
+    &quot;context_pack_audit&quot;: 116,
+    &quot;context_pack_telemetry&quot;: 12,
+    &quot;context_recall_reinforcement&quot;: 376,
+    &quot;context_segment&quot;: 40,
+    &quot;context_summary&quot;: 374,
+    &quot;context_summary_dirty&quot;: 40,
+    &quot;context_summary_refresh_audit&quot;: 182,
+    &quot;matrixark_audit_log&quot;: 221
+  },
+  &quot;retrieval_elapsed_ms&quot;: {
+    &quot;avg&quot;: 32055.519,
+    &quot;count&quot;: 104,
+    &quot;max&quot;: 72468.813,
+    &quot;p50&quot;: 29582.856,
+    &quot;p95&quot;: 63636.795,
+    &quot;p99&quot;: 71053.461
+  },
+  &quot;selected_refs&quot;: {
+    &quot;avg&quot;: 11.043,
+    &quot;p50&quot;: 8,
+    &quot;p95&quot;: 50
+  },
+  &quot;used_context_tokens&quot;: {
+    &quot;avg&quot;: 623.621,
+    &quot;p50&quot;: 647,
+    &quot;p95&quot;: 656
+  }
+}
+```
+
+## Blockers
+
+### C++ native backend 1K/10K/100K ingestion sweep
+
+- result: `timed_out_after_184s_before_report`
+- evidence: `No raw SDK report was produced. A lingering run was killed.`
+- likely cause: Live local C++ deployment is single-node sync storage (storage_async=false) with small storage_zone_size=10485760; not the async/bundled production sweep profile.
+
+### C++ vs Rust live scale report
+
+- result: `timed_out_after_244s_before_report`
+- evidence: `No cpp_rust_scale_120 report was produced.`
+- likely cause: Live native backend write/query path still blocks before comparison artifact can complete.
+
+### retrieval worker sweep 4/8/16/32 with resource import and audit
+
+- result: `timed_out_after_244s_with_partial_jsonl_trace`
+- evidence: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl`
+- likely cause: Local Python/MCP record-log loading and audit writes degrade into timeout_partial packs; retrieval elapsed in audit records is ~56-72s despite 5s deadline fallback.
+
+## Next Fixes
+
+- Run native sweeps only after launching C++/Rust with async oplog/bundled write profile and adequate storage zone size.
+- Move ingestion sweep below Python JSONL/MCP path: native matrixark_batch_append_records should enqueue/batch inside TemporalStore.
+- For retrieval scale, push prefix scan, secondary-index prefilter, and ContextPack audit buffering into C++/Rust; current local Python audit trace shows timeout_partial fallback under load.
+- Rerun 1K, 10K, 100K only after 1K produces a report under the guardrail; then run 4/8/16/32 workers separately from ingest-only.
+</pre>

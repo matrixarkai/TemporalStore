@@ -1,0 +1,65 @@
+{
+  "status": "passed",
+  "corpus": "temporalstore_context_pipeline_scale_e2e",
+  "case": "context_pipeline_scale_e2e",
+  "expected": {
+    "events_per_lane": 20,
+    "requested_model_provider": "deterministic",
+    "effective_model_provider": "deterministic",
+    "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "summary_embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+    "vlm_model": "Salesforce/blip-image-captioning-base",
+    "embedding_backend": "deterministic-local-fallback",
+    "vlm_backend": "metadata-only-vlm-fallback",
+    "embedding_dim": 16,
+    "api_events": 1,
+    "batch_events": 20,
+    "stream_events": 20,
+    "resource_chunks": 1,
+    "resource_extracted_events": 1,
+    "entity_records": 2,
+    "summary_records": 7,
+    "summary_embedding_refs": 6,
+    "summary_embedding_paired_refs": 6,
+    "summary_refs_in_context_packs": 5,
+    "compression_records": 2,
+    "compression_source_event_refs": 43,
+    "feedback_events": 1,
+    "agent_envelopes": 3,
+    "agent_envelope_kinds": [
+      "message",
+      "resource",
+      "feedback"
+    ],
+    "hook_captured_envelopes": 3,
+    "hook_types": [
+      "before_llm",
+      "resource_added",
+      "after_llm"
+    ],
+    "agent_always_extract_envelopes": 3,
+    "confirmation_requires_context": true,
+    "total_expected_events": 43,
+    "tree_shape": "root/collection/leaf",
+    "layer_traversal": "global_topk_per_depth",
+    "query_understanding": "model",
+    "staleness_scoring": "algorithmic_freshness_v1",
+    "token_budgeting": "max_prompt_tokens",
+    "pipeline": [
+      "raw_query_plus_hints",
+      "model_query_understanding",
+      "scope_time_filter_planning",
+      "context_node_traversal",
+      "context_event_resource_retrieval",
+      "algorithmic_staleness_scoring",
+      "token_budgeting",
+      "context_pack"
+    ],
+    "steps": 64
+  },
+  "timings": {
+    "cpp_unified_contract_s": 6.118957975995727,
+    "rust_unified_mock_s": 1.8898360169987427
+  },
+  "rust_executed": true
+}
