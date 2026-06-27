@@ -894,13 +894,15 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - WAL-backed data Raft clusters now persist installed snapshot payload and snapshot-index floor in WAL records, so a restarted replica can recover trimmed pre-snapshot state without replaying old log entries.
 - Rust now emits a `ByteRaftRuntimeAdminReport` from the Raft process path. It makes the
   ByteRaft-derived runtime fields executable instead of only documented: per-peer match/next index,
-  inflight bytes/entries, append and reorder queue depth, snapshot sender/downloader lifecycle
-  state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
+  append request/accept/reject counters, inflight bytes/entries, append and reorder queue depth,
+  snapshot sender/downloader lifecycle state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
   leader-transfer target state, pre-vote/election rejection counters, read-index and lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention, and admin-status
   completeness. The standalone Raft node `/metrics` route and raft-enabled data-node `/metrics`
   output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
-  read-safety gauges for scrape-based operator parity. The per-peer pipeline/reorder/snapshot
+  read-safety gauges for scrape-based operator parity. Append request construction now enforces
+  configured in-flight entry/byte limits, rejects saturated peer pipelines with explicit
+  backpressure, and records the outcome in per-peer counters. The per-peer pipeline/reorder/snapshot
   fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
   local WAL records, so the process-path evidence survives restart instead of being only a
   report-time derivation.
