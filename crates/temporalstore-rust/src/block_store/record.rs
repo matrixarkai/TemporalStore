@@ -3,7 +3,7 @@ use std::io::Cursor;
 
 use sha2::{Digest, Sha256};
 
-use super::{PageAddress, PageStoreError, PageStoreOptions, PageStoreSegmentReport};
+use super::{BlockAddress, BlockStoreError, BlockStoreOptions, BlockStoreSegmentReport};
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
 pub(super) const PAGE_RECORD_VERSION: u8 = 6;
@@ -76,8 +76,8 @@ pub(super) fn encode_page_record(
     object_id: Option<u64>,
     routing_slot: Option<u32>,
     zone_id: u64,
-    options: PageStoreOptions,
-) -> Result<EncodedPageRecord, PageStoreError> {
+    options: BlockStoreOptions,
+) -> Result<EncodedPageRecord, BlockStoreError> {
     let digest = Sha256::digest(payload);
     let (stored_payload, compression) = encode_page_record_payload(payload, options)?;
     let stored_len = stored_payload.len();
@@ -112,8 +112,8 @@ pub(super) fn encode_page_record(
 
 fn encode_page_record_payload(
     payload: &[u8],
-    options: PageStoreOptions,
-) -> Result<(Vec<u8>, PageRecordCompression), PageStoreError> {
+    options: BlockStoreOptions,
+) -> Result<(Vec<u8>, PageRecordCompression), BlockStoreError> {
     if !options.compression_enabled || payload.len() < options.compression_min_bytes {
         return Ok((payload.to_vec(), PageRecordCompression::None));
     }
@@ -130,8 +130,8 @@ fn encode_page_record_payload(
 
 pub(super) fn decode_page_record(
     record: &[u8],
-    address: &PageAddress,
-) -> Result<DecodedPageRecord, PageStoreError> {
+    address: &BlockAddress,
+) -> Result<DecodedPageRecord, BlockStoreError> {
     if !record.starts_with(PAGE_RECORD_MAGIC) {
         return Ok(DecodedPageRecord {
             payload: record.to_vec(),
@@ -202,7 +202,7 @@ pub(super) fn logical_range_from_segment(
     page_segment_id: u64,
     offset: u64,
     size: u64,
-) -> Result<LogicalRangeRead, PageStoreError> {
+) -> Result<LogicalRangeRead, BlockStoreError> {
     if size == 0 {
         return Ok(LogicalRangeRead {
             bytes: Vec::new(),
@@ -232,7 +232,7 @@ pub(super) fn logical_range_from_segment(
 
     while physical_offset < segment.len() && out.len() < size as usize {
         let remaining = &segment[physical_offset..];
-        let address = PageAddress {
+        let address = BlockAddress {
             page_segment_id,
             offset: physical_offset as u64,
             length: 0,
@@ -259,7 +259,7 @@ pub(super) fn logical_range_from_segment(
                 "payload length mismatch".to_string(),
             ));
         }
-        let address = PageAddress {
+        let address = BlockAddress {
             length: record_len as u64,
             page_id: header.page_id,
             object_id: header.object_id,
@@ -298,8 +298,8 @@ pub(super) fn logical_range_from_segment(
 
 fn parse_page_record_header(
     record: &[u8],
-    address: &PageAddress,
-) -> Result<PageRecordHeader, PageStoreError> {
+    address: &BlockAddress,
+) -> Result<PageRecordHeader, BlockStoreError> {
     let version = record[8];
     if !matches!(version, 1..=PAGE_RECORD_VERSION) {
         return Err(corrupt_page_envelope(
@@ -436,8 +436,8 @@ fn parse_page_record_header(
 fn decode_page_record_payload(
     stored_payload: &[u8],
     header: &PageRecordHeader,
-    address: &PageAddress,
-) -> Result<Vec<u8>, PageStoreError> {
+    address: &BlockAddress,
+) -> Result<Vec<u8>, BlockStoreError> {
     match header.compression {
         PageRecordCompression::None => Ok(stored_payload.to_vec()),
         PageRecordCompression::Zstd => {
@@ -462,11 +462,11 @@ fn decode_page_record_payload(
 fn verify_page_record_checksum(
     payload: &[u8],
     expected_sha256: &[u8; 32],
-    address: &PageAddress,
-) -> Result<(), PageStoreError> {
+    address: &BlockAddress,
+) -> Result<(), BlockStoreError> {
     let actual_sha256 = Sha256::digest(payload);
     if &actual_sha256[..] != expected_sha256 {
-        return Err(PageStoreError::ChecksumMismatch {
+        return Err(BlockStoreError::ChecksumMismatch {
             page_segment_id: address.page_segment_id,
             offset: address.offset,
             length: address.length,
@@ -478,10 +478,10 @@ fn verify_page_record_checksum(
 }
 
 pub(super) fn corrupt_page_envelope(
-    address: &PageAddress,
+    address: &BlockAddress,
     reason: impl Into<String>,
-) -> PageStoreError {
-    PageStoreError::CorruptPageEnvelope {
+) -> BlockStoreError {
+    BlockStoreError::CorruptPageEnvelope {
         page_segment_id: address.page_segment_id,
         offset: address.offset,
         reason: reason.into(),
@@ -502,7 +502,7 @@ pub(super) struct SegmentSummary {
 pub(super) fn summarize_segment(
     segment: &[u8],
     page_segment_id: u64,
-) -> Result<SegmentSummary, PageStoreError> {
+) -> Result<SegmentSummary, BlockStoreError> {
     if !segment.starts_with(PAGE_RECORD_MAGIC) {
         return Ok(SegmentSummary {
             logical_bytes: segment.len() as u64,
@@ -514,7 +514,7 @@ pub(super) fn summarize_segment(
     let mut summary = SegmentSummary::default();
     while physical_offset < segment.len() {
         let remaining = &segment[physical_offset..];
-        let address = PageAddress {
+        let address = BlockAddress {
             page_segment_id,
             offset: physical_offset as u64,
             length: 0,
@@ -561,11 +561,11 @@ pub(super) fn summarize_segment(
     Ok(summary)
 }
 
-pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStoreSegmentReport {
-    let mut report = PageStoreSegmentReport {
+pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStoreSegmentReport {
+    let mut report = BlockStoreSegmentReport {
         page_segment_id,
         physical_bytes: segment.len() as u64,
-        ..PageStoreSegmentReport::default()
+        ..BlockStoreSegmentReport::default()
     };
     let mut object_ids = BTreeSet::new();
     let mut routing_slots = BTreeSet::new();
@@ -582,7 +582,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStore
     let mut physical_offset = 0usize;
     while physical_offset < segment.len() {
         let remaining = &segment[physical_offset..];
-        let mut address = PageAddress {
+        let mut address = BlockAddress {
             page_segment_id,
             offset: physical_offset as u64,
             length: 0,
@@ -673,7 +673,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> PageStore
 }
 
 fn record_segment_inspection_error(
-    report: &mut PageStoreSegmentReport,
+    report: &mut BlockStoreSegmentReport,
     offset: u64,
     error: String,
 ) {

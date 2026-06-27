@@ -2868,7 +2868,7 @@ impl DataNodeRuntime {
                     total_records: stats.total_records,
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
-                    page_store_bytes_written: stats.page_store.bytes_written,
+                    block_store_bytes_written: stats.block_store.bytes_written,
                     oplog_sequence: stats.write_ahead_log.last_sequence,
                     dirty_object_count: dirty_by_shard
                         .get(&stats.shard_id)
@@ -3460,10 +3460,13 @@ fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse 
     if status.ok {
         if let Some(retain_from_page_segment_id) = request.retain_page_segments_from_id {
             let live_page_segment_ids = inner.engine.live_page_segment_ids(request.shard_id);
-            match inner.engine.page_store().gc_segments_before_with_live_refs(
-                retain_from_page_segment_id,
-                live_page_segment_ids,
-            ) {
+            match inner
+                .engine
+                .block_store()
+                .gc_segments_before_with_live_refs(
+                    retain_from_page_segment_id,
+                    live_page_segment_ids,
+                ) {
                 Ok(report) => {
                     page_segments_removed = report.removed_page_segment_ids.len();
                     page_segments_removed_physical_bytes = report.removed_physical_bytes;
@@ -3473,7 +3476,7 @@ fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse 
                         report.retained_live_physical_bytes;
                 }
                 Err(err) => {
-                    status = Status::error("page_store_gc_failed", &err.to_string());
+                    status = Status::error("block_store_gc_failed", &err.to_string());
                 }
             }
         }

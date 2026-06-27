@@ -9,8 +9,8 @@ use sha2::{Digest, Sha256};
 use temporalstore_snapshot::object_store::{ObjectStore, ObjectStoreError};
 use thiserror::Error;
 
+use crate::block_store::{BlockStoreError, LocalBlockStore};
 use crate::engine::TemporalEngine;
-use crate::page_store::{LocalPageStore, PageStoreError};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
 
 #[derive(Debug, Error)]
@@ -20,7 +20,7 @@ pub enum SharedStoreReplicationError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
     #[error("page store error: {0}")]
-    PageStore(#[from] PageStoreError),
+    BlockStore(#[from] BlockStoreError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
@@ -284,14 +284,14 @@ where
     pub async fn publish_page_segments(
         &self,
         shard_id: ShardId,
-        page_store: &LocalPageStore,
+        block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
-        for page_segment_id in page_store.segment_ids()? {
+        for page_segment_id in block_store.segment_ids()? {
             self.object_store
                 .put(
                     &self.page_segment_key(shard_id, page_segment_id),
-                    Bytes::from(page_store.read_segment(page_segment_id)?),
+                    Bytes::from(block_store.read_segment(page_segment_id)?),
                 )
                 .await?;
             published.push(page_segment_id);
@@ -304,7 +304,7 @@ where
         shard_id: ShardId,
         checkpoint_oplog_index: u64,
         engine: &TemporalEngine,
-        page_store: &LocalPageStore,
+        block_store: &LocalBlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
@@ -315,8 +315,8 @@ where
             .await?;
 
         let mut page_segments = Vec::new();
-        for page_segment_id in page_store.segment_ids()? {
-            let bytes = page_store.read_segment(page_segment_id)?;
+        for page_segment_id in block_store.segment_ids()? {
+            let bytes = block_store.read_segment(page_segment_id)?;
             let key = format!("{prefix}page_segments/page_segment_{page_segment_id:020}.seg");
             self.object_store
                 .put(&key, Bytes::from(bytes.clone()))
@@ -353,7 +353,7 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        page_store: &LocalPageStore,
+        block_store: &LocalBlockStore,
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let index = self.object_store.get(&self.index_key(shard_id)).await?;
         engine.install_index_bytes(shard_id, &index)?;
@@ -365,7 +365,7 @@ where
                 continue;
             };
             let bytes = self.object_store.get(&key).await?;
-            page_store.install_segment(page_segment_id, &bytes)?;
+            block_store.install_segment(page_segment_id, &bytes)?;
             restored.push(page_segment_id);
         }
         restored.sort_unstable();
@@ -397,7 +397,7 @@ where
         &self,
         manifest: &SharedStoreCheckpointManifest,
         engine: &TemporalEngine,
-        page_store: &LocalPageStore,
+        block_store: &LocalBlockStore,
     ) -> Result<(), SharedStoreReplicationError> {
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
@@ -411,7 +411,7 @@ where
         for segment in &manifest.page_segments {
             let bytes = self.object_store.get(&segment.key).await?;
             verify_checksum(&segment.key, &bytes, segment.byte_size, &segment.sha256)?;
-            page_store.install_segment(segment.page_segment_id, &bytes)?;
+            block_store.install_segment(segment.page_segment_id, &bytes)?;
         }
         Ok(())
     }
@@ -420,14 +420,14 @@ where
         &self,
         shard_id: ShardId,
         engine: &TemporalEngine,
-        page_store: &LocalPageStore,
+        block_store: &LocalBlockStore,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         let manifest = self
             .list_checkpoints(shard_id)
             .await?
             .pop()
             .ok_or(SharedStoreReplicationError::CheckpointNotFound(shard_id))?;
-        self.restore_checkpoint(&manifest, engine, page_store)
+        self.restore_checkpoint(&manifest, engine, block_store)
             .await?;
         Ok(manifest)
     }
@@ -1035,7 +1035,7 @@ mod tests {
         let (_store, replicator) = test_shared_store(dir.path());
         replicator.publish_index(1, &primary).await.unwrap();
         replicator
-            .publish_page_segments(1, &primary.page_store())
+            .publish_page_segments(1, &primary.block_store())
             .await
             .unwrap();
         replicator
@@ -1052,7 +1052,7 @@ mod tests {
 
         let follower = test_engine(dir.path(), "follower");
         let restored = replicator
-            .restore_index_and_pages(1, &follower, &follower.page_store())
+            .restore_index_and_pages(1, &follower, &follower.block_store())
             .await
             .unwrap();
         assert_eq!(restored, vec![0]);
@@ -1110,7 +1110,7 @@ mod tests {
 
         let (store, replicator) = test_shared_store(dir.path());
         let manifest = replicator
-            .publish_checkpoint(1, 1, &primary, &primary.page_store())
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
             .await
             .unwrap();
         store
@@ -1124,7 +1124,7 @@ mod tests {
         let follower = test_engine(dir.path(), "follower");
         assert!(matches!(
             replicator
-                .restore_checkpoint(&manifest, &follower, &follower.page_store())
+                .restore_checkpoint(&manifest, &follower, &follower.block_store())
                 .await
                 .unwrap_err(),
             SharedStoreReplicationError::ChecksumMismatch { .. }
@@ -1456,7 +1456,7 @@ mod tests {
                 },
             });
             replicator
-                .publish_checkpoint(1, checkpoint_oplog_index, &primary, &primary.page_store())
+                .publish_checkpoint(1, checkpoint_oplog_index, &primary, &primary.block_store())
                 .await
                 .unwrap();
         }

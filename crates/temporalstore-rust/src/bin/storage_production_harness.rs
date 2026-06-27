@@ -66,7 +66,7 @@ struct StorageProductionCaseSummary {
     fault_matrix_passed_count: usize,
     fault_matrix_scenario_count: usize,
     cache_warmup_page_refs: usize,
-    cache_warmup_page_store_reads: usize,
+    cache_warmup_block_store_reads: usize,
     cache_warmup_failed_page_refs: usize,
     cache_memory_hits: u64,
     cache_disk_hits: u64,
@@ -228,7 +228,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
         fault_matrix_passed_count: fault_matrix.passed_count,
         fault_matrix_scenario_count: fault_matrix.scenario_count,
         cache_warmup_page_refs: lifecycle.cache_warmup.considered_page_refs,
-        cache_warmup_page_store_reads: lifecycle.cache_warmup.page_store_reads,
+        cache_warmup_block_store_reads: lifecycle.cache_warmup.block_store_reads,
         cache_warmup_failed_page_refs: lifecycle.cache_warmup.failed_page_refs,
         cache_memory_hits: cache_stats.memory_hits,
         cache_disk_hits: cache_stats.disk_hits,
@@ -326,9 +326,9 @@ fn assert_lifecycle_ok(report: &StorageLifecycleReport, case_name: &str) {
     assert!(report.cache_warmup.considered_page_refs > 0);
     assert_eq!(report.cache_warmup.failed_page_refs, 0);
     assert!(
-        report.cache_warmup.page_store_reads > 0
+        report.cache_warmup.block_store_reads > 0
             || report.cache_warmup.already_cached_page_refs > 0,
-        "case={case_name} did not prove cache warmup via page-store read or existing cache refs"
+        "case={case_name} did not prove cache warmup via block-store read or existing cache refs"
     );
     assert!(
         report.manifest_prune_plan.follower_blocks.is_empty()

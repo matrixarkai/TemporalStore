@@ -115,12 +115,12 @@ METRIC_FAMILIES = {
             "temporalstore_storage_slot_page_refs",
             "temporalstore_storage_slot_bytes",
             "temporalstore_cache_operations_total",
-            "temporalstore_page_store_operations_total",
-            "temporalstore_page_store_zone_bytes",
+            "temporalstore_block_store_operations_total",
+            "temporalstore_block_store_zone_bytes",
         ],
         "alerts": [
             "TemporalStoreStorageCacheBlockers",
-            "TemporalStorePageStoreReadErrors",
+            "TemporalStoreBlockStoreReadErrors",
             "TemporalStoreCacheMissPressure",
         ],
         "rust": [
@@ -131,8 +131,8 @@ METRIC_FAMILIES = {
             "temporalstore_storage_slot_bytes",
             "temporalstore_cache_operations_total",
             "temporalstore_cache_bytes",
-            "temporalstore_page_store_operations_total",
-            "temporalstore_page_store_zone_bytes",
+            "temporalstore_block_store_operations_total",
+            "temporalstore_block_store_zone_bytes",
         ],
     },
     "data_node": {

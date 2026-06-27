@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
+use crate::block_store::{BlockAddress, LocalBlockStore};
 use crate::cache::MultiLayerCache;
-use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::{
     FeatureFilter, FeatureFilterOp, FeaturePoint, IpsSnapshotReport, IpsStats, RiskFamily,
     SequenceFeatureRow, ShardId,
@@ -12,12 +12,12 @@ use super::state::PackedFeaturePageDecode;
 use super::{parse_i64, read_page_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<SequenceFeatureRow> {
-    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => points
             .into_iter()
@@ -48,7 +48,7 @@ pub(super) fn sequence_filter_matches(row: &SequenceFeatureRow, filter: &Feature
 
 pub(super) fn sequence_rows_in_range(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -65,7 +65,7 @@ pub(super) fn sequence_rows_in_range(
                 .range(start_ms..=end_ms)
                 .take(count)
                 .filter_map(|(timestamp_ms, address)| {
-                    read_sequence_row(cache, page_store, shard_id, *timestamp_ms, address)
+                    read_sequence_row(cache, block_store, shard_id, *timestamp_ms, address)
                 })
                 .filter(|row| {
                     filters
@@ -145,7 +145,7 @@ pub(super) fn risk_family_name(family: RiskFamily) -> &'static str {
 
 pub(super) fn ips_points_in_range(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -161,7 +161,7 @@ pub(super) fn ips_points_in_range(
                 .range(start_ms..=end_ms)
                 .take(count.unwrap_or(usize::MAX))
                 .filter_map(|(timestamp_ms, address)| {
-                    read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
+                    read_feature_point(cache, block_store, shard_id, *timestamp_ms, address)
                 })
                 .collect()
         })
@@ -170,7 +170,7 @@ pub(super) fn ips_points_in_range(
 
 pub(super) fn ips_points_in_range_with_options(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: &str,
@@ -182,7 +182,14 @@ pub(super) fn ips_points_in_range_with_options(
 ) -> Vec<FeaturePoint> {
     let Some(series) = shard.ips_meta.get(key) else {
         return ips_points_in_range(
-            cache, page_store, shard_id, shard, key, start_ms, end_ms, count,
+            cache,
+            block_store,
+            shard_id,
+            shard,
+            key,
+            start_ms,
+            end_ms,
+            count,
         );
     };
     series
@@ -197,7 +204,7 @@ pub(super) fn ips_points_in_range_with_options(
         })
         .take(count.unwrap_or(usize::MAX))
         .filter_map(|(timestamp_ms, meta)| {
-            read_feature_point(cache, page_store, shard_id, *timestamp_ms, &meta.address)
+            read_feature_point(cache, block_store, shard_id, *timestamp_ms, &meta.address)
         })
         .collect()
 }
@@ -227,7 +234,7 @@ pub(super) fn empty_ips_snapshot_report(
 
 pub(super) fn ips_snapshot_report_in_range(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     shard: &ShardState,
     key: String,
@@ -237,7 +244,7 @@ pub(super) fn ips_snapshot_report_in_range(
 ) -> IpsSnapshotReport {
     let points = ips_points_in_range(
         cache,
-        page_store,
+        block_store,
         shard_id,
         shard,
         &key,
@@ -246,14 +253,14 @@ pub(super) fn ips_snapshot_report_in_range(
         requested_count,
     );
     let stats = ips_stats_in_range(shard, &key, start_ms, end_ms);
-    let mut page_refs = HashSet::<PageAddress>::new();
+    let mut page_refs = HashSet::<BlockAddress>::new();
     let mut page_segment_ids = BTreeSet::<u64>::new();
     let mut packed_timestamped_page_count = 0usize;
     if let Some(series) = shard.ips.get(&key) {
         for (_, address) in series.range(start_ms..=end_ms) {
             if page_refs.insert(address.clone()) {
                 page_segment_ids.insert(address.page_segment_id);
-                if read_page_bytes(cache, page_store, shard_id, address)
+                if read_page_bytes(cache, block_store, shard_id, address)
                     .map(|bytes| {
                         matches!(
                             decode_feature_page_strict(&bytes),

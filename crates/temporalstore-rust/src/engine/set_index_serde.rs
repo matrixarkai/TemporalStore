@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use crate::page_store::PageAddress;
+use crate::block_store::BlockAddress;
 
 pub fn serialize<S>(
-    value: &HashMap<String, BTreeMap<Vec<u8>, PageAddress>>,
+    value: &HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -28,11 +28,11 @@ where
 
 pub fn deserialize<'de, D>(
     deserializer: D,
-) -> Result<HashMap<String, BTreeMap<Vec<u8>, PageAddress>>, D::Error>
+) -> Result<HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>, D::Error>
 where
     D: Deserializer<'de>,
 {
-    let encoded = HashMap::<String, Vec<(Vec<u8>, PageAddress)>>::deserialize(deserializer)?;
+    let encoded = HashMap::<String, Vec<(Vec<u8>, BlockAddress)>>::deserialize(deserializer)?;
     Ok(encoded
         .into_iter()
         .map(|(key, members)| (key, members.into_iter().collect()))

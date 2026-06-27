@@ -140,7 +140,7 @@ shared store oplog -> command replay -> catch up after checkpoint
 - Checkpoint manifest records the durable oplog sequence covered by the index/page generation.
 - Index and page segment byte size plus SHA-256 are verified before install.
 - Follower restores page bytes and index bytes from shared store.
-- Follower can read restored data by following `PageAddress` into local page files.
+- Follower can read restored data by following `BlockAddress` into local page files.
 - Follower can replay oplog entries after the restored checkpoint.
 - Unit tests validate checkpoint restore, later oplog replay, and corrupt page rejection.
 - A C++-style compatibility test validates shared-store bootstrap plus catch-up across string, hash,

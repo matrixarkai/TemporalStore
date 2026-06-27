@@ -45,8 +45,8 @@ AREAS: tuple[ParityArea, ...] = (
                 ("SlotStorageSummary", "SlotDumpManifest", "StorageLifecyclePlan"),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/src/page_store.rs",
-                ("PageAddress", "PageStoreSegmentReport", "PageStoreZoneManifest"),
+                "crates/temporalstore-rust/src/block_store.rs",
+                ("BlockAddress", "BlockStoreSegmentReport", "BlockStoreZoneManifest"),
             ),
         ),
     ),
@@ -91,7 +91,7 @@ AREAS: tuple[ParityArea, ...] = (
         ),
         rust_evidence=(
             RustEvidence(
-                "crates/temporalstore-rust/src/page_store.rs",
+                "crates/temporalstore-rust/src/block_store.rs",
                 (
                     "gc_segments_before_with_live_refs_delayed_destroy",
                     "purge_delayed_destroy_segments_with_report",

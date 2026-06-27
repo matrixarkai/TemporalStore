@@ -650,7 +650,7 @@ fn committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled
         applier.apply(11, &committed, &engine).unwrap(),
         Some(CommandResponse::Empty)
     );
-    assert_eq!(engine.page_store().stats().writes, 1);
+    assert_eq!(engine.block_store().stats().writes, 1);
     assert_eq!(engine.write_ahead_log_store().stats(7).writes, 1);
     assert_eq!(engine.index_log_store().stats(7).writes, 1);
     assert_eq!(
@@ -7303,7 +7303,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
             .status
             .ok
     );
-    engine.page_store().roll_segment().unwrap();
+    engine.block_store().roll_segment().unwrap();
     assert!(
         engine
             .execute(ExecuteRequest {

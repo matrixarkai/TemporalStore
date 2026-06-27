@@ -28,7 +28,7 @@ Important C++ files checked:
 - `/home/vj/src/temporalstore/src/partition/storage/op_logger.cc`
 - `/home/vj/src/temporalstore/src/partition/storage/object_manager.cc`
 - `/home/vj/src/temporalstore/src/partition/storage/storage_manager.cc`
-- `/home/vj/src/temporalstore/src/partition/storage/page_store.cc`
+- `/home/vj/src/temporalstore/src/partition/storage/lock_store.cc`
 - `/home/vj/src/temporalstore/src/partition/storage/replicator.cc`
 
 ## Rust Coverage After This Change
@@ -148,7 +148,7 @@ The runtime supports:
 - `/compact`
 - `/gc`
 
-Dump clears dirty objects for the shard. Compaction now rolls the local page store to a fresh page
+Dump clears dirty objects for the shard. Compaction now rolls the local block store to a fresh page
 segment, rewrites live page-address-backed objects, persists the compacted index, and reports stale
 page segments. GC now clears the shard's memory/disk cache and accepts explicit retention
 boundaries for the local oplog, index log, and page segments; it rewrites JSONL log tails and

@@ -55,7 +55,7 @@ groups:
           severity: warning
         annotations:
           summary: TemporalStore Raft apply loop is lagging
-          description: "Node {{ $labels.node_id }} in {{ $labels.kind }} has apply lag {{ $value }}. Inspect queue saturation and storage/page-store errors."
+          description: "Node {{ $labels.node_id }} in {{ $labels.kind }} has apply lag {{ $value }}. Inspect queue saturation and storage/block-store errors."
 
   - name: temporalstore-storage-pressure
     rules:
@@ -133,14 +133,14 @@ groups:
           summary: TemporalStore lifecycle snapshot persistence failure
           description: "Lifecycle snapshot persistence or restore failed. Inspect the data-node lifecycle snapshot path before allowing restart or scale actions."
 
-      - alert: TemporalStorePageStoreReadErrors
-        expr: increase(temporalstore_page_store_operations_total{kind=~"read_error|checksum_error|corrupt"}[10m]) > 0
+      - alert: TemporalStoreBlockStoreReadErrors
+        expr: increase(temporalstore_block_store_operations_total{kind=~"read_error|checksum_error|corrupt"}[10m]) > 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: TemporalStore page-store read or corruption errors
-          description: "Page-store errors are visible in Prometheus. Run storage recovery/fault matrix validation and check shard/page/slot recovery reports."
+          summary: TemporalStore block-store read or corruption errors
+          description: "Block-store errors are visible in Prometheus. Run storage recovery/fault matrix validation and check shard/page/slot recovery reports."
 
       - alert: TemporalStoreCacheMissPressure
         expr: increase(temporalstore_cache_operations_total{kind="miss"}[5m]) > 10000
@@ -149,7 +149,7 @@ groups:
           severity: warning
         annotations:
           summary: TemporalStore cache miss pressure is high
-          description: "Cache miss pressure is high. Inspect cache admission/eviction settings, tiny-cache pressure tests, and page-store refill latency."
+          description: "Cache miss pressure is high. Inspect cache admission/eviction settings, tiny-cache pressure tests, and block-store refill latency."
 
       - alert: TemporalStoreReplicaReplayFailures
         expr: temporalstore_replica_replay_loop_consecutive_failures > 0

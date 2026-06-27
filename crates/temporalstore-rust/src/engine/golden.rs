@@ -478,7 +478,7 @@ pub fn cpp_api_golden_corpus_report() -> CppGoldenCorpusReport {
         &mut cases,
         "cpp_admin_storage_readiness_report",
         storage_readiness.production_ready
-            && storage_readiness.page_store_bytes_written > 0
+            && storage_readiness.block_store_bytes_written > 0
             && storage_readiness.feature_page_layout.packed_feature_pages >= 1,
         "Admin/storage readiness report is queryable after mixed C++ API corpus writes",
     );

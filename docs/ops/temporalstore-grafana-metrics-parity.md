@@ -98,7 +98,7 @@ readiness tooling can inspect the same mapping without scraping text metrics.
 
 ### storage_cache
 
-C++ storage parity question: are object/page/slot ownership, page-store health, and cache pressure visible?
+C++ storage parity question: are object/page/slot ownership, block-store health, and cache pressure visible?
 
 Rust metrics:
 
@@ -109,10 +109,10 @@ Rust metrics:
 - `temporalstore_storage_slot_bytes`
 - `temporalstore_cache_operations_total`
 - `temporalstore_cache_bytes`
-- `temporalstore_page_store_operations_total`
-- `temporalstore_page_store_zone_bytes`
+- `temporalstore_block_store_operations_total`
+- `temporalstore_block_store_zone_bytes`
 
-Grafana panels cover object manager ownership, slot refs/bytes, cache operations/bytes, page-store operations, and stale-zone bytes. Alerts cover storage/cache readiness blockers, page-store read/corruption errors, and sustained cache miss pressure.
+Grafana panels cover object manager ownership, slot refs/bytes, cache operations/bytes, block-store operations, and stale-zone bytes. Alerts cover storage/cache readiness blockers, block-store read/corruption errors, and sustained cache miss pressure.
 
 ### data_node
 

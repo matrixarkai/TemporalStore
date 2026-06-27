@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::cache::MultiLayerCache;
-use crate::page_store::{LocalPageStore, PageAddress, PageStoreError};
 use crate::types::{FeaturePoint, ShardId};
 
 use super::constants::{FEATURE_PAGE_MAGIC, TIMESTAMPED_KV_PAGE_TARGET_BYTES};
@@ -51,21 +51,21 @@ fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
 
 pub(super) fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     kind: &str,
     key: &str,
     points: Vec<FeaturePoint>,
     routing_slot: u32,
     async_storage: bool,
-) -> Result<Vec<(u64, PageAddress)>, PageStoreError> {
+) -> Result<Vec<(u64, BlockAddress)>, BlockStoreError> {
     let object_id = stable_page_object_id(shard_id, kind, key, None);
     let mut refs = Vec::new();
     for chunk in chunk_timestamped_kv_points(points) {
         let packed = encode_feature_page(&chunk);
         let address = append_value(
             cache,
-            page_store,
+            block_store,
             shard_id,
             &packed,
             Some(object_id),
@@ -140,12 +140,12 @@ pub(super) fn decode_feature_page_strict(bytes: &[u8]) -> PackedFeaturePageDecod
 
 pub(super) fn read_feature_point(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &PageAddress,
+    address: &BlockAddress,
 ) -> Option<FeaturePoint> {
-    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => points
             .into_iter()

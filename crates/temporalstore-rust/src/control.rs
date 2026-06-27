@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::block_store::{BlockStoreStats, BlockStoreZoneSummary};
 use crate::cache::CacheStats;
-use crate::page_store::{PageStoreStats, PageStoreZoneSummary};
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
 use crate::wal::WriteAheadLogStats;
@@ -174,9 +174,11 @@ pub struct ShardStats {
     pub object_manager: ObjectManagerStats,
     pub partition_info: PartitionInfoStats,
     pub cache: CacheStats,
-    pub page_store: PageStoreStats,
+    #[serde(alias = "page_store")]
+    pub block_store: BlockStoreStats,
     #[serde(default)]
-    pub page_store_zones: PageStoreZoneSummary,
+    #[serde(alias = "page_store_zones")]
+    pub block_store_zones: BlockStoreZoneSummary,
     #[serde(alias = "oplog")]
     pub write_ahead_log: WriteAheadLogStats,
 }
@@ -220,13 +222,15 @@ pub enum StreamKind {
     IndexLog,
     #[serde(alias = "oplog")]
     Wal,
-    Page,
+    #[serde(alias = "page")]
+    Block,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StreamReadRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
+    #[serde(alias = "page_segment_id")]
     pub page_segment_id: u64,
     pub offset: u64,
     pub size: u64,
@@ -242,6 +246,7 @@ pub struct StreamReadResponse {
 pub struct ScanStreamRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
+    #[serde(alias = "page_segment_id")]
     pub page_segment_id: u64,
     pub start_offset: u64,
     pub end_offset: u64,
