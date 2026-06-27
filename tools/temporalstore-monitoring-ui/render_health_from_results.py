@@ -91,7 +91,12 @@ def load_existing(path: Path) -> dict[str, Any]:
 def runtime_config_from_env() -> dict[str, str]:
     env = os.environ
     return {
-        "storage_zone_size": human_bytes(env.get("TEMPORALSTORE_STORAGE_ZONE_SIZE", "268435456")),
+        "storage_extent_size": human_bytes(
+            env.get(
+                "TEMPORALSTORE_STORAGE_EXTENT_SIZE",
+                env.get("TEMPORALSTORE_STORAGE_ZONE_SIZE", "268435456"),
+            )
+        ),
         "stream_max_blob_size": human_bytes(env.get("TEMPORALSTORE_STREAM_MAX_BLOB_SIZE", "268435456")),
         "storage_oplog_delay_dump_length": env.get("TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH", "0"),
         "replicator_loop_interval_us": env.get("TEMPORALSTORE_REPLICATOR_LOOP_INTERVAL_US", "1000"),

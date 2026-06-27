@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::block_store::{BlockStoreStats, BlockStoreZoneSummary};
+use crate::block_store::{BlockStoreExtentSummary, BlockStoreStats};
 use crate::cache::CacheStats;
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
@@ -177,8 +177,9 @@ pub struct ShardStats {
     #[serde(alias = "page_store")]
     pub block_store: BlockStoreStats,
     #[serde(default)]
+    #[serde(alias = "block_store_zones")]
     #[serde(alias = "page_store_zones")]
-    pub block_store_zones: BlockStoreZoneSummary,
+    pub block_store_extents: BlockStoreExtentSummary,
     #[serde(alias = "oplog")]
     pub write_ahead_log: WriteAheadLogStats,
 }

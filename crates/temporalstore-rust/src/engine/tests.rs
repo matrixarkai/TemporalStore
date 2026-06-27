@@ -1,5 +1,5 @@
 use super::*;
-use crate::block_store::BlockStoreZoneState;
+use crate::block_store::BlockStoreExtentState;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };
@@ -872,7 +872,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         },
     );
@@ -885,7 +885,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         },
     );
@@ -898,7 +898,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         },
     );
@@ -915,7 +915,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                zone_id: None,
+                extent_id: None,
                 sha256: None,
             },
         );
@@ -932,7 +932,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                zone_id: None,
+                extent_id: None,
                 sha256: None,
             },
         );
@@ -945,7 +945,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         },
     );
@@ -959,7 +959,7 @@ fn live_page_segment_ids_scan_all_index_backed_data_models() {
                 page_id: None,
                 object_id: None,
                 routing_slot: None,
-                zone_id: None,
+                extent_id: None,
                 sha256: None,
             },
             action_type: Some(1),
@@ -1494,7 +1494,7 @@ fn recovery_reports_reused_object_id_conflicts() {
 }
 
 #[test]
-fn crash_recovery_report_covers_oplog_index_page_and_zone_manifest() {
+fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     let cache_dir = unique_temp_path("recovery-cache");
     let page_dir = unique_temp_path("recovery-pages");
     let index_dir = unique_temp_path("recovery-index");
@@ -1547,29 +1547,29 @@ fn crash_recovery_report_covers_oplog_index_page_and_zone_manifest() {
     assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
     assert_eq!(report.segment_integrity.live_page_segment_count, 2);
     assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.zone_descriptors.len(), 2);
+    assert_eq!(report.extent_descriptors.len(), 2);
     assert_eq!(
-        report.zone_descriptors[0].state,
-        BlockStoreZoneState::Sealed
+        report.extent_descriptors[0].state,
+        BlockStoreExtentState::Sealed
     );
     assert_eq!(
-        report.zone_descriptors[1].state,
-        BlockStoreZoneState::Active
+        report.extent_descriptors[1].state,
+        BlockStoreExtentState::Active
     );
-    assert_eq!(report.zone_summary.sealed_zones, 1);
-    assert_eq!(report.zone_summary.active_zones, 1);
-    assert_eq!(report.zone_summary.delayed_destroy_zones, 0);
+    assert_eq!(report.extent_summary.sealed_extents, 1);
+    assert_eq!(report.extent_summary.active_extents, 1);
+    assert_eq!(report.extent_summary.delayed_destroy_extents, 0);
     assert_eq!(
-        report.zone_summary.sealed_physical_bytes,
-        report.zone_descriptors[0].physical_bytes
-    );
-    assert_eq!(
-        report.zone_summary.active_physical_bytes,
-        report.zone_descriptors[1].physical_bytes
+        report.extent_summary.sealed_physical_bytes,
+        report.extent_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.zone_summary.live_physical_bytes,
-        report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
+        report.extent_summary.active_physical_bytes,
+        report.extent_descriptors[1].physical_bytes
+    );
+    assert_eq!(
+        report.extent_summary.live_physical_bytes,
+        report.extent_descriptors[0].physical_bytes + report.extent_descriptors[1].physical_bytes
     );
     assert_eq!(report.page_segment_live_reports.len(), 2);
     assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
@@ -1782,7 +1782,7 @@ fn cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memo
 }
 
 #[test]
-fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
+fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
     let cache_dir = unique_temp_path("recovery-rebuild-cache");
     let page_dir = unique_temp_path("recovery-rebuild-pages");
     let index_dir = unique_temp_path("recovery-rebuild-index");
@@ -1815,7 +1815,7 @@ fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
             .ok
     );
 
-    fs::remove_file(page_dir.join("page_zone_manifest.json")).unwrap();
+    fs::remove_file(page_dir.join("page_extent_manifest.json")).unwrap();
     let recovered = TemporalEngine::with_local_dirs(256, &cache_dir, &page_dir, &index_dir);
     recovered.load_shard(1);
     let report = recovered.storage_recovery_report(1);
@@ -1826,19 +1826,19 @@ fn crash_recovery_rebuilds_missing_zone_manifest_from_page_stream() {
     assert_eq!(report.live_page_segment_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
-    assert_eq!(report.zone_descriptors.len(), 2);
+    assert_eq!(report.extent_descriptors.len(), 2);
     assert_eq!(
-        report.zone_descriptors[0].state,
-        BlockStoreZoneState::Sealed
+        report.extent_descriptors[0].state,
+        BlockStoreExtentState::Sealed
     );
     assert_eq!(
-        report.zone_descriptors[1].state,
-        BlockStoreZoneState::Active
+        report.extent_descriptors[1].state,
+        BlockStoreExtentState::Active
     );
-    assert_eq!(report.zone_summary.sealed_zones, 1);
-    assert_eq!(report.zone_summary.active_zones, 1);
-    assert!(report.zone_summary.live_physical_bytes > 0);
-    assert!(page_dir.join("page_zone_manifest.json").exists());
+    assert_eq!(report.extent_summary.sealed_extents, 1);
+    assert_eq!(report.extent_summary.active_extents, 1);
+    assert!(report.extent_summary.live_physical_bytes > 0);
+    assert!(page_dir.join("page_extent_manifest.json").exists());
     assert_eq!(
         recovered
             .execute(ExecuteRequest {
@@ -1928,7 +1928,10 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         string_address.routing_slot,
         Some(page_routing_slot("k", 10, 20))
     );
-    assert_eq!(string_address.zone_id, Some(string_address.page_segment_id));
+    assert_eq!(
+        string_address.extent_id,
+        Some(string_address.page_segment_id)
+    );
     assert_eq!(
         hash_address.object_id,
         Some(stable_page_object_id(1, "hash", "h", Some("f")))
@@ -1937,7 +1940,7 @@ fn durable_writes_stamp_stable_object_ids_on_page_addresses() {
         hash_address.routing_slot,
         Some(page_routing_slot("h", 10, 20))
     );
-    assert_eq!(hash_address.zone_id, Some(hash_address.page_segment_id));
+    assert_eq!(hash_address.extent_id, Some(hash_address.page_segment_id));
     assert_ne!(string_address.object_id, hash_address.object_id);
 }
 
@@ -5754,12 +5757,12 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
     assert_eq!(stats.partition_info.start_routing_slot, 10);
     assert_eq!(stats.partition_info.end_routing_slot, 20);
     assert_eq!(stats.partition_info.object_manager, stats.object_manager);
-    assert!(stats.block_store_zones.active_zones >= 1);
-    assert!(stats.block_store_zones.active_physical_bytes > 0);
+    assert!(stats.block_store_extents.active_extents >= 1);
+    assert!(stats.block_store_extents.active_physical_bytes > 0);
     assert_eq!(
-        stats.block_store_zones.live_physical_bytes,
-        stats.block_store_zones.active_physical_bytes
-            + stats.block_store_zones.sealed_physical_bytes
+        stats.block_store_extents.live_physical_bytes,
+        stats.block_store_extents.active_physical_bytes
+            + stats.block_store_extents.sealed_physical_bytes
     );
 }
 
@@ -5789,20 +5792,24 @@ fn prometheus_metrics_include_records_cache_page_and_wal() {
         "temporalstore_cache_operations_total{shard_id=\"1\",kind=\"memory_evictions\"}"
     ));
     assert!(metrics.contains("temporalstore_block_store_operations_total"));
+    assert!(metrics
+        .contains("temporalstore_block_store_extent_count{shard_id=\"1\",state=\"sealed\"} 1"));
     assert!(
-        metrics.contains("temporalstore_block_store_zone_count{shard_id=\"1\",state=\"sealed\"} 1")
+        metrics.contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"live\"}")
     );
-    assert!(metrics.contains("temporalstore_block_store_zone_bytes{shard_id=\"1\",kind=\"live\"}"));
     assert!(metrics
-        .contains("temporalstore_block_store_zone_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+        .contains("temporalstore_block_store_extent_bytes{shard_id=\"1\",kind=\"total_known\"}"));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"
+    ));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"
+    ));
+    assert!(metrics.contains(
+        "temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"
+    ));
     assert!(metrics
-        .contains("temporalstore_block_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"known\"}"));
-    assert!(metrics
-        .contains("temporalstore_block_store_zone_oldest_unix_ms{shard_id=\"1\",scope=\"live\"}"));
-    assert!(metrics
-        .contains("temporalstore_block_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"));
-    assert!(metrics
-        .contains("temporalstore_block_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+        .contains("temporalstore_block_store_extent_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
     assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
@@ -7384,8 +7391,8 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(report.object_ids_embedded);
     assert!(report.routing_slots_embedded);
     assert!(report.compression_supported);
-    assert_eq!(report.sealed_zones, 1);
-    assert_eq!(report.active_zones, 1);
+    assert_eq!(report.sealed_extents, 1);
+    assert_eq!(report.active_extents, 1);
     assert!(report.live_physical_bytes > 0);
     assert!(report.block_store_writes > 0);
     assert!(report.block_store_bytes_written > 0);

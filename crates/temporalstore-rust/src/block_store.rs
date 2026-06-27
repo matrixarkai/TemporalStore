@@ -11,9 +11,9 @@ mod paths;
 mod record;
 
 use paths::{
-    delayed_destroy_dir, delayed_destroy_path, file_created_unix_ms, file_modified_unix_ms,
-    now_unix_ms, segment_path, sync_dir, sync_parent_dir, system_time_unix_ms, unique_temp_path,
-    zone_manifest_path,
+    delayed_destroy_dir, delayed_destroy_path, extent_manifest_path, file_created_unix_ms,
+    file_modified_unix_ms, legacy_zone_manifest_path, now_unix_ms, segment_path, sync_dir,
+    sync_parent_dir, system_time_unix_ms, unique_temp_path,
 };
 use record::{
     decode_page_record, default_page_record_compression_enabled,
@@ -60,8 +60,8 @@ pub struct BlockAddress {
     pub object_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_slot: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub zone_id: Option<u64>,
+    #[serde(default, alias = "zone_id", skip_serializing_if = "Option::is_none")]
+    pub extent_id: Option<u64>,
     #[serde(default, alias = "checksum", skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
 }
@@ -193,7 +193,7 @@ pub struct BlockStorePurgeDelayedDestroyReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum BlockStoreZoneState {
+pub enum BlockStoreExtentState {
     Active,
     Sealed,
     DelayedDestroy,
@@ -201,10 +201,11 @@ pub enum BlockStoreZoneState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStoreZoneDescriptor {
-    pub zone_id: u64,
+pub struct BlockStoreExtentDescriptor {
+    #[serde(alias = "zone_id")]
+    pub extent_id: u64,
     pub page_segment_id: u64,
-    pub state: BlockStoreZoneState,
+    pub state: BlockStoreExtentState,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -218,11 +219,15 @@ pub struct BlockStoreZoneDescriptor {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct BlockStoreZoneSummary {
-    pub active_zones: u64,
-    pub sealed_zones: u64,
-    pub delayed_destroy_zones: u64,
-    pub purged_zones: u64,
+pub struct BlockStoreExtentSummary {
+    #[serde(alias = "active_zones")]
+    pub active_extents: u64,
+    #[serde(alias = "sealed_zones")]
+    pub sealed_extents: u64,
+    #[serde(alias = "delayed_destroy_zones")]
+    pub delayed_destroy_extents: u64,
+    #[serde(alias = "purged_zones")]
+    pub purged_extents: u64,
     pub active_physical_bytes: u64,
     pub sealed_physical_bytes: u64,
     pub delayed_destroy_physical_bytes: u64,
@@ -230,34 +235,64 @@ pub struct BlockStoreZoneSummary {
     pub live_physical_bytes: u64,
     pub reclaimable_physical_bytes: u64,
     pub total_known_physical_bytes: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_known_zone_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_known_zone_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_live_zone_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_live_zone_age_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_reclaimable_zone_unix_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub oldest_reclaimable_zone_age_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_known_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_known_extent_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_known_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_known_extent_age_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_live_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_live_extent_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_live_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_live_extent_age_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_reclaimable_zone_unix_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_reclaimable_extent_unix_ms: Option<u64>,
+    #[serde(
+        default,
+        alias = "oldest_reclaimable_zone_age_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub oldest_reclaimable_extent_age_ms: Option<u64>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct StreamBackedZoneRuntimeReport {
+pub struct StreamBackedExtentRuntimeReport {
     pub runtime_ready: bool,
-    pub zone_count: u64,
-    pub active_zones: u64,
-    pub sealed_zones: u64,
-    pub delayed_destroy_zones: u64,
-    pub purged_zones: u64,
+    #[serde(alias = "zone_count")]
+    pub extent_count: u64,
+    #[serde(alias = "active_zones")]
+    pub active_extents: u64,
+    #[serde(alias = "sealed_zones")]
+    pub sealed_extents: u64,
+    #[serde(alias = "delayed_destroy_zones")]
+    pub delayed_destroy_extents: u64,
+    #[serde(alias = "purged_zones")]
+    pub purged_extents: u64,
     pub stream_segment_count: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
-    pub zone_manifest_ready: bool,
+    #[serde(alias = "zone_manifest_ready")]
+    pub extent_manifest_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
     pub delayed_destroy_ready: bool,
@@ -295,9 +330,10 @@ pub struct BlockStoreSegmentReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct BlockStoreZoneManifest {
+struct BlockStoreExtentManifest {
     version: u32,
-    zones: Vec<BlockStoreZoneDescriptor>,
+    #[serde(alias = "zones")]
+    extents: Vec<BlockStoreExtentDescriptor>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -318,7 +354,7 @@ struct BlockStoreInner {
     write_offset: u64,
     next_page_id: u64,
     options: BlockStoreOptions,
-    zones: BTreeMap<u64, BlockStoreZoneDescriptor>,
+    extents: BTreeMap<u64, BlockStoreExtentDescriptor>,
     stats: BlockStoreStats,
 }
 
@@ -336,22 +372,23 @@ impl LocalBlockStore {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
-        let manifest_exists = zone_manifest_path(&root).exists();
-        let mut zones = if manifest_exists {
-            load_zone_manifest_at(&root)
-                .or_else(|_| rebuild_zone_manifest_at(&root))
+        let manifest_exists =
+            extent_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
+        let mut extents = if manifest_exists {
+            load_extent_manifest_at(&root)
+                .or_else(|_| rebuild_extent_manifest_at(&root))
                 .unwrap_or_default()
         } else {
-            rebuild_zone_manifest_at(&root).unwrap_or_default()
+            rebuild_extent_manifest_at(&root).unwrap_or_default()
         };
-        ensure_zone_descriptor(
-            &mut zones,
+        ensure_extent_descriptor(
+            &mut extents,
             &root,
             page_segment_id,
-            BlockStoreZoneState::Active,
+            BlockStoreExtentState::Active,
         );
         if !manifest_exists {
-            let _ = persist_zone_manifest(&root, &zones);
+            let _ = persist_extent_manifest(&root, &extents);
         }
         Self {
             inner: Arc::new(Mutex::new(BlockStoreInner {
@@ -360,7 +397,7 @@ impl LocalBlockStore {
                 write_offset,
                 next_page_id,
                 options,
-                zones,
+                extents,
                 stats: BlockStoreStats::default(),
             })),
         }
@@ -389,13 +426,13 @@ impl LocalBlockStore {
         let path = segment_path(&inner.root, inner.page_segment_id);
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let zone_id = zone_id_for_segment(inner.page_segment_id);
+        let extent_id = extent_id_for_segment(inner.page_segment_id);
         let record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_slot,
-            zone_id,
+            extent_id,
             inner.options,
         )?;
         let address = BlockAddress {
@@ -405,7 +442,7 @@ impl LocalBlockStore {
             page_id: Some(page_id),
             object_id,
             routing_slot,
-            zone_id: Some(zone_id),
+            extent_id: Some(extent_id),
             sha256: Some(sha256_hex(bytes)),
         };
         file.write_all(&record.bytes)?;
@@ -415,14 +452,14 @@ impl LocalBlockStore {
         inner.write_offset += address.length;
         let page_segment_id = inner.page_segment_id;
         let write_offset = inner.write_offset;
-        upsert_zone_after_append(
-            &mut inner.zones,
+        upsert_extent_after_append(
+            &mut inner.extents,
             page_segment_id,
             write_offset,
             record.logical_len as u64,
             page_id,
         );
-        persist_zone_manifest(&inner.root, &inner.zones)?;
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         inner.stats.writes += 1;
         inner.stats.bytes_written += address.length;
         inner.stats.logical_bytes_written += record.logical_len as u64;
@@ -451,14 +488,14 @@ impl LocalBlockStore {
         file.sync_all()?;
         sync_parent_dir(&path)?;
         let transition_unix_ms = now_unix_ms();
-        if let Some(previous) = inner.zones.get_mut(&previous_page_segment_id) {
-            previous.state = BlockStoreZoneState::Sealed;
+        if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
+            previous.state = BlockStoreExtentState::Sealed;
             previous.updated_unix_ms = Some(transition_unix_ms);
         }
-        let new_zone = BlockStoreZoneDescriptor {
-            zone_id: zone_id_for_segment(inner.page_segment_id),
+        let new_zone = BlockStoreExtentDescriptor {
+            extent_id: extent_id_for_segment(inner.page_segment_id),
             page_segment_id: inner.page_segment_id,
-            state: BlockStoreZoneState::Active,
+            state: BlockStoreExtentState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
             created_unix_ms: Some(transition_unix_ms),
@@ -467,8 +504,8 @@ impl LocalBlockStore {
             last_page_id: None,
         };
         let page_segment_id = inner.page_segment_id;
-        inner.zones.insert(page_segment_id, new_zone);
-        persist_zone_manifest(&inner.root, &inner.zones)?;
+        inner.extents.insert(page_segment_id, new_zone);
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(BlockStoreRollReport {
             previous_page_segment_id,
             new_page_segment_id: inner.page_segment_id,
@@ -578,44 +615,44 @@ impl LocalBlockStore {
             inner.page_segment_id = page_segment_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let zone_summary = summarize_segment(bytes, page_segment_id)?;
-        if let Some(max_page_id) = zone_summary.last_page_id {
+        let extent_summary = summarize_segment(bytes, page_segment_id)?;
+        if let Some(max_page_id) = extent_summary.last_page_id {
             inner.next_page_id = inner.next_page_id.max(max_page_id.saturating_add(1));
         }
         let is_current_segment = page_segment_id == inner.page_segment_id;
         let now = now_unix_ms();
-        inner.zones.insert(
+        inner.extents.insert(
             page_segment_id,
-            BlockStoreZoneDescriptor {
-                zone_id: zone_id_for_segment(page_segment_id),
+            BlockStoreExtentDescriptor {
+                extent_id: extent_id_for_segment(page_segment_id),
                 page_segment_id,
                 state: if is_current_segment {
-                    BlockStoreZoneState::Active
+                    BlockStoreExtentState::Active
                 } else {
-                    BlockStoreZoneState::Sealed
+                    BlockStoreExtentState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
-                logical_bytes: zone_summary.logical_bytes,
+                logical_bytes: extent_summary.logical_bytes,
                 created_unix_ms: Some(
                     file_modified_unix_ms(&path)
                         .or_else(|| file_created_unix_ms(&path))
                         .unwrap_or(now),
                 ),
                 updated_unix_ms: Some(now),
-                first_page_id: zone_summary.first_page_id,
-                last_page_id: zone_summary.last_page_id,
+                first_page_id: extent_summary.first_page_id,
+                last_page_id: extent_summary.last_page_id,
             },
         );
         if is_current_segment {
-            for zone in inner.zones.values_mut() {
-                if zone.page_segment_id != page_segment_id
-                    && zone.state == BlockStoreZoneState::Active
+            for extent in inner.extents.values_mut() {
+                if extent.page_segment_id != page_segment_id
+                    && extent.state == BlockStoreExtentState::Active
                 {
-                    zone.state = BlockStoreZoneState::Sealed;
+                    extent.state = BlockStoreExtentState::Sealed;
                 }
             }
         }
-        persist_zone_manifest(&inner.root, &inner.zones)?;
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(())
     }
 
@@ -813,9 +850,9 @@ impl LocalBlockStore {
                     .metadata()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default();
-                let zone = inner.zones.get(&page_segment_id);
-                let created_unix_ms = zone.and_then(|zone| zone.created_unix_ms);
-                let updated_unix_ms = zone.and_then(|zone| zone.updated_unix_ms);
+                let extent = inner.extents.get(&page_segment_id);
+                let created_unix_ms = extent.and_then(|extent| extent.created_unix_ms);
+                let updated_unix_ms = extent.and_then(|extent| extent.updated_unix_ms);
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
@@ -902,19 +939,19 @@ impl LocalBlockStore {
                 removed_physical_bytes += segment_physical_bytes;
                 if delayed_destroy {
                     move_segment_to_delayed_destroy(&inner.root, page_segment_id)?;
-                    set_zone_state(
-                        &mut inner.zones,
+                    set_extent_state(
+                        &mut inner.extents,
                         page_segment_id,
-                        BlockStoreZoneState::DelayedDestroy,
+                        BlockStoreExtentState::DelayedDestroy,
                     );
                     delayed_destroy_ids.push(page_segment_id);
                     delayed_destroy_physical_bytes += segment_physical_bytes;
                 } else {
                     fs::remove_file(segment_path(&inner.root, page_segment_id))?;
-                    set_zone_state(
-                        &mut inner.zones,
+                    set_extent_state(
+                        &mut inner.extents,
                         page_segment_id,
-                        BlockStoreZoneState::Purged,
+                        BlockStoreExtentState::Purged,
                     );
                 }
                 removed.push(page_segment_id);
@@ -931,7 +968,7 @@ impl LocalBlockStore {
                 retained.push(page_segment_id);
             }
         }
-        persist_zone_manifest(&inner.root, &inner.zones)?;
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(BlockStoreGcReport {
             retain_from_page_segment_id,
             removed_page_segment_ids: removed,
@@ -995,42 +1032,48 @@ impl LocalBlockStore {
                 .map(|metadata| metadata.len())
                 .unwrap_or_default();
             fs::remove_file(entry.path())?;
-            set_zone_state(&mut inner.zones, id, BlockStoreZoneState::Purged);
+            set_extent_state(&mut inner.extents, id, BlockStoreExtentState::Purged);
             purged.push(id);
         }
         purged.sort_unstable();
         sync_dir(&trash_dir)?;
-        persist_zone_manifest(&inner.root, &inner.zones)?;
+        persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(BlockStorePurgeDelayedDestroyReport {
             purged_page_segment_ids: purged,
             purged_physical_bytes,
         })
     }
 
-    pub fn zone_descriptors(&self) -> Vec<BlockStoreZoneDescriptor> {
+    pub fn extent_descriptors(&self) -> Vec<BlockStoreExtentDescriptor> {
         self.inner
             .lock()
             .expect("block store lock poisoned")
-            .zones
+            .extents
             .values()
             .cloned()
             .collect()
     }
 
-    pub fn zone_summary(&self) -> BlockStoreZoneSummary {
-        summarize_zones(&self.inner.lock().expect("block store lock poisoned").zones)
+    pub fn extent_summary(&self) -> BlockStoreExtentSummary {
+        summarize_extents(
+            &self
+                .inner
+                .lock()
+                .expect("block store lock poisoned")
+                .extents,
+        )
     }
 
-    pub fn stream_backed_zone_runtime_report(
+    pub fn stream_backed_extent_runtime_report(
         &self,
-    ) -> Result<StreamBackedZoneRuntimeReport, BlockStoreError> {
+    ) -> Result<StreamBackedExtentRuntimeReport, BlockStoreError> {
         let inner = self.inner.lock().expect("block store lock poisoned");
-        let zones = inner.zones.clone();
+        let extents = inner.extents.clone();
         let root = inner.root.clone();
         let options = inner.options;
         drop(inner);
 
-        let summary = summarize_zones(&zones);
+        let summary = summarize_extents(&extents);
         let segment_reports = {
             let mut reports = Vec::new();
             for id in segment_ids_at(&root)? {
@@ -1051,16 +1094,16 @@ impl LocalBlockStore {
             .map(|report| report.logical_bytes)
             .sum::<u64>();
         let logical_stream_read_ready = segment_reports.iter().any(|report| report.page_count > 0);
-        let append_roll_ready = summary.active_zones == 1
+        let append_roll_ready = summary.active_extents == 1
             && summary
-                .sealed_zones
-                .saturating_add(summary.delayed_destroy_zones)
+                .sealed_extents
+                .saturating_add(summary.delayed_destroy_extents)
                 > 0;
-        let zone_manifest_ready = zone_manifest_path(&root).exists()
-            && !zones.is_empty()
-            && zones
+        let extent_manifest_ready = extent_manifest_path(&root).exists()
+            && !extents.is_empty()
+            && extents
                 .values()
-                .all(|zone| zone.zone_id == zone_id_for_segment(zone.page_segment_id));
+                .all(|extent| extent.extent_id == extent_id_for_segment(extent.page_segment_id));
         let envelope_checksum_ready = segment_reports
             .iter()
             .filter(|report| report.page_count > 0)
@@ -1069,7 +1112,8 @@ impl LocalBlockStore {
             && segment_reports
                 .iter()
                 .any(|report| report.compressed_records > 0);
-        let delayed_destroy_ready = summary.delayed_destroy_zones > 0 || summary.purged_zones > 0;
+        let delayed_destroy_ready =
+            summary.delayed_destroy_extents > 0 || summary.purged_extents > 0;
 
         let mut blockers = Vec::new();
         if !logical_stream_read_ready {
@@ -1077,30 +1121,31 @@ impl LocalBlockStore {
         }
         if !append_roll_ready {
             blockers.push(
-                "append/roll zone lifecycle has not produced active plus sealed zones".to_string(),
+                "append/roll extent lifecycle has not produced active plus sealed extents"
+                    .to_string(),
             );
         }
-        if !zone_manifest_ready {
-            blockers.push("zone manifest is missing or inconsistent".to_string());
+        if !extent_manifest_ready {
+            blockers.push("extent manifest is missing or inconsistent".to_string());
         }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
         }
 
         let runtime_ready = blockers.is_empty();
-        Ok(StreamBackedZoneRuntimeReport {
+        Ok(StreamBackedExtentRuntimeReport {
             runtime_ready,
-            zone_count: zones.len() as u64,
-            active_zones: summary.active_zones,
-            sealed_zones: summary.sealed_zones,
-            delayed_destroy_zones: summary.delayed_destroy_zones,
-            purged_zones: summary.purged_zones,
+            extent_count: extents.len() as u64,
+            active_extents: summary.active_extents,
+            sealed_extents: summary.sealed_extents,
+            delayed_destroy_extents: summary.delayed_destroy_extents,
+            purged_extents: summary.purged_extents,
             stream_segment_count,
             physical_bytes,
             logical_bytes,
             logical_stream_read_ready,
             append_roll_ready,
-            zone_manifest_ready,
+            extent_manifest_ready,
             envelope_checksum_ready,
             compression_stream_ready,
             delayed_destroy_ready,
@@ -1109,8 +1154,8 @@ impl LocalBlockStore {
                 "page records are appended as self-describing stream envelopes".to_string(),
                 "logical stream reads span records while skipping envelopes and decompression"
                     .to_string(),
-                "segment roll seals the previous zone and opens a new active zone".to_string(),
-                "zone manifest persists active/sealed/delayed-destroy/purged state".to_string(),
+                "segment roll seals the previous extent and opens a new active extent".to_string(),
+                "extent manifest persists active/sealed/delayed-destroy/purged state".to_string(),
             ],
         })
     }
@@ -1201,23 +1246,53 @@ pub type PageStoreDelayedDestroySegmentReport = BlockStoreDelayedDestroySegmentR
 )]
 pub type PageStorePurgeDelayedDestroyReport = BlockStorePurgeDelayedDestroyReport;
 
-#[deprecated(
-    since = "0.1.0",
-    note = "use BlockStoreZoneState; page naming remains only for legacy compatibility"
-)]
-pub type PageStoreZoneState = BlockStoreZoneState;
+#[deprecated(since = "0.1.0", note = "use BlockStoreExtentState")]
+pub type BlockStoreZoneState = BlockStoreExtentState;
+
+#[deprecated(since = "0.1.0", note = "use BlockStoreExtentDescriptor")]
+pub type BlockStoreZoneDescriptor = BlockStoreExtentDescriptor;
+
+#[deprecated(since = "0.1.0", note = "use BlockStoreExtentSummary")]
+pub type BlockStoreZoneSummary = BlockStoreExtentSummary;
+
+#[deprecated(since = "0.1.0", note = "use StreamBackedExtentRuntimeReport")]
+pub type StreamBackedZoneRuntimeReport = StreamBackedExtentRuntimeReport;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreZoneDescriptor; page naming remains only for legacy compatibility"
+    note = "use BlockStoreExtentState; page naming remains only for legacy compatibility"
 )]
-pub type PageStoreZoneDescriptor = BlockStoreZoneDescriptor;
+pub type PageStoreExtentState = BlockStoreExtentState;
 
 #[deprecated(
     since = "0.1.0",
-    note = "use BlockStoreZoneSummary; page naming remains only for legacy compatibility"
+    note = "use BlockStoreExtentState; zone naming remains only for legacy compatibility"
 )]
-pub type PageStoreZoneSummary = BlockStoreZoneSummary;
+pub type PageStoreZoneState = BlockStoreExtentState;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreExtentDescriptor; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreExtentDescriptor = BlockStoreExtentDescriptor;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreExtentDescriptor; zone naming remains only for legacy compatibility"
+)]
+pub type PageStoreZoneDescriptor = BlockStoreExtentDescriptor;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreExtentSummary; page naming remains only for legacy compatibility"
+)]
+pub type PageStoreExtentSummary = BlockStoreExtentSummary;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStoreExtentSummary; zone naming remains only for legacy compatibility"
+)]
+pub type PageStoreZoneSummary = BlockStoreExtentSummary;
 
 #[deprecated(
     since = "0.1.0",
@@ -1237,46 +1312,52 @@ pub type PageStoreRollReport = BlockStoreRollReport;
 )]
 pub type LocalPageStore = LocalBlockStore;
 
-fn load_zone_manifest_at(
+fn load_extent_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, BlockStoreZoneDescriptor>, BlockStoreError> {
-    let path = zone_manifest_path(root);
+) -> Result<BTreeMap<u64, BlockStoreExtentDescriptor>, BlockStoreError> {
+    let current_path = extent_manifest_path(root);
+    let legacy_path = legacy_zone_manifest_path(root);
+    let path = if current_path.exists() {
+        current_path
+    } else {
+        legacy_path
+    };
     if !path.exists() {
         return Ok(BTreeMap::new());
     }
-    let manifest: BlockStoreZoneManifest =
+    let manifest: BlockStoreExtentManifest =
         serde_json::from_slice(&fs::read(path)?).map_err(|err| {
             BlockStoreError::CorruptPageEnvelope {
                 page_segment_id: 0,
                 offset: 0,
-                reason: format!("corrupt zone manifest: {err}"),
+                reason: format!("corrupt extent manifest: {err}"),
             }
         })?;
     Ok(manifest
-        .zones
+        .extents
         .into_iter()
-        .map(|zone| (zone.page_segment_id, zone))
+        .map(|extent| (extent.page_segment_id, extent))
         .collect())
 }
 
-fn rebuild_zone_manifest_at(
+fn rebuild_extent_manifest_at(
     root: &Path,
-) -> Result<BTreeMap<u64, BlockStoreZoneDescriptor>, BlockStoreError> {
-    let mut zones = BTreeMap::new();
+) -> Result<BTreeMap<u64, BlockStoreExtentDescriptor>, BlockStoreError> {
+    let mut extents = BTreeMap::new();
     let latest = latest_segment_id_at(root)?;
     for page_segment_id in segment_ids_at(root)? {
         let path = segment_path(root, page_segment_id);
         let bytes = fs::read(&path)?;
         let summary = summarize_segment(&bytes, page_segment_id)?;
-        zones.insert(
+        extents.insert(
             page_segment_id,
-            BlockStoreZoneDescriptor {
-                zone_id: zone_id_for_segment(page_segment_id),
+            BlockStoreExtentDescriptor {
+                extent_id: extent_id_for_segment(page_segment_id),
                 page_segment_id,
                 state: if page_segment_id == latest {
-                    BlockStoreZoneState::Active
+                    BlockStoreExtentState::Active
                 } else {
-                    BlockStoreZoneState::Sealed
+                    BlockStoreExtentState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
                 logical_bytes: summary.logical_bytes,
@@ -1290,17 +1371,17 @@ fn rebuild_zone_manifest_at(
         );
     }
     for delayed in delayed_destroy_segment_reports_at(root)? {
-        zones
+        extents
             .entry(delayed.page_segment_id)
-            .and_modify(|zone| {
-                zone.state = BlockStoreZoneState::DelayedDestroy;
-                zone.updated_unix_ms = delayed.modified_unix_ms;
-                zone.physical_bytes = delayed.physical_bytes;
+            .and_modify(|extent| {
+                extent.state = BlockStoreExtentState::DelayedDestroy;
+                extent.updated_unix_ms = delayed.modified_unix_ms;
+                extent.physical_bytes = delayed.physical_bytes;
             })
-            .or_insert(BlockStoreZoneDescriptor {
-                zone_id: zone_id_for_segment(delayed.page_segment_id),
+            .or_insert(BlockStoreExtentDescriptor {
+                extent_id: extent_id_for_segment(delayed.page_segment_id),
                 page_segment_id: delayed.page_segment_id,
-                state: BlockStoreZoneState::DelayedDestroy,
+                state: BlockStoreExtentState::DelayedDestroy,
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
@@ -1309,15 +1390,15 @@ fn rebuild_zone_manifest_at(
                 last_page_id: None,
             });
     }
-    Ok(zones)
+    Ok(extents)
 }
 
-fn persist_zone_manifest(
+fn persist_extent_manifest(
     root: &Path,
-    zones: &BTreeMap<u64, BlockStoreZoneDescriptor>,
+    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
 ) -> Result<(), BlockStoreError> {
     fs::create_dir_all(root)?;
-    let path = zone_manifest_path(root);
+    let path = extent_manifest_path(root);
     let temp_path = path.with_extension(format!(
         "json.tmp.{}",
         std::time::SystemTime::now()
@@ -1325,9 +1406,9 @@ fn persist_zone_manifest(
             .map(|duration| duration.as_nanos())
             .unwrap_or_default()
     ));
-    let manifest = BlockStoreZoneManifest {
+    let manifest = BlockStoreExtentManifest {
         version: 1,
-        zones: zones.values().cloned().collect(),
+        extents: extents.values().cloned().collect(),
     };
     {
         let mut temp = File::create(&temp_path)?;
@@ -1335,7 +1416,7 @@ fn persist_zone_manifest(
             BlockStoreError::CorruptPageEnvelope {
                 page_segment_id: 0,
                 offset: 0,
-                reason: format!("serialize zone manifest: {err}"),
+                reason: format!("serialize extent manifest: {err}"),
             }
         })?;
         temp.write_all(b"\n")?;
@@ -1347,67 +1428,72 @@ fn persist_zone_manifest(
     Ok(())
 }
 
-fn summarize_zones(zones: &BTreeMap<u64, BlockStoreZoneDescriptor>) -> BlockStoreZoneSummary {
-    let mut summary = BlockStoreZoneSummary::default();
+fn summarize_extents(
+    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
+) -> BlockStoreExtentSummary {
+    let mut summary = BlockStoreExtentSummary::default();
     let now = now_unix_ms();
-    for zone in zones.values() {
-        update_oldest_zone_timestamp(&mut summary.oldest_known_zone_unix_ms, zone);
+    for extent in extents.values() {
+        update_oldest_extent_timestamp(&mut summary.oldest_known_extent_unix_ms, extent);
         summary.total_known_physical_bytes = summary
             .total_known_physical_bytes
-            .saturating_add(zone.physical_bytes);
-        match zone.state {
-            BlockStoreZoneState::Active => {
-                update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
-                summary.active_zones = summary.active_zones.saturating_add(1);
+            .saturating_add(extent.physical_bytes);
+        match extent.state {
+            BlockStoreExtentState::Active => {
+                update_oldest_extent_timestamp(&mut summary.oldest_live_extent_unix_ms, extent);
+                summary.active_extents = summary.active_extents.saturating_add(1);
                 summary.active_physical_bytes = summary
                     .active_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
                 summary.live_physical_bytes = summary
                     .live_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
             }
-            BlockStoreZoneState::Sealed => {
-                update_oldest_zone_timestamp(&mut summary.oldest_live_zone_unix_ms, zone);
-                summary.sealed_zones = summary.sealed_zones.saturating_add(1);
+            BlockStoreExtentState::Sealed => {
+                update_oldest_extent_timestamp(&mut summary.oldest_live_extent_unix_ms, extent);
+                summary.sealed_extents = summary.sealed_extents.saturating_add(1);
                 summary.sealed_physical_bytes = summary
                     .sealed_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
                 summary.live_physical_bytes = summary
                     .live_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
             }
-            BlockStoreZoneState::DelayedDestroy => {
-                update_oldest_zone_timestamp(&mut summary.oldest_reclaimable_zone_unix_ms, zone);
-                summary.delayed_destroy_zones = summary.delayed_destroy_zones.saturating_add(1);
+            BlockStoreExtentState::DelayedDestroy => {
+                update_oldest_extent_timestamp(
+                    &mut summary.oldest_reclaimable_extent_unix_ms,
+                    extent,
+                );
+                summary.delayed_destroy_extents = summary.delayed_destroy_extents.saturating_add(1);
                 summary.delayed_destroy_physical_bytes = summary
                     .delayed_destroy_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
                 summary.reclaimable_physical_bytes = summary
                     .reclaimable_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
             }
-            BlockStoreZoneState::Purged => {
-                summary.purged_zones = summary.purged_zones.saturating_add(1);
+            BlockStoreExtentState::Purged => {
+                summary.purged_extents = summary.purged_extents.saturating_add(1);
                 summary.purged_physical_bytes = summary
                     .purged_physical_bytes
-                    .saturating_add(zone.physical_bytes);
+                    .saturating_add(extent.physical_bytes);
             }
         }
     }
-    summary.oldest_known_zone_age_ms = summary
-        .oldest_known_zone_unix_ms
+    summary.oldest_known_extent_age_ms = summary
+        .oldest_known_extent_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
-    summary.oldest_live_zone_age_ms = summary
-        .oldest_live_zone_unix_ms
+    summary.oldest_live_extent_age_ms = summary
+        .oldest_live_extent_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
-    summary.oldest_reclaimable_zone_age_ms = summary
-        .oldest_reclaimable_zone_unix_ms
+    summary.oldest_reclaimable_extent_age_ms = summary
+        .oldest_reclaimable_extent_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
     summary
 }
 
-fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &BlockStoreZoneDescriptor) {
-    let Some(timestamp) = zone.updated_unix_ms.or(zone.created_unix_ms) else {
+fn update_oldest_extent_timestamp(target: &mut Option<u64>, extent: &BlockStoreExtentDescriptor) {
+    let Some(timestamp) = extent.updated_unix_ms.or(extent.created_unix_ms) else {
         return;
     };
     if target.map(|current| timestamp < current).unwrap_or(true) {
@@ -1415,19 +1501,19 @@ fn update_oldest_zone_timestamp(target: &mut Option<u64>, zone: &BlockStoreZoneD
     }
 }
 
-fn ensure_zone_descriptor(
-    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
+fn ensure_extent_descriptor(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
     root: &Path,
     page_segment_id: u64,
-    state: BlockStoreZoneState,
+    state: BlockStoreExtentState,
 ) {
-    zones.entry(page_segment_id).or_insert_with(|| {
+    extents.entry(page_segment_id).or_insert_with(|| {
         let physical_bytes = segment_path(root, page_segment_id)
             .metadata()
             .map(|metadata| metadata.len())
             .unwrap_or_default();
-        BlockStoreZoneDescriptor {
-            zone_id: zone_id_for_segment(page_segment_id),
+        BlockStoreExtentDescriptor {
+            extent_id: extent_id_for_segment(page_segment_id),
             page_segment_id,
             state,
             physical_bytes,
@@ -1440,30 +1526,30 @@ fn ensure_zone_descriptor(
         }
     });
     let transition_unix_ms = now_unix_ms();
-    for zone in zones.values_mut() {
-        if zone.page_segment_id == page_segment_id {
-            zone.state = state;
-            zone.updated_unix_ms = Some(transition_unix_ms);
-        } else if zone.state == BlockStoreZoneState::Active {
-            zone.state = BlockStoreZoneState::Sealed;
-            zone.updated_unix_ms = Some(transition_unix_ms);
+    for extent in extents.values_mut() {
+        if extent.page_segment_id == page_segment_id {
+            extent.state = state;
+            extent.updated_unix_ms = Some(transition_unix_ms);
+        } else if extent.state == BlockStoreExtentState::Active {
+            extent.state = BlockStoreExtentState::Sealed;
+            extent.updated_unix_ms = Some(transition_unix_ms);
         }
     }
 }
 
-fn upsert_zone_after_append(
-    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
+fn upsert_extent_after_append(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
     page_segment_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
     page_id: u64,
 ) {
-    let zone = zones
+    let extent = extents
         .entry(page_segment_id)
-        .or_insert(BlockStoreZoneDescriptor {
-            zone_id: zone_id_for_segment(page_segment_id),
+        .or_insert(BlockStoreExtentDescriptor {
+            extent_id: extent_id_for_segment(page_segment_id),
             page_segment_id,
-            state: BlockStoreZoneState::Active,
+            state: BlockStoreExtentState::Active,
             physical_bytes: 0,
             logical_bytes: 0,
             created_unix_ms: Some(now_unix_ms()),
@@ -1472,33 +1558,38 @@ fn upsert_zone_after_append(
             last_page_id: Some(page_id),
         });
     let updated_unix_ms = now_unix_ms();
-    zone.state = BlockStoreZoneState::Active;
-    zone.physical_bytes = physical_bytes;
-    zone.logical_bytes = zone.logical_bytes.saturating_add(logical_bytes_written);
-    if zone.created_unix_ms.is_none() {
-        zone.created_unix_ms = Some(updated_unix_ms);
+    extent.state = BlockStoreExtentState::Active;
+    extent.physical_bytes = physical_bytes;
+    extent.logical_bytes = extent.logical_bytes.saturating_add(logical_bytes_written);
+    if extent.created_unix_ms.is_none() {
+        extent.created_unix_ms = Some(updated_unix_ms);
     }
-    zone.updated_unix_ms = Some(updated_unix_ms);
-    zone.first_page_id = Some(
-        zone.first_page_id
+    extent.updated_unix_ms = Some(updated_unix_ms);
+    extent.first_page_id = Some(
+        extent
+            .first_page_id
             .map_or(page_id, |first| first.min(page_id)),
     );
-    zone.last_page_id = Some(zone.last_page_id.map_or(page_id, |last| last.max(page_id)));
+    extent.last_page_id = Some(
+        extent
+            .last_page_id
+            .map_or(page_id, |last| last.max(page_id)),
+    );
 }
 
-fn set_zone_state(
-    zones: &mut BTreeMap<u64, BlockStoreZoneDescriptor>,
+fn set_extent_state(
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
     page_segment_id: u64,
-    state: BlockStoreZoneState,
+    state: BlockStoreExtentState,
 ) {
-    zones
+    extents
         .entry(page_segment_id)
-        .and_modify(|zone| {
-            zone.state = state;
-            zone.updated_unix_ms = Some(now_unix_ms());
+        .and_modify(|extent| {
+            extent.state = state;
+            extent.updated_unix_ms = Some(now_unix_ms());
         })
-        .or_insert(BlockStoreZoneDescriptor {
-            zone_id: zone_id_for_segment(page_segment_id),
+        .or_insert(BlockStoreExtentDescriptor {
+            extent_id: extent_id_for_segment(page_segment_id),
             page_segment_id,
             state,
             physical_bytes: 0,
@@ -1579,7 +1670,7 @@ fn delayed_destroy_segment_id_from_name(name: &std::ffi::OsStr) -> Option<u64> {
     id.parse::<u64>().ok()
 }
 
-fn zone_id_for_segment(page_segment_id: u64) -> u64 {
+fn extent_id_for_segment(page_segment_id: u64) -> u64 {
     page_segment_id
 }
 
@@ -1728,7 +1819,7 @@ mod tests {
         assert_eq!(address.page_id, Some(0));
         assert_eq!(address.object_id, Some(4242));
         assert_eq!(address.routing_slot, Some(17));
-        assert_eq!(address.zone_id, Some(0));
+        assert_eq!(address.extent_id, Some(0));
         assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
@@ -1739,7 +1830,7 @@ mod tests {
             "page_id": address.page_id,
             "object_id": address.object_id,
             "routing_slot": address.routing_slot,
-            "zone_id": address.zone_id,
+            "extent_id": address.extent_id,
             "checksum": address.sha256,
         });
         let from_checksum_alias: BlockAddress = serde_json::from_value(cpp_style_json).unwrap();
@@ -1817,7 +1908,7 @@ mod tests {
 
         assert_eq!(address.object_id, Some(42));
         assert_eq!(address.routing_slot, Some(7));
-        assert_eq!(address.zone_id, Some(0));
+        assert_eq!(address.extent_id, Some(0));
         assert_eq!(store.read(&address).unwrap(), b"object-page");
 
         address.object_id = Some(43);
@@ -1830,97 +1921,106 @@ mod tests {
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
 
         address.routing_slot = Some(7);
-        address.zone_id = Some(1);
+        address.extent_id = Some(1);
         let err = store.read(&address).unwrap_err();
         assert!(matches!(err, BlockStoreError::CorruptPageEnvelope { .. }));
     }
 
     #[test]
-    fn rolled_segments_stamp_new_zone_ids() {
+    fn rolled_segments_stamp_new_extent_ids() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-zone").unwrap();
+        let first = store.append(b"first-extent").unwrap();
         let roll = store.roll_segment().unwrap();
-        let second = store.append(b"second-zone").unwrap();
+        let second = store.append(b"second-extent").unwrap();
 
-        assert_eq!(first.zone_id, Some(first.page_segment_id));
-        assert_eq!(second.zone_id, Some(second.page_segment_id));
-        assert_eq!(second.zone_id, Some(roll.new_page_segment_id));
-        assert_ne!(first.zone_id, second.zone_id);
+        assert_eq!(first.extent_id, Some(first.page_segment_id));
+        assert_eq!(second.extent_id, Some(second.page_segment_id));
+        assert_eq!(second.extent_id, Some(roll.new_page_segment_id));
+        assert_ne!(first.extent_id, second.extent_id);
     }
 
     #[test]
-    fn zone_manifest_tracks_roll_reopen_gc_and_purge() {
+    fn extent_manifest_tracks_roll_reopen_gc_and_purge() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-zone").unwrap();
+        let first = store.append(b"first-extent").unwrap();
         store.roll_segment().unwrap();
-        let second = store.append(b"second-zone").unwrap();
+        let second = store.append(b"second-extent").unwrap();
 
-        let zones = store.zone_descriptors();
-        assert_eq!(zones.len(), 2);
-        assert_eq!(zones[0].page_segment_id, first.page_segment_id);
-        assert_eq!(zones[0].state, BlockStoreZoneState::Sealed);
-        assert_eq!(zones[0].first_page_id, first.page_id);
-        assert_eq!(zones[0].last_page_id, first.page_id);
-        assert!(zones[0].created_unix_ms.is_some());
-        assert!(zones[0].updated_unix_ms.is_some());
-        assert_eq!(zones[1].page_segment_id, second.page_segment_id);
-        assert_eq!(zones[1].state, BlockStoreZoneState::Active);
-        assert_eq!(zones[1].first_page_id, second.page_id);
-        assert_eq!(zones[1].last_page_id, second.page_id);
-        assert!(zones[1].created_unix_ms.is_some());
-        assert!(zones[1].updated_unix_ms.is_some());
-        assert!(zone_manifest_path(dir.path()).exists());
-        let initial_summary = store.zone_summary();
-        assert_eq!(initial_summary.sealed_zones, 1);
-        assert_eq!(initial_summary.active_zones, 1);
-        assert_eq!(initial_summary.delayed_destroy_zones, 0);
-        assert_eq!(initial_summary.purged_zones, 0);
+        let extents = store.extent_descriptors();
+        assert_eq!(extents.len(), 2);
+        assert_eq!(extents[0].page_segment_id, first.page_segment_id);
+        assert_eq!(extents[0].state, BlockStoreExtentState::Sealed);
+        assert_eq!(extents[0].first_page_id, first.page_id);
+        assert_eq!(extents[0].last_page_id, first.page_id);
+        assert!(extents[0].created_unix_ms.is_some());
+        assert!(extents[0].updated_unix_ms.is_some());
+        assert_eq!(extents[1].page_segment_id, second.page_segment_id);
+        assert_eq!(extents[1].state, BlockStoreExtentState::Active);
+        assert_eq!(extents[1].first_page_id, second.page_id);
+        assert_eq!(extents[1].last_page_id, second.page_id);
+        assert!(extents[1].created_unix_ms.is_some());
+        assert!(extents[1].updated_unix_ms.is_some());
+        assert!(extent_manifest_path(dir.path()).exists());
+        let initial_summary = store.extent_summary();
+        assert_eq!(initial_summary.sealed_extents, 1);
+        assert_eq!(initial_summary.active_extents, 1);
+        assert_eq!(initial_summary.delayed_destroy_extents, 0);
+        assert_eq!(initial_summary.purged_extents, 0);
         assert_eq!(
             initial_summary.sealed_physical_bytes,
-            zones[0].physical_bytes
+            extents[0].physical_bytes
         );
         assert_eq!(
             initial_summary.active_physical_bytes,
-            zones[1].physical_bytes
+            extents[1].physical_bytes
         );
         assert_eq!(
             initial_summary.live_physical_bytes,
-            zones[0].physical_bytes + zones[1].physical_bytes
+            extents[0].physical_bytes + extents[1].physical_bytes
         );
         assert_eq!(initial_summary.reclaimable_physical_bytes, 0);
-        assert!(initial_summary.oldest_known_zone_unix_ms.is_some());
-        assert!(initial_summary.oldest_known_zone_age_ms.is_some());
-        assert!(initial_summary.oldest_live_zone_unix_ms.is_some());
-        assert!(initial_summary.oldest_live_zone_age_ms.is_some());
-        assert!(initial_summary.oldest_reclaimable_zone_unix_ms.is_none());
-        assert!(initial_summary.oldest_reclaimable_zone_age_ms.is_none());
+        assert!(initial_summary.oldest_known_extent_unix_ms.is_some());
+        assert!(initial_summary.oldest_known_extent_age_ms.is_some());
+        assert!(initial_summary.oldest_live_extent_unix_ms.is_some());
+        assert!(initial_summary.oldest_live_extent_age_ms.is_some());
+        assert!(initial_summary.oldest_reclaimable_extent_unix_ms.is_none());
+        assert!(initial_summary.oldest_reclaimable_extent_age_ms.is_none());
 
         let reopened = LocalBlockStore::new(dir.path());
-        let reopened_zones = reopened.zone_descriptors();
-        assert_eq!(reopened_zones.len(), zones.len());
-        assert_eq!(reopened_zones[0], zones[0]);
-        assert_eq!(reopened_zones[1].page_segment_id, zones[1].page_segment_id);
-        assert_eq!(reopened_zones[1].state, zones[1].state);
-        assert_eq!(reopened_zones[1].physical_bytes, zones[1].physical_bytes);
-        assert_eq!(reopened_zones[1].logical_bytes, zones[1].logical_bytes);
-        assert_eq!(reopened_zones[1].created_unix_ms, zones[1].created_unix_ms);
-        assert!(reopened_zones[1].updated_unix_ms >= zones[1].updated_unix_ms);
+        let reopened_extents = reopened.extent_descriptors();
+        assert_eq!(reopened_extents.len(), extents.len());
+        assert_eq!(reopened_extents[0], extents[0]);
+        assert_eq!(
+            reopened_extents[1].page_segment_id,
+            extents[1].page_segment_id
+        );
+        assert_eq!(reopened_extents[1].state, extents[1].state);
+        assert_eq!(
+            reopened_extents[1].physical_bytes,
+            extents[1].physical_bytes
+        );
+        assert_eq!(reopened_extents[1].logical_bytes, extents[1].logical_bytes);
+        assert_eq!(
+            reopened_extents[1].created_unix_ms,
+            extents[1].created_unix_ms
+        );
+        assert!(reopened_extents[1].updated_unix_ms >= extents[1].updated_unix_ms);
 
         let report = reopened
             .gc_segments_before_with_live_refs_delayed_destroy(1, std::iter::empty())
             .unwrap();
         assert_eq!(report.delayed_destroy_page_segment_ids, vec![0]);
-        let delayed = reopened.zone_descriptors();
-        assert_eq!(delayed[0].state, BlockStoreZoneState::DelayedDestroy);
+        let delayed = reopened.extent_descriptors();
+        assert_eq!(delayed[0].state, BlockStoreExtentState::DelayedDestroy);
         assert!(delayed[0].physical_bytes > 0);
-        assert_eq!(delayed[0].created_unix_ms, zones[0].created_unix_ms);
-        assert!(delayed[0].updated_unix_ms >= zones[0].updated_unix_ms);
-        assert_eq!(delayed[1].state, BlockStoreZoneState::Active);
-        let delayed_summary = reopened.zone_summary();
-        assert_eq!(delayed_summary.delayed_destroy_zones, 1);
-        assert_eq!(delayed_summary.active_zones, 1);
+        assert_eq!(delayed[0].created_unix_ms, extents[0].created_unix_ms);
+        assert!(delayed[0].updated_unix_ms >= extents[0].updated_unix_ms);
+        assert_eq!(delayed[1].state, BlockStoreExtentState::Active);
+        let delayed_summary = reopened.extent_summary();
+        assert_eq!(delayed_summary.delayed_destroy_extents, 1);
+        assert_eq!(delayed_summary.active_extents, 1);
         assert_eq!(
             delayed_summary.delayed_destroy_physical_bytes,
             delayed[0].physical_bytes
@@ -1933,64 +2033,64 @@ mod tests {
             delayed_summary.live_physical_bytes,
             delayed[1].physical_bytes
         );
-        assert!(delayed_summary.oldest_known_zone_unix_ms.is_some());
-        assert!(delayed_summary.oldest_live_zone_unix_ms.is_some());
+        assert!(delayed_summary.oldest_known_extent_unix_ms.is_some());
+        assert!(delayed_summary.oldest_live_extent_unix_ms.is_some());
         assert_eq!(
-            delayed_summary.oldest_reclaimable_zone_unix_ms,
+            delayed_summary.oldest_reclaimable_extent_unix_ms,
             delayed[0].updated_unix_ms
         );
-        assert!(delayed_summary.oldest_reclaimable_zone_age_ms.is_some());
+        assert!(delayed_summary.oldest_reclaimable_extent_age_ms.is_some());
 
         let purge = reopened
             .purge_delayed_destroy_segments_with_report()
             .unwrap();
         assert_eq!(purge.purged_page_segment_ids, vec![0]);
         assert!(purge.purged_physical_bytes > 0);
-        let purged = LocalBlockStore::new(dir.path()).zone_descriptors();
-        assert_eq!(purged[0].state, BlockStoreZoneState::Purged);
-        assert_eq!(purged[0].created_unix_ms, zones[0].created_unix_ms);
+        let purged = LocalBlockStore::new(dir.path()).extent_descriptors();
+        assert_eq!(purged[0].state, BlockStoreExtentState::Purged);
+        assert_eq!(purged[0].created_unix_ms, extents[0].created_unix_ms);
         assert!(purged[0].updated_unix_ms >= delayed[0].updated_unix_ms);
-        assert_eq!(purged[1].state, BlockStoreZoneState::Active);
-        let purged_summary = LocalBlockStore::new(dir.path()).zone_summary();
-        assert_eq!(purged_summary.purged_zones, 1);
-        assert_eq!(purged_summary.active_zones, 1);
+        assert_eq!(purged[1].state, BlockStoreExtentState::Active);
+        let purged_summary = LocalBlockStore::new(dir.path()).extent_summary();
+        assert_eq!(purged_summary.purged_extents, 1);
+        assert_eq!(purged_summary.active_extents, 1);
         assert_eq!(
             purged_summary.purged_physical_bytes,
             purged[0].physical_bytes
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
-        assert!(purged_summary.oldest_known_zone_unix_ms.is_some());
-        assert!(purged_summary.oldest_live_zone_unix_ms.is_some());
-        assert!(purged_summary.oldest_reclaimable_zone_unix_ms.is_none());
-        assert!(purged_summary.oldest_reclaimable_zone_age_ms.is_none());
+        assert!(purged_summary.oldest_known_extent_unix_ms.is_some());
+        assert!(purged_summary.oldest_live_extent_unix_ms.is_some());
+        assert!(purged_summary.oldest_reclaimable_extent_unix_ms.is_none());
+        assert!(purged_summary.oldest_reclaimable_extent_age_ms.is_none());
     }
 
     #[test]
-    fn missing_zone_manifest_rebuilds_from_existing_segments() {
+    fn missing_extent_manifest_rebuilds_from_existing_segments() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first = store.append(b"first-zone").unwrap();
+        let first = store.append(b"first-extent").unwrap();
         store.roll_segment().unwrap();
-        let second = store.append(b"second-zone").unwrap();
-        fs::remove_file(zone_manifest_path(dir.path())).unwrap();
+        let second = store.append(b"second-extent").unwrap();
+        fs::remove_file(extent_manifest_path(dir.path())).unwrap();
 
         let rebuilt = LocalBlockStore::new(dir.path());
-        let zones = rebuilt.zone_descriptors();
+        let extents = rebuilt.extent_descriptors();
 
-        assert_eq!(zones.len(), 2);
-        assert_eq!(zones[0].page_segment_id, first.page_segment_id);
-        assert_eq!(zones[0].state, BlockStoreZoneState::Sealed);
-        assert_eq!(zones[0].first_page_id, first.page_id);
-        assert_eq!(zones[0].last_page_id, first.page_id);
-        assert!(zones[0].created_unix_ms.is_some());
-        assert!(zones[0].updated_unix_ms.is_some());
-        assert_eq!(zones[1].page_segment_id, second.page_segment_id);
-        assert_eq!(zones[1].state, BlockStoreZoneState::Active);
-        assert_eq!(zones[1].first_page_id, second.page_id);
-        assert_eq!(zones[1].last_page_id, second.page_id);
-        assert!(zones[1].created_unix_ms.is_some());
-        assert!(zones[1].updated_unix_ms.is_some());
+        assert_eq!(extents.len(), 2);
+        assert_eq!(extents[0].page_segment_id, first.page_segment_id);
+        assert_eq!(extents[0].state, BlockStoreExtentState::Sealed);
+        assert_eq!(extents[0].first_page_id, first.page_id);
+        assert_eq!(extents[0].last_page_id, first.page_id);
+        assert!(extents[0].created_unix_ms.is_some());
+        assert!(extents[0].updated_unix_ms.is_some());
+        assert_eq!(extents[1].page_segment_id, second.page_segment_id);
+        assert_eq!(extents[1].state, BlockStoreExtentState::Active);
+        assert_eq!(extents[1].first_page_id, second.page_id);
+        assert_eq!(extents[1].last_page_id, second.page_id);
+        assert!(extents[1].created_unix_ms.is_some());
+        assert!(extents[1].updated_unix_ms.is_some());
     }
 
     #[test]
@@ -2042,13 +2142,13 @@ mod tests {
         assert!(stats.logical_bytes_read >= stats.bytes_read);
     }
 
-    // shared-corpus: storage_stream_backed_zone_runtime;
+    // shared-corpus: storage_stream_backed_extent_runtime;
     #[test]
-    fn stream_backed_zone_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
+    fn stream_backed_extent_runtime_report_covers_roll_read_manifest_and_delayed_destroy() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
-        let first_payload = b"zone-stream-first-".repeat(96);
-        let second_payload = b"zone-stream-second-".repeat(96);
+        let first_payload = b"extent-stream-first-".repeat(96);
+        let second_payload = b"extent-stream-second-".repeat(96);
         let first = store
             .append_with_page_metadata(&first_payload, Some(11), Some(7))
             .unwrap();
@@ -2067,7 +2167,7 @@ mod tests {
         assert_eq!(logical, expected);
 
         let roll = store.roll_segment().unwrap();
-        let third_payload = b"zone-stream-third-".repeat(96);
+        let third_payload = b"extent-stream-third-".repeat(96);
         let third = store
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
@@ -2086,15 +2186,15 @@ mod tests {
 
         let reopened = LocalBlockStore::new(dir.path());
         assert_eq!(reopened.read(&third).unwrap(), third_payload);
-        let report = reopened.stream_backed_zone_runtime_report().unwrap();
+        let report = reopened.stream_backed_extent_runtime_report().unwrap();
         assert!(report.runtime_ready, "{report:?}");
-        assert_eq!(report.active_zones, 1);
-        assert_eq!(report.delayed_destroy_zones, 1);
-        assert!(report.zone_count >= 2);
+        assert_eq!(report.active_extents, 1);
+        assert_eq!(report.delayed_destroy_extents, 1);
+        assert!(report.extent_count >= 2);
         assert!(report.stream_segment_count >= 1);
         assert!(report.logical_stream_read_ready);
         assert!(report.append_roll_ready);
-        assert!(report.zone_manifest_ready);
+        assert!(report.extent_manifest_ready);
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
         assert!(report.delayed_destroy_ready);
@@ -2287,7 +2387,7 @@ mod tests {
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         };
         fs::write(

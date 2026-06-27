@@ -26,7 +26,7 @@ regresses, the service readiness report must fail closed with the missing eviden
 
 1. Storage production readiness gate across recovery, lifecycle, cache, and page-store health. Done.
 2. End-to-end readiness route coverage in the storage-mode harness.
-3. Configurable readiness policy thresholds for dirty slots, stale zones, and dump lag. Done.
+3. Configurable readiness policy thresholds for dirty slots, stale extents, and dump lag. Done.
 4. Durable readiness snapshots for post-crash comparison.
 5. Background readiness scanner integrated with data-node preflight.
 6. Readiness Prometheus gauges and blocker counters.
@@ -34,7 +34,7 @@ regresses, the service readiness report must fail closed with the missing eviden
 8. Roll-forward recovery harness for interrupted slot dump install phases.
 9. Live page owner validation in every compaction apply path.
 10. Page segment quarantine on corruption before GC.
-11. Zone-level reclaim budget enforcement under sustained writes.
+11. Extent-level reclaim budget enforcement under sustained writes.
 12. Disk cache admission policy under memory pressure. Done.
 13. Cache warmup budget and backpressure controls.
 14. Shared-store checkpoint retention under multiple follower cursors.
@@ -187,10 +187,10 @@ layout classes, layout transition counters, missing owner refs, owner mismatches
 reuse conflicts. That makes native Rust ObjectManager runtime mechanics readiness-backed rather
 than only doc-described.
 
-Rust also has stream-backed zone runtime evidence. The page store appends self-describing stream
+Rust also has stream-backed extent runtime evidence. The page store appends self-describing stream
 records, supports logical range reads that skip envelopes and decompress records across page
-boundaries, rolls segments by sealing the previous zone and opening a new active zone, persists the
-zone manifest across reopen, and tracks active/sealed/delayed-destroy/purged zone states.
+boundaries, rolls segments by sealing the previous extent and opening a new active extent, persists the
+extent manifest across reopen, and tracks active/sealed/delayed-destroy/purged extent states.
 
 Page compaction is tied to model layout and tombstones through `ShardCompactionReport`.
 Compaction now reports `model_layout_compaction_ready`, per-model layout rows, packed timestamped
@@ -217,7 +217,7 @@ retention, and index-GC as one fail-closed readiness surface. The shared
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
 C++ byte-for-byte cleaner internals, and CacheLib/mtcache-class cache behavior. The slot-first
-index, ObjectManager runtime report, stream-backed zone report, StorageManager loop report, merged
+index, ObjectManager runtime report, stream-backed extent report, StorageManager loop report, merged
 dump/load policy report, and layout evidence are real readiness evidence, but they are not treated
 as byte-for-byte C++ runtime parity.
 

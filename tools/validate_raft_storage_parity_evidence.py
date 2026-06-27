@@ -46,7 +46,7 @@ AREAS: tuple[ParityArea, ...] = (
             ),
             RustEvidence(
                 "crates/temporalstore-rust/src/block_store.rs",
-                ("BlockAddress", "BlockStoreSegmentReport", "BlockStoreZoneManifest"),
+                ("BlockAddress", "BlockStoreSegmentReport", "BlockStoreExtentManifest"),
             ),
         ),
     ),

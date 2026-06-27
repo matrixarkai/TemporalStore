@@ -1258,9 +1258,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::crash_recovery_report_covers_oplog_index_page_and_zone_manifest",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::crash_recovery_report_covers_oplog_index_page_and_extent_manifest",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "crash_recovery_report_covers_oplog_index_page_and_zone_manifest",
+      "test_name": "crash_recovery_report_covers_oplog_index_page_and_extent_manifest",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -1276,9 +1276,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::crash_recovery_rebuilds_missing_zone_manifest_from_page_stream",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::crash_recovery_rebuilds_missing_extent_manifest_from_page_stream",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "crash_recovery_rebuilds_missing_zone_manifest_from_page_stream",
+      "test_name": "crash_recovery_rebuilds_missing_extent_manifest_from_page_stream",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -2482,27 +2482,27 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/block_store.rs::rolled_segments_stamp_new_zone_ids",
+      "test_id": "crates/temporalstore-rust/src/block_store.rs::rolled_segments_stamp_new_extent_ids",
       "file": "crates/temporalstore-rust/src/block_store.rs",
-      "test_name": "rolled_segments_stamp_new_zone_ids",
+      "test_name": "rolled_segments_stamp_new_extent_ids",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/block_store.rs::zone_manifest_tracks_roll_reopen_gc_and_purge",
+      "test_id": "crates/temporalstore-rust/src/block_store.rs::extent_manifest_tracks_roll_reopen_gc_and_purge",
       "file": "crates/temporalstore-rust/src/block_store.rs",
-      "test_name": "zone_manifest_tracks_roll_reopen_gc_and_purge",
+      "test_name": "extent_manifest_tracks_roll_reopen_gc_and_purge",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/block_store.rs::missing_zone_manifest_rebuilds_from_existing_segments",
+      "test_id": "crates/temporalstore-rust/src/block_store.rs::missing_extent_manifest_rebuilds_from_existing_segments",
       "file": "crates/temporalstore-rust/src/block_store.rs",
-      "test_name": "missing_zone_manifest_rebuilds_from_existing_segments",
+      "test_name": "missing_extent_manifest_rebuilds_from_existing_segments",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",

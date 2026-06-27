@@ -110,9 +110,9 @@ Rust metrics:
 - `temporalstore_cache_operations_total`
 - `temporalstore_cache_bytes`
 - `temporalstore_block_store_operations_total`
-- `temporalstore_block_store_zone_bytes`
+- `temporalstore_block_store_extent_bytes`
 
-Grafana panels cover object manager ownership, slot refs/bytes, cache operations/bytes, block-store operations, and stale-zone bytes. Alerts cover storage/cache readiness blockers, block-store read/corruption errors, and sustained cache miss pressure.
+Grafana panels cover object manager ownership, slot refs/bytes, cache operations/bytes, block-store operations, and stale-extent bytes. Alerts cover storage/cache readiness blockers, block-store read/corruption errors, and sustained cache miss pressure.
 
 ### data_node
 
