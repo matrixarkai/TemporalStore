@@ -50,7 +50,7 @@ if [[ "$MATRIXARK_MCP_BACKEND" == "temporalstore-direct" && "$MATRIXARK_MCP_AUTO
   port="${MATRIXARK_TEMPORALSTORE_METASERVER##*:}"
   if ! timeout 2 bash -c "</dev/tcp/$host/$port" >/dev/null 2>&1; then
     echo "MatrixArk MCP: TemporalStore metaserver $MATRIXARK_TEMPORALSTORE_METASERVER is not listening; starting local C++ deployment..." >&2
-    BUILD_TYPE="${BUILD_TYPE:-Release}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
+    BUILD_TYPE="${BUILD_TYPE:-Release}" SERVER_EXTRA_FLAGS="${SERVER_EXTRA_FLAGS:---storage_async=true --server_stopping_wait_s=1}" timeout 90 bash "$ROOT/tools/deploy_local_ubuntu22.sh" start >&2
   fi
 fi
 
