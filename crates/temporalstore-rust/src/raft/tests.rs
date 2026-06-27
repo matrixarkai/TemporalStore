@@ -2034,6 +2034,7 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     let config = RaftConfig {
         enable_pre_vote: true,
         lease_duration_ms: 1_000,
+        max_inflights_replicate: 2,
         max_segment_bytes: 512,
         min_keep_segment_num: 1,
         ..RaftConfig::default()
@@ -2054,6 +2055,19 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .propose(Command::StringSet {
             key: "byteraft-admin-lag".to_string(),
             value: b"lag".to_vec(),
+        })
+        .unwrap();
+    let append_request = cluster.build_append_entries_request(3).unwrap();
+    assert!(matches!(
+        cluster.build_append_entries_request(3),
+        Err(RaftError::AppendBackpressure { node_id: 3, .. })
+    ));
+    cluster.receive_append_entries(append_request).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "byteraft-admin-lag-2".to_string(),
+            value: b"lag-2".to_vec(),
         })
         .unwrap();
     cluster.set_alive(3, true).unwrap();
@@ -2101,7 +2115,11 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report
         .peer_pipeline_states
         .iter()
-        .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+        .any(|peer| peer.peer_id == 3
+            && peer.append_requests >= 2
+            && peer.append_accepted >= 1
+            && peer.append_rejected >= 1
+            && peer.append_queue_depth > 0));
     assert!(report
         .peer_pipeline_states
         .iter()
@@ -2127,6 +2145,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_accepted"));
     assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_stale_follower_write_rejected"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_requests"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
@@ -2146,7 +2167,11 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(restored_report
         .peer_pipeline_states
         .iter()
-        .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+        .any(|peer| peer.peer_id == 3
+            && peer.append_requests >= 2
+            && peer.append_accepted >= 1
+            && peer.append_rejected >= 1
+            && peer.append_queue_depth > 0));
     assert!(restored_report
         .peer_pipeline_states
         .iter()

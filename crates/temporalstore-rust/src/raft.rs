@@ -481,6 +481,9 @@ pub struct ByteRaftPeerPipelineState {
     pub replica_role: RaftReplicaRole,
     pub match_index: u64,
     pub next_index: u64,
+    pub append_requests: u64,
+    pub append_accepted: u64,
+    pub append_rejected: u64,
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
@@ -897,6 +900,9 @@ pub struct RaftWalRecord {
 pub struct RaftPeerPipelineRuntimeState {
     pub match_index: u64,
     pub next_index: u64,
+    pub append_requests: u64,
+    pub append_accepted: u64,
+    pub append_rejected: u64,
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
@@ -4503,6 +4509,14 @@ pub enum RaftError {
     ApplySnapshotFence(String),
     #[error("raft log entry too large: bytes={bytes}, limit={limit}")]
     LogEntryTooLarge { bytes: u64, limit: u64 },
+    #[error("raft append pipeline backpressure for node {node_id}: inflight_entries={inflight_entries}, inflight_bytes={inflight_bytes}, entry_limit={entry_limit}, byte_limit={byte_limit}")]
+    AppendBackpressure {
+        node_id: RaftNodeId,
+        inflight_entries: u64,
+        inflight_bytes: u64,
+        entry_limit: u64,
+        byte_limit: u64,
+    },
     #[error("node {node_id} is not leader")]
     NotLeader { node_id: RaftNodeId },
     #[error("election is prohibited by raft config")]
@@ -5879,6 +5893,34 @@ impl RaftCluster {
         target_id: RaftNodeId,
     ) -> Result<AppendEntriesRequest, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let entry_limit = inner.config.max_inflights_replicate.max(1);
+        let byte_limit = inner.config.max_memory_replicate_log_bytes.max(1);
+        let mut current_inflight_entries = 0;
+        let mut current_inflight_bytes = 0;
+        if let Some(target) = inner.nodes.get_mut(&target_id) {
+            target.pipeline_state.append_requests =
+                target.pipeline_state.append_requests.saturating_add(1);
+            current_inflight_entries = target.pipeline_state.inflight_entries;
+            current_inflight_bytes = target.pipeline_state.inflight_bytes;
+            if target.pipeline_state.inflight_entries >= entry_limit
+                || target.pipeline_state.inflight_bytes >= byte_limit
+            {
+                target.pipeline_state.append_rejected =
+                    target.pipeline_state.append_rejected.saturating_add(1);
+                let inflight_entries = target.pipeline_state.inflight_entries;
+                let inflight_bytes = target.pipeline_state.inflight_bytes;
+                inner.persist_configured_wal()?;
+                return Err(RaftError::AppendBackpressure {
+                    node_id: target_id,
+                    inflight_entries,
+                    inflight_bytes,
+                    entry_limit,
+                    byte_limit,
+                });
+            }
+        }
+        let available_entries = entry_limit.saturating_sub(current_inflight_entries);
+        let available_bytes = byte_limit.saturating_sub(current_inflight_bytes);
         let leader = inner
             .nodes
             .get(&inner.leader_id)
@@ -5896,27 +5938,57 @@ impl RaftCluster {
         let prev_log_index = target_last_index.min(node_last_log_or_snapshot_index(leader));
         let prev_log_term =
             node_term_at_log_or_snapshot_index(leader, prev_log_index).unwrap_or_default();
-        let entries = leader
+        let mut entries = Vec::new();
+        let mut inflight_bytes = 0u64;
+        for entry in leader
             .log
             .iter()
             .filter(|entry| entry.index > prev_log_index)
-            .cloned()
-            .collect::<Vec<_>>();
+        {
+            if entries.len() as u64 >= available_entries {
+                break;
+            }
+            let entry_bytes = command_size_bytes(&entry.command);
+            if !entries.is_empty() && inflight_bytes.saturating_add(entry_bytes) > available_bytes {
+                break;
+            }
+            if entries.is_empty() && entry_bytes > available_bytes {
+                if let Some(target) = inner.nodes.get_mut(&target_id) {
+                    target.pipeline_state.append_rejected =
+                        target.pipeline_state.append_rejected.saturating_add(1);
+                }
+                inner.persist_configured_wal()?;
+                return Err(RaftError::AppendBackpressure {
+                    node_id: target_id,
+                    inflight_entries: 0,
+                    inflight_bytes: entry_bytes,
+                    entry_limit,
+                    byte_limit,
+                });
+            }
+            inflight_bytes = inflight_bytes.saturating_add(entry_bytes);
+            entries.push(entry.clone());
+        }
         let inflight_bytes = entries
             .iter()
             .map(|entry| command_size_bytes(&entry.command))
             .sum();
         if let Some(target) = inner.nodes.get_mut(&target_id) {
+            target.pipeline_state.append_accepted =
+                target.pipeline_state.append_accepted.saturating_add(1);
             target.pipeline_state.match_index = target.commit_index;
             target.pipeline_state.next_index = prev_log_index.saturating_add(1);
-            target.pipeline_state.inflight_entries = entries.len() as u64;
-            target.pipeline_state.inflight_bytes = inflight_bytes;
-            target.pipeline_state.append_queue_depth = entries.len() as u64;
+            target.pipeline_state.inflight_entries =
+                current_inflight_entries.saturating_add(entries.len() as u64);
+            target.pipeline_state.inflight_bytes =
+                current_inflight_bytes.saturating_add(inflight_bytes);
+            target.pipeline_state.append_queue_depth = target.pipeline_state.inflight_entries;
             if enable_reorder_queue {
                 target.pipeline_state.reorder_queue_depth =
                     target.commit_index.saturating_sub(target.applied_index);
             }
         }
+        inner.persist_configured_wal()?;
         Ok(AppendEntriesRequest {
             rpc: None,
             shard_id,
@@ -7838,6 +7910,9 @@ impl RaftClusterInner {
                     replica_role: node.replica_role,
                     match_index: pipeline.match_index,
                     next_index: pipeline.next_index,
+                    append_requests: pipeline.append_requests,
+                    append_accepted: pipeline.append_accepted,
+                    append_rejected: pipeline.append_rejected,
                     inflight_entries: pipeline.inflight_entries,
                     inflight_bytes: pipeline.inflight_bytes,
                     append_queue_depth: pipeline.append_queue_depth,
@@ -8994,6 +9069,12 @@ fn append_byteraft_runtime_admin_prometheus(
         "# HELP temporalstore_raft_byteraft_peer_next_index ByteRaft-style per-peer next index.\n",
     );
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_next_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_requests ByteRaft-style per-peer append requests.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_accepted ByteRaft-style per-peer append requests accepted.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_rejected ByteRaft-style per-peer append requests rejected by pipeline backpressure.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_rejected counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_entries ByteRaft-style per-peer inflight entries.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_entries gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_bytes ByteRaft-style per-peer inflight bytes.\n");
@@ -9043,6 +9124,24 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_next_index",
             labels,
             peer.next_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_append_requests",
+            labels,
+            peer.append_requests,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_append_accepted",
+            labels,
+            peer.append_accepted,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_append_rejected",
+            labels,
+            peer.append_rejected,
         );
         push_raft_metric(
             out,
