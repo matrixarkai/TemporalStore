@@ -749,6 +749,45 @@ class Client:
         finally:
             self._native.lib.temporalstore_free_string(value)
 
+    def matrixark_scan_candidates(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        scope: dict,
+        record_types: list[str],
+        secondary_index_groups: list[list[str]],
+        selected_node_hashes: list[int],
+    ) -> dict:
+        if not getattr(self._native, "has_matrixark_scan_candidates", False):
+            raise TemporalStoreError(1, "temporalstore_matrixark_scan_candidates is not available in this SDK build")
+        import json
+        request = {
+            "scope": scope,
+            "record_types": record_types,
+            "secondary_index_groups": secondary_index_groups,
+            "selected_node_hashes": selected_node_hashes,
+        }
+        out = ctypes.c_void_p()
+        error = ctypes.c_void_p()
+        request_json = json.dumps(request, separators=(",", ":"), sort_keys=True)
+        code = self._native.lib.temporalstore_matrixark_scan_candidates(
+            self._handle,
+            _encode(count_key),
+            _encode(record_hash_key),
+            int(shard_size),
+            _encode(request_json),
+            ctypes.byref(out),
+            ctypes.byref(error),
+        )
+        self._native.check(code, error)
+        try:
+            payload = ctypes.cast(out, ctypes.c_char_p).value.decode("utf-8", errors="replace")
+            return json.loads(payload)
+        finally:
+            self._native.lib.temporalstore_free_string(out)
+
     def matrixark_retrieve_context_pack(
         self,
         *,

@@ -147,6 +147,30 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/Envelope'
+  /v1/matrixark/append_records:
+    post:
+      summary: Append MatrixArk record bundles natively through the proxy.
+      requestBody:
+        $ref: '#/components/requestBodies/MatrixArkAppendRecords'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/matrixark/scan_candidates:
+    post:
+      summary: Scan MatrixArk candidates with scope and secondary-index prefiltering in the proxy.
+      requestBody:
+        $ref: '#/components/requestBodies/MatrixArkScanCandidates'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
+  /v1/matrixark/retrieve_context_pack:
+    post:
+      summary: Return a fully assembled MatrixArk ContextPack from the proxy.
+      requestBody:
+        $ref: '#/components/requestBodies/MatrixArkRetrieveContextPack'
+      responses:
+        '200':
+          $ref: '#/components/responses/Envelope'
 components:
   responses:
     Envelope:
@@ -234,6 +258,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/RiskCountRequest'
+    MatrixArkAppendRecords:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MatrixArkAppendRecordsRequest'
+    MatrixArkScanCandidates:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MatrixArkScanCandidatesRequest'
+    MatrixArkRetrieveContextPack:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MatrixArkRetrieveContextPackRequest'
   schemas:
     Envelope:
       type: object
@@ -479,3 +521,78 @@ components:
               format: int64
             window_unit:
               type: integer
+    MatrixArkHashEntry:
+      type: object
+      required: [key, field, value]
+      properties:
+        key:
+          type: string
+        field:
+          type: string
+        value:
+          type: string
+    MatrixArkAppendRecordsRequest:
+      type: object
+      required: [namespace, table, entries]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatrixArkHashEntry'
+        count_key:
+          type: string
+        count_value:
+          type: string
+    MatrixArkScanCandidatesRequest:
+      type: object
+      required: [namespace, table, count_key, record_hash_key, shard_size]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        count_key:
+          type: string
+        record_hash_key:
+          type: string
+        shard_size:
+          type: integer
+          format: int64
+        scope:
+          type: object
+        record_types:
+          type: array
+          items:
+            type: string
+        secondary_index_groups:
+          type: array
+          items:
+            type: array
+            items:
+              type: string
+        selected_node_hashes:
+          type: array
+          items:
+            type: integer
+            format: int64
+    MatrixArkRetrieveContextPackRequest:
+      type: object
+      required: [namespace, table, count_key, record_hash_key, shard_size, request]
+      properties:
+        namespace:
+          type: string
+        table:
+          type: string
+        count_key:
+          type: string
+        record_hash_key:
+          type: string
+        shard_size:
+          type: integer
+          format: int64
+        request:
+          type: object
