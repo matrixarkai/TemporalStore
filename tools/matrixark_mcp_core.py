@@ -18,6 +18,8 @@ import hashlib
 import json
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
+import urllib.error
+import urllib.request
 import math
 import os
 import re
@@ -104,6 +106,15 @@ TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_CO
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
 TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH", "4"))
+TIME_COMPRESSION_MIN_EVENT_AGE_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS", "0"))
+TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS", str(30 * 24 * 60 * 60 * 1000)))
+TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS", str(30 * 24 * 60 * 60 * 1000)))
+TIME_COMPRESSION_SUMMARY_PROVIDER = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER", "deterministic").strip().lower()
+TIME_COMPRESSION_SUMMARY_MODEL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_MODEL", os.environ.get("OPENAI_MODEL", "gpt-4o-mini"))
+TIME_COMPRESSION_SUMMARY_BASE_URL = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_BASE_URL", os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")).rstrip("/")
+TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
+TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
+TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = os.environ.get("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", "").strip().lower() in {"1", "true", "yes"}
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
@@ -3827,6 +3838,123 @@ def summarize_text(text: str, *, limit: int = 220) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 3] + "..."
+
+
+def deterministic_time_compression_summary(
+    *,
+    node_path: list[str],
+    source_start_ms: int,
+    source_end_ms: int,
+    event_texts: list[str],
+    max_raw_events_per_node: int,
+) -> str:
+    snippets = [summarize_text(text, limit=180) for text in event_texts[:5]]
+    return (
+        f"Temporal compression window [{source_start_ms}, {source_end_ms}] under "
+        f"{' / '.join(node_path)} contains {len(event_texts)} source events. "
+        f"Normal retrieval should score this synthesis plus the newest {max_raw_events_per_node} raw events. "
+        + " | ".join(snippets)
+    )
+
+
+def time_compression_summary_provider_name() -> str:
+    provider = TIME_COMPRESSION_SUMMARY_PROVIDER.replace("-", "_")
+    if provider in {"", "local", "rules"}:
+        return "deterministic"
+    return provider
+
+
+def generate_time_compression_summary(
+    *,
+    node_path: list[str],
+    source_start_ms: int,
+    source_end_ms: int,
+    event_texts: list[str],
+    max_raw_events_per_node: int,
+) -> Json:
+    fallback = deterministic_time_compression_summary(
+        node_path=node_path,
+        source_start_ms=source_start_ms,
+        source_end_ms=source_end_ms,
+        event_texts=event_texts,
+        max_raw_events_per_node=max_raw_events_per_node,
+    )
+    provider = time_compression_summary_provider_name()
+    if provider == "deterministic":
+        return {
+            "summary": fallback,
+            "provider": "deterministic",
+            "model": "",
+            "fallback_used": False,
+        }
+    if provider not in {"openai", "openai_compatible", "openai_compatible_llm"}:
+        if TIME_COMPRESSION_REQUIRE_LLM_SUMMARY:
+            raise MatrixArkError(f"unsupported TIME_COMPRESS summary provider: {provider}")
+        return {
+            "summary": fallback,
+            "provider": provider,
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "fallback_used": True,
+            "warning": "unsupported_time_compression_summary_provider",
+        }
+    api_key = os.environ.get(TIME_COMPRESSION_SUMMARY_API_KEY_ENV, "")
+    if not api_key:
+        if TIME_COMPRESSION_REQUIRE_LLM_SUMMARY:
+            raise MatrixArkError(f"{TIME_COMPRESSION_SUMMARY_API_KEY_ENV} is required for TIME_COMPRESS summaries")
+        return {
+            "summary": fallback,
+            "provider": provider,
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "fallback_used": True,
+            "warning": "missing_time_compression_summary_api_key",
+        }
+    prompt = (
+        "Summarize old LLM context events into a compact replayable memory. "
+        "Preserve decisions, entities, dates, constraints, and stale/current status. "
+        "Do not invent facts. Return only the summary.\n\n"
+        f"Node path: {' / '.join(node_path)}\n"
+        f"Source time window: {source_start_ms}..{source_end_ms}\n"
+        f"Newest raw events kept outside this summary: {max_raw_events_per_node}\n"
+        "Source events:\n"
+        + "\n".join(f"- {summarize_text(text, limit=400)}" for text in event_texts[:32])
+    )
+    payload = {
+        "model": TIME_COMPRESSION_SUMMARY_MODEL,
+        "messages": [
+            {"role": "system", "content": "You write concise, factual memory compression summaries for an LLM context system."},
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "max_tokens": 512,
+    }
+    request = urllib.request.Request(
+        f"{TIME_COMPRESSION_SUMMARY_BASE_URL}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        summary = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        if not summary:
+            raise MatrixArkError("TIME_COMPRESS summary provider returned empty content")
+        return {
+            "summary": summarize_text(summary, limit=1200),
+            "provider": provider,
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "fallback_used": False,
+        }
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, MatrixArkError, OSError, json.JSONDecodeError) as exc:
+        if TIME_COMPRESSION_REQUIRE_LLM_SUMMARY:
+            raise MatrixArkError(f"TIME_COMPRESS summary provider failed: {exc}") from exc
+        return {
+            "summary": fallback,
+            "provider": provider,
+            "model": TIME_COMPRESSION_SUMMARY_MODEL,
+            "fallback_used": True,
+            "warning": str(exc),
+        }
 
 
 def estimated_context_tokens(text: str) -> int:
