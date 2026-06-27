@@ -174,6 +174,30 @@ The response and `ContextPackAudit` also include
 old-versus-recent counts, max selected age, and a marker that this is a
 `ranking_prior_not_temporal_compression`.
 
+## Operational Telemetry Versus Replay Audit
+
+For production serving, MatrixArk should favor telemetry-style visibility over
+heavy replay payloads on every request.
+
+Retrieval now supports:
+
+- `audit_mode=full`: write compact telemetry plus rich `ContextPackAudit` for
+  replay/debug. This remains the default for compatibility and benchmark proof.
+- `audit_mode=telemetry_only`: write compact `context_pack_telemetry` counters
+  and skip the heavy selected/dropped replay payload.
+- `audit_mode=off`: skip both telemetry and rich audit for highly constrained
+  paths.
+
+`context_pack_telemetry` records include operational counters such as selected
+ref count, dropped ref buckets, token use, partial-pack flags, tree fallback,
+secondary-index match/drop counts, rerank candidate count, time-weighted recall
+stats, and stage latency budgets. They intentionally avoid raw selected/dropped
+text so the default operational view stays small.
+
+Use `MATRIXARK_CONTEXT_AUDIT_MODE=telemetry_only` for high-throughput production
+traffic, and switch to `full` for benchmark runs, debugging, compliance scopes,
+or user-requested replay.
+
 ## Validation
 
 Local:

@@ -281,6 +281,22 @@ Latest AWS/test state:
     - sparse-first retrieval improves exact/rare-term benchmark buckets without reducing broad semantic recall;
     - benchmark report includes path-level recall and token-efficiency metrics for dense, sparse, hybrid, and keyword paths.
 
+- Make operational telemetry the default visibility layer; keep replay/audit bounded.
+  - Product stance:
+    - always-on visibility should look like lightweight service telemetry: QPS, p50/p95/p99 latency, token pressure, candidate counts, time-weighted recall stats, fallback flags, and error/timeout counts;
+    - rich ContextPack replay/audit is valuable for debugging, compliance, and benchmark artifacts, but should be controlled by mode, sampling, retention, and access scope;
+    - this keeps MatrixArk closer to production observability while preserving stronger replay/debug governance as an opt-in capability.
+  - Implemented MVP:
+    - `audit_mode=full|telemetry_only|off` on retrieval, also configurable with `MATRIXARK_CONTEXT_AUDIT_MODE`;
+    - `context_pack_telemetry` records with compact operational counters and no raw selected/dropped text;
+    - `telemetry_only` writes telemetry but skips heavy `context_pack_audit` replay payloads;
+    - dashboard context-pack listing can show telemetry rows as well as audit rows.
+  - Next production work:
+    - add sampling policy, for example `full_audit_sample_rate` and force-full-audit on errors, low confidence, explicit debug, or compliance scopes;
+    - add retention tiers: telemetry hot, audit warm/cold, replay artifacts object-store backed;
+    - expose Prometheus counters directly from telemetry fields;
+    - add portal controls for per-account audit mode and retention.
+
 - Borrow the useful VikingMem retrieval/extraction ideas without copying heavy infra.
   - Product stance:
     - MatrixArk should keep TemporalStore as the serving store and keep the hot path simple;

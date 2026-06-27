@@ -211,6 +211,53 @@ class MatrixArkLocalAdapter:
     def append_audit(self, record: Json) -> None:
         self.append(record)
 
+    def telemetry_record_for_context_pack(self, pack: Json, *, query: str, scope: Json, audit_mode: str) -> Json:
+        recall_policy = pack.get("recall_policy", {}) if isinstance(pack.get("recall_policy"), dict) else {}
+        stage_budgets = recall_policy.get("stage_latency_budgets", {}) if isinstance(recall_policy.get("stage_latency_budgets"), dict) else {}
+        tree = recall_policy.get("tree_traversal", {}) if isinstance(recall_policy.get("tree_traversal"), dict) else {}
+        secondary = recall_policy.get("secondary_index_filter", {}) if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
+        rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
+        time_weighted = recall_policy.get("time_weighted_recall", {}) if isinstance(recall_policy.get("time_weighted_recall"), dict) else {}
+        dropped_refs = pack.get("dropped_refs", {}) if isinstance(pack.get("dropped_refs"), dict) else {}
+        return {
+            "record_type": "context_pack_telemetry",
+            "context_pack_id": pack.get("context_pack_id", ""),
+            "query_hash": stable_hash(query),
+            "scope": scope,
+            "audit_mode": audit_mode,
+            "question_type": pack.get("question_type", ""),
+            "selected_ref_count": len(pack.get("selected_refs", []) or []),
+            "selected_ref_counts": pack.get("selected_ref_counts", {}),
+            "dropped_ref_count": len(dropped_refs.get("refs", []) or []),
+            "dropped_ref_bucket_counts": {k: v for k, v in dropped_refs.items() if isinstance(v, int)},
+            "used_local_context_tokens": pack.get("used_local_context_tokens", 0),
+            "used_remote_context_tokens": pack.get("used_remote_context_tokens", 0),
+            "total_prompt_context_tokens": pack.get("total_prompt_context_tokens", 0),
+            "remote_context_budget_tokens": pack.get("remote_context_budget_tokens", 0),
+            "requested_max_context_tokens": pack.get("requested_max_context_tokens", 0),
+            "partial_context_pack": bool(pack.get("partial_context_pack", False)),
+            "insufficient_context": bool(pack.get("insufficient_context", False)),
+            "quality_warning_count": len(pack.get("quality_warnings", []) or []),
+            "primary_candidate_count": pack.get("primary_candidate_count", 0),
+            "auxiliary_candidate_count": pack.get("auxiliary_candidate_count", 0),
+            "tree_fallback_to_flat": bool(tree.get("fallback_to_flat", False)),
+            "tree_selected_node_count": tree.get("selected_node_count", 0),
+            "secondary_index_matched_candidate_count": secondary.get("matched_candidate_count", 0),
+            "secondary_index_dropped_candidate_count": secondary.get("dropped_candidate_count", 0),
+            "rerank_mode": rerank.get("mode", ""),
+            "rerank_candidate_count": rerank.get("reranked_candidate_count", 0),
+            "time_weighted_recall": time_weighted,
+            "stage_latency_budgets": stage_budgets,
+            "created_at_ms": now_ms(),
+        }
+
+    def append_context_pack_visibility(self, *, pack: Json, audit_record: Json, query: str, scope: Json, audit_mode: str) -> None:
+        telemetry = self.telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
+        if audit_mode != "off":
+            self.append(telemetry)
+        if audit_mode == "full":
+            self.append_audit(audit_record)
+
     def flush_audits(self) -> None:
         return
 
@@ -1383,16 +1430,17 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": record.get("updated_at_ms", 0),
                     }
                 )
-            elif table == "context_packs" and record_type == "context_pack_audit":
+            elif table == "context_packs" and record_type in {"context_pack_audit", "context_pack_telemetry"}:
+                dropped_refs = record.get("dropped_refs", {})
                 rows.append(
                     {
                         "row_type": record_type,
                         "context_pack_id": record.get("context_pack_id", ""),
-                        "query": record.get("query", ""),
-                        "used_context_tokens": record.get("used_context_tokens", 0),
-                        "selected_ref_count": len(record.get("selected_refs", [])),
-                        "dropped_ref_count": len(record.get("dropped_refs", [])),
-                        "quality_warnings": record.get("quality_warnings", []),
+                        "query": record.get("query", "") if record_type == "context_pack_audit" else f"hash:{record.get('query_hash', '')}",
+                        "used_context_tokens": record.get("used_context_tokens", record.get("used_remote_context_tokens", 0)),
+                        "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
+                        "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
+                        "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
                         "scope": record.get("scope", {}),
                         "created_at_ms": record.get("created_at_ms", 0),
                     }
@@ -3524,6 +3572,9 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
+        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "full")).strip().lower()
+        if audit_mode not in {"full", "telemetry_only", "off"}:
+            raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
         raw_deadline_ms = args.get("deadline_ms", ranking.get("deadline_ms", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", 0)))
         try:
             deadline_ms = int(raw_deadline_ms or 0)
@@ -4452,6 +4503,11 @@ class MatrixArkLocalAdapter:
             "quality_warnings": quality_warnings,
             "insufficient_context": not selected,
             "partial_context_pack": partial_context_pack,
+            "operational_visibility_policy": {
+                "audit_mode": audit_mode,
+                "telemetry_record": audit_mode != "off",
+                "rich_replay_audit": audit_mode == "full",
+            },
         }
         finish_retrieval_stage("pack", stage_started_perf)
         pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
@@ -4491,6 +4547,7 @@ class MatrixArkLocalAdapter:
             "requested_max_context_tokens": pack["requested_max_context_tokens"],
             "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
             "budget_source": pack["budget_source"],
+            "operational_visibility_policy": pack["operational_visibility_policy"],
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
             "tree_candidate_records": len(tree_candidate_records),
@@ -4500,7 +4557,7 @@ class MatrixArkLocalAdapter:
             "max_selected_refs": max_selected_refs,
             "created_at_ms": now_ms(),
         }
-        self.append_audit(audit_record)
+        self.append_context_pack_visibility(pack=pack, audit_record=audit_record, query=query, scope=scope, audit_mode=audit_mode)
         finish_retrieval_stage("audit", audit_started_perf)
         pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
         over_budget_stages = pack["recall_policy"]["stage_latency_budgets"].get("over_budget_stages", [])
