@@ -2174,6 +2174,10 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_requests"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_rejected"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_completed"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_bytes"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_active_segment_bytes"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_records"));
@@ -3384,9 +3388,28 @@ fn raft_read_index_and_transfer_reject_lagging_replica() {
             leader_commit_index: 1,
         }
     );
+    let rejected = cluster.byteraft_runtime_admin_report();
+    let peer3 = rejected
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 transfer state");
+    assert_eq!(peer3.transfer_leader_requests, 1);
+    assert_eq!(peer3.transfer_leader_rejected, 1);
+    assert_eq!(peer3.transfer_leader_accepted, 0);
     cluster.catch_up(3).unwrap();
     assert!(cluster.read_index(3).is_ok());
     assert!(cluster.transfer_leader(3).is_ok());
+    let completed = cluster.byteraft_runtime_admin_report();
+    let peer3 = completed
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 transfer state");
+    assert_eq!(peer3.transfer_leader_requests, 2);
+    assert_eq!(peer3.transfer_leader_rejected, 1);
+    assert_eq!(peer3.transfer_leader_accepted, 1);
+    assert_eq!(peer3.transfer_leader_completed, 1);
 }
 
 #[test]

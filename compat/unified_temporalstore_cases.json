@@ -4760,6 +4760,10 @@
               "temporalstore_raft_byteraft_peer_snapshot_install_total_chunks",
               "temporalstore_raft_byteraft_peer_snapshot_retry_count",
               "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
+              "temporalstore_raft_byteraft_peer_transfer_leader_requests",
+              "temporalstore_raft_byteraft_peer_transfer_leader_accepted",
+              "temporalstore_raft_byteraft_peer_transfer_leader_rejected",
+              "temporalstore_raft_byteraft_peer_transfer_leader_completed",
               "temporalstore_raft_byteraft_wal_segment_count",
               "temporalstore_raft_byteraft_wal_total_bytes",
               "temporalstore_raft_byteraft_wal_active_segment_bytes",
@@ -4831,6 +4835,10 @@
                 "snapshot_retry_count",
                 "snapshot_backpressure_rejections",
                 "transfer_leader_target",
+                "transfer_leader_requests",
+                "transfer_leader_accepted",
+                "transfer_leader_rejected",
+                "transfer_leader_completed",
                 "pre_vote_rejections",
                 "election_rejections"
               ]

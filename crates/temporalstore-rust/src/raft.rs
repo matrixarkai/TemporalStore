@@ -500,6 +500,10 @@ pub struct ByteRaftPeerPipelineState {
     pub snapshot_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
     pub transfer_leader_target: bool,
+    pub transfer_leader_requests: u64,
+    pub transfer_leader_accepted: u64,
+    pub transfer_leader_rejected: u64,
+    pub transfer_leader_completed: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
 }
@@ -927,6 +931,10 @@ pub struct RaftPeerPipelineRuntimeState {
     pub snapshot_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
     pub transfer_leader_target: bool,
+    pub transfer_leader_requests: u64,
+    pub transfer_leader_accepted: u64,
+    pub transfer_leader_rejected: u64,
+    pub transfer_leader_completed: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
 }
@@ -5437,19 +5445,46 @@ impl RaftCluster {
             .commit_index;
         let candidate = inner
             .nodes
-            .get(&node_id)
+            .get_mut(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
+        candidate.pipeline_state.transfer_leader_requests = candidate
+            .pipeline_state
+            .transfer_leader_requests
+            .saturating_add(1);
         if !candidate.alive {
+            candidate.pipeline_state.transfer_leader_rejected = candidate
+                .pipeline_state
+                .transfer_leader_rejected
+                .saturating_add(1);
+            inner.persist_configured_wal()?;
             return Err(RaftError::NodeNotFound(node_id));
         }
         if candidate.commit_index < leader_commit_index {
+            let replica_commit_index = candidate.commit_index;
+            candidate.pipeline_state.transfer_leader_rejected = candidate
+                .pipeline_state
+                .transfer_leader_rejected
+                .saturating_add(1);
+            inner.persist_configured_wal()?;
             return Err(RaftError::ReplicaLagging {
                 replica_id: node_id,
-                replica_commit_index: candidate.commit_index,
+                replica_commit_index,
                 leader_commit_index,
             });
         }
+        candidate.pipeline_state.transfer_leader_target = true;
+        candidate.pipeline_state.transfer_leader_accepted = candidate
+            .pipeline_state
+            .transfer_leader_accepted
+            .saturating_add(1);
         inner.elect_leader(node_id)?;
+        if let Some(target) = inner.nodes.get_mut(&node_id) {
+            target.pipeline_state.transfer_leader_completed = target
+                .pipeline_state
+                .transfer_leader_completed
+                .saturating_add(1);
+            target.pipeline_state.transfer_leader_target = false;
+        }
         inner.persist_configured_wal()
     }
 
@@ -8034,6 +8069,10 @@ impl RaftClusterInner {
                     snapshot_retry_count: pipeline.snapshot_retry_count,
                     snapshot_backpressure_rejections: pipeline.snapshot_backpressure_rejections,
                     transfer_leader_target: pipeline.transfer_leader_target,
+                    transfer_leader_requests: pipeline.transfer_leader_requests,
+                    transfer_leader_accepted: pipeline.transfer_leader_accepted,
+                    transfer_leader_rejected: pipeline.transfer_leader_rejected,
+                    transfer_leader_completed: pipeline.transfer_leader_completed,
                     pre_vote_rejections: pipeline.pre_vote_rejections,
                     election_rejections: pipeline.election_rejections,
                 }
@@ -9305,6 +9344,14 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str(
         "# TYPE temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections counter\n",
     );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_requests Leader-transfer requests per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_accepted Leader-transfer requests accepted per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_rejected Leader-transfer requests rejected per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_completed Leader-transfer completions per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_completed counter\n");
     for peer in report.peer_pipeline_states {
         let labels = &[
             ("kind", kind.to_string()),
@@ -9434,6 +9481,30 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
             labels,
             peer.snapshot_backpressure_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_requests",
+            labels,
+            peer.transfer_leader_requests,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_accepted",
+            labels,
+            peer.transfer_leader_accepted,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_rejected",
+            labels,
+            peer.transfer_leader_rejected,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_completed",
+            labels,
+            peer.transfer_leader_completed,
         );
     }
 }
