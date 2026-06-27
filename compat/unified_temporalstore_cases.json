@@ -3003,6 +3003,23 @@
       ]
     },
     {
+      "name": "storage_slot_first_physical_index",
+      "shard_id": 9,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage exposes C++-style Index -> SlotNode -> PageIndex ownership with routing slot, object id, page id, checksum, dirty/log flags, and per-slot bytes for mixed page-backed product models.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_physical_index_report_is_slot_first_and_page_index_complete"
+          },
+          "name": "rust_storage_physical_index_report_matches_slot_first_contract",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [
