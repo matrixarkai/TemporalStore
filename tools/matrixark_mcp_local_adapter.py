@@ -4063,14 +4063,10 @@ class MatrixArkLocalAdapter:
                         pack["recall_policy"] = recall_policy
                         return pack
                     self._context_pack_cache.pop(pack_cache_key, None)
-        embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(query)
-        self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         finish_retrieval_stage("query_understanding", stage_started_perf)
         native_pack = self.native_context_pack({
             "query": query,
-            "query_embedding": query_embedding,
             "scope": scope,
             "question_type": question_type,
             "query_plan": query_plan,
@@ -4136,6 +4132,9 @@ class MatrixArkLocalAdapter:
                 "but this backend did not return matrixark_retrieve_context_pack. "
                 "Python reference packing is disabled for production/benchmark serving."
             )
+        embedding_started_perf = time.perf_counter()
+        query_embedding = embedding_for_text(query)
+        self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
             scope=scope,
