@@ -28,7 +28,8 @@ names, for example `process_path_validated`, `read_index_validated`, or
 
 When a process report lacks those semantics, the readiness blocker includes the exact missing field
 names, for example `process_path_validated`, `read_index_validated`, or
-`leader_lease_validated`, rather than a vague "Raft API present" failure.
+`leader_lease_validated`, `stale_follower_write_rejected`, or
+`leader_transfer_exact_once_validated`, rather than a vague "Raft API present" failure.
 
 The Rust code currently has:
 
