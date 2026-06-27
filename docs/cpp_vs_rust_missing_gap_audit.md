@@ -897,12 +897,13 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   inflight bytes/entries, append and reorder queue depth, snapshot sender/downloader lifecycle
   state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
   leader-transfer target state, pre-vote/election rejection counters, read-index and lease-read
-  evidence, stale follower read/write rejection, WAL segment retention, and admin-status
+  request/accept/reject counters, stale follower read/write rejection, WAL segment retention, and admin-status
   completeness. The standalone Raft node `/metrics` route and raft-enabled data-node `/metrics`
   output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
   read-safety gauges for scrape-based operator parity. The per-peer pipeline/reorder/snapshot
-  fields now live on each Rust Raft node and are serialized into local WAL records, so the
-  process-path evidence survives restart instead of being only a report-time derivation.
+  fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
+  local WAL records, so the process-path evidence survives restart instead of being only a
+  report-time derivation.
 - data-node and metaserver Raft election paths now reject stale candidates whose logs are not up-to-date with a voting majority before leadership can move.
 - data-node Raft `RequestVote` receive path now follows Raft term monotonicity more closely: higher terms update local hard state and clear old votes before grant/reject decisions, including the candidate-log-behind rejection path.
 - data-node Raft now exposes a safe membership-change unit for add/remove/replace voter plans: it validates target quorum, opens joint consensus, catches up live followers, commits the new voter set, aborts on failure, and returns a scheduler-friendly report with old/new voters and deltas.

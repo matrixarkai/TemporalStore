@@ -119,8 +119,9 @@ ByteRaft runtime-admin case requires a shared JSON shape for per-peer match/next
 bytes, append/reorder queues, snapshot sender/downloader lifecycle, WAL segments, read-index/lease
 evidence, stale follower rejection, and matching Prometheus metrics for scrape-based operator
 parity. Snapshot lifecycle fields include send attempts, received/total chunks, retry count, and
-backpressure rejection counters. Rust now also validates that the per-peer pipeline state is
-persisted through WAL restore.
+backpressure rejection counters. Read-safety fields include read-index, lease-read, and pre-vote
+request/accept/reject counters. Rust now also validates that the per-peer pipeline and read-safety
+state is persisted through WAL restore.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
