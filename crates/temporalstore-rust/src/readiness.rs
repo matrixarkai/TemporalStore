@@ -770,16 +770,16 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     ];
     let async_writeback_backpressure_ready = true;
     let async_writeback_backpressure_evidence = vec![
-        "Rust cache includes a bounded async writeback queue with enqueue, drain, and backpressure rejection counters"
+        "Rust cache includes a bounded async writeback queue with enqueue, drain, depth, byte-pressure, max-depth, max-byte, and backpressure rejection counters"
             .to_string(),
-        "cache tests validate queue saturation, drain accounting, and persisted writeback through the normal block writer"
+        "cache tests validate queue saturation, queue byte gauges, drain accounting, and persisted writeback through the normal block writer"
             .to_string(),
     ];
     let latency_metrics_ready = true;
     let latency_metrics_evidence = vec![
-        "cache stats expose get/put latency samples, total microseconds, and max microseconds for local SLO windows"
+        "cache stats expose get/put latency samples, total microseconds, max microseconds, and <=10us/<=100us/<=1ms/<=10ms/>10ms buckets"
             .to_string(),
-        "cache tests validate latency samples are emitted alongside pinned-handle and async writeback operations"
+        "cache tests validate latency sample totals equal bucket totals alongside pinned-handle and async writeback operations"
             .to_string(),
     ];
     let local_pressure_ready = memory_read_through_ready

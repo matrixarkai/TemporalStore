@@ -119,7 +119,7 @@ response/page disk hit -> decode block envelope -> promote to memory -> return
 cache miss -> engine reads page file by PageAddress -> cache page bytes and response -> return
 ```
 
-This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. It is still not CacheLib, mtcache, blockcache, or a production SSD cache. Missing production cache pieces include admission policy, advanced eviction policy, write amplification control, warmup, pinning, and integration with a production page/block cache API.
+This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. The Rust-native cache also has tier-placement policy evidence for DRAM/PMEM/SSD decisions, pinned `Arc` block handles, eviction-skip accounting, bounded async writeback with queue-depth/byte backpressure counters, warmup, admission/eviction counters, and bucketed get/put latency metrics. It is still not the C++ CacheLib/mtcache implementation or a proof of long-running mtcache production soak history.
 
 ## Page Store Deep Dive
 
@@ -264,7 +264,7 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
 | Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
 | Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, bounded data-node StorageManager worker scheduling, local live-page rewrite compaction, C++-ordered StorageManager cycle with per-stage pressure/candidate/byte reports, and Rust-native merged dump/load policy evidence for manifest validation, sequence boundaries, install preflight, reclaim, compaction, index-GC, and cache policy | Oplog + page/slot store + dump/recover | Need binary log/header parity, deeper C++ object/page/slot layout, C++ allocator/stream-backend internals, and byte-for-byte C++ zone/page-header compaction parity. |
-| Cache | Simple memory + disk cache | mtcache/blockcache-like production cache | Need production SSD cache engine or Rust equivalent. |
+| Cache | Rust-native memory + disk cache with page-address keys, versioned block envelope, zstd compression, tier-placement policy, pinned handles, bounded async writeback/backpressure, warmup, admission/eviction counters, and bucketed latency metrics | mtcache/blockcache-like production cache | Need only CacheLib/mtcache FFI/byte-for-byte runtime replacement if Rust must embed the exact C++ cache engine; otherwise validate Rust-native soak/SLO evidence. |
 | Replication | OpenRaft/raft-rs production path plus local fixtures, with ByteRaft-style admin evidence for per-peer pipeline state, WAL segments, snapshot lifecycle, read-index/lease safety, stale follower rejection, and leader transfer | ByteRaft-backed production replication | Need deeper OpenRaft FSM/storage rollout and long-running external chaos/soak evidence. |
 | Metaserver | Simple route + in-process raft model | Full topology and routing control plane | Need namespace/table/shard/slot topology and heartbeat. |
 | Read policy | Pin-primary default, optional replica reads, bounded-stale policy, read-index/lease rejection for lagging followers, and process-path evidence in `ByteRaftRuntimeAdminReport` | Primary/secondary serving with readonly replay | Need broader multi-process soak and deployment-specific read-SLO evidence. |
@@ -327,8 +327,10 @@ P1, required for production-like parity:
 
 - full C++ Feature/IPS/Risk semantics
 - C++ protobuf/legacy C++ wire compatibility or a documented migration API
-- production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support; the
-  current Rust cache is a local memory plus disk read-through cache
+- production cache backend choice: keep the current Rust-native memory/disk cache with
+  DRAM/PMEM/SSD placement policy, pinned handles, async writeback/backpressure, and latency
+  buckets, or add CacheLib/mtcache FFI only if exact C++ cache-engine embedding becomes a
+  requirement
 - page/index compaction and full C++ page rewrite garbage collection; local GC retention boundaries
   exist for oplog/index-log/page segment files
 - production Raft snapshot lifecycle wired to engine freeze/flush/download/verify/install; local and
