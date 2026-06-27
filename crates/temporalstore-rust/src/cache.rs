@@ -4,6 +4,7 @@ use std::hash::{Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,7 +21,7 @@ pub enum CacheError {
     UnsupportedCodec(u8),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct CacheKey {
     pub shard_id: ShardId,
     pub record_key: String,
@@ -138,6 +139,28 @@ pub struct CacheStats {
     pub unpin_operations: u64,
     #[serde(default)]
     pub eviction_pinned_skips: u64,
+    #[serde(default)]
+    pub zero_copy_handle_hits: u64,
+    #[serde(default)]
+    pub zero_copy_handle_misses: u64,
+    #[serde(default)]
+    pub async_writeback_enqueued: u64,
+    #[serde(default)]
+    pub async_writeback_drained: u64,
+    #[serde(default)]
+    pub async_writeback_backpressure_rejections: u64,
+    #[serde(default)]
+    pub get_latency_samples: u64,
+    #[serde(default)]
+    pub put_latency_samples: u64,
+    #[serde(default)]
+    pub get_latency_total_micros: u64,
+    #[serde(default)]
+    pub put_latency_total_micros: u64,
+    #[serde(default)]
+    pub get_latency_max_micros: u64,
+    #[serde(default)]
+    pub put_latency_max_micros: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -148,6 +171,7 @@ pub struct CacheStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CacheTier {
     Memory,
+    Pmem,
     Ssd,
     Reject,
 }
@@ -157,6 +181,7 @@ pub enum CacheAdmissionReason {
     HotPage,
     HotObject,
     WarmSlot,
+    PersistentMemory,
     LargeColdBlock,
     Oversize,
     MemoryOnly,
@@ -187,10 +212,16 @@ pub struct CacheAdmissionRequest {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheTieringPolicy {
     pub memory_capacity_bytes: usize,
+    #[serde(default)]
+    pub pmem_capacity_bytes: usize,
     pub ssd_capacity_bytes: usize,
     pub memory_hotness_threshold: u32,
+    #[serde(default)]
+    pub pmem_admit_hotness_threshold: u32,
     pub ssd_admit_hotness_threshold: u32,
     pub max_memory_block_bytes: usize,
+    #[serde(default)]
+    pub max_pmem_block_bytes: usize,
     pub max_ssd_block_bytes: usize,
 }
 
@@ -198,10 +229,13 @@ impl Default for CacheTieringPolicy {
     fn default() -> Self {
         Self {
             memory_capacity_bytes: 64 * 1024 * 1024,
+            pmem_capacity_bytes: 512 * 1024 * 1024,
             ssd_capacity_bytes: 16 * 1024 * 1024 * 1024,
             memory_hotness_threshold: 8,
+            pmem_admit_hotness_threshold: 4,
             ssd_admit_hotness_threshold: 2,
             max_memory_block_bytes: 1024 * 1024,
+            max_pmem_block_bytes: 4 * 1024 * 1024,
             max_ssd_block_bytes: 16 * 1024 * 1024,
         }
     }
@@ -212,6 +246,8 @@ pub struct CacheAdmissionDecision {
     pub tier: CacheTier,
     pub reason: CacheAdmissionReason,
     pub admit_memory: bool,
+    #[serde(default)]
+    pub admit_pmem: bool,
     pub admit_ssd: bool,
 }
 
@@ -224,6 +260,7 @@ impl CacheTieringPolicy {
                 tier: CacheTier::Reject,
                 reason: CacheAdmissionReason::Oversize,
                 admit_memory: false,
+                admit_pmem: false,
                 admit_ssd: false,
             };
         }
@@ -240,6 +277,20 @@ impl CacheTieringPolicy {
                     CacheAdmissionReason::HotObject
                 },
                 admit_memory: true,
+                admit_pmem: true,
+                admit_ssd: true,
+            };
+        }
+        if self.pmem_capacity_bytes > 0
+            && request.hotness >= self.pmem_admit_hotness_threshold
+            && request.block_bytes <= self.max_pmem_block_bytes
+            && request.block_bytes <= self.pmem_capacity_bytes
+        {
+            return CacheAdmissionDecision {
+                tier: CacheTier::Pmem,
+                reason: CacheAdmissionReason::PersistentMemory,
+                admit_memory: false,
+                admit_pmem: true,
                 admit_ssd: true,
             };
         }
@@ -251,6 +302,7 @@ impl CacheTieringPolicy {
                 tier: CacheTier::Ssd,
                 reason: CacheAdmissionReason::WarmSlot,
                 admit_memory: false,
+                admit_pmem: false,
                 admit_ssd: true,
             };
         }
@@ -261,6 +313,7 @@ impl CacheTieringPolicy {
                 tier: CacheTier::Ssd,
                 reason: CacheAdmissionReason::LargeColdBlock,
                 admit_memory: false,
+                admit_pmem: false,
                 admit_ssd: true,
             };
         }
@@ -268,6 +321,7 @@ impl CacheTieringPolicy {
             tier: CacheTier::Memory,
             reason: CacheAdmissionReason::MemoryOnly,
             admit_memory: true,
+            admit_pmem: false,
             admit_ssd: false,
         }
     }
@@ -277,6 +331,7 @@ impl CacheTieringPolicy {
 pub struct CachePressureValidationReport {
     pub iterations: usize,
     pub memory_admitted: u64,
+    pub pmem_admitted: u64,
     pub ssd_admitted: u64,
     pub rejected: u64,
     pub observed_evictions: u64,
@@ -299,6 +354,7 @@ pub fn validate_cache_pressure_policy(
     for request in requests {
         match policy.decide(request).tier {
             CacheTier::Memory => report.memory_admitted += 1,
+            CacheTier::Pmem => report.pmem_admitted += 1,
             CacheTier::Ssd => report.ssd_admitted += 1,
             CacheTier::Reject => report.rejected += 1,
         }
@@ -308,6 +364,9 @@ pub fn validate_cache_pressure_policy(
     }
     if report.ssd_admitted == 0 {
         report.reasons.push("missing_ssd_admission".to_string());
+    }
+    if policy.pmem_capacity_bytes > 0 && report.pmem_admitted == 0 {
+        report.reasons.push("missing_pmem_admission".to_string());
     }
     if report.rejected == 0 {
         report.reasons.push("missing_rejection_case".to_string());
@@ -373,6 +432,31 @@ pub struct CacheEntryInfo {
 }
 
 #[derive(Debug, Clone)]
+pub struct CachePinnedHandle {
+    pub key: CacheKey,
+    pub value: Arc<[u8]>,
+}
+
+impl CachePinnedHandle {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheWritebackJob {
+    pub key: CacheKey,
+    pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheWritebackDrainReport {
+    pub requested: usize,
+    pub drained: usize,
+    pub remaining: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct MultiLayerCache {
     inner: Arc<RwLock<CacheInner>>,
 }
@@ -383,10 +467,12 @@ struct CacheInner {
     memory_bytes: usize,
     disk_dir: PathBuf,
     block_options: CacheBlockOptions,
-    memory: HashMap<CacheKey, Vec<u8>>,
+    memory: HashMap<CacheKey, Arc<[u8]>>,
     disk_index: HashMap<CacheKey, u64>,
     pinned: HashSet<CacheKey>,
     order: VecDeque<CacheKey>,
+    async_writeback_queue: VecDeque<CacheWritebackJob>,
+    max_async_writeback_queue: usize,
     stats: CacheStats,
 }
 
@@ -416,17 +502,21 @@ impl MultiLayerCache {
                 disk_index: HashMap::new(),
                 pinned: HashSet::new(),
                 order: VecDeque::new(),
+                async_writeback_queue: VecDeque::new(),
+                max_async_writeback_queue: 1024,
                 stats: CacheStats::default(),
             })),
         }
     }
 
     pub fn get(&self, key: &CacheKey) -> Result<Option<Vec<u8>>, CacheError> {
+        let started = Instant::now();
         {
             let mut inner = self.inner.write().expect("cache lock poisoned");
             if let Some(value) = inner.memory.get(key).cloned() {
                 inner.stats.memory_hits += 1;
-                return Ok(Some(value));
+                inner.record_get_latency(started);
+                return Ok(Some(value.to_vec()));
             }
         }
 
@@ -445,11 +535,13 @@ impl MultiLayerCache {
                 if !inner.put_memory(key.clone(), decoded.clone()) {
                     inner.stats.refill_failures += 1;
                 }
+                inner.record_get_latency(started);
                 Ok(Some(decoded))
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 let mut inner = self.inner.write().expect("cache lock poisoned");
                 inner.stats.misses += 1;
+                inner.record_get_latency(started);
                 Ok(None)
             }
             Err(err) => Err(CacheError::Io(err)),
@@ -464,10 +556,33 @@ impl MultiLayerCache {
         } else {
             inner.stats.misses += 1;
         }
-        value
+        value.map(|value| value.to_vec())
+    }
+
+    pub fn get_pinned_handle(
+        &self,
+        key: &CacheKey,
+    ) -> Result<Option<CachePinnedHandle>, CacheError> {
+        let started = Instant::now();
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        if let Some(value) = inner.memory.get(key).cloned() {
+            inner.pinned.insert(key.clone());
+            inner.stats.zero_copy_handle_hits = inner.stats.zero_copy_handle_hits.saturating_add(1);
+            inner.stats.pin_operations = inner.stats.pin_operations.saturating_add(1);
+            inner.refresh_pin_stats();
+            inner.record_get_latency(started);
+            return Ok(Some(CachePinnedHandle {
+                key: key.clone(),
+                value,
+            }));
+        }
+        inner.stats.zero_copy_handle_misses = inner.stats.zero_copy_handle_misses.saturating_add(1);
+        inner.record_get_latency(started);
+        Ok(None)
     }
 
     pub fn put(&self, key: CacheKey, value: Vec<u8>) -> Result<(), CacheError> {
+        let started = Instant::now();
         let mut inner = self.inner.write().expect("cache lock poisoned");
         let path = inner.disk_path(&key);
         if let Some(parent) = path.parent() {
@@ -486,6 +601,7 @@ impl MultiLayerCache {
         inner.stats.disk_bytes = inner.stats.disk_bytes.saturating_add(block_len as u64);
         inner.disk_index.insert(key.clone(), block_len as u64);
         inner.put_memory(key, value);
+        inner.record_put_latency(started);
         Ok(())
     }
 
@@ -495,6 +611,63 @@ impl MultiLayerCache {
         if !inner.put_memory(key, value) {
             inner.stats.refill_failures += 1;
         }
+    }
+
+    pub fn enqueue_async_writeback(
+        &self,
+        key: CacheKey,
+        value: Vec<u8>,
+    ) -> Result<(), CacheWritebackJob> {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        if inner.async_writeback_queue.len() >= inner.max_async_writeback_queue {
+            inner.stats.async_writeback_backpressure_rejections = inner
+                .stats
+                .async_writeback_backpressure_rejections
+                .saturating_add(1);
+            return Err(CacheWritebackJob { key, value });
+        }
+        inner
+            .async_writeback_queue
+            .push_back(CacheWritebackJob { key, value });
+        inner.stats.async_writeback_enqueued =
+            inner.stats.async_writeback_enqueued.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn drain_async_writeback(
+        &self,
+        max_jobs: usize,
+    ) -> Result<CacheWritebackDrainReport, CacheError> {
+        let jobs = {
+            let mut inner = self.inner.write().expect("cache lock poisoned");
+            let mut jobs = Vec::new();
+            for _ in 0..max_jobs {
+                let Some(job) = inner.async_writeback_queue.pop_front() else {
+                    break;
+                };
+                jobs.push(job);
+            }
+            jobs
+        };
+        let drained = jobs.len();
+        for job in jobs {
+            self.put(job.key, job.value)?;
+        }
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        inner.stats.async_writeback_drained = inner
+            .stats
+            .async_writeback_drained
+            .saturating_add(drained as u64);
+        Ok(CacheWritebackDrainReport {
+            requested: max_jobs,
+            drained,
+            remaining: inner.async_writeback_queue.len(),
+        })
+    }
+
+    pub fn set_async_writeback_queue_limit_for_test(&self, limit: usize) {
+        let mut inner = self.inner.write().expect("cache lock poisoned");
+        inner.max_async_writeback_queue = limit;
     }
 
     pub fn pin(&self, key: CacheKey) {
@@ -852,7 +1025,8 @@ impl CacheInner {
         }
         self.stats.memory_admission_accepted += 1;
         self.stats.memory_fills += 1;
-        if let Some(old) = self.memory.insert(key.clone(), value.clone()) {
+        let value = Arc::<[u8]>::from(value);
+        if let Some(old) = self.memory.insert(key.clone(), Arc::clone(&value)) {
             self.memory_bytes = self.memory_bytes.saturating_sub(old.len());
         } else {
             self.order.push_back(key);
@@ -901,6 +1075,22 @@ impl CacheInner {
     fn refresh_pin_stats(&mut self) {
         self.stats.pinned_entries = self.pinned.len() as u64;
         self.stats.pinned_bytes = self.pinned_memory_bytes();
+    }
+
+    fn record_get_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.stats.get_latency_samples = self.stats.get_latency_samples.saturating_add(1);
+        self.stats.get_latency_total_micros =
+            self.stats.get_latency_total_micros.saturating_add(micros);
+        self.stats.get_latency_max_micros = self.stats.get_latency_max_micros.max(micros);
+    }
+
+    fn record_put_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        self.stats.put_latency_samples = self.stats.put_latency_samples.saturating_add(1);
+        self.stats.put_latency_total_micros =
+            self.stats.put_latency_total_micros.saturating_add(micros);
+        self.stats.put_latency_max_micros = self.stats.put_latency_max_micros.max(micros);
     }
 }
 
@@ -996,10 +1186,13 @@ mod tests {
     fn ssd_cache_tiering_policy_admits_hot_warm_and_rejects_oversize_blocks() {
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 64,
+            pmem_capacity_bytes: 256,
             ssd_capacity_bytes: 1024,
             memory_hotness_threshold: 8,
+            pmem_admit_hotness_threshold: 5,
             ssd_admit_hotness_threshold: 2,
             max_memory_block_bytes: 32,
+            max_pmem_block_bytes: 96,
             max_ssd_block_bytes: 256,
         };
         let hot_page = CacheAdmissionRequest {
@@ -1031,29 +1224,49 @@ mod tests {
         assert_eq!(hot.tier, CacheTier::Memory);
         assert_eq!(hot.reason, CacheAdmissionReason::HotPage);
         assert!(hot.admit_memory);
+        assert!(hot.admit_pmem);
         assert!(hot.admit_ssd);
 
         let warm = policy.decide(&warm_slot);
         assert_eq!(warm.tier, CacheTier::Ssd);
         assert_eq!(warm.reason, CacheAdmissionReason::WarmSlot);
         assert!(!warm.admit_memory);
+        assert!(!warm.admit_pmem);
         assert!(warm.admit_ssd);
 
         let rejected = policy.decide(&oversize);
         assert_eq!(rejected.tier, CacheTier::Reject);
         assert_eq!(rejected.reason, CacheAdmissionReason::Oversize);
         assert!(!rejected.admit_memory);
+        assert!(!rejected.admit_pmem);
         assert!(!rejected.admit_ssd);
+
+        let pmem = policy.decide(&CacheAdmissionRequest {
+            block_kind: CacheBlockKind::Index,
+            shard_id: 1,
+            routing_slot: Some(9),
+            block_bytes: 64,
+            hotness: 5,
+            pinned: false,
+        });
+        assert_eq!(pmem.tier, CacheTier::Pmem);
+        assert_eq!(pmem.reason, CacheAdmissionReason::PersistentMemory);
+        assert!(!pmem.admit_memory);
+        assert!(pmem.admit_pmem);
+        assert!(pmem.admit_ssd);
     }
 
     #[test]
     fn cache_pressure_policy_report_requires_admission_eviction_and_refill_evidence() {
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 64,
+            pmem_capacity_bytes: 256,
             ssd_capacity_bytes: 1024,
             memory_hotness_threshold: 8,
+            pmem_admit_hotness_threshold: 5,
             ssd_admit_hotness_threshold: 2,
             max_memory_block_bytes: 32,
+            max_pmem_block_bytes: 128,
             max_ssd_block_bytes: 256,
         };
         let requests = vec![
@@ -1063,6 +1276,14 @@ mod tests {
                 routing_slot: Some(1),
                 block_bytes: 8,
                 hotness: 10,
+                pinned: false,
+            },
+            CacheAdmissionRequest {
+                block_kind: CacheBlockKind::Index,
+                shard_id: 1,
+                routing_slot: Some(1),
+                block_bytes: 64,
+                hotness: 5,
                 pinned: false,
             },
             CacheAdmissionRequest {
@@ -1093,6 +1314,7 @@ mod tests {
         );
         assert!(passing.passed, "{passing:?}");
         assert_eq!(passing.memory_admitted, 1);
+        assert_eq!(passing.pmem_admitted, 1);
         assert_eq!(passing.ssd_admitted, 1);
         assert_eq!(passing.rejected, 1);
 
@@ -1142,6 +1364,43 @@ mod tests {
         assert_eq!(cache.stats().pinned_entries, 0);
         assert_eq!(cache.stats().pinned_bytes, 0);
         assert!(cache.entries_for_shard(1).is_empty());
+    }
+
+    // shared-corpus: storage_cache_refill
+    #[test]
+    fn pinned_handle_async_writeback_and_latency_metrics_are_reported() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(64, dir.path());
+        let key = CacheKey::string(1, "handle");
+
+        cache.put(key.clone(), b"value".to_vec()).unwrap();
+        let handle = cache
+            .get_pinned_handle(&key)
+            .unwrap()
+            .expect("pinned handle should exist");
+        assert_eq!(handle.as_slice(), b"value");
+        assert_eq!(cache.stats().pinned_entries, 1);
+        assert_eq!(cache.stats().zero_copy_handle_hits, 1);
+
+        cache.set_async_writeback_queue_limit_for_test(1);
+        cache
+            .enqueue_async_writeback(CacheKey::string(1, "async-a"), b"a".to_vec())
+            .unwrap();
+        assert!(cache
+            .enqueue_async_writeback(CacheKey::string(1, "async-b"), b"b".to_vec())
+            .is_err());
+        let drained = cache.drain_async_writeback(8).unwrap();
+        assert_eq!(drained.drained, 1);
+        assert_eq!(drained.remaining, 0);
+
+        let stats = cache.stats();
+        assert_eq!(stats.async_writeback_enqueued, 1);
+        assert_eq!(stats.async_writeback_drained, 1);
+        assert_eq!(stats.async_writeback_backpressure_rejections, 1);
+        assert!(stats.get_latency_samples > 0);
+        assert!(stats.put_latency_samples > 0);
+        assert!(stats.get_latency_total_micros >= stats.get_latency_max_micros);
+        assert!(stats.put_latency_total_micros >= stats.put_latency_max_micros);
     }
 
     #[test]
