@@ -11,6 +11,9 @@ TABLE="${MATRIXARK_TEMPORALSTORE_TABLE:-deploy_table}"
 TOPOLOGY_TIMEOUT_MS="${TOPOLOGY_TIMEOUT_MS:-30000}"
 RUN_TOPOLOGY_GATE="${RUN_TOPOLOGY_GATE:-1}"
 RUN_PROXY_CLIENT_GATE="${RUN_PROXY_CLIENT_GATE:-1}"
+RUN_CPP_CLIENT_BUILD_GATE="${RUN_CPP_CLIENT_BUILD_GATE:-1}"
+CPP_CLIENT_BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S:-300}"
+CPP_CLIENT_BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS:-customer_client_example}"
 RUN_INGESTION_GATE="${RUN_INGESTION_GATE:-1}"
 RUN_CACHE_EVICTION_GATE="${RUN_CACHE_EVICTION_GATE:-1}"
 RUN_CONTEXT_PARITY_GATE="${RUN_CONTEXT_PARITY_GATE:-0}"
@@ -143,12 +146,16 @@ run_stage() {
   (cd "${ROOT}" && timeout "${STAGE_TIMEOUT_S}" "$@") > "${case_dir}/stdout.log" 2> "${case_dir}/stderr.log"
   code=$?
   set -e
+  end_s="$(date +%s)"
   local stage_status=fail
   if [[ "${code}" == "124" ]]; then
     stage_status=timeout
-    echo "stage ${name} timed out after ${STAGE_TIMEOUT_S}s" >> "${case_dir}/stderr.log"
+    if (( end_s - start_s >= STAGE_TIMEOUT_S )); then
+      echo "stage ${name} timed out after ${STAGE_TIMEOUT_S}s" >> "${case_dir}/stderr.log"
+    else
+      echo "stage ${name} reported an inner timeout before the outer ${STAGE_TIMEOUT_S}s guard" >> "${case_dir}/stderr.log"
+    fi
   fi
-  end_s="$(date +%s)"
   if [[ "${code}" == "0" ]]; then
     write_stage "${name}" pass "${remediation}" "$((end_s - start_s))" "${case_dir}"
     return 0
@@ -162,6 +169,17 @@ if [[ "${RUN_TOPOLOGY_GATE}" == "1" ]]; then
   run_stage topology_readiness \
     "fix metaserver reachability, namespace/table creation, placement, slot coverage, primary assignment, or topology readiness retries" \
     bash tools/wait_temporalstore_topology_ready.sh --backend "${BACKEND}" --metaserver "${METASERVER}" --namespace "${NAMESPACE}" --table "${TABLE}" --timeout-ms "${TOPOLOGY_TIMEOUT_MS}"
+fi
+
+
+if [[ "${RUN_CPP_CLIENT_BUILD_GATE}" == "1" ]]; then
+  if [[ "${BACKEND}" != "cpp" ]]; then
+    write_stage cpp_client_target_build skip "C++ client target build gate is C++-specific" 0 "${RESULT_DIR}/cpp_client_target_build"
+  else
+    run_stage cpp_client_target_build \
+      "fix stale build tree, missing client target dependencies, long compile fan-in, or local client build timeout before proxy/client pressure" \
+      env BUILD_TYPE="${BUILD_TYPE}" BUILD_TARGETS="${CPP_CLIENT_BUILD_TARGETS}" BUILD_TIMEOUT_S="${CPP_CLIENT_BUILD_TIMEOUT_S}" ARTIFACT_DIR="${RESULT_DIR}/cpp_client_target_build/artifacts" bash tools/run_cpp_client_target_gate.sh
+  fi
 fi
 
 if [[ "${RUN_PROXY_CLIENT_GATE}" == "1" ]]; then
