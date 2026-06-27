@@ -2112,6 +2112,69 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
 
 
+
+    def test_direct_retrieval_records_prefilters_scope_type_and_secondary_indexes(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._records_cache = []
+        adapter._backend_label = lambda: "temporalstore-direct"
+        scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user"}
+        adapter.read_all = lambda: [
+            {
+                "record_type": "resource_chunk",
+                "scope": scope,
+                "node_hash": 101,
+                "chunk_hash": 1001,
+                "resource_type": "pdf",
+                "text": "GPU approval policy",
+            },
+            {
+                "record_type": "resource_chunk",
+                "scope": scope,
+                "node_hash": 102,
+                "chunk_hash": 1002,
+                "resource_type": "md",
+                "text": "Markdown notes",
+            },
+            {
+                "record_type": "context_event",
+                "scope": scope,
+                "node_hash": 103,
+                "text": "Alice approved the request",
+            },
+            {
+                "record_type": "context_pack_audit",
+                "scope": scope,
+                "context_pack_id": "audit-only",
+            },
+            {
+                "record_type": "resource_chunk",
+                "scope": {"account_id": "other", "tenant_id": "tenant", "user_id": "user"},
+                "node_hash": 104,
+                "chunk_hash": 1004,
+                "resource_type": "pdf",
+                "text": "wrong account",
+            },
+        ]
+
+        result = adapter.retrieval_records(
+            scope=scope,
+            secondary_index_groups=[{"resource_type:pdf"}],
+        )
+
+        texts = {record.get("text") for record in result["records"]}
+        self.assertIn("GPU approval policy", texts)
+        self.assertIn("Alice approved the request", texts)
+        self.assertNotIn("Markdown notes", texts)
+        self.assertNotIn("wrong account", texts)
+        stats = result["scan_stats"]
+        self.assertTrue(stats["backend_pushdown"])
+        self.assertTrue(stats["direct_backend_prefilter"])
+        self.assertFalse(stats["native_pushdown"])
+        self.assertEqual(stats["execution_mode"], "direct_backend_hot_cache_prefilter")
+        self.assertGreaterEqual(stats["secondary_index_dropped_candidate_count"], 1)
+        self.assertEqual(stats["dropped_by_type"], 1)
+        self.assertEqual(stats["dropped_by_scope"], 1)
+
     def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "src/client/temporalstore_c_client.cc").read_text()
