@@ -596,6 +596,211 @@ class MatrixArkLocalAdapter:
                 events.append(record)
         return list(reversed(events[:max_events])), list(reversed(child_summaries[:max_child_summaries]))
 
+    def context_event_ingestion_time_ms(self, record: Json, debug_by_ref: dict[Any, Json] | None = None) -> int:
+        event_hash = record.get("event_id_hash")
+        debug_payload = (debug_by_ref or {}).get(event_hash, {}) if event_hash is not None else {}
+        envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else debug_payload.get("envelope", {})
+        if not isinstance(envelope, dict):
+            envelope = {}
+        for value in (envelope.get("ingestion_time_ms"), record.get("updated_at_ms"), record.get("created_at_ms")):
+            try:
+                timestamp = int(value)
+            except (TypeError, ValueError):
+                continue
+            if timestamp > 0:
+                return timestamp
+        return 0
+
+    def _write_time_compression_from_events(
+        self,
+        *,
+        scope: Json,
+        node_hash: int,
+        node_path: list[str],
+        selected: list[Json],
+        event_times: dict[int, int],
+        compressed_time_ms: int,
+        summary: str = "",
+        truncated: bool = False,
+        mode: str = "manual",
+    ) -> Json:
+        if not selected:
+            raise MatrixArkError("no source events matched compression window")
+        source_event_ids = [int(record["event_id_hash"]) for record in selected if record.get("event_id_hash") is not None]
+        if not source_event_ids:
+            raise MatrixArkError("source events need event_id_hash for compression")
+        source_times = [event_times.get(event_id, 0) for event_id in source_event_ids if event_times.get(event_id, 0) > 0]
+        source_start_ms = min(source_times) if source_times else compressed_time_ms
+        source_end_ms = max(source_times) if source_times else compressed_time_ms
+        if not summary:
+            snippets = [summarize_text(str(record.get("text", "")), limit=180) for record in selected[:5]]
+            suffix = " plus additional source events" if truncated else ""
+            summary = (
+                f"Temporal compression window [{source_start_ms}, {source_end_ms}] contains "
+                f"{len(selected)} selected events{suffix}. " + " | ".join(snippets)
+            )
+        compression_id_hash = stable_hash(f"compress:{scope}:{node_hash}:{source_start_ms}:{source_end_ms}:{source_event_ids}")
+        record = {
+            "record_type": "context_compression_event",
+            "compression_id_hash": compression_id_hash,
+            "node_hash": node_hash,
+            "node_path": node_path,
+            "scope": scope,
+            "source_start_ms": source_start_ms,
+            "source_end_ms": source_end_ms,
+            "compressed_time_ms": compressed_time_ms,
+            "summary_text": summarize_text(summary, limit=1200),
+            "source_event_ids": source_event_ids,
+            "source_event_count": len(source_event_ids),
+            "truncated_source_events": truncated,
+            "operator": "TIME_COMPRESS",
+            "compression_mode": mode,
+            "updated_at_ms": compressed_time_ms,
+        }
+        self.append(record)
+        summary_vector = embedding_for_text(record["summary_text"])
+        self.append(
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "compression_summary",
+                "ref_type": "compression",
+                "ref_hash": compression_id_hash,
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "dim": len(summary_vector),
+                "model": embedding_model_name(),
+                "vector": summary_vector,
+                "scope": scope,
+                "updated_at_ms": compressed_time_ms,
+            }
+        )
+        return record
+
+    def auto_time_compress_node_events(
+        self,
+        *,
+        records: list[Json],
+        scope: Json,
+        node_hash: int,
+        node_path: list[str],
+        compressed_time_ms: int,
+        max_raw_events_per_node: int = TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        max_source_events: int = TIME_COMPRESSION_WINDOW_EVENTS,
+        min_source_events: int = TIME_COMPRESSION_MIN_EVENTS,
+        max_windows: int = TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+    ) -> Json:
+        max_raw_events_per_node = max(1, int(max_raw_events_per_node))
+        max_source_events = max(1, int(max_source_events))
+        min_source_events = max(1, int(min_source_events))
+        max_windows = max(0, int(max_windows))
+        if max_windows <= 0:
+            return {"status": "disabled", "created_count": 0, "created": []}
+        debug_by_ref = {
+            record.get("ref_hash"): record.get("debug_payload", {})
+            for record in records
+            if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
+        }
+        compressed_source_ids: set[int] = set()
+        for record in records:
+            if record.get("record_type") != "context_compression_event":
+                continue
+            if int(record.get("node_hash") or 0) != node_hash:
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            for event_id in record.get("source_event_ids", []) or []:
+                try:
+                    compressed_source_ids.add(int(event_id))
+                except (TypeError, ValueError):
+                    pass
+        events: list[Json] = []
+        event_times: dict[int, int] = {}
+        event_scopes: dict[int, Json] = {}
+        for record in records:
+            if record.get("record_type") != "context_event":
+                continue
+            if int(record.get("node_hash") or 0) != node_hash:
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            try:
+                event_hash = int(record.get("event_id_hash"))
+            except (TypeError, ValueError):
+                continue
+            event_time = self.context_event_ingestion_time_ms(record, debug_by_ref)
+            if event_time <= 0:
+                continue
+            events.append(record)
+            event_times[event_hash] = event_time
+            event_scopes[event_hash] = candidate_access_scope(record)
+        events.sort(key=lambda record: (event_times.get(int(record.get("event_id_hash") or 0), 0), int(record.get("event_id_hash") or 0)))
+        if len(events) <= max_raw_events_per_node:
+            return {
+                "status": "skipped",
+                "reason": "raw_event_count_within_threshold",
+                "raw_event_count": len(events),
+                "max_raw_events_per_node": max_raw_events_per_node,
+                "created_count": 0,
+                "created": [],
+            }
+        newest_raw_ids = {
+            int(record.get("event_id_hash"))
+            for record in events[-max_raw_events_per_node:]
+            if record.get("event_id_hash") is not None
+        }
+        old_uncompressed = [
+            record
+            for record in events
+            if int(record.get("event_id_hash") or 0) not in newest_raw_ids
+            and int(record.get("event_id_hash") or 0) not in compressed_source_ids
+        ]
+        created: list[Json] = []
+        for window_start in range(0, len(old_uncompressed), max_source_events):
+            if len(created) >= max_windows:
+                break
+            window = old_uncompressed[window_start : window_start + max_source_events]
+            if len(window) < min_source_events:
+                continue
+            first_hash = int(window[0].get("event_id_hash") or 0)
+            compression_scope = event_scopes.get(first_hash, scope)
+            source_ids = [int(record["event_id_hash"]) for record in window if record.get("event_id_hash") is not None]
+            summary = (
+                "Automatic temporal compression for old ContextEvents before the hot raw-event window. "
+                f"The raw source events remain replayable; normal retrieval scores this summary plus the newest "
+                f"{max_raw_events_per_node} raw events. "
+                + " | ".join(summarize_text(str(record.get("text", "")), limit=160) for record in window[:5])
+            )
+            created.append(
+                self._write_time_compression_from_events(
+                    scope=compression_scope,
+                    node_hash=node_hash,
+                    node_path=node_path,
+                    selected=window,
+                    event_times=event_times,
+                    compressed_time_ms=compressed_time_ms,
+                    summary=summary,
+                    truncated=len(old_uncompressed) > len(source_ids),
+                    mode="automatic",
+                )
+            )
+        return {
+            "status": "ok" if created else "skipped",
+            "reason": "" if created else "no_uncompressed_old_window_met_minimum",
+            "raw_event_count": len(events),
+            "max_raw_events_per_node": max_raw_events_per_node,
+            "old_uncompressed_event_count": len(old_uncompressed),
+            "created_count": len(created),
+            "created": [
+                {
+                    "compression_id_hash": item.get("compression_id_hash"),
+                    "source_start_ms": item.get("source_start_ms"),
+                    "source_end_ms": item.get("source_end_ms"),
+                    "source_event_count": item.get("source_event_count"),
+                }
+                for item in created
+            ],
+        }
+
     def mark_node_summary_dirty(
         self,
         *,
@@ -644,6 +849,10 @@ class MatrixArkLocalAdapter:
         scope: Json,
         limit: int = 64,
         refreshed_at_ms: int | None = None,
+        max_raw_events_per_node: int = TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE,
+        compression_window_events: int = TIME_COMPRESSION_WINDOW_EVENTS,
+        min_compression_events: int = TIME_COMPRESSION_MIN_EVENTS,
+        max_compression_windows_per_node: int = TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
     ) -> Json:
         refreshed_at_ms = refreshed_at_ms or now_ms()
         records = self.read_all()
@@ -752,6 +961,17 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": refreshed_at_ms,
                     }
                 )
+            compression_refresh = self.auto_time_compress_node_events(
+                records=records,
+                scope=dirty.get("scope", scope),
+                node_hash=node_hash,
+                node_path=node_path,
+                compressed_time_ms=refreshed_at_ms,
+                max_raw_events_per_node=max_raw_events_per_node,
+                max_source_events=compression_window_events,
+                min_source_events=min_compression_events,
+                max_windows=max_compression_windows_per_node,
+            )
             self.append(
                 {
                     "record_type": "context_summary_refresh_audit",
@@ -765,6 +985,14 @@ class MatrixArkLocalAdapter:
                     "source_summary_count": len(source_summary_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
+                    "time_compression_policy": {
+                        "automatic": True,
+                        "max_raw_events_per_node": max_raw_events_per_node,
+                        "compression_window_events": compression_window_events,
+                        "min_compression_events": min_compression_events,
+                        "max_compression_windows_per_node": max_compression_windows_per_node,
+                    },
+                    "time_compression": compression_refresh,
                     "status": "refreshed",
                     "worker": "matrixark-local-async-summary-worker",
                     "refreshed_at_ms": refreshed_at_ms,
@@ -781,11 +1009,13 @@ class MatrixArkLocalAdapter:
                     "source_summary_count": len(source_summary_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
+                    "time_compression": compression_refresh,
                 }
             )
         return {
             "status": "ok",
             "refreshed_count": len(refreshed),
+            "compression_created_count": sum(int(item.get("time_compression", {}).get("created_count", 0)) for item in refreshed),
             "refreshed": refreshed,
         }
 
@@ -823,7 +1053,20 @@ class MatrixArkLocalAdapter:
         refreshed_at_ms = args.get("refreshed_at_ms")
         if refreshed_at_ms is not None and not isinstance(refreshed_at_ms, int):
             raise MatrixArkError("refreshed_at_ms must be an integer")
-        return self.refresh_dirty_node_summaries(scope=scope, limit=limit, refreshed_at_ms=refreshed_at_ms)
+        return self.refresh_dirty_node_summaries(
+            scope=scope,
+            limit=limit,
+            refreshed_at_ms=refreshed_at_ms,
+            max_raw_events_per_node=integer_arg(args, "max_raw_events_per_node", TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE, minimum=1),
+            compression_window_events=integer_arg(args, "compression_window_events", TIME_COMPRESSION_WINDOW_EVENTS, minimum=1),
+            min_compression_events=integer_arg(args, "min_compression_events", TIME_COMPRESSION_MIN_EVENTS, minimum=1),
+            max_compression_windows_per_node=integer_arg(
+                args,
+                "max_compression_windows_per_node",
+                TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+                minimum=0,
+            ),
+        )
 
     def latest_skill_controls(self, records: list[Json] | None = None) -> dict[int, Json]:
         controls: dict[int, Json] = {}
@@ -3258,6 +3501,7 @@ class MatrixArkLocalAdapter:
         hard_max_children_scored_per_parent = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
         max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", 256, minimum=1)
         max_selected_refs = integer_arg(ranking, "max_selected_refs", max(8, min(256, max_context_tokens)), minimum=1)
+        max_raw_events_per_node = integer_arg(ranking, "max_raw_events_per_node", TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE, minimum=1)
         traversal = tree_first_traversal(
             node_scores,
             top_k_per_layer=top_k_per_layer,
@@ -3287,6 +3531,42 @@ class MatrixArkLocalAdapter:
 
         tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
         tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        raw_event_ids_by_node: dict[Any, set[int]] = {}
+        raw_event_time_window_dropped_count = 0
+        events_by_node: dict[Any, list[Json]] = {}
+        nodes_with_compression: set[Any] = set()
+        for record in tree_candidate_records:
+            if record.get("record_type") == "context_compression_event":
+                node_key_for_compression: Any = record.get("node_hash")
+                if node_key_for_compression is None:
+                    node_key_for_compression = tuple(record.get("node_path", []))
+                nodes_with_compression.add(node_key_for_compression)
+                continue
+            if record.get("record_type") != "context_event":
+                continue
+            if record.get("source_chunk_hash"):
+                continue
+            node_key: Any = record.get("node_hash")
+            if node_key is None:
+                node_key = tuple(record.get("node_path", []))
+            events_by_node.setdefault(node_key, []).append(record)
+        for node_key, node_events in events_by_node.items():
+            if node_key not in nodes_with_compression:
+                continue
+            node_events.sort(
+                key=lambda item: (
+                    self.context_event_ingestion_time_ms(item),
+                    int(item.get("event_id_hash") or 0),
+                ),
+                reverse=True,
+            )
+            admitted = {
+                int(record.get("event_id_hash"))
+                for record in node_events[:max_raw_events_per_node]
+                if record.get("event_id_hash") is not None
+            }
+            raw_event_ids_by_node[node_key] = admitted
+            raw_event_time_window_dropped_count += max(0, len(node_events) - len(admitted))
         candidate_count_by_node: dict[Any, int] = {}
         fanout_dropped_count = 0
 
@@ -3366,6 +3646,15 @@ class MatrixArkLocalAdapter:
                 )
         for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_event":
+                continue
+            event_node_key: Any = record.get("node_hash")
+            if event_node_key is None:
+                event_node_key = tuple(record.get("node_path", []))
+            if (
+                not record.get("source_chunk_hash")
+                and event_node_key in raw_event_ids_by_node
+                and int(record.get("event_id_hash") or 0) not in raw_event_ids_by_node[event_node_key]
+            ):
                 continue
             envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
             record_scope = candidate_access_scope(record)
@@ -3799,6 +4088,7 @@ class MatrixArkLocalAdapter:
                     "hard_max_children_scored_per_parent": hard_max_children_scored_per_parent,
                     "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
                     "max_candidates_per_node": max_candidates_per_node,
+                    "max_raw_events_per_node": max_raw_events_per_node,
                     "max_selected_refs": max_selected_refs,
                     "selected_node_count": len(selected_node_hashes),
                     "selected_path_count": len(selected_paths),
@@ -3806,6 +4096,8 @@ class MatrixArkLocalAdapter:
                     "candidate_records_after_tree": len(tree_candidate_records),
                     "records_dropped_by_tree": tree_prefilter_dropped_count,
                     "records_dropped_by_node_fanout": fanout_dropped_count,
+                    "raw_events_dropped_by_time_window": raw_event_time_window_dropped_count,
+                    "cold_events_represented_by_compression": raw_event_time_window_dropped_count > 0,
                     "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
                     "fallback_to_flat": bool(traversal.get("fallback_to_flat")),
                     "fallback_reason": "missing_or_stale_summary_embeddings" if traversal.get("fallback_to_flat") else "",
@@ -3921,5 +4213,3 @@ class MatrixArkLocalAdapter:
             "context_pack_id": context_pack_id,
             "events": self.read_all(),
         }
-
-
