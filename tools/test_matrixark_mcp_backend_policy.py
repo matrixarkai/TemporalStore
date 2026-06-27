@@ -2111,6 +2111,28 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(second["scan_stats"]["candidate_cache_scope"], "process_global")
         self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
 
+
+    def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+        start = source.index("int temporalstore_matrixark_batch_append_records")
+        end = source.index("int temporalstore_smembers", start)
+        body = source[start:end]
+
+        self.assertIn("MatrixArkBatchAppendRecords", body)
+        self.assertNotIn("->HSet(", body)
+        self.assertNotIn("->PutString(", body)
+
+    def test_rust_matrixark_append_uses_native_gateway_path(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
+
+        self.assertIn('"batch_hset" =>', source)
+        self.assertIn('"matrixark_append_records" | "matrixark_batch_append_records" =>', source)
+        self.assertNotIn('"batch_hset" | "matrixark_append_records"', source)
+        self.assertIn("client\n                .matrixark_batch_append_records", source)
+        self.assertIn('"native_append": true', source)
+
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
         result = adapter._run_backend_readiness_gate(reason="unit-metaserver-down", timeout_ms=1)

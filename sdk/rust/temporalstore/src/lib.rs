@@ -95,6 +95,15 @@ struct CFeatureFilter {
 #[cfg(feature = "direct")]
 #[repr(C)]
 #[derive(Clone, Copy)]
+struct CHashEntry {
+    key: *const c_char,
+    field: *const c_char,
+    value: *const c_char,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct CSequenceFeatureRow {
     timestamp: u64,
     gid: u64,

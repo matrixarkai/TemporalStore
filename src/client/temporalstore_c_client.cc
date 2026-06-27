@@ -482,6 +482,7 @@ int temporalstore_matrixark_batch_append_records_v2(temporalstore_client_t* clie
         return Finish(NullError("entries"), error_message);
     }
     bcache2::Status status = CheckClient(client);
+    std::vector<bcache2::client::MatrixArkHashRecord> records;
     if (status.ok()) {
         std::vector<bcache2::client::HashEntry> batch;
         batch.reserve(entry_count);

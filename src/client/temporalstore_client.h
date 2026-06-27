@@ -44,6 +44,12 @@ struct TemporalFeaturePoint {
     std::string value;
 };
 
+struct MatrixArkHashRecord {
+    std::string key;
+    std::string field;
+    std::string value;
+};
+
 enum class TemporalFeatureWritePolicy {
     kUpsert,
     kBlock,
