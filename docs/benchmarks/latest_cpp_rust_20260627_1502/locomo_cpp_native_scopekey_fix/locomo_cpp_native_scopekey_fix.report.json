@@ -1,0 +1,121 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.context_packs.jsonl",
+    "hypotheses_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.hypotheses.jsonl",
+    "judge_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.judge.jsonl",
+    "progress_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.progress.json",
+    "report_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.report.json",
+    "report_markdown": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.report.md",
+    "result_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_native_scopekey_fix/locomo_cpp_native_scopekey_fix.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 20,
+    "name": "locomo",
+    "questions_run": 20,
+    "sessions": 38,
+    "source_path": "/root/matrixark_benchmarks/data/locomo10.json",
+    "turns_ingested": 788,
+    "version": "locomo10.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 9,
+    "evidence_session_miss": 9,
+    "reader_exact_substring_miss": 18,
+    "reader_miss_with_evidence": 3,
+    "reader_support_miss": 6,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 0
+  },
+  "finished_at_ms": 1782599148623,
+  "latency": {
+    "avg_answer_bearing_tokens": 18.2,
+    "avg_latency_ms": 86.38894045070629,
+    "avg_prompt_tokens": 5259.6,
+    "ingestion_elapsed_ms": 1079,
+    "ingestion_throughput_turns_per_sec": 730.306,
+    "p50_latency_ms": 83.58463400509208,
+    "p95_latency_ms": 116.25133600318804
+  },
+  "models": {
+    "embedding_execution_mode": "runtime_unconfirmed",
+    "embedding_fallback_used": false,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "embedding_model_path": "",
+    "embedding_provider": "hash",
+    "fallback_used": false,
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "runtime_embedding_model": "",
+    "runtime_embedding_model_confirmed": false,
+    "warnings": [
+      "MCP response did not include query_embedding_model; using configured embedding model in report",
+      "runtime_embedding_model_confirmed=false"
+    ]
+  },
+  "retrieval_config": {
+    "batch_size": 20,
+    "direct_audit_mode": "buffered",
+    "direct_record_bundle_max_bytes": 65536,
+    "direct_write_backoff_ms": 100,
+    "direct_write_retries": 8,
+    "ingest_mode": "batch",
+    "ingest_pause_ms": 0,
+    "io_timeout_ms": 60000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 60000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_options": {
+      "oplog_mode": "async",
+      "raft_mode": false,
+      "replication_mode": "shared_store",
+      "storage_mode": "multi_node"
+    },
+    "storage_prefix": "matrixark:dataset:locomo:locomo_cpp_native_scopekey_fix",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-direct",
+    "token_budget": 10000
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.00346,
+    "answer_hit": 0.1,
+    "answer_quality_under_budget": 0.7,
+    "answer_support_hit": 0.7,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_gate": {
+      "enabled": true,
+      "policy": "compressed windows must retain source_event_ids; raw source events remain replayable; benchmarks fail on hidden-answer evidence when detected",
+      "source": "ContextCompressionEvent.compression_safety + ContextPackAudit selected/dropped refs"
+    },
+    "compression_safety_passed": true,
+    "context_recall": 1.0,
+    "evidence_session_recall": 0.55,
+    "final_judge_score": 0.7,
+    "judge_score_per_1k_tokens": 0.13309
+  },
+  "started_at_ms": 1782599145623,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.00346,
+    "answer_bearing_tokens": 364,
+    "answer_bearing_tokens_per_question": 18.2,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 0,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 105192
+  }
+}

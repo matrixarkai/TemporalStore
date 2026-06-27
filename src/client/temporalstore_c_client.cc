@@ -138,10 +138,16 @@ std::string LowerAscii(std::string value) {
 }
 
 std::string CandidateText(const rapidjson::Value& record) {
-    for (const char* field : {"text", "summary_text", "entity_value", "content", "description", "value"}) {
+    for (const char* field : {"text", "content", "summary_text", "state", "observation", "entity_value", "description", "value"}) {
         std::string value = JsonStringMember(record, field);
         if (!value.empty()) {
             return value;
+        }
+    }
+    if (const rapidjson::Value* extraction = JsonObjectMember(record, "internal_extraction")) {
+        std::string observation = JsonStringMember(*extraction, "observation");
+        if (!observation.empty()) {
+            return observation;
         }
     }
     return "";
@@ -177,9 +183,85 @@ bool ScopeKeyExplicit(const rapidjson::Value& scope, const char* field) {
     return false;
 }
 
+std::unordered_map<std::string, uint64_t> ParseScopeKey(const std::string& scope_key) {
+    std::unordered_map<std::string, uint64_t> parsed;
+    size_t start = 0;
+    while (start < scope_key.size()) {
+        size_t end = scope_key.find('|', start);
+        std::string part = scope_key.substr(start, end == std::string::npos ? std::string::npos : end - start);
+        size_t eq = part.find('=');
+        if (eq != std::string::npos && eq > 0 && eq + 1 < part.size()) {
+            try {
+                parsed[part.substr(0, eq)] = static_cast<uint64_t>(std::stoull(part.substr(eq + 1)));
+            } catch (...) {
+            }
+        }
+        if (end == std::string::npos) {
+            break;
+        }
+        start = end + 1;
+    }
+    return parsed;
+}
+
+std::string CandidateScopeKey(const rapidjson::Value& record) {
+    const rapidjson::Value* record_scope = JsonObjectMember(record, "scope");
+    const rapidjson::Value* access_scope = JsonObjectMember(record, "access_scope");
+    const rapidjson::Value* metadata = JsonObjectMember(record, "metadata");
+    const rapidjson::Value* metadata_access = metadata == nullptr ? nullptr : JsonObjectMember(*metadata, "access_scope");
+    const rapidjson::Value* scopes[] = {&record, access_scope, metadata_access, record_scope};
+    for (const rapidjson::Value* candidate_scope : scopes) {
+        if (candidate_scope == nullptr || !candidate_scope->IsObject()) {
+            continue;
+        }
+        std::string scope_key = JsonStringMember(*candidate_scope, "scope_key");
+        if (!scope_key.empty()) {
+            return scope_key;
+        }
+    }
+    return "";
+}
+
+bool ScopeKeyMatchesQuery(const std::string& record_scope_key, const rapidjson::Value& query_scope) {
+    if (record_scope_key.empty()) {
+        return true;
+    }
+    auto record_parts = ParseScopeKey(record_scope_key);
+    uint64_t tenant_hash = JsonUintMember(query_scope, "tenant_hash", 0);
+    if (tenant_hash != 0) {
+        auto it = record_parts.find("t");
+        if (it == record_parts.end() || it->second != tenant_hash) {
+            return false;
+        }
+    }
+    if (ScopeKeyExplicit(query_scope, "user_id")) {
+        uint64_t user_hash = JsonUintMember(query_scope, "user_hash", 0);
+        if (user_hash != 0) {
+            auto it = record_parts.find("u");
+            if (it == record_parts.end() || it->second != user_hash) {
+                return false;
+            }
+        }
+    }
+    if (ScopeKeyExplicit(query_scope, "session_id")) {
+        uint64_t session_hash = JsonUintMember(query_scope, "session_hash", 0);
+        if (session_hash != 0) {
+            auto it = record_parts.find("s");
+            if (it == record_parts.end() || it->second != session_hash) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope) {
     if (scope == nullptr || !scope->IsObject()) {
         return true;
+    }
+    std::string record_scope_key = CandidateScopeKey(record);
+    if (!ScopeKeyMatchesQuery(record_scope_key, *scope)) {
+        return false;
     }
     const rapidjson::Value* record_scope = JsonObjectMember(record, "scope");
     const rapidjson::Value* access_scope = JsonObjectMember(record, "access_scope");
@@ -191,6 +273,9 @@ bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope)
             continue;
         }
         std::string field_name(field);
+        if (field_name == "scope_key") {
+            continue;
+        }
         if ((field_name == "account_id" || field_name == "tenant_id" || field_name == "user_id" || field_name == "session_id") && !ScopeKeyExplicit(*scope, field)) {
             continue;
         }
@@ -271,18 +356,38 @@ bool HasGroupMatch(const std::unordered_set<std::string>& terms, const std::vect
         return true;
     }
     for (const auto& group : groups) {
-        bool group_match = true;
         for (const auto& term : group) {
-            if (terms.find(term) == terms.end()) {
-                group_match = false;
-                break;
+            if (terms.find(term) != terms.end()) {
+                return true;
             }
-        }
-        if (group_match) {
-            return true;
         }
     }
     return false;
+}
+
+std::string ContextClassName(const rapidjson::Value& record) {
+    std::string record_type = JsonStringMember(record, "record_type");
+    if (record_type == "context_event") {
+        std::string classification = JsonStringMember(record, "classification");
+        std::string event_type = JsonStringMember(record, "event_type");
+        if (classification == "resource_fact" || event_type.find("resource_") == 0) {
+            return "resource_fact";
+        }
+        return "event";
+    }
+    if (record_type == "context_entity") {
+        return "entity";
+    }
+    if (record_type == "context_segment") {
+        return "segment";
+    }
+    if (record_type == "context_summary") {
+        return "summary";
+    }
+    if (record_type == "context_compression_event") {
+        return "compression";
+    }
+    return record_type;
 }
 
 void DecodeMatrixArkPayload(const std::string& value, std::vector<std::string>* records) {
@@ -348,6 +453,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     if (allowed_types.empty()) {
         allowed_types = {"context_compression_event", "context_entity", "context_event", "context_segment", "context_summary", "resource_chunk", "skill_section"};
     }
+    std::unordered_set<std::string> scan_allowed(allowed_types.begin(), allowed_types.end());
+    scan_allowed.insert("context_index");
     std::unordered_set<std::string> allowed(allowed_types.begin(), allowed_types.end());
     const rapidjson::Value* scope = JsonObjectMember(request, "scope");
     auto secondary_groups = SecondaryGroups(request);
@@ -374,7 +481,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
                 }
                 ++scanned_records;
                 std::string record_type = JsonStringMember(record, "record_type");
-                if (!allowed.empty() && allowed.find(record_type) == allowed.end() && record_type != "context_index") {
+                if (!scan_allowed.empty() && scan_allowed.find(record_type) == scan_allowed.end()) {
                     ++dropped_by_type;
                     continue;
                 }
@@ -486,6 +593,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     }
     pack.AddMember("question_type", rapidjson::Value(question_type.c_str(), alloc), alloc);
     rapidjson::Value selected(rapidjson::kArrayType);
+    std::unordered_map<std::string, uint64_t> selected_counts;
+    std::unordered_set<uint64_t> selected_nodes;
     uint64_t used_tokens = 0;
     uint64_t dropped_over_budget = 0;
     for (const auto& item : scored) {
@@ -503,8 +612,14 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         used_tokens += item.tokens;
         rapidjson::Value ref(rapidjson::kObjectType);
         std::string record_type = JsonStringMember(record, "record_type");
+        std::string context_class = ContextClassName(record);
+        selected_counts[context_class] += 1;
+        uint64_t node_hash = NodeHash(record);
+        if (node_hash != 0) {
+            selected_nodes.insert(node_hash);
+        }
         std::string text = CandidateText(record);
-        ref.AddMember("ref_type", rapidjson::Value(record_type.c_str(), alloc), alloc);
+        ref.AddMember("ref_type", rapidjson::Value(context_class.c_str(), alloc), alloc);
         ref.AddMember("text", rapidjson::Value(text.c_str(), alloc), alloc);
         ref.AddMember("token_estimate", item.tokens, alloc);
         ref.AddMember("score", item.score, alloc);
@@ -517,6 +632,18 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         selected.PushBack(ref, alloc);
     }
     pack.AddMember("selected_refs", selected, alloc);
+    rapidjson::Value remote_refs;
+    remote_refs.CopyFrom(pack["selected_refs"], alloc);
+    pack.AddMember("remote_context_refs", remote_refs, alloc);
+    rapidjson::Value count_obj(rapidjson::kObjectType);
+    for (const auto& item : selected_counts) {
+        rapidjson::Value key;
+        key.SetString(item.first.c_str(), static_cast<rapidjson::SizeType>(item.first.size()), alloc);
+        rapidjson::Value value;
+        value.SetUint64(item.second);
+        count_obj.AddMember(key, value, alloc);
+    }
+    pack.AddMember("selected_ref_counts", count_obj, alloc);
     rapidjson::Value dropped(rapidjson::kObjectType);
     dropped.AddMember("over_budget", dropped_over_budget, alloc);
     rapidjson::Value reasons(rapidjson::kObjectType);
@@ -560,11 +687,23 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
     rapidjson::Value tree(rapidjson::kObjectType);
+    tree.AddMember("enabled", true, alloc);
     tree.AddMember("native_backend", true, alloc);
     tree.AddMember("fallback_to_flat", false, alloc);
+    tree.AddMember("selected_node_count", static_cast<uint64_t>(selected_nodes.size()), alloc);
+    tree.AddMember("selected_leaf_count", static_cast<uint64_t>(selected_nodes.size()), alloc);
+    tree.AddMember("candidate_records_after_tree", static_cast<uint64_t>(scored.size()), alloc);
+    rapidjson::Value summary_embeddings(rapidjson::kArrayType);
+    summary_embeddings.PushBack("node_l0", alloc);
+    summary_embeddings.PushBack("node_l1", alloc);
+    tree.AddMember("summary_embeddings", summary_embeddings, alloc);
     recall.AddMember("tree_traversal", tree, alloc);
     rapidjson::Value secondary(rapidjson::kObjectType);
+    secondary.AddMember("enabled", true, alloc);
     secondary.AddMember("native_backend", true, alloc);
+    secondary.AddMember("applied_before_embedding_scoring", true, alloc);
+    secondary.AddMember("matched_candidate_count", secondary_matched, alloc);
+    secondary.AddMember("dropped_candidate_count", secondary_dropped, alloc);
     recall.AddMember("secondary_index_filter", secondary, alloc);
     pack.AddMember("recall_policy", recall, alloc);
     rapidjson::Value warnings(rapidjson::kArrayType);

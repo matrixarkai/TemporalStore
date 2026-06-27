@@ -1,0 +1,1456 @@
+[
+  {
+    "answer": "7 May 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 22,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599146-581",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 125.866,
+    "prediction": "user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful.",
+    "question": "When did Caroline go to the LGBTQ support group?",
+    "question_id": "locomo-0-0",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_segment",
+        "score": 0.8571428571428571,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "4: D10:5 [8:56 pm on 20 July, 2023] Caroline: Thanks, Melanie! It's awesome to have our own platform to be ourselves and support others' rights. Our group, 'Connected LGBTQ Activists', is made of all kinds of people investing in positive changes. We have regular meetings, plan events and campaigns, to get together and support each other.\n13: D10:14 [8:56 pm on 20 July, 2023] Melanie: I'll always remember our camping trip last year when we saw the Perseid meteor shower. It was so amazing lying there and watching the sky light up with streaks of light. We all made wishes and felt so at one with the universe. That's a memory I'll never forget. Image: a photo of a plane flying in the sky with a star filled sky",
+        "token_estimate": 179
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.8571428571428571,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D1:1 [1:56 pm on 8 May, 2023] Caroline: Hey Mel! Good to see you! How have you been? assistant: D1:2 [1:56 pm on 8 May, 2023] Melanie: Hey Caroline! Good to see you! I'm swamped with the kids & work. What's up with you? Anything new? user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful. assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories? user: D1:5 [1:56 pm on 8 May, 2023] Caroline: The transgender stories were so inspiring! I was so happy and thankful for all the support. Image: a photo of a dog walking past a wall with a paintin...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.8571428571428571,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D12:1 [1:50 pm on 17 August, 2023] Caroline: Hey Mel! How're ya doin'? Recently, I had a not-so-great experience on a hike. I ran into a group of religious conservatives who said something that really upset me. It made me think how much work we still have to do for LGBTQ rights. It's been so helpful to have people around me who accept and support me, so I know I'll be ok! assistant: D12:2 [1:50 pm on 17 August, 2023] Melanie: Hey Caroline, sorry about the hike. It sucks when people are so closed-minded. Strong support really helps. FYI, I finished another pottery project - want to see a pic? user: D12:3 [1:50 pm on 17 August, 2023] Caroline: Sure thing, Melanie! Can't wait to see yo...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.7142857142857143,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D11:2 [2:24 pm on 14 August, 2023] Caroline: Wow, sounds wonderful! Your love for your kids is so awesome. What concert was it? The advocacy event was a cool experience - so much love and support, amazing! Image: a photo of a poster for a concert with a picture of a man\n2: D11:3 [2:24 pm on 14 August, 2023] Melanie: Thanks, Caroline! It was Matt Patterson, he is so talented! His voice and songs were amazing. What's up with you? Anything interesting going on?\n3: D11:4 [2:24 pm on 14 August, 2023] Caroline: Wow, Mel, glad you had a blast at the concert. A lot's happened since we talked. I went to a pride parade last Friday and it was awesome - so much energy and love everywhere. Really made me proud and reminded me how important it is to keep standing up for equality.\n6: D11:7 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline! That sounds awesome. This pic's from last night - looks like everyone was having a blast! Reminds me it's important to cultivate a loving and accepting environment for our kids. How do you stay inclusive in your work as an artist? Image: a photo of a group of people sitting on chairs watching a band\n7: D11:8 [2:24 pm on 14 August, 2023] Caroline: That pic is cool! Representing inclusivity and diversity in my art is important to me. I also use it to speak up for the LGBTQ+ community and push for acceptance. Here's a recent painting! Image: a photo of a painting with a painting brush and paint on it\n9: D11:10 [2:24 pm on 14 August, 2023] Caroline: My art is about expressing my trans experience. It's my way of showing my story and helping people understand the trans community. Image: a photo of a painting of a woman with a cow in her lap\n11: D11:12 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. Here's one- 'Embracing Identity' is all about finding comfort and love in being yourself. The woman in the painting stands for the journey of acceptance. My aim was to show warmth, love and self-acceptance. Image: a photo of a painting of a woman with a red shirt\n12: D11:13 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's gorgeous! I love the self-acceptance and love theme. How does art help you with your self-discovery and acceptance journey? Image: a photo of a woman is making a vase on a wheel\n14: D11:15 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's so cool! Art can be so healing and a way to really connect with who you are. It's awesome that beauty can be found in the imperfections. We're all individual and wonderfully imperfect. Thanks for sharing it with me!\n15: D11:16 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. It means a lot to share this with you.",
+        "token_estimate": 666
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.7142857142857143,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D15:3 [3:19 pm on 28 August, 2023] Caroline: Wow, your kids had so much fun at the park! Being outdoors can be really enjoyable. A lot happened since our last chat. I've been chasing my ambitions and had the chance to volunteer at an LGBTQ+ youth center. It was so gratifying to talk to similar young people. It made me remember how essential it is to be kind and show support.\n3: D15:4 [3:19 pm on 28 August, 2023] Melanie: That sounds great, Caroline. Volunteering is a great way to meet people. Creating community and supporting each other, especially for kids, is really important. How did you feel about your time there? Anything that sticks out to you?\n8: D15:9 [3:19 pm on 28 August, 2023] Caroline: I'm definitely carrying on volunteering at the youth center. It's an important part of my life and I've made strong connections with people there. I really believe in community and supporting each other. So I wanna keep making a difference.",
+        "token_estimate": 238
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.7142857142857143,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D10:5 [8:56 pm on 20 July, 2023] Caroline: Thanks, Melanie! It's awesome to have our own platform to be ourselves and support others' rights. Our group, 'Connected LGBTQ Activists', is made of all kinds of people investing in positive changes. We have regular meetings, plan events and campaigns, to get together and support each other.",
+        "token_estimate": 86
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D15:3 [3:19 pm on 28 August, 2023] Caroline: Wow, your kids had so much fun at the park! Being outdoors can be really enjoyable. A lot happened since our last chat. I've been chasing my ambitions and had the chance to volunteer at an LGBTQ+ youth center. It was so gratifying to talk to similar young people. It made me remember how essential it is to be kind and show support.",
+        "token_estimate": 96
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D15:4 [3:19 pm on 28 August, 2023] Melanie: That sounds great, Caroline. Volunteering is a great way to meet people. Creating community and supporting each other, especially for kids, is really important. How did you feel about your time there? Anything that sticks out to you?",
+        "token_estimate": 72
+      }
+    ],
+    "used_context_tokens": 7040
+  },
+  {
+    "answer": 2022,
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 16,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.138,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599146-583",
+    "evidence_hit": true,
+    "failure_reason": "reader_miss_with_evidence",
+    "latency_ms": 91.353,
+    "prediction": "assistant: D17:12 [10:31 am on 13 October, 2023] Melanie: Yeah, Here's one I did last week.",
+    "question": "When did Melanie paint a sunrise?",
+    "question_id": "locomo-0-1",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.8,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:21 [1:33 pm on 25 August, 2023] Caroline: Thanks, Mel! Glad you like it. It's a symbol of togetherness, to celebrate differences and be that much closer. I'd love to make something like this next! Image: a photo of a painted sidewalk with a rainbow design on it assistant: D14:22 [1:33 pm on 25 August, 2023] Melanie: Wow, that's gorgeous! Where did you find it? user: D14:23 [1:33 pm on 25 August, 2023] Caroline: I was out walking in my neighborhood when I came across this cool rainbow sidewalk for Pride Month. It was so vibrant and welcoming, I had to take a picture! It reminds us that love and acceptance are everywhere—even where we least expect it. assistant: D14:24 [1:33 pm on...",
+        "token_estimate": 176
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:1 [1:33 pm on 25 August, 2023] Caroline: Hey, Mel! How's it going? There's something I want to tell you. I went hiking last week and got into a bad spot with some people. It really bugged me, so I tried to apologize to them. Image: a photo of a woman sitting on a sign on top of a mountain assistant: D14:2 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline! Sorry that happened to you. It's tough when those things happen, but it's great you apologized. Takes a lot of courage and maturity! What do you think of this? Image: a photo of a plate with a bunch of flowers on it user: D14:3 [1:33 pm on 25 August, 2023] Caroline: Thanks, Melanie! That plate is awesome! Did you make it? ass...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "9: D14:30 [1:33 pm on 25 August, 2023] Melanie: Painting landscapes and still life is my favorite! Nature's amazing, here's a painting I did recently. Image: a photo of a painting of a sunflower on a canvas",
+        "token_estimate": 52
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D13:8 [3:31 pm on 23 August, 2023] Melanie: Wow, that sounds great - I agree, they're awesome. Here's a photo of my horse painting I did recently. Image: a photo of a horse painted on a wooden wall",
+        "token_estimate": 52
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D14:30 [1:33 pm on 25 August, 2023] Melanie: Painting landscapes and still life is my favorite! Nature's amazing, here's a painting I did recently. Image: a photo of a painting of a sunflower on a canvas",
+        "token_estimate": 54
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D17:12 [10:31 am on 13 October, 2023] Melanie: Yeah, Here's one I did last week. It's inspired by the sunsets. The colors make me feel calm. What have you been up to lately, artistically? Image: a photo of a painting of a sunset with a pink sky",
+        "token_estimate": 64
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D1:1 [1:56 pm on 8 May, 2023] Caroline: Hey Mel! Good to see you! How have you been? assistant: D1:2 [1:56 pm on 8 May, 2023] Melanie: Hey Caroline! Good to see you! I'm swamped with the kids & work. What's up with you? Anything new? user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful. assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories? user: D1:5 [1:56 pm on 8 May, 2023] Caroline: The transgender stories were so inspiring! I was so happy and thankful for all the support. Image: a photo of a dog walking past a wall with a paintin...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D1:14 [1:56 pm on 8 May, 2023] Melanie: Yeah, I painted that lake sunrise last year! It's special to me.",
+        "token_estimate": 29
+      }
+    ],
+    "used_context_tokens": 5311
+  },
+  {
+    "answer": "Psychology, counseling certification",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 23,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.333333,
+    "category": 3,
+    "context_pack_id": "cpp-native-1782599147-589",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 116.251,
+    "prediction": "Rich overview: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career.",
+    "question": "What fields would Caroline be likely to pursue in her educaton?",
+    "question_id": "locomo-0-2",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_4. Rich overview: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career. I want to help people who have gone through the same things as me. Image: a photo of a book shelf with many books on it assistant: D4:12 [10:37 am on 27 June, 2023] Melanie: Sounds great! What kind of counseling and mental health services do you want to persue? user: D4:13 [10:37 am on 27 June, 2023] Caroline: I'm still figuring out the details, but I'm thinking of working with trans people, helping them accept themselves and supporting their mental health. Last Friday, I went to an LGBTQ+ counseling workshop and it was really enlightening. They talked about different therapeutic methods and how to best work with trans people. Seeing how passionate these pros were about making a safe space for people like me was amazing. assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling? user: D4:15 [10:37 am on 27 June, 2023] Caroline: Thanks, Melanie. ...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D14:24 [1:33 pm on 25 August, 2023] Melanie: That's so nice, Caroline! Art can be in the most unlikely places. Love and acceptance really can be found everywhere. Image: a photo of a person drawing a flower on the ground\n4: D14:25 [1:33 pm on 25 August, 2023] Caroline: Agreed, Mel! Art can be a real mood-booster - I saw someone drawing on the ground the other day and it made me so happy. Creativity sure can lighten someone's day. Image: a photo of a painting of flowers and a watercolor palette\n5: D14:26 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline, that's so nice! The colors are so bright and the flowers are so pretty. Art is such a source of joy.\n8: D14:29 [1:33 pm on 25 August, 2023] Caroline: Yeah, definitely! Drawing flowers is one of my faves. Appreciating nature and sharing it is great. What about you, Mel? What type of art do you love? Image: a photo of a drawing of a flower bouquet with a person holding it\n13: D14:34 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline, that's awesome! Can't wait to see your show - the LGBTQ community needs more platforms like this!",
+        "token_estimate": 275
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling?",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.455,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.375,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset\n2: D16:3 [12:09 am on 13 September, 2023] Caroline: Melanie, that photo's amazing! I love all the yellow leaves, it looks so cozy. That sounds like fun! Seeing how excited they get for the little things is awesome, it's so contagious.\n4: D16:5 [12:09 am on 13 September, 2023] Caroline: I'm inspired seeing my work make a difference for the LGBTQ+ community. Knowing I'm helping create a more loving world is amazing. I'm really thankful for my friends, family and mentors' support. It inspires me to keep making art, too. Image: a photo of a painting of a heart on a table\n6: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?\n8: D16:9 [12:09 am on 13 September, 2023] Caroline: Melanie, those bowls are amazing! They each have such cool designs. I love that you chose pottery for your art. Painting and drawing have helped me express my feelings and explore my gender identity. Creating art was really important to me during my transition - it helped me understand and accept myself. I'm so grateful.\n11: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?\n12: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am.\n13: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?\n15: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this! It brings me so much happiness. Image: a photo of a sign posted on a door stating that someone is not being able to leave",
+        "token_estimate": 638
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.375,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D7:4 [4:33 pm on 12 July, 2023] Melanie: Wow, Caroline. We've come so far, but there's more to do. Your drive to help is awesome! What's your plan to pitch in?",
+        "token_estimate": 43
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.375,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D14:24 [1:33 pm on 25 August, 2023] Melanie: That's so nice, Caroline! Art can be in the most unlikely places. Love and acceptance really can be found everywhere. Image: a photo of a person drawing a flower on the ground",
+        "token_estimate": 58
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.375,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:1 [1:33 pm on 25 August, 2023] Caroline: Hey, Mel! How's it going? There's something I want to tell you. I went hiking last week and got into a bad spot with some people. It really bugged me, so I tried to apologize to them. Image: a photo of a woman sitting on a sign on top of a mountain assistant: D14:2 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline! Sorry that happened to you. It's tough when those things happen, but it's great you apologized. Takes a lot of courage and maturity! What do you think of this? Image: a photo of a plate with a bunch of flowers on it user: D14:3 [1:33 pm on 25 August, 2023] Caroline: Thanks, Melanie! That plate is awesome! Did you make it? ass...",
+        "token_estimate": 175
+      }
+    ],
+    "used_context_tokens": 7057
+  },
+  {
+    "answer": "Adoption agencies",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 15,
+    "answer_hit": true,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599147-601",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 81.493,
+    "prediction": "adoption agencies",
+    "question": "What did Caroline research?",
+    "question_id": "locomo-0-3",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_segment",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories?",
+        "token_estimate": 37
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig assistant: D13:2 [3:31 pm on 23 August, 2023] Melanie: Caroline, congrats! So proud of you for taking this step. How does it feel? Also, do you have any pets? user: D13:3 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! Exciting but kinda nerve-wracking. Parenting's such a big res...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D10:15 [8:56 pm on 20 July, 2023] Caroline: Cool! What did it look like?",
+        "token_estimate": 20
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D1:1 [1:56 pm on 8 May, 2023] Caroline: Hey Mel! Good to see you! How have you been? assistant: D1:2 [1:56 pm on 8 May, 2023] Melanie: Hey Caroline! Good to see you! I'm swamped with the kids & work. What's up with you? Anything new? user: D1:3 [1:56 pm on 8 May, 2023] Caroline: I went to a LGBTQ support group yesterday and it was so powerful. assistant: D1:4 [1:56 pm on 8 May, 2023] Melanie: Wow, that's cool, Caroline! What happened that was so awesome? Did you hear any inspiring stories? user: D1:5 [1:56 pm on 8 May, 2023] Caroline: The transgender stories were so inspiring! I was so happy and thankful for all the support. Image: a photo of a dog walking past a wall with a paintin...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:1 [1:33 pm on 25 August, 2023] Caroline: Hey, Mel! How's it going? There's something I want to tell you. I went hiking last week and got into a bad spot with some people. It really bugged me, so I tried to apologize to them. Image: a photo of a woman sitting on a sign on top of a mountain assistant: D14:2 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline! Sorry that happened to you. It's tough when those things happen, but it's great you apologized. Takes a lot of courage and maturity! What do you think of this? Image: a photo of a plate with a bunch of flowers on it user: D14:3 [1:33 pm on 25 August, 2023] Caroline: Thanks, Melanie! That plate is awesome! Did you make it? ass...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.58,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "standing on the beach at sunset user: D10:23 [8:56 pm on 20 July, 2023] Caroline: Wow, Melanie, what a beautiful moment",
+        "token_estimate": 30
+      }
+    ],
+    "used_context_tokens": 4822
+  },
+  {
+    "answer": "Transgender woman",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 25,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.54,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599147-607",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 84.283,
+    "prediction": "Image: a photo of a painting of a woman with a blue face assistant: D13:12 [3:31 pm on 23 August, 2023] Melanie: Caroline, that's great!",
+    "question": "What is Caroline's identity?",
+    "question_id": "locomo-0-4",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_13. Rich overview: user: D13:11 [3:31 pm on 23 August, 2023] Caroline: Painting's great for expressing myself. I love creating art! Here's a recent self-portrait I made last week. Image: a photo of a painting of a woman with a blue face assistant: D13:12 [3:31 pm on 23 August, 2023] Melanie: Caroline, that's great! The blue's really powerful, huh? How'd you feel while painting it? user: D13:13 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! I felt liberated and empowered doing it. Painting helps me explore my identity and be true to myself. It's definitely therapeutic. assistant: D13:14 [3:31 pm on 23 August, 2023] Melanie: Wow, Caroline, that's great! Art's awesome for showing us who we really are and getting in touch with ourselves. What else helps you out? user: D13:15 [3:31 pm on 23 August, 2023] Caroline: Thanks, Melanie. Art gives me a sense of freedom, but so does having supportive people around, promoting LGBTQ rights and being true to myself. I want to live authentically and help others to do the same. assistant: D13:16 [3:31 pm on 23 August, 2023] Melanie: Wow, Caroline! That's amazing. You really care about being real and he...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D3:3 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! Your backing really means a lot. I felt super powerful giving my talk. I shared my own journey, the struggles I had and how much I've developed since coming out. It was wonderful to see how the audience related to what I said and how it inspired them to be better allies. Conversations about gender identity and inclusion are so necessary and I'm thankful for being able to give a voice to the trans community.\n4: D3:5 [7:55 pm on 9 June, 2023] Caroline: Thanks Mel! Your kind words mean a lot. Sharing our experiences isn't always easy, but I feel it's important to help promote understanding and acceptance. I've been blessed with loads of love and support throughout this journey, and I want to pass it on to others. By sharing our stories, we can build a strong, supportive community of hope.\n8: D3:9 [7:55 pm on 9 June, 2023] Caroline: Yeah Mel, let's spread love and understanding! Thanks for the support and encouragement. We can tackle life's challenges together! We got this!",
+        "token_estimate": 261
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D11:2 [2:24 pm on 14 August, 2023] Caroline: Wow, sounds wonderful! Your love for your kids is so awesome. What concert was it? The advocacy event was a cool experience - so much love and support, amazing! Image: a photo of a poster for a concert with a picture of a man\n2: D11:3 [2:24 pm on 14 August, 2023] Melanie: Thanks, Caroline! It was Matt Patterson, he is so talented! His voice and songs were amazing. What's up with you? Anything interesting going on?\n3: D11:4 [2:24 pm on 14 August, 2023] Caroline: Wow, Mel, glad you had a blast at the concert. A lot's happened since we talked. I went to a pride parade last Friday and it was awesome - so much energy and love everywhere. Really made me proud and reminded me how important it is to keep standing up for equality.\n6: D11:7 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline! That sounds awesome. This pic's from last night - looks like everyone was having a blast! Reminds me it's important to cultivate a loving and accepting environment for our kids. How do you stay inclusive in your work as an artist? Image: a photo of a group of people sitting on chairs watching a band\n7: D11:8 [2:24 pm on 14 August, 2023] Caroline: That pic is cool! Representing inclusivity and diversity in my art is important to me. I also use it to speak up for the LGBTQ+ community and push for acceptance. Here's a recent painting! Image: a photo of a painting with a painting brush and paint on it\n9: D11:10 [2:24 pm on 14 August, 2023] Caroline: My art is about expressing my trans experience. It's my way of showing my story and helping people understand the trans community. Image: a photo of a painting of a woman with a cow in her lap\n11: D11:12 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. Here's one- 'Embracing Identity' is all about finding comfort and love in being yourself. The woman in the painting stands for the journey of acceptance. My aim was to show warmth, love and self-acceptance. Image: a photo of a painting of a woman with a red shirt\n12: D11:13 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's gorgeous! I love the self-acceptance and love theme. How does art help you with your self-discovery and acceptance journey? Image: a photo of a woman is making a vase on a wheel\n14: D11:15 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's so cool! Art can be so healing and a way to really connect with who you are. It's awesome that beauty can be found in the imperfections. We're all individual and wonderfully imperfect. Thanks for sharing it with me!\n15: D11:16 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. It means a lot to share this with you.",
+        "token_estimate": 666
+      },
+      {
+        "ref_type": "context_event",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:3 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! Your backing really means a lot. I felt super powerful giving my talk. I shared my own journey, the struggles I had and how much I've developed since coming out. It was wonderful to see how the audience related to what I said and how it inspired them to be better allies. Conversations about gender identity and inclusion are so necessary and I'm thankful for being able to give a voice to the trans community.",
+        "token_estimate": 118
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset\n2: D16:3 [12:09 am on 13 September, 2023] Caroline: Melanie, that photo's amazing! I love all the yellow leaves, it looks so cozy. That sounds like fun! Seeing how excited they get for the little things is awesome, it's so contagious.\n4: D16:5 [12:09 am on 13 September, 2023] Caroline: I'm inspired seeing my work make a difference for the LGBTQ+ community. Knowing I'm helping create a more loving world is amazing. I'm really thankful for my friends, family and mentors' support. It inspires me to keep making art, too. Image: a photo of a painting of a heart on a table\n6: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?\n8: D16:9 [12:09 am on 13 September, 2023] Caroline: Melanie, those bowls are amazing! They each have such cool designs. I love that you chose pottery for your art. Painting and drawing have helped me express my feelings and explore my gender identity. Creating art was really important to me during my transition - it helped me understand and accept myself. I'm so grateful.\n11: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?\n12: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am.\n13: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?\n15: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this! It brings me so much happiness. Image: a photo of a sign posted on a door stating that someone is not being able to leave",
+        "token_estimate": 638
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.7466666666666666,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "standing on the beach at sunset user: D10:23 [8:56 pm on 20 July, 2023] Caroline: Wow, Melanie, what a beautiful moment",
+        "token_estimate": 30
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.7466666666666666,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6666666666666666,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D10:1 [8:56 pm on 20 July, 2023] Caroline: Hey Melanie! Just wanted to say hi! assistant: D10:2 [8:56 pm on 20 July, 2023] Melanie: Hey Caroline! Good to talk to you again. What's up? Anything new since last time? user: D10:3 [8:56 pm on 20 July, 2023] Caroline: Hey Mel! A lot's happened since we last chatted - I just joined a new LGBTQ activist group last Tues. I'm meeting so many cool people who are as passionate as I am about rights and community support. I'm giving my voice and making a real difference, plus it's fulfilling in so many ways. It's just great, you know? assistant: D10:4 [8:56 pm on 20 July, 2023] Melanie: That's awesome, Caroline! Glad to hear you found a great gro...",
+        "token_estimate": 175
+      }
+    ],
+    "used_context_tokens": 5293
+  },
+  {
+    "answer": "The sunday before 25 May 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 15,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.666667,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-614",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 73.348,
+    "prediction": "assistant: D2:2 [1:14 pm on 25 May, 2023] Caroline: That charity race sounds great, Mel!",
+    "question": "When did Melanie run a charity race?",
+    "question_id": "locomo-0-5",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.6666666666666666,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D2:1 [1:14 pm on 25 May, 2023] Melanie: Hey Caroline, since we last chatted, I've had a lot of things happening to me. I ran a charity race for mental health last Saturday – it was really rewarding. Really made me think about taking care of our minds. assistant: D2:2 [1:14 pm on 25 May, 2023] Caroline: That charity race sounds great, Mel! Making a difference & raising awareness for mental health is super rewarding - I'm really proud of you for taking part! user: D2:3 [1:14 pm on 25 May, 2023] Melanie: Thanks, Caroline! The event was really thought-provoking. I'm starting to realize that self-care is really important. It's a journey for me, but when I look after myself, I'm able to b...",
+        "token_estimate": 176
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:1 [1:33 pm on 25 August, 2023] Caroline: Hey, Mel! How's it going? There's something I want to tell you. I went hiking last week and got into a bad spot with some people. It really bugged me, so I tried to apologize to them. Image: a photo of a woman sitting on a sign on top of a mountain assistant: D14:2 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline! Sorry that happened to you. It's tough when those things happen, but it's great you apologized. Takes a lot of courage and maturity! What do you think of this? Image: a photo of a plate with a bunch of flowers on it user: D14:3 [1:33 pm on 25 August, 2023] Caroline: Thanks, Melanie! That plate is awesome! Did you make it? ass...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D2:1 [1:14 pm on 25 May, 2023] Melanie: Hey Caroline, since we last chatted, I've had a lot of things happening to me. I ran a charity race for mental health last Saturday – it was really rewarding. Really made me think about taking care of our minds.",
+        "token_estimate": 65
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:21 [1:33 pm on 25 August, 2023] Caroline: Thanks, Mel! Glad you like it. It's a symbol of togetherness, to celebrate differences and be that much closer. I'd love to make something like this next! Image: a photo of a painted sidewalk with a rainbow design on it assistant: D14:22 [1:33 pm on 25 August, 2023] Melanie: Wow, that's gorgeous! Where did you find it? user: D14:23 [1:33 pm on 25 August, 2023] Caroline: I was out walking in my neighborhood when I came across this cool rainbow sidewalk for Pride Month. It was so vibrant and welcoming, I had to take a picture! It reminds us that love and acceptance are everywhere—even where we least expect it. assistant: D14:24 [1:33 pm on...",
+        "token_estimate": 176
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D2:2 [1:14 pm on 25 May, 2023] Caroline: That charity race sounds great, Mel! Making a difference & raising awareness for mental health is super rewarding - I'm really proud of you for taking part!\n3: D2:4 [1:14 pm on 25 May, 2023] Caroline: I totally agree, Melanie. Taking care of ourselves is so important - even if it's not always easy. Great that you're prioritizing self-care.\n5: D2:6 [1:14 pm on 25 May, 2023] Caroline: That's great, Mel! Taking time for yourself is so important. You're doing an awesome job looking after yourself and your family!\n9: D2:10 [1:14 pm on 25 May, 2023] Caroline: Thanks, Mel! My goal is to give kids a loving home. I'm truly grateful for all the support I've got from friends and mentors. Now the hard work starts to turn my dream into a reality. And here's one of the adoption agencies I'm looking into. It's a lot to take in, but I'm feeling hopeful and optimistic. Image: a photography of a sign for a new arrival and an information and domestic building",
+        "token_estimate": 250
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D8:21 [1:51 pm on 15 July, 2023] Caroline: I felt so proud and grateful - the vibes were amazing and it was comforting to know I'm not alone and have a great community around me. Image: a photo of a rainbow flag on a pole on a carpet assistant: D8:22 [1:51 pm on 15 July, 2023] Melanie: Wow, Caroline! That's huge! How did it feel to be around so much love and acceptance? user: D8:23 [1:51 pm on 15 July, 2023] Caroline: It was awesome, Melanie! Being around people who embrace and back me up is beyond words. It really inspired me. Image: a photo of a group of people sitting on the ground with a dog assistant: D8:24 [1:51 pm on 15 July, 2023] Melanie: Wow, that sounds awesome! Your frie...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.41333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D3:22 [7:55 pm on 9 June, 2023] Melanie: Absolutely, Caroline! I cherish time with family. It's when I really feel alive and happy.",
+        "token_estimate": 36
+      }
+    ],
+    "used_context_tokens": 5085
+  },
+  {
+    "answer": "June 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 15,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.5,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-2",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 88.358,
+    "prediction": "locomo / conv-26 :: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie!",
+    "question": "When is Melanie planning on going camping?",
+    "question_id": "locomo-0-6",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 2,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.2,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "locomo / conv-26 :: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a ...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.2,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26. Rich overview: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family. assistant: D19:2 [9:55 am on 22 October, 2023] Melanie: Congrats, Caroline! Adoption sounds awesome. I'm so happy for you. These figurines I bought yesterday remind me of family love. Tell me, what's your vision for the future? Image: a photo of a couple of wooden dolls sitting on top of a table user: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie! It's beautiful! It really brings home how much love's in families - both blood and the ones we choose. I hope to build.... This node belongs to path locomo / conv-26 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 217
+      }
+    ],
+    "used_context_tokens": 272
+  },
+  {
+    "answer": "Single",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 12,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.1,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599147-158",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 79.231,
+    "prediction": "3: D4:4 [10:37 am on 27 June, 2023] Melanie: That's gorgeous, Caroline!",
+    "question": "What is Caroline's relationship status?",
+    "question_id": "locomo-0-7",
+    "question_type": "current_state",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D4:4 [10:37 am on 27 June, 2023] Melanie: That's gorgeous, Caroline! It's awesome what items can mean so much to us, right? Got any other objects that you treasure, like that necklace? Image: a photo of a stack of bowls with different designs on them\n15: D4:16 [10:37 am on 27 June, 2023] Melanie: Wow, Caroline! You've gained so much from your own experience. Your passion and hard work to help others is awesome. Keep it up, you're making a big impact!",
+        "token_estimate": 115
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D18:20 [6:55 pm on 20 October, 2023] Caroline: Wow, that's awesome! What do you love most about camping with your fam?",
+        "token_estimate": 33
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D3:3 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! Your backing really means a lot. I felt super powerful giving my talk. I shared my own journey, the struggles I had and how much I've developed since coming out. It was wonderful to see how the audience related to what I said and how it inspired them to be better allies. Conversations about gender identity and inclusion are so necessary and I'm thankful for being able to give a voice to the trans community.\n4: D3:5 [7:55 pm on 9 June, 2023] Caroline: Thanks Mel! Your kind words mean a lot. Sharing our experiences isn't always easy, but I feel it's important to help promote understanding and acceptance. I've been blessed with loads of love and support throughout this journey, and I want to pass it on to others. By sharing our stories, we can build a strong, supportive community of hope.\n8: D3:9 [7:55 pm on 9 June, 2023] Caroline: Yeah Mel, let's spread love and understanding! Thanks for the support and encouragement. We can tackle life's challenges together! We got this!",
+        "token_estimate": 261
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D3:4 [7:55 pm on 9 June, 2023] Melanie: Wow, Caroline, you're doing an awesome job of inspiring others with your journey. It's great to be part of it and see how you're positively affecting so many. Talking about inclusivity and acceptance is crucial, and you're so brave to speak up for the trans community. Keep up the great work!\n5: D3:6 [7:55 pm on 9 June, 2023] Melanie: Yeah, Caroline! It takes courage to talk about our own stories. But it's in these vulnerable moments that we bond and understand each other. We all have our different paths, but if we share them, we show people that they're not alone. Our stories can be so inspiring and encouraging to others who are facing the same challenges. Thank you for using your voice to create love, acceptance, and hope. You're doing amazing!\n7: D3:8 [7:55 pm on 9 June, 2023] Melanie: Thanks, Caroline, for letting me join your journey. I'm so proud to be part of the difference you're making. Let's keep motivating and helping each other out as we journey through life. We can make a real impact together!\n9: D3:10 [7:55 pm on 9 June, 2023] Melanie: Yes, Caroline! We can do it. Your courage is inspiring. I want to be couragous for my family- they motivate me and give me love. What motivates you?\n11: D3:12 [7:55 pm on 9 June, 2023] Melanie: Wow, that photo is great! How long have you had such a great support system?",
+        "token_estimate": 345
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D18:1 [6:55 pm on 20 October, 2023] Melanie: Hey Caroline, that roadtrip this past weekend was insane! We were all freaked when my son got into an accident. We were so lucky he was okay. It was a real scary experience. Thankfully it's over now. What's been up since we last talked? Image: a photo of a car dashboard with a white cloth and a steering wheel",
+        "token_estimate": 91
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D4:4 [10:37 am on 27 June, 2023] Melanie: That's gorgeous, Caroline! It's awesome what items can mean so much to us, right? Got any other objects that you treasure, like that necklace? Image: a photo of a stack of bowls with different designs on them",
+        "token_estimate": 66
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D4:10 [10:37 am on 27 June, 2023] Melanie: Thanks, Caroline! Family time matters to me. What's up with you lately?",
+        "token_estimate": 32
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D8:33 [1:51 pm on 15 July, 2023] Caroline: Awesome, Mel! Family support's huge. What else do you guys like doing together? Image: a photo of a family walking through a forest with a toddler",
+        "token_estimate": 49
+      }
+    ],
+    "used_context_tokens": 4544
+  },
+  {
+    "answer": "The week before 9 June 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 11,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-620",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 89.418,
+    "prediction": "user: D3:11 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel!",
+    "question": "When did Caroline give a speech at a school?",
+    "question_id": "locomo-0-8",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:21 [1:33 pm on 25 August, 2023] Caroline: Thanks, Mel! Glad you like it. It's a symbol of togetherness, to celebrate differences and be that much closer. I'd love to make something like this next! Image: a photo of a painted sidewalk with a rainbow design on it assistant: D14:22 [1:33 pm on 25 August, 2023] Melanie: Wow, that's gorgeous! Where did you find it? user: D14:23 [1:33 pm on 25 August, 2023] Caroline: I was out walking in my neighborhood when I came across this cool rainbow sidewalk for Pride Month. It was so vibrant and welcoming, I had to take a picture! It reminds us that love and acceptance are everywhere—even where we least expect it. assistant: D14:24 [1:33 pm on...",
+        "token_estimate": 176
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig assistant: D13:2 [3:31 pm on 23 August, 2023] Melanie: Caroline, congrats! So proud of you for taking this step. How does it feel? Also, do you have any pets? user: D13:3 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! Exciting but kinda nerve-wracking. Parenting's such a big res...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:11 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! My friends, family and mentors are my rocks – they motivate me and give me the strength to push on. Here's a pic from when we met up last week! Image: a photo of a family posing for a picture in a yard",
+        "token_estimate": 66
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D5:3 [1:36 pm on 3 July, 2023] Caroline: Thanks, Mel! It really motivated me for sure. Talking to the community made me want to use my story to help others too - I'm still thinking that counseling and mental health is the way to go. I'm super excited to give back.\n6: D5:7 [1:36 pm on 3 July, 2023] Caroline: That bowl is gorgeous! The black and white design looks so fancy. Did you make it?\n10: D5:11 [1:36 pm on 3 July, 2023] Caroline: Wow, Mel, I'm so stoked for you that art is helping you express yourself and bring you joy! Keep it up!\n14: D5:15 [1:36 pm on 3 July, 2023] Caroline: Cool, thanks Mel! Can't wait. I'll keep ya posted. Bye!",
+        "token_estimate": 162
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D14:1 [1:33 pm on 25 August, 2023] Caroline: Hey, Mel! How's it going? There's something I want to tell you. I went hiking last week and got into a bad spot with some people. It really bugged me, so I tried to apologize to them. Image: a photo of a woman sitting on a sign on top of a mountain assistant: D14:2 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline! Sorry that happened to you. It's tough when those things happen, but it's great you apologized. Takes a lot of courage and maturity! What do you think of this? Image: a photo of a plate with a bunch of flowers on it user: D14:3 [1:33 pm on 25 August, 2023] Caroline: Thanks, Melanie! That plate is awesome! Did you make it? ass...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D16:17 [12:09 am on 13 September, 2023] Caroline: Whoa, Mel, that sign looks serious. Did anything happen?",
+        "token_estimate": 28
+      }
+    ],
+    "used_context_tokens": 5632
+  },
+  {
+    "answer": "The week before 9 June 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 11,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-158",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 90.563,
+    "prediction": "user: D3:11 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel!",
+    "question": "When did Caroline meet up with her friends, family, and mentors?",
+    "question_id": "locomo-0-9",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_event",
+        "score": 0.7,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:11 [7:55 pm on 9 June, 2023] Caroline: Thanks, Mel! My friends, family and mentors are my rocks – they motivate me and give me the strength to push on. Here's a pic from when we met up last week! Image: a photo of a family posing for a picture in a yard",
+        "token_estimate": 66
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:21 [7:55 pm on 9 June, 2023] Caroline: Sounds great, Mel! Glad you had a great time. Cherish the moments - they're the best! assistant: D3:22 [7:55 pm on 9 June, 2023] Melanie: Absolutely, Caroline! I cherish time with family. It's when I really feel alive and happy. user: D3:23 [7:55 pm on 9 June, 2023] Caroline: I 100% agree, Mel. Hanging with loved ones is amazing and brings so much happiness. Those moments really make me thankful. Family is everything.",
+        "token_estimate": 118
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D3:22 [7:55 pm on 9 June, 2023] Melanie: Absolutely, Caroline! I cherish time with family. It's when I really feel alive and happy.",
+        "token_estimate": 36
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_3. Rich overview: user: D3:21 [7:55 pm on 9 June, 2023] Caroline: Sounds great, Mel! Glad you had a great time. Cherish the moments - they're the best! assistant: D3:22 [7:55 pm on 9 June, 2023] Melanie: Absolutely, Caroline! I cherish time with family. It's when I really feel alive and happy. user: D3:23 [7:55 pm on 9 June, 2023] Caroline: I 100% agree, Mel. Hanging with loved ones is amazing and brings so much happiness. Those moments really make me thankful. Family is everything.. This node belongs to path locomo / conv-26 / session_3 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 165
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D18:21 [6:55 pm on 20 October, 2023] Melanie: It's a chance to be present and together. We bond over stories, campfires and nature. It's so peaceful waking up to the sound of birds and the smell of fresh air - it always refreshes my soul. assistant: D18:22 [6:55 pm on 20 October, 2023] Caroline: That's so peaceful and calming, Melanie! I can picture waking up to nature. It's great that you get to spend quality, tranquil time with your family. user: D18:23 [6:55 pm on 20 October, 2023] Melanie: Thanks, Caroline! This is a great time. Nature and quality time, can't beat it! assistant: D18:24 [6:55 pm on 20 October, 2023] Caroline: Yeah totally! They're priceless. Lucky you!",
+        "token_estimate": 172
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D18:2 [6:55 pm on 20 October, 2023] Caroline: Oops, sorry 'bout the accident! Must have been traumatizing for you guys. Thank goodness your son's okay. Life sure can be a roller coaster.\n2: D18:3 [6:55 pm on 20 October, 2023] Melanie: Yeah, our trip got off to a bad start. I was really scared when we got into the accident. Thankfully, my son's ok and that was a reminder that life is precious and to cherish our family.\n3: D18:4 [6:55 pm on 20 October, 2023] Caroline: Glad your son is okay, Melanie. Life's unpredictable, but moments like these remind us how important our loved ones are. Family's everything.\n4: D18:5 [6:55 pm on 20 October, 2023] Melanie: Yeah, you're right, Caroline. Family's super important to me. Especially after the accident, I've thought a lot about how much I need them. They mean the world to me and I'm so thankful to have them. Thankfully, they enjoyed the Grand Canyon a lot! Image: a photo of two children standing on a rocky cliff overlooking a canyon\n15: D18:16 [6:55 pm on 20 October, 2023] Caroline: Wow, great pic! Is that recent? Looks like you all had fun!",
+        "token_estimate": 276
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D8:23 [1:51 pm on 15 July, 2023] Caroline: It was awesome, Melanie! Being around people who embrace and back me up is beyond words. It really inspired me. Image: a photo of a group of people sitting on the ground with a dog\n4: D8:25 [1:51 pm on 15 July, 2023] Caroline: Realizing I can be me without fear and having the courage to transition was the best part. It's so freeing to express myself authentically and have people back me up. Image: a photo of a teepee with a teddy bear and pillows\n10: D8:31 [1:51 pm on 15 July, 2023] Caroline: Wow, Mel, family love and support is the best!\n14: D8:35 [1:51 pm on 15 July, 2023] Caroline: Wow, Mel, that sounds awesome! Exploring nature and family time is so special.\n18: D8:39 [1:51 pm on 15 July, 2023] Caroline: No worries, Mel! Your friendship means so much to me. Enjoy your day!",
+        "token_estimate": 209
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "4: D8:5 [1:51 pm on 15 July, 2023] Caroline: Aww, that's so sweet! That cup is so cute. It's awesome to see how kids show their personalities through art. What other creative projects do you do with them, besides pottery?\n8: D8:9 [1:51 pm on 15 July, 2023] Caroline: That photo is stunning! So glad you bonded over our love of nature. Last Friday I went to a council meeting for adoption. It was inspiring and emotional - so many people wanted to create loving homes for children in need. It made me even more determined to adopt.\n12: D8:13 [1:51 pm on 15 July, 2023] Caroline: It must have been special at your wedding. I wish I had known you back then!",
+        "token_estimate": 164
+      }
+    ],
+    "used_context_tokens": 5632
+  },
+  {
+    "answer": "4 years",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 19,
+    "answer_hit": true,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-620",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 99.847,
+    "prediction": "4 years",
+    "question": "How long has Caroline had her current group of friends for?",
+    "question_id": "locomo-0-10",
+    "question_type": "current_state",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.8,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_6. Rich overview: user: D6:9 [8:18 pm on 6 July, 2023] Caroline: I've got lots of kids' books- classics, stories from different cultures, educational books, all of that. What's a favorite book you remember from your childhood? assistant: D6:10 [8:18 pm on 6 July, 2023] Melanie: I loved reading \"Charlotte's Web\" as a kid. It was so cool seeing how friendship and compassion can make a difference. Image: a photo of a book cover with a picture of a girl and a cat user: D6:11 [8:18 pm on 6 July, 2023] Caroline: Wow, that's great! It sure shows how important friendship and compassion are. It's made me appreciate how lucky I am to have my friends and family helping with my transition. They make all the difference. We even had a picnic last week! Image: a photo of a group of women sitting on a blanket in a park assistant: D6:12 [8:18 pm on 6 July, 2023] Melanie: That's a gorgeous photo, Caroline! Wow, the love around you is awesome. How have your friends and fam been helping you out with your transition? user: D6:13 [8:18 pm on 6 July, 2023] Caroline: Thanks, Melanie! This support network has been amazing. They've been there for me every step of t...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.8,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset\n2: D16:3 [12:09 am on 13 September, 2023] Caroline: Melanie, that photo's amazing! I love all the yellow leaves, it looks so cozy. That sounds like fun! Seeing how excited they get for the little things is awesome, it's so contagious.\n4: D16:5 [12:09 am on 13 September, 2023] Caroline: I'm inspired seeing my work make a difference for the LGBTQ+ community. Knowing I'm helping create a more loving world is amazing. I'm really thankful for my friends, family and mentors' support. It inspires me to keep making art, too. Image: a photo of a painting of a heart on a table\n6: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?\n8: D16:9 [12:09 am on 13 September, 2023] Caroline: Melanie, those bowls are amazing! They each have such cool designs. I love that you chose pottery for your art. Painting and drawing have helped me express my feelings and explore my gender identity. Creating art was really important to me during my transition - it helped me understand and accept myself. I'm so grateful.\n11: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?\n12: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am.\n13: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?\n15: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this! It brings me so much happiness. Image: a photo of a sign posted on a door stating that someone is not being able to leave",
+        "token_estimate": 638
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.7,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_16. Rich overview: user: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am. assistant: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships? user: D16:15 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie. It's definitely changed them. Some close friends kept supporting me, but a few weren't able to handle it. It wasn't easy, but I'm much happier being around those who accept and love me. Now my relationships feel more genuine. assistant: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this!...",
+        "token_estimate": 301
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D12:15 [1:50 pm on 17 August, 2023] Caroline: I'm always here for you, Mel! We had a blast last year at the Pride fest. Those supportive friends definitely make everything worth it! Image: a photo of a group of people walking down a street with balloons",
+        "token_estimate": 65
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D5:1 [1:36 pm on 3 July, 2023] Caroline: Since we last spoke, some big things have happened. Last week I went to an LGBTQ+ pride parade. Everyone was so happy and it made me feel like I belonged. It showed me how much our community has grown, it was amazing! assistant: D5:2 [1:36 pm on 3 July, 2023] Melanie: Wow, Caroline, sounds like the parade was an awesome experience! It's great to see the love and support for the LGBTQ+ community. Congrats! Has this experience influenced your goals at all? user: D5:3 [1:36 pm on 3 July, 2023] Caroline: Thanks, Mel! It really motivated me for sure. Talking to the community made me want to use my story to help others too - I'm still thinking that...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D15:3 [3:19 pm on 28 August, 2023] Caroline: Wow, your kids had so much fun at the park! Being outdoors can be really enjoyable. A lot happened since our last chat. I've been chasing my ambitions and had the chance to volunteer at an LGBTQ+ youth center. It was so gratifying to talk to similar young people. It made me remember how essential it is to be kind and show support.\n3: D15:4 [3:19 pm on 28 August, 2023] Melanie: That sounds great, Caroline. Volunteering is a great way to meet people. Creating community and supporting each other, especially for kids, is really important. How did you feel about your time there? Anything that sticks out to you?\n8: D15:9 [3:19 pm on 28 August, 2023] Caroline: I'm definitely carrying on volunteering at the youth center. It's an important part of my life and I've made strong connections with people there. I really believe in community and supporting each other. So I wanna keep making a difference.",
+        "token_estimate": 238
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D12:1 [1:50 pm on 17 August, 2023] Caroline: Hey Mel! How're ya doin'? Recently, I had a not-so-great experience on a hike. I ran into a group of religious conservatives who said something that really upset me. It made me think how much work we still have to do for LGBTQ rights. It's been so helpful to have people around me who accept and support me, so I know I'll be ok! assistant: D12:2 [1:50 pm on 17 August, 2023] Melanie: Hey Caroline, sorry about the hike. It sucks when people are so closed-minded. Strong support really helps. FYI, I finished another pottery project - want to see a pic? user: D12:3 [1:50 pm on 17 August, 2023] Caroline: Sure thing, Melanie! Can't wait to see yo...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family.\n2: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie! It's beautiful! It really brings home how much love's in families - both blood and the ones we choose. I hope to build my own family and put a roof over kids who haven't had that before. For me, adoption is a way of giving back and showing love and acceptance.\n4: D19:5 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. My dream is to create a safe and loving home for these kids. Love and acceptance should be everyone's right, and I want them to experience it.\n7: D19:8 [9:55 am on 22 October, 2023] Melanie: That must have been tough for you, Caroline. Respect for finding acceptance and helping others with what you've been through. You're so strong and inspiring.\n10: D19:11 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. Your support really means a lot. This journey has been amazing and I'm grateful I get to share it and help others with theirs. It's a real gift. Image: a photo of a clock with a green and yellow design on it\n11: D19:12 [9:55 am on 22 October, 2023] Melanie: Absolutely! I'm so glad we can always be there for each other.\n13: D19:14 [9:55 am on 22 October, 2023] Melanie: Glad you had support. Being yourself is great!",
+        "token_estimate": 360
+      }
+    ],
+    "used_context_tokens": 9306
+  },
+  {
+    "answer": "Sweden",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 33,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.142286,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599147-168",
+    "evidence_hit": true,
+    "failure_reason": "reader_miss_with_evidence",
+    "latency_ms": 78.509,
+    "prediction": "Rich overview: user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions.",
+    "question": "Where did Caroline move from 4 years ago?",
+    "question_id": "locomo-0-11",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:1 [7:55 pm on 9 June, 2023] Caroline: Hey Melanie! How's it going? I wanted to tell you about my school event last week. It was awesome! I talked about my transgender journey and encouraged students to get involved in the LGBTQ community. It was great to see their reactions. It made me reflect on how far I've come since I started transitioning three years ago. assistant: D3:2 [7:55 pm on 9 June, 2023] Melanie: Hey Caroline! Great to hear from you. Sounds like your event was amazing! I'm so proud of you for spreading awareness and getting others involved in the LGBTQ community. You've come a long way since your transition - keep on inspiring people with your strength and courage! ...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "12: D3:13 [7:55 pm on 9 June, 2023] Caroline: Yeah, I'm really lucky to have them. They've been there through everything, I've known these friends for 4 years, since I moved from my home country. Their love and help have been so important especially after that tough breakup. I'm super thankful. Who supports you, Mel?",
+        "token_estimate": 80
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:13 [7:55 pm on 9 June, 2023] Caroline: Yeah, I'm really lucky to have them. They've been there through everything, I've known these friends for 4 years, since I moved from my home country. Their love and help have been so important especially after that tough breakup. I'm super thankful. Who supports you, Mel?",
+        "token_estimate": 80
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.42857142857142855,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.42857142857142855,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_15. Rich overview: user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assistant: D15:22 [3:19 pm on 28 August, 2023] Melanie: Music's amazing, isn't it? Any songs that have deep meaning for you? user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made. assistant: D15:24 [3:19 pm on 28 August, 2023] Melanie: That's a gorgeous song, Caroline. It really fits with your journey and your determination to make a difference. Music can be so inspiring and uplifting. Image: a photo of a piece of paper with a drawing of a man playing a piano user: D15:25 [3:19 pm on 28 August, 2023] Caroline: Thanks, Melanie! Appreciate it. You play any instruments? assistant: D15:26 [3:19 pm on 28 August, 2023] Melanie: Yeah, I play clarinet! Started when I was young and it's been great. Expression of myself and a way to relax. Im...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.42857142857142855,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "locomo / conv-26 / session_15 :: user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assista...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.42857142857142855,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig",
+        "token_estimate": 103
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.42857142857142855,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig assistant: D13:2 [3:31 pm on 23 August, 2023] Melanie: Caroline, congrats! So proud of you for taking this step. How does it feel? Also, do you have any pets? user: D13:3 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! Exciting but kinda nerve-wracking. Parenting's such a big res...",
+        "token_estimate": 175
+      }
+    ],
+    "used_context_tokens": 5048
+  },
+  {
+    "answer": "10 years ago",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 11,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 1.0,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599147-620",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 84.54,
+    "prediction": "A friend made it for my 18th birthday ten years ago.",
+    "question": "How long ago was Caroline's 18th birthday?",
+    "question_id": "locomo-0-12",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.7142857142857143,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:1 [7:55 pm on 9 June, 2023] Caroline: Hey Melanie! How's it going? I wanted to tell you about my school event last week. It was awesome! I talked about my transgender journey and encouraged students to get involved in the LGBTQ community. It was great to see their reactions. It made me reflect on how far I've come since I started transitioning three years ago. assistant: D3:2 [7:55 pm on 9 June, 2023] Melanie: Hey Caroline! Great to hear from you. Sounds like your event was amazing! I'm so proud of you for spreading awareness and getting others involved in the LGBTQ community. You've come a long way since your transition - keep on inspiring people with your strength and courage! ...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:1 [4:33 pm on 12 July, 2023] Caroline: Hey Mel, great to chat with you again! So much has happened since we last spoke - I went to an LGBTQ conference two days ago and it was really special. I got the chance to meet and connect with people who've gone through similar journeys. It was such a welcoming environment and I felt totally accepted. I'm really thankful for this amazing community - it's shown me how important it is to fight for trans rights and spread awareness. assistant: D7:2 [4:33 pm on 12 July, 2023] Melanie: Wow, Caroline, that sounds awesome! So glad you felt accepted and supported. Events like these are great for reminding us of how strong community can be! user: D7...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset assistant: D16:2 [12:09 am on 13 September, 2023] Melanie: Hey Caroline! It's so good to hear from you! That pic is so beautiful, the colors really pop. Biking sounds like a great way to get out in nature. We went camping with the kids a few weeks ago, had a blast exploring the forest and hiking. Nature can be so refreshing for your soul. Any plans coming up? Image: a photo of a dirt road sur...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset\n2: D16:3 [12:09 am on 13 September, 2023] Caroline: Melanie, that photo's amazing! I love all the yellow leaves, it looks so cozy. That sounds like fun! Seeing how excited they get for the little things is awesome, it's so contagious.\n4: D16:5 [12:09 am on 13 September, 2023] Caroline: I'm inspired seeing my work make a difference for the LGBTQ+ community. Knowing I'm helping create a more loving world is amazing. I'm really thankful for my friends, family and mentors' support. It inspires me to keep making art, too. Image: a photo of a painting of a heart on a table\n6: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?\n8: D16:9 [12:09 am on 13 September, 2023] Caroline: Melanie, those bowls are amazing! They each have such cool designs. I love that you chose pottery for your art. Painting and drawing have helped me express my feelings and explore my gender identity. Creating art was really important to me during my transition - it helped me understand and accept myself. I'm so grateful.\n11: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?\n12: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am.\n13: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?\n15: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this! It brings me so much happiness. Image: a photo of a sign posted on a door stating that someone is not being able to leave",
+        "token_estimate": 638
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D3:1 [7:55 pm on 9 June, 2023] Caroline: Hey Melanie! How's it going? I wanted to tell you about my school event last week. It was awesome! I talked about my transgender journey and encouraged students to get involved in the LGBTQ community. It was great to see their reactions. It made me reflect on how far I've come since I started transitioning three years ago.",
+        "token_estimate": 93
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D17:4 [10:31 am on 13 October, 2023] Melanie: Yeah, a buddy of mine adopted last year. It was a long process, but now they're super happy with their new kid. Makes me feel like maybe I should do it too!\n4: D17:5 [10:31 am on 13 October, 2023] Caroline: That's great news about your friend! It can be tough, but so worth it. It's a great way to add to your family and show your love. If you ever do it, let me know — I'd love to help in any way I can.\n6: D17:7 [10:31 am on 13 October, 2023] Caroline: Yep! Do your research and find an adoption agency or lawyer. They'll help with the process and provide all the info. Gather documents like references, financial info and medical checks. Don't forget to prepare emotionally, since the wait can be hard. It's all worth it in the end though.\n8: D17:9 [10:31 am on 13 October, 2023] Caroline: Oh man, sorry to hear that, Melanie. I hope you're okay. Pottery's a great way to relax, so it must have been tough taking a break. Need any help?\n13: D17:14 [10:31 am on 13 October, 2023] Melanie: Thanks, Caroline! I painted it because it was calming. I've done an abstract painting too, take a look! I love how art lets us get our emotions out. Image: a photo of a painting on a wall with a blue background\n16: D17:17 [10:31 am on 13 October, 2023] Caroline: Yeah, it's very calming. It's awesome how art can show emotions. By the way, I went to a poetry reading last Fri - it was really powerful! Ever been to one? Image: a photo of a poster on a wall in a classroom",
+        "token_estimate": 379
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D3:4 [7:55 pm on 9 June, 2023] Melanie: Wow, Caroline, you're doing an awesome job of inspiring others with your journey. It's great to be part of it and see how you're positively affecting so many. Talking about inclusivity and acceptance is crucial, and you're so brave to speak up for the trans community. Keep up the great work!\n5: D3:6 [7:55 pm on 9 June, 2023] Melanie: Yeah, Caroline! It takes courage to talk about our own stories. But it's in these vulnerable moments that we bond and understand each other. We all have our different paths, but if we share them, we show people that they're not alone. Our stories can be so inspiring and encouraging to others who are facing the same challenges. Thank you for using your voice to create love, acceptance, and hope. You're doing amazing!\n7: D3:8 [7:55 pm on 9 June, 2023] Melanie: Thanks, Caroline, for letting me join your journey. I'm so proud to be part of the difference you're making. Let's keep motivating and helping each other out as we journey through life. We can make a real impact together!\n9: D3:10 [7:55 pm on 9 June, 2023] Melanie: Yes, Caroline! We can do it. Your courage is inspiring. I want to be couragous for my family- they motivate me and give me love. What motivates you?\n11: D3:12 [7:55 pm on 9 June, 2023] Melanie: Wow, that photo is great! How long have you had such a great support system?",
+        "token_estimate": 345
+      }
+    ],
+    "used_context_tokens": 7456
+  },
+  {
+    "answer": "counseling or mental health for Transgender people",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 25,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.8,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599148-620",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 82.694,
+    "prediction": "So, I started looking into counseling and mental health career options, so I could help other people on their own journeys like I was helped.",
+    "question": "What career path has Caroline decided to persue?",
+    "question_id": "locomo-0-13",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_event",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made.",
+        "token_estimate": 69
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assistant: D15:22 [3:19 pm on 28 August, 2023] Melanie: Music's amazing, isn't it? Any songs that have deep meaning for you? user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made. assistant: D15:24 [3:19 pm on 28 August, 2023] Melanie: That's a gorgeous song, Caroline. It really fits with your journe...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_16. Rich overview: user: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am. assistant: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships? user: D16:15 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie. It's definitely changed them. Some close friends kept supporting me, but a few weren't able to handle it. It wasn't easy, but I'm much happier being around those who accept and love me. Now my relationships feel more genuine. assistant: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this!...",
+        "token_estimate": 301
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D16:1 [12:09 am on 13 September, 2023] Caroline: Hey Mel, long time no chat! I had a wicked day out with the gang last weekend - we went biking and saw some pretty cool stuff. It was so refreshing, and the pic I'm sending is just stunning, eh? Image: a photo of a beach with a fence and a sunset\n2: D16:3 [12:09 am on 13 September, 2023] Caroline: Melanie, that photo's amazing! I love all the yellow leaves, it looks so cozy. That sounds like fun! Seeing how excited they get for the little things is awesome, it's so contagious.\n4: D16:5 [12:09 am on 13 September, 2023] Caroline: I'm inspired seeing my work make a difference for the LGBTQ+ community. Knowing I'm helping create a more loving world is amazing. I'm really thankful for my friends, family and mentors' support. It inspires me to keep making art, too. Image: a photo of a painting of a heart on a table\n6: D16:7 [12:09 am on 13 September, 2023] Caroline: Since I was 17 or so. I find it soempowering and cathartic. It's amazing how art can show things that are hard to put into words. How long have you been into art?\n8: D16:9 [12:09 am on 13 September, 2023] Caroline: Melanie, those bowls are amazing! They each have such cool designs. I love that you chose pottery for your art. Painting and drawing have helped me express my feelings and explore my gender identity. Creating art was really important to me during my transition - it helped me understand and accept myself. I'm so grateful.\n11: D16:12 [12:09 am on 13 September, 2023] Melanie: Wow, Caroline! This painting is awesome. Love the red and blue. What gave you the idea?\n12: D16:13 [12:09 am on 13 September, 2023] Caroline: Thanks, Melanie! I made this painting to show my path as a trans woman. The red and blue are for the binary gender system, and the mix of colors means smashing that rigid thinking. It's a reminder to love my authentic self - it's taken a while to get here but I'm finally proud of who I am.\n13: D16:14 [12:09 am on 13 September, 2023] Melanie: Wow, Caro, that painting is amazing! You've made so much progress. I'm super proud of you for being your true self. What effect has the journey had on your relationships?\n15: D16:16 [12:09 am on 13 September, 2023] Melanie: Caroline, it's got to be tough dealing with those changes. Glad you've found people who uplift and accept you! Here's to a good time at the café last weekend - they even had thoughtful signs like this! It brings me so much happiness. Image: a photo of a sign posted on a door stating that someone is not being able to leave",
+        "token_estimate": 638
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_15. Rich overview: user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assistant: D15:22 [3:19 pm on 28 August, 2023] Melanie: Music's amazing, isn't it? Any songs that have deep meaning for you? user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made. assistant: D15:24 [3:19 pm on 28 August, 2023] Melanie: That's a gorgeous song, Caroline. It really fits with your journey and your determination to make a difference. Music can be so inspiring and uplifting. Image: a photo of a piece of paper with a drawing of a man playing a piano user: D15:25 [3:19 pm on 28 August, 2023] Caroline: Thanks, Melanie! Appreciate it. You play any instruments? assistant: D15:26 [3:19 pm on 28 August, 2023] Melanie: Yeah, I play clarinet! Started when I was young and it's been great. Expression of myself and a way to relax. Im...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_4. Rich overview: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career. I want to help people who have gone through the same things as me. Image: a photo of a book shelf with many books on it assistant: D4:12 [10:37 am on 27 June, 2023] Melanie: Sounds great! What kind of counseling and mental health services do you want to persue? user: D4:13 [10:37 am on 27 June, 2023] Caroline: I'm still figuring out the details, but I'm thinking of working with trans people, helping them accept themselves and supporting their mental health. Last Friday, I went to an LGBTQ+ counseling workshop and it was really enlightening. They talked about different therapeutic methods and how to best work with trans people. Seeing how passionate these pros were about making a safe space for people like me was amazing. assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling? user: D4:15 [10:37 am on 27 June, 2023] Caroline: Thanks, Melanie. ...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5714285714285714,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_7. Rich overview: user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user: D7:23 [4:33 pm on 12 July, 2023] Caroline: Cool, Melanie! Running can really boost your mood. Keep it up! assistant: D7:24 [4:33 pm on 12 July, 2023] Melanie: Thanks, Caroline! This has been great for my mental health. I'm gonna keep it up. user: D7:25 [4:33 pm on 12 July, 2023] Caroline: Awesome, Melanie! Mental health's a priority, so make sure you take care of yourself. assistant: D7:26 [4:33 pm on 12 July, 2023] Melanie: Caroline, thanks! Mental health is important to me, and it's made such an improvement! user: D7:27 [4:33 pm on 12 July, 2023] Caroline: Glad it helped ya, Melanie!. This node belongs to path locomo / conv-26 / session_7 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 251
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.5085714285714286,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user...",
+        "token_estimate": 55
+      }
+    ],
+    "used_context_tokens": 8024
+  },
+  {
+    "answer": "Likely no",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 23,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.098333,
+    "category": 3,
+    "context_pack_id": "cpp-native-1782599148-620",
+    "evidence_hit": true,
+    "failure_reason": "reader_miss_with_evidence",
+    "latency_ms": 70.887,
+    "prediction": "Rich overview: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career.",
+    "question": "Would Caroline still want to pursue counseling as a career if she hadn't received support growing up?",
+    "question_id": "locomo-0-14",
+    "question_type": "current_state",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.6666666666666666,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_4. Rich overview: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career. I want to help people who have gone through the same things as me. Image: a photo of a book shelf with many books on it assistant: D4:12 [10:37 am on 27 June, 2023] Melanie: Sounds great! What kind of counseling and mental health services do you want to persue? user: D4:13 [10:37 am on 27 June, 2023] Caroline: I'm still figuring out the details, but I'm thinking of working with trans people, helping them accept themselves and supporting their mental health. Last Friday, I went to an LGBTQ+ counseling workshop and it was really enlightening. They talked about different therapeutic methods and how to best work with trans people. Seeing how passionate these pros were about making a safe space for people like me was amazing. assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling? user: D4:15 [10:37 am on 27 June, 2023] Caroline: Thanks, Melanie. ...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D7:1 [4:33 pm on 12 July, 2023] Caroline: Hey Mel, great to chat with you again! So much has happened since we last spoke - I went to an LGBTQ conference two days ago and it was really special. I got the chance to meet and connect with people who've gone through similar journeys. It was such a welcoming environment and I felt totally accepted. I'm really thankful for this amazing community - it's shown me how important it is to fight for trans rights and spread awareness.\n4: D7:5 [4:33 pm on 12 July, 2023] Caroline: Thanks, Mell! I'm still looking into counseling and mental health jobs. It's important to me that people have someone to talk to, and I want to help make that happen.\n6: D7:7 [4:33 pm on 12 July, 2023] Caroline: I struggled with mental health, and support I got was really helpful. It made me realize how important it is for others to have a support system. So, I started looking into counseling and mental health career options, so I could help other people on their own journeys like I was helped.",
+        "token_estimate": 256
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.4166666666666667,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D12:1 [1:50 pm on 17 August, 2023] Caroline: Hey Mel! How're ya doin'? Recently, I had a not-so-great experience on a hike. I ran into a group of religious conservatives who said something that really upset me. It made me think how much work we still have to do for LGBTQ rights. It's been so helpful to have people around me who accept and support me, so I know I'll be ok! assistant: D12:2 [1:50 pm on 17 August, 2023] Melanie: Hey Caroline, sorry about the hike. It sucks when people are so closed-minded. Strong support really helps. FYI, I finished another pottery project - want to see a pic? user: D12:3 [1:50 pm on 17 August, 2023] Caroline: Sure thing, Melanie! Can't wait to see yo...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.4166666666666667,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career. I want to help people who have gone through the same things as me. Image: a photo of a book shelf with many books on it",
+        "token_estimate": 61
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D5:3 [1:36 pm on 3 July, 2023] Caroline: Thanks, Mel! It really motivated me for sure. Talking to the community made me want to use my story to help others too - I'm still thinking that counseling and mental health is the way to go. I'm super excited to give back.",
+        "token_estimate": 68
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D12:2 [1:50 pm on 17 August, 2023] Melanie: Hey Caroline, sorry about the hike. It sucks when people are so closed-minded. Strong support really helps. FYI, I finished another pottery project - want to see a pic?",
+        "token_estimate": 56
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "locomo / conv-26 / session_4 :: user: D4:11 [10:37 am on 27 June, 2023] Caroline: Lately, I've been looking into counseling and mental health as a career. I want to help people who have gone through the same things as...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:7 [4:33 pm on 12 July, 2023] Caroline: I struggled with mental health, and support I got was really helpful. It made me realize how important it is for others to have a support system. So, I started looking into counseling and mental health career options, so I could help other people on their own journeys like I was helped.",
+        "token_estimate": 84
+      }
+    ],
+    "used_context_tokens": 7327
+  },
+  {
+    "answer": "pottery, camping, painting, swimming",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 25,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.75,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599148-620",
+    "evidence_hit": true,
+    "failure_reason": "",
+    "latency_ms": 76.638,
+    "prediction": "Image: a photo of a painting of a woman with a blue face assistant: D13:12 [3:31 pm on 23 August, 2023] Melanie: Caroline, that's great!",
+    "question": "What activities does Melanie partake in?",
+    "question_id": "locomo-0-15",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D13:1 [3:31 pm on 23 August, 2023] Caroline: Hi Melanie! Hope you're doing good. Guess what I did this week? I took the first step towards becoming a mom - I applied to adoption agencies! It's a big decision, but I think I'm ready to give all my love to a child. I got lots of help from this adoption advice/assistance group I attended. It was great! Image: a photo of a sign with a picture of a guinea pig assistant: D13:2 [3:31 pm on 23 August, 2023] Melanie: Caroline, congrats! So proud of you for taking this step. How does it feel? Also, do you have any pets? user: D13:3 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! Exciting but kinda nerve-wracking. Parenting's such a big res...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D11:2 [2:24 pm on 14 August, 2023] Caroline: Wow, sounds wonderful! Your love for your kids is so awesome. What concert was it? The advocacy event was a cool experience - so much love and support, amazing! Image: a photo of a poster for a concert with a picture of a man\n2: D11:3 [2:24 pm on 14 August, 2023] Melanie: Thanks, Caroline! It was Matt Patterson, he is so talented! His voice and songs were amazing. What's up with you? Anything interesting going on?\n3: D11:4 [2:24 pm on 14 August, 2023] Caroline: Wow, Mel, glad you had a blast at the concert. A lot's happened since we talked. I went to a pride parade last Friday and it was awesome - so much energy and love everywhere. Really made me proud and reminded me how important it is to keep standing up for equality.\n6: D11:7 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline! That sounds awesome. This pic's from last night - looks like everyone was having a blast! Reminds me it's important to cultivate a loving and accepting environment for our kids. How do you stay inclusive in your work as an artist? Image: a photo of a group of people sitting on chairs watching a band\n7: D11:8 [2:24 pm on 14 August, 2023] Caroline: That pic is cool! Representing inclusivity and diversity in my art is important to me. I also use it to speak up for the LGBTQ+ community and push for acceptance. Here's a recent painting! Image: a photo of a painting with a painting brush and paint on it\n9: D11:10 [2:24 pm on 14 August, 2023] Caroline: My art is about expressing my trans experience. It's my way of showing my story and helping people understand the trans community. Image: a photo of a painting of a woman with a cow in her lap\n11: D11:12 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. Here's one- 'Embracing Identity' is all about finding comfort and love in being yourself. The woman in the painting stands for the journey of acceptance. My aim was to show warmth, love and self-acceptance. Image: a photo of a painting of a woman with a red shirt\n12: D11:13 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's gorgeous! I love the self-acceptance and love theme. How does art help you with your self-discovery and acceptance journey? Image: a photo of a woman is making a vase on a wheel\n14: D11:15 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's so cool! Art can be so healing and a way to really connect with who you are. It's awesome that beauty can be found in the imperfections. We're all individual and wonderfully imperfect. Thanks for sharing it with me!\n15: D11:16 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. It means a lot to share this with you.",
+        "token_estimate": 666
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_17. Rich overview: user: D17:21 [10:31 am on 13 October, 2023] Caroline: The room was electric with energy and support! The posters were amazing, so much pride and strength! It inspired me to make some art. Image: a photo of a drawing of a woman in a dress assistant: D17:22 [10:31 am on 13 October, 2023] Melanie: That's awesome, Caroline! You drew it? What does it mean to you? user: D17:23 [10:31 am on 13 October, 2023] Caroline: Thanks, Melanie! Yeah, I drew it. It stands for freedom and being real. It's like a nudge to always stay true to myself and embrace my womanhood. assistant: D17:24 [10:31 am on 13 October, 2023] Melanie: I love it. Showing off our true selves is the best thing ever. user: D17:25 [10:31 am on 13 October, 2023] Caroline: Yep, Melanie! Being ourselves is such a great feeling. It's an ongoing adventure of learning and growing. assistant: D17:26 [10:31 am on 13 October, 2023] Melanie: Yep, Caroline. Life's about learning and exploring. Glad we can be on this trip together.. This node belongs to path locomo / conv-26 / session_17 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 296
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D17:22 [10:31 am on 13 October, 2023] Melanie: That's awesome, Caroline! You drew it? What does it mean to you?",
+        "token_estimate": 31
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D17:21 [10:31 am on 13 October, 2023] Caroline: The room was electric with energy and support! The posters were amazing, so much pride and strength! It inspired me to make some art. Image: a photo of a drawing of a woman in a dress assistant: D17:22 [10:31 am on 13 October, 2023] Melanie: That's awesome, Caroline! You drew it? What does it mean to you? user: D17:23 [10:31 am on 13 October, 2023] Caroline: Thanks, Melanie! Yeah, I drew it. It stands for freedom and being real. It's like a nudge to always stay true to myself and embrace my womanhood. assistant: D17:24 [10:31 am on 13 October, 2023] Melanie: I love it. Showing off our true selves is the best thing ever. user: D17:25 [1...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.6,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_13. Rich overview: user: D13:11 [3:31 pm on 23 August, 2023] Caroline: Painting's great for expressing myself. I love creating art! Here's a recent self-portrait I made last week. Image: a photo of a painting of a woman with a blue face assistant: D13:12 [3:31 pm on 23 August, 2023] Melanie: Caroline, that's great! The blue's really powerful, huh? How'd you feel while painting it? user: D13:13 [3:31 pm on 23 August, 2023] Caroline: Thanks, Mel! I felt liberated and empowered doing it. Painting helps me explore my identity and be true to myself. It's definitely therapeutic. assistant: D13:14 [3:31 pm on 23 August, 2023] Melanie: Wow, Caroline, that's great! Art's awesome for showing us who we really are and getting in touch with ourselves. What else helps you out? user: D13:15 [3:31 pm on 23 August, 2023] Caroline: Thanks, Melanie. Art gives me a sense of freedom, but so does having supportive people around, promoting LGBTQ rights and being true to myself. I want to live authentically and help others to do the same. assistant: D13:16 [3:31 pm on 23 August, 2023] Melanie: Wow, Caroline! That's amazing. You really care about being real and he...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.48000000000000004,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D7:21 [4:33 pm on 12 July, 2023] Caroline: Wow! What got you into running? assistant: D7:22 [4:33 pm on 12 July, 2023] Melanie: I've been running farther to de-stress, which has been great for my headspace. user...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.48000000000000004,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "standing on the beach at sunset user: D10:23 [8:56 pm on 20 July, 2023] Caroline: Wow, Melanie, what a beautiful moment",
+        "token_estimate": 30
+      }
+    ],
+    "used_context_tokens": 5247
+  },
+  {
+    "answer": "2 July 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 28,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.5,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599148-2",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 76.247,
+    "prediction": "Image: a photo of a couple of wooden dolls sitting on top of a table user: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie!",
+    "question": "When did Melanie sign up for a pottery class?",
+    "question_id": "locomo-0-16",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 2,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.2857142857142857,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26. Rich overview: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family. assistant: D19:2 [9:55 am on 22 October, 2023] Melanie: Congrats, Caroline! Adoption sounds awesome. I'm so happy for you. These figurines I bought yesterday remind me of family love. Tell me, what's your vision for the future? Image: a photo of a couple of wooden dolls sitting on top of a table user: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie! It's beautiful! It really brings home how much love's in families - both blood and the ones we choose. I hope to build.... This node belongs to path locomo / conv-26 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 217
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.14285714285714285,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "locomo / conv-26 :: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a ...",
+        "token_estimate": 55
+      }
+    ],
+    "used_context_tokens": 272
+  },
+  {
+    "answer": "July 2023",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 15,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.5,
+    "category": 2,
+    "context_pack_id": "cpp-native-1782599148-2",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 77.399,
+    "prediction": "locomo / conv-26 :: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie!",
+    "question": "When is Caroline going to the transgender conference?",
+    "question_id": "locomo-0-17",
+    "question_type": "date",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 2,
+    "selected_refs": [
+      {
+        "ref_type": "context_summary",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "locomo / conv-26 :: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a ...",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.3333333333333333,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26. Rich overview: user: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family. assistant: D19:2 [9:55 am on 22 October, 2023] Melanie: Congrats, Caroline! Adoption sounds awesome. I'm so happy for you. These figurines I bought yesterday remind me of family love. Tell me, what's your vision for the future? Image: a photo of a couple of wooden dolls sitting on top of a table user: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie! It's beautiful! It really brings home how much love's in families - both blood and the ones we choose. I hope to build.... This node belongs to path locomo / conv-26 and should be used for tree-first retrieval before leaf event/entity recall.",
+        "token_estimate": 217
+      }
+    ],
+    "used_context_tokens": 272
+  },
+  {
+    "answer": "beach, mountains, forest",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 13,
+    "answer_hit": false,
+    "answer_support_hit": false,
+    "answer_support_score": 0.1,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599148-168",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 77.268,
+    "prediction": "3: D15:4 [3:19 pm on 28 August, 2023] Melanie: That sounds great, Caroline.",
+    "question": "Where has Melanie camped?",
+    "question_id": "locomo-0-18",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "2: D15:3 [3:19 pm on 28 August, 2023] Caroline: Wow, your kids had so much fun at the park! Being outdoors can be really enjoyable. A lot happened since our last chat. I've been chasing my ambitions and had the chance to volunteer at an LGBTQ+ youth center. It was so gratifying to talk to similar young people. It made me remember how essential it is to be kind and show support.\n3: D15:4 [3:19 pm on 28 August, 2023] Melanie: That sounds great, Caroline. Volunteering is a great way to meet people. Creating community and supporting each other, especially for kids, is really important. How did you feel about your time there? Anything that sticks out to you?\n8: D15:9 [3:19 pm on 28 August, 2023] Caroline: I'm definitely carrying on volunteering at the youth center. It's an important part of my life and I've made strong connections with people there. I really believe in community and supporting each other. So I wanna keep making a difference.",
+        "token_estimate": 238
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_19. Rich overview: assistant: D19:8 [9:55 am on 22 October, 2023] Melanie: That must have been tough for you, Caroline. Respect for finding acceptance and helping others with what you've been through. You're so strong and inspiring. user: D19:9 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. Transitioning wasn't easy and acceptance wasn't either, but the help I got from friends, family and people I looked up to was invaluable. They boosted me through tough times and helped me find out who I really am. That's why I want to pass that same support to anyone who needs it. Bringing others comfort and helping them grow brings me such joy. assistant: D19:10 [9:55 am on 22 October, 2023] Melanie: I'm so happy for you, Caroline. You found your true self and now you're helping others. You're so inspiring! user: D19:11 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. Your support really means a lot. This journey has been amazing and I'm grateful I get to share it and help others with theirs. It's a real gift. Image: a photo of a clock with a green and yellow design on it assistant: D19:12 [9:55 am on 22 October, 2023] Melanie: Absolu...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "Context node locomo / conv-26 / session_15. Rich overview: user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assistant: D15:22 [3:19 pm on 28 August, 2023] Melanie: Music's amazing, isn't it? Any songs that have deep meaning for you? user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made. assistant: D15:24 [3:19 pm on 28 August, 2023] Melanie: That's a gorgeous song, Caroline. It really fits with your journey and your determination to make a difference. Music can be so inspiring and uplifting. Image: a photo of a piece of paper with a drawing of a man playing a piano user: D15:25 [3:19 pm on 28 August, 2023] Caroline: Thanks, Melanie! Appreciate it. You play any instruments? assistant: D15:26 [3:19 pm on 28 August, 2023] Melanie: Yeah, I play clarinet! Started when I was young and it's been great. Expression of myself and a way to relax. Im...",
+        "token_estimate": 300
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "0: D19:1 [9:55 am on 22 October, 2023] Caroline: Woohoo Melanie! I passed the adoption agency interviews last Friday! I'm so excited and thankful. This is a big move towards my goal of having a family.\n2: D19:3 [9:55 am on 22 October, 2023] Caroline: Thanks so much, Melanie! It's beautiful! It really brings home how much love's in families - both blood and the ones we choose. I hope to build my own family and put a roof over kids who haven't had that before. For me, adoption is a way of giving back and showing love and acceptance.\n4: D19:5 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. My dream is to create a safe and loving home for these kids. Love and acceptance should be everyone's right, and I want them to experience it.\n7: D19:8 [9:55 am on 22 October, 2023] Melanie: That must have been tough for you, Caroline. Respect for finding acceptance and helping others with what you've been through. You're so strong and inspiring.\n10: D19:11 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. Your support really means a lot. This journey has been amazing and I'm grateful I get to share it and help others with theirs. It's a real gift. Image: a photo of a clock with a green and yellow design on it\n11: D19:12 [9:55 am on 22 October, 2023] Melanie: Absolutely! I'm so glad we can always be there for each other.\n13: D19:14 [9:55 am on 22 October, 2023] Melanie: Glad you had support. Being yourself is great!",
+        "token_estimate": 360
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D19:11 [9:55 am on 22 October, 2023] Caroline: Thanks, Melanie. Your support really means a lot. This journey has been amazing and I'm grateful I get to share it and help others with theirs. It's a real gift. Image: a photo of a clock with a green and yellow design on it",
+        "token_estimate": 70
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D15:21 [3:19 pm on 28 August, 2023] Caroline: I started playing acoustic guitar about five years ago; it's been a great way to express myself and escape into my emotions. assistant: D15:22 [3:19 pm on 28 August, 2023] Melanie: Music's amazing, isn't it? Any songs that have deep meaning for you? user: D15:23 [3:19 pm on 28 August, 2023] Caroline: Yeah totally! \"Brave\" by Sara Bareilles has a lot of significance for me. It's about being courageous and fighting for what's right. Whenever I hear this jam, I think about the paths I've taken and the progress I've made. assistant: D15:24 [3:19 pm on 28 August, 2023] Melanie: That's a gorgeous song, Caroline. It really fits with your journe...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.5,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D15:1 [3:19 pm on 28 August, 2023] Caroline: Hey Melanie, great to hear from you. What's been up since we talked? assistant: D15:2 [3:19 pm on 28 August, 2023] Melanie: Hey Caroline! Since we last spoke, I took my kids to a park yesterday. They had fun exploring and playing. It was nice seeing them have a good time outdoors. Time flies, huh? What's new with you? Image: a photo of a playground with a climbing net and a slide user: D15:3 [3:19 pm on 28 August, 2023] Caroline: Wow, your kids had so much fun at the park! Being outdoors can be really enjoyable. A lot happened since our last chat. I've been chasing my ambitions and had the chance to volunteer at an LGBTQ+ youth center. It...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_entity",
+        "score": 0.33,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "matter assistant: D17:20 [10:31 am on 13 October, 2023] Melanie: Wow, sounds amazing",
+        "token_estimate": 21
+      }
+    ],
+    "used_context_tokens": 5109
+  },
+  {
+    "answer": "dinosaurs, nature",
+    "answer_bearing_ref": "",
+    "answer_bearing_tokens": 7,
+    "answer_hit": false,
+    "answer_support_hit": true,
+    "answer_support_score": 0.5,
+    "category": 1,
+    "context_pack_id": "cpp-native-1782599148-454",
+    "evidence_hit": false,
+    "failure_reason": "evidence_miss_with_context",
+    "latency_ms": 83.585,
+    "prediction": "Appreciating nature and sharing it is great.",
+    "question": "What do Melanie's kids like?",
+    "question_id": "locomo-0-19",
+    "question_type": "fact",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "selected_ref_count": 48,
+    "selected_refs": [
+      {
+        "ref_type": "context_segment",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "1: D11:2 [2:24 pm on 14 August, 2023] Caroline: Wow, sounds wonderful! Your love for your kids is so awesome. What concert was it? The advocacy event was a cool experience - so much love and support, amazing! Image: a photo of a poster for a concert with a picture of a man\n2: D11:3 [2:24 pm on 14 August, 2023] Melanie: Thanks, Caroline! It was Matt Patterson, he is so talented! His voice and songs were amazing. What's up with you? Anything interesting going on?\n3: D11:4 [2:24 pm on 14 August, 2023] Caroline: Wow, Mel, glad you had a blast at the concert. A lot's happened since we talked. I went to a pride parade last Friday and it was awesome - so much energy and love everywhere. Really made me proud and reminded me how important it is to keep standing up for equality.\n6: D11:7 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline! That sounds awesome. This pic's from last night - looks like everyone was having a blast! Reminds me it's important to cultivate a loving and accepting environment for our kids. How do you stay inclusive in your work as an artist? Image: a photo of a group of people sitting on chairs watching a band\n7: D11:8 [2:24 pm on 14 August, 2023] Caroline: That pic is cool! Representing inclusivity and diversity in my art is important to me. I also use it to speak up for the LGBTQ+ community and push for acceptance. Here's a recent painting! Image: a photo of a painting with a painting brush and paint on it\n9: D11:10 [2:24 pm on 14 August, 2023] Caroline: My art is about expressing my trans experience. It's my way of showing my story and helping people understand the trans community. Image: a photo of a painting of a woman with a cow in her lap\n11: D11:12 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. Here's one- 'Embracing Identity' is all about finding comfort and love in being yourself. The woman in the painting stands for the journey of acceptance. My aim was to show warmth, love and self-acceptance. Image: a photo of a painting of a woman with a red shirt\n12: D11:13 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's gorgeous! I love the self-acceptance and love theme. How does art help you with your self-discovery and acceptance journey? Image: a photo of a woman is making a vase on a wheel\n14: D11:15 [2:24 pm on 14 August, 2023] Melanie: Wow, Caroline, that's so cool! Art can be so healing and a way to really connect with who you are. It's awesome that beauty can be found in the imperfections. We're all individual and wonderfully imperfect. Thanks for sharing it with me!\n15: D11:16 [2:24 pm on 14 August, 2023] Caroline: Thanks, Melanie. It means a lot to share this with you.",
+        "token_estimate": 666
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 1.0,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D8:1 [1:51 pm on 15 July, 2023] Caroline: Hey Mel, what's up? Been a busy week since we talked. assistant: D8:2 [1:51 pm on 15 July, 2023] Melanie: Hey Caroline, it's been super busy here. So much since we talked! Last Fri I finally took my kids to a pottery workshop. We all made our own pots, it was fun and therapeutic! Image: a photography of a group of children making clay sculptures in a classroom user: D8:3 [1:51 pm on 15 July, 2023] Caroline: Wow, Mel! Sounds like you and the kids had a blast. How'd they like it? assistant: D8:4 [1:51 pm on 15 July, 2023] Melanie: The kids loved it! They were so excited to get their hands dirty and make something with clay. It was special to w...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D17:18 [10:31 am on 13 October, 2023] Melanie: Nope, never been to something like that. What was it about? What made it so special?",
+        "token_estimate": 36
+      },
+      {
+        "ref_type": "context_segment",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "3: D14:24 [1:33 pm on 25 August, 2023] Melanie: That's so nice, Caroline! Art can be in the most unlikely places. Love and acceptance really can be found everywhere. Image: a photo of a person drawing a flower on the ground\n4: D14:25 [1:33 pm on 25 August, 2023] Caroline: Agreed, Mel! Art can be a real mood-booster - I saw someone drawing on the ground the other day and it made me so happy. Creativity sure can lighten someone's day. Image: a photo of a painting of flowers and a watercolor palette\n5: D14:26 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline, that's so nice! The colors are so bright and the flowers are so pretty. Art is such a source of joy.\n8: D14:29 [1:33 pm on 25 August, 2023] Caroline: Yeah, definitely! Drawing flowers is one of my faves. Appreciating nature and sharing it is great. What about you, Mel? What type of art do you love? Image: a photo of a drawing of a flower bouquet with a person holding it\n13: D14:34 [1:33 pm on 25 August, 2023] Melanie: Wow, Caroline, that's awesome! Can't wait to see your show - the LGBTQ community needs more platforms like this!",
+        "token_estimate": 275
+      },
+      {
+        "ref_type": "context_summary",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D9:1 [2:31 pm on 17 July, 2023] Melanie: Hey Caroline, hope all's good! I had a quiet weekend after we went camping with my fam two weekends ago. It was great to unplug and hang with the kids. What've you been up to? Anything fun over the weekend? assistant: D9:2 [2:31 pm on 17 July, 2023] Caroline: Hey Melanie! That sounds great! Last weekend I joined a mentorship program for LGBTQ youth - it's really rewarding to help the community. user: D9:3 [2:31 pm on 17 July, 2023] Melanie: Wow, Caroline! It's great that you're helping out. How's it going? Got any cool experiences you can share? assistant: D9:4 [2:31 pm on 17 July, 2023] Caroline: The mentoring is going great! I've met some a...",
+        "token_estimate": 175
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D15:2 [3:19 pm on 28 August, 2023] Melanie: Hey Caroline! Since we last spoke, I took my kids to a park yesterday. They had fun exploring and playing. It was nice seeing them have a good time outdoors. Time flies, huh? What's new with you? Image: a photo of a playground with a climbing net and a slide",
+        "token_estimate": 79
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "assistant: D4:14 [10:37 am on 27 June, 2023] Melanie: Woah, Caroline, it sounds like you're doing some impressive work. It's inspiring to see your dedication to helping others. What motivated you to pursue counseling?",
+        "token_estimate": 55
+      },
+      {
+        "ref_type": "context_event",
+        "score": 0.75,
+        "selection_reason": "native_cpp_score_pack",
+        "text": "user: D9:17 [2:31 pm on 17 July, 2023] Melanie: Wow, Caroline! It really conveys unity and strength - such a gorgeous piece! My kids and I just finished another painting like our last one.",
+        "token_estimate": 47
+      }
+    ],
+    "used_context_tokens": 6443
+  }
+]
