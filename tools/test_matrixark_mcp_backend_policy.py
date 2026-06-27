@@ -2237,13 +2237,15 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
 
         metrics = client.metrics_snapshot()
 
-        self.assertEqual(metrics["gateway_mode"], "long_lived_stdio_gateway")
-        self.assertEqual(metrics["sdk_mode"], "gateway")
+        self.assertEqual(metrics["gateway_mode"], "rust_proxy")
+        self.assertEqual(metrics["proxy_mode"], "rust_proxy_stdio")
+        self.assertEqual(metrics["sdk_mode"], "proxy")
         self.assertFalse(metrics["process_per_operation_enabled"])
         self.assertEqual(metrics["single_shot_mode"], "debug_only")
         self.assertTrue(metrics["supports_batch_append"])
         self.assertTrue(metrics["supports_prefix_scan"])
         self.assertEqual(metrics["prefix_scan_path"], "rust_proxy_scan_hash")
+        self.assertFalse(metrics["requires_c_sdk_hgetall_for_prefix_scan"])
         self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_append_records")
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
         self.assertFalse(metrics["matrixark_append_uses_per_record_hset"])

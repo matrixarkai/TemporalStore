@@ -790,7 +790,7 @@ For production-like Codex integration:
 
 ```text
 C++ TemporalStore remains the production-performance baseline.
-Rust TemporalStore should use the long-lived gateway/binding path, not process-per-operation CLI mode.
+Rust TemporalStore should use the Rust proxy or Rust direct SDK path, not process-per-operation CLI mode.
 Hooks should fail open to avoid breaking the agent loop.
 MCP API keys should scope account/tenant/user/session access.
 MatrixArk should own extraction and schema mapping; agents send simple messages, files, and hints.

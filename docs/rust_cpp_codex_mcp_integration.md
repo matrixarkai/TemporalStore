@@ -9,7 +9,7 @@ selection chooses which TemporalStore record-log adapter owns persistence.
 | Backend | TemporalStore path | Purpose |
 | --- | --- | --- |
 | `temporalstore-direct` | C++ TemporalStore SDK | C++ thread compatibility path. |
-| `temporalstore-rust` | Long-lived Rust `matrixark_record_log --serve` gateway/proxy | Rust-native Codex integration path. |
+| `temporalstore-rust` | Rust proxy `matrixark_record_log --serve` | Rust-native Codex integration path. |
 | `temporalstore-rust-direct` | Long-lived Rust direct SDK bridge | Embedded/local Rust parity path matching the C++ direct SDK contract. |
 | `local` | JSONL file | Local diagnostic path only. |
 

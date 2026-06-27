@@ -75,7 +75,7 @@ Backend parity expectations:
 - The same monitoring UI must work for `backend=cpp` and `backend=rust`.
 - Health payloads should expose `temporalstore.backend`, `mode`, `storage`, `raft`, and `gateway`.
 - C++ and Rust runs should render the same ContextNode topology, summaries, embeddings, events, entities, resource chunks, skills, ContextPacks, and audit rows.
-- Rust CLI-per-operation is acceptable for debug parity only; production Rust should use a long-lived gateway or binding.
+- Rust CLI-per-operation is acceptable for debug parity only; production Rust should use the Rust proxy or Rust direct SDK.
 - C++ and Rust benchmark runs should emit the same artifact set so LOCOMO, LongMemEval, resource, skill, and scale reports can be compared side by side.
 
 Today, the same pieces are available through the MCP server, Docker OSS scale

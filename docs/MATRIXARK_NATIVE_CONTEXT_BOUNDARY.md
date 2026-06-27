@@ -65,7 +65,7 @@ the batch contains the same sharded record fields plus the optional count update
 
 Backend status:
 
-- Rust long-lived gateway: implements `matrixark_append_records` and
+- Rust proxy/direct SDK: implements `matrixark_append_records` and
   `matrixark_batch_append_records` as first-class ops.
 - C++ direct SDK: exposes `temporalstore_matrixark_batch_append_records` in the
   C ABI, and the Python SDK prefers that symbol when the loaded library provides
