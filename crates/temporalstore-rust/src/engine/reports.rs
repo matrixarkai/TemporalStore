@@ -641,6 +641,8 @@ pub struct StorageManagerCycleReport {
     pub production_parity_slice: bool,
     pub stages: Vec<StorageManagerStageReport>,
     pub plan: StorageLifecyclePlan,
+    #[serde(default)]
+    pub merged_dump_load_policy: StorageMergedDumpLoadPolicyReport,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_report: Option<StorageLifecycleReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -649,6 +651,33 @@ pub struct StorageManagerCycleReport {
     pub compaction_report: Option<ShardCompactionReport>,
     #[serde(default)]
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMergedDumpLoadPolicyReport {
+    pub shard_id: ShardId,
+    pub dry_run: bool,
+    pub production_slice_ready: bool,
+    pub dirty_slot_count: usize,
+    pub selected_dump_slot_count: usize,
+    pub dumped_slot_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub manifest_id: Option<String>,
+    pub manifest_checksum_validated: bool,
+    pub manifest_generation_validated: bool,
+    pub sequence_boundaries_validated: bool,
+    pub page_segments_validated: bool,
+    pub live_page_refs_validated: bool,
+    pub object_lifecycle_validated: bool,
+    pub install_preflight_safe: bool,
+    pub install_marker_policy_checked: bool,
+    pub install_roll_forward_checked: bool,
+    pub page_reclaim_policy_applied: bool,
+    pub compaction_policy_applied: bool,
+    pub index_gc_policy_applied: bool,
+    pub cache_policy_applied: bool,
+    #[serde(default)]
+    pub blockers: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
