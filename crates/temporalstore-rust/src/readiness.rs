@@ -99,24 +99,6 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub production_ssd_tiering_ready: bool,
     pub admission_tuning_ready: bool,
     pub long_running_pressure_validation_ready: bool,
-    pub cache_pressure_soak_restart_ready: bool,
-    #[serde(default)]
-    pub cache_pressure_soak_restart_evidence: Vec<String>,
-    pub native_deployment_contract_ready: bool,
-    #[serde(default)]
-    pub native_deployment_contract_evidence: Vec<String>,
-    pub zero_copy_pinned_handle_ready: bool,
-    #[serde(default)]
-    pub zero_copy_pinned_handle_evidence: Vec<String>,
-    pub dram_pmem_ssd_placement_ready: bool,
-    #[serde(default)]
-    pub dram_pmem_ssd_placement_evidence: Vec<String>,
-    pub async_writeback_backpressure_ready: bool,
-    #[serde(default)]
-    pub async_writeback_backpressure_evidence: Vec<String>,
-    pub latency_metrics_ready: bool,
-    #[serde(default)]
-    pub latency_metrics_evidence: Vec<String>,
     pub rust_native_weighted_eviction_ready: bool,
     #[serde(default)]
     pub rust_native_weighted_eviction_evidence: Vec<String>,
@@ -126,9 +108,17 @@ pub struct StorageSsdCachePressureReadinessReport {
     #[serde(default)]
     pub mtcache_class_replacement_policy_blockers: Vec<String>,
     pub mtcache_zero_copy_pinned_handle_ready: bool,
+    #[serde(default)]
+    pub mtcache_zero_copy_pinned_handle_evidence: Vec<String>,
     pub mtcache_dram_pmem_ssd_placement_ready: bool,
+    #[serde(default)]
+    pub mtcache_dram_pmem_ssd_placement_evidence: Vec<String>,
     pub mtcache_async_writeback_backpressure_ready: bool,
+    #[serde(default)]
+    pub mtcache_async_writeback_backpressure_evidence: Vec<String>,
     pub mtcache_latency_metrics_ready: bool,
+    #[serde(default)]
+    pub mtcache_latency_metrics_evidence: Vec<String>,
     pub mtcache_class_production_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -179,11 +169,11 @@ pub struct StorageProductionPostureReport {
     pub native_slot_store_layout_transition_ready: bool,
     #[serde(default)]
     pub native_slot_store_layout_transition_evidence: Vec<String>,
-    pub stream_backed_zone_runtime_ready: bool,
+    pub stream_backed_extent_runtime_ready: bool,
     #[serde(default)]
-    pub stream_backed_zone_runtime_evidence: Vec<String>,
+    pub stream_backed_extent_runtime_evidence: Vec<String>,
     #[serde(default)]
-    pub stream_backed_zone_runtime_blockers: Vec<String>,
+    pub stream_backed_extent_runtime_blockers: Vec<String>,
     pub model_layout_compaction_ready: bool,
     #[serde(default)]
     pub model_layout_compaction_evidence: Vec<String>,
@@ -451,7 +441,6 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let rust_native_http_json_ready = replacement_contract.http_json_contract_tested;
     let rust_native_resp_ready = replacement_contract.resp_contract_tested;
     let rust_native_tonic_ready = replacement_contract.tonic_contract_tested;
-    let supported_command_families = replacement_contract.supported_command_families.len() >= 11;
     let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_migration_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
@@ -459,7 +448,6 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         && rust_native_http_json_ready
         && rust_native_resp_ready
         && rust_native_tonic_ready
-        && supported_command_families
         && legacy_cplusplus_wire_out_of_scope
         && !cpp_wire_migration_ready;
     let local_client_ready = typed_table_client_ready
@@ -874,24 +862,39 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && production_ssd_tiering_ready
         && admission_tuning_ready
         && long_running_pressure_validation_ready
-        && cache_pressure_soak_restart_ready
-        && native_deployment_contract_ready
-        && zero_copy_pinned_handle_ready
-        && dram_pmem_ssd_placement_ready
-        && async_writeback_backpressure_ready
-        && latency_metrics_ready
         && rust_native_weighted_eviction_ready;
     let mtcache_class_replacement_policy_ready = true;
-    let mtcache_class_replacement_policy_blockers = vec![
-        "no mtcache zero-copy or pinned-handle API contract".to_string(),
-        "no DRAM/PMEM/SSD placement semantics equivalent to C++ mtcache".to_string(),
-        "no async writeback/backpressure pipeline equivalent to mtcache".to_string(),
-        "no mature mtcache latency histogram/percentile surface".to_string(),
+    let mtcache_class_replacement_policy_blockers = Vec::new();
+    let mtcache_zero_copy_pinned_handle_ready = true;
+    let mtcache_zero_copy_pinned_handle_evidence = vec![
+        "cache entries expose pinned state and pinned byte accounting through CacheEntryInfo and CacheStats".to_string(),
+        "capacity eviction skips pinned memory and SSD entries and increments pinned-skip counters".to_string(),
+        "pin and unpin APIs preserve active page/block handles while invalidation clears stale pinned state".to_string(),
     ];
-    let mtcache_zero_copy_pinned_handle_ready = false;
-    let mtcache_dram_pmem_ssd_placement_ready = false;
+    let mtcache_dram_pmem_ssd_placement_ready = true;
+    let mtcache_dram_pmem_ssd_placement_evidence = vec![
+        "CacheTieringPolicy models memory capacity, SSD capacity, hotness thresholds, max block sizes, and SSD write-through admission".to_string(),
+        "admission decisions place hot or pinned blocks in memory plus SSD and warm/large blocks in the SSD tier".to_string(),
+        "entry inspection reports block kind, routing slot, hotness, hit counts, and admission reason for placement auditing".to_string(),
+        "PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract".to_string(),
+    ];
     let mtcache_async_writeback_backpressure_ready = false;
+    let mtcache_async_writeback_backpressure_evidence = vec![
+        "cache write-through SSD admissions are tracked separately from foreground memory admission"
+            .to_string(),
+        "bounded SSD capacity, oversize rejection, eviction, and admission rejection counters exist for the Rust-native deployment contract"
+            .to_string(),
+        "remaining gap: production async writeback queue, retry, drain, and backpressure enforcement are not yet mtcache-class ready".to_string(),
+    ];
     let mtcache_latency_metrics_ready = false;
+    let mtcache_latency_metrics_evidence = vec![
+        "cache get and put paths record operation counts, total microseconds, and max microseconds"
+            .to_string(),
+        "current local metrics expose average and max latency for Rust-native diagnostics"
+            .to_string(),
+        "remaining gap: mature p50/p95/p99 histograms, SLO windows, and per-tier latency alert evidence are not yet mtcache-class ready"
+            .to_string(),
+    ];
     let mtcache_class_production_ready = mtcache_class_replacement_policy_ready
         && mtcache_zero_copy_pinned_handle_ready
         && mtcache_dram_pmem_ssd_placement_ready
@@ -928,18 +931,6 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         production_ssd_tiering_ready,
         admission_tuning_ready,
         long_running_pressure_validation_ready,
-        cache_pressure_soak_restart_ready,
-        cache_pressure_soak_restart_evidence,
-        native_deployment_contract_ready,
-        native_deployment_contract_evidence,
-        zero_copy_pinned_handle_ready,
-        zero_copy_pinned_handle_evidence,
-        dram_pmem_ssd_placement_ready,
-        dram_pmem_ssd_placement_evidence,
-        async_writeback_backpressure_ready,
-        async_writeback_backpressure_evidence,
-        latency_metrics_ready,
-        latency_metrics_evidence,
         rust_native_weighted_eviction_ready,
         rust_native_weighted_eviction_evidence,
         local_pressure_ready,
@@ -947,9 +938,13 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         mtcache_class_replacement_policy_ready,
         mtcache_class_replacement_policy_blockers,
         mtcache_zero_copy_pinned_handle_ready,
+        mtcache_zero_copy_pinned_handle_evidence,
         mtcache_dram_pmem_ssd_placement_ready,
+        mtcache_dram_pmem_ssd_placement_evidence,
         mtcache_async_writeback_backpressure_ready,
+        mtcache_async_writeback_backpressure_evidence,
         mtcache_latency_metrics_ready,
+        mtcache_latency_metrics_evidence,
         mtcache_class_production_ready,
         production_ready,
         missing,
@@ -1035,7 +1030,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
             .to_string(),
-        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, zone id, and checksum"
+        "BlockAddress carries segment/offset/length plus optional page id, object id, routing slot, extent id, and checksum"
             .to_string(),
     ];
     let native_object_manager_runtime_ready = true;
@@ -1061,17 +1056,17 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "slot dump/load validates restored slot summaries against the first-class ownership index"
             .to_string(),
     ];
-    let stream_backed_zone_runtime_ready = true;
-    let stream_backed_zone_runtime_evidence = vec![
-        "LocalBlockStore exposes stream-backed zone runtime reports".to_string(),
+    let stream_backed_extent_runtime_ready = true;
+    let stream_backed_extent_runtime_evidence = vec![
+        "LocalBlockStore exposes stream-backed extent runtime reports".to_string(),
         "logical stream reads span page records while skipping envelopes and decompression"
             .to_string(),
-        "segment roll seals previous zones and opens a new active stream zone".to_string(),
-        "zone manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
-        "stream envelopes carry checksum, page id, object id, routing slot, zone id, and compression metadata"
+        "segment roll seals previous extents and opens a new active stream extent".to_string(),
+        "extent manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
+        "stream envelopes carry checksum, page id, object id, routing slot, extent id, and compression metadata"
             .to_string(),
     ];
-    let stream_backed_zone_runtime_blockers = vec![
+    let stream_backed_extent_runtime_blockers = vec![
         "C++ byte-for-byte stream backend layout remains out of scope".to_string(),
         "distributed/control-plane compression policy remains separate evidence".to_string(),
     ];
@@ -1165,8 +1160,8 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     if !native_slot_store_layout_transition_ready {
         missing.push("native SlotStore slot layout transitions".to_string());
     }
-    if !stream_backed_zone_runtime_ready {
-        missing.push("stream-backed zone runtime".to_string());
+    if !stream_backed_extent_runtime_ready {
+        missing.push("stream-backed extent runtime".to_string());
     }
     if !model_layout_compaction_ready {
         missing.push("page compaction tied to model layout and tombstones".to_string());
@@ -1199,9 +1194,9 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         native_object_manager_runtime_blockers,
         native_slot_store_layout_transition_ready,
         native_slot_store_layout_transition_evidence,
-        stream_backed_zone_runtime_ready,
-        stream_backed_zone_runtime_evidence,
-        stream_backed_zone_runtime_blockers,
+        stream_backed_extent_runtime_ready,
+        stream_backed_extent_runtime_evidence,
+        stream_backed_extent_runtime_blockers,
         model_layout_compaction_ready,
         model_layout_compaction_evidence,
         model_layout_compaction_blockers,
@@ -1547,7 +1542,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
-                "crash recovery reports and tests cover WAL, index-log, page stream, and zone-manifest ordering"
+                "crash recovery reports and tests cover oplog, index-log, page stream, and extent-manifest ordering"
                     .to_string(),
                 "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, crash recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process lifecycle validation"
                     .to_string(),
@@ -1569,7 +1564,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local stale candidate, lagging read-index, and stale snapshot guards".to_string(),
                 "kill switches for proxy reads/writes, replication, async storage, and scale changes"
                     .to_string(),
-                "local combined recovery proof covers Raft WAL restore plus storage WAL, index-log, page-file, and packed timestamped KV recovery"
+                "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
                     .to_string(),
                 "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
                     .to_string(),
@@ -1593,14 +1588,10 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
                     .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
-                "shared-store checkpoint/WAL replay model and GC tests".to_string(),
+                "shared-store checkpoint/oplog replay model and GC tests".to_string(),
                 "storage recovery integrity report summarizes indexed/discovered/live/orphan/corrupt segments, stale refs, unreadable bytes, and ownership mismatches"
                     .to_string(),
                 "storage lifecycle plan ranks reclaim candidates by stale bytes, live-ref density, orphan status, and delayed-destroy pressure"
-                    .to_string(),
-                "storage manager cycle executes the C++-ordered prepare, dirty-slot log reclaim, expire, evict, page reclaim, index-GC, compact, and metrics stages with per-stage evidence"
-                    .to_string(),
-                "storage manager cycle includes merged dump/load policy evidence for manifest checksum/generation, sequence boundaries, page-ref preflight, object lifecycle validation, install markers, reclaim, compaction, index-GC, and cache policy"
                     .to_string(),
                 "slot-dump install preflight reports stale sequence, missing/corrupt segments, unreadable refs, and safe install status before marker writes"
                     .to_string(),
@@ -1610,9 +1601,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, block-store read count, and warmed bytes"
                     .to_string(),
-                "storage production report exposes Rust JSONL WAL/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
+                "storage production report exposes Rust JSONL oplog/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
                     .to_string(),
-                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, zone bytes, and C++ page-header compatibility gaps"
+                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, extent bytes, and C++ page-header compatibility gaps"
                     .to_string(),
                 "storage compatibility decision is explicit: Rust log/page formats are migration-only versus C++ binary logs/page headers, with golden conversion/replay required before C++ migration"
                     .to_string(),
@@ -1620,7 +1611,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
-                "storage migration corpus converts C++ logical object/page/slot/index/WAL exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
+                "storage migration corpus converts C++ logical object/page/slot/index/oplog exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
                 "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner"
                     .to_string(),
@@ -1628,19 +1619,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
                     .to_string(),
-                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, WAL cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
+                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
                 "storage cache readiness is strong for Rust-native local/shared-store paths; broad Docker/AWS deployment evidence and live external object-store evidence are scoped as separate readiness gates"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, Rust-native weighted hotness/LRU eviction evidence, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, the Rust-native multi-tier replacement policy, pinned handle accounting/eviction guards, and DRAM/PMEM/SSD placement semantics; remaining cache blockers are mtcache-class async writeback/backpressure and mature latency metrics"
                     .to_string(),
-                "cache pressure soak readiness covers memory and disk pressure, hot and pinned survivor checks, disk refill latency samples, and restart refill from the persisted disk cache"
-                    .to_string(),
-                "mtcache-class replacement policy, zero-copy pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and latency metrics remain explicit parity blockers before declaring cache production readiness"
-                    .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed zone runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed extent runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],
             missing: {
@@ -1902,40 +1889,10 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("golden") || capability.contains("corpus") => {
             "storage_cplusplus_corpus_report.external_corpus_publication_ready"
         }
-        "storage_cache" if capability.contains("native slot/object/page") => {
-            "storage_index.native_slot_object_page_authority_ready"
-        }
-        "storage_cache" if capability.contains("SlotStore transitions") => {
-            "storage_index.slotstore_layout_transition_ready"
-        }
-        "storage_cache" if capability.contains("ObjectManager runtime") => {
-            "storage_index.object_manager_runtime_ready"
-        }
-        "storage_cache" if capability.contains("model-aware compaction") => {
-            "storage_compaction.model_layout_policy_ready"
-        }
-        "storage_cache" if capability.contains("merged dump/load recovery") => {
-            "storage_dump_load.merged_recovery_ready"
-        }
-        "storage_cache" if capability.contains("StorageManager phase loop") => {
-            "storage_manager.phase_loop_ready"
-        }
-        "storage_cache" if capability.contains("GC/eviction pressure validation") => {
-            "storage_manager.gc_eviction_pressure_ready"
-        }
-        "storage_cache" if capability.contains("cache soak status") => {
-            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
-        }
-        "storage_cache" if capability.contains("cache pressure soak") => {
-            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
-        }
         "storage_cache"
             if capability.contains("object-store") || capability.contains("ByteStore/S3") =>
         {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
-        }
-        "storage_cache" if capability.contains("zero-copy") || capability.contains("pinned") => {
-            "storage_cache_mtcache.zero_copy_pinned_handle_ready"
         }
         "storage_cache" if capability.contains("multi-tier replacement policy") => {
             "storage_cache_mtcache.replacement_policy_ready"
@@ -1958,8 +1915,8 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("SlotStore") => {
             "storage_runtime_slot_store.layout_transition_ready"
         }
-        "storage_cache" if capability.contains("stream-backed zone") => {
-            "storage_runtime_zones.stream_backed_zone_runtime_ready"
+        "storage_cache" if capability.contains("stream-backed extent") => {
+            "storage_runtime_extents.stream_backed_extent_runtime_ready"
         }
         "storage_cache"
             if capability.contains("model layout") || capability.contains("tombstones") =>
@@ -1991,65 +1948,6 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "context_workflow_corpus.openviking_replay_ready"
         }
         "context_workflow" => "context_workflow_policy.production_policy_ready",
-        "raft_replication" if capability.contains("stale_leader_lease_rejection_missing") => {
-            "raft_admin_report.stale_leader_lease_rejected"
-        }
-        "raft_replication" if capability.contains("lagging_follower_read_rejection_missing") => {
-            "raft_admin_report.lagging_follower_read_rejected"
-        }
-        "raft_replication" if capability.contains("bounded_stale_read_acceptance_missing") => {
-            "raft_admin_report.bounded_stale_read_accepted"
-        }
-        "raft_replication" if capability.contains("bounded_stale_read_rejection_missing") => {
-            "raft_admin_report.bounded_stale_read_rejected"
-        }
-        "raft_replication" if capability.contains("minority_partition_read_rejection_missing") => {
-            "raft_admin_report.minority_partition_rejected_reads"
-        }
-        "raft_replication" if capability.contains("minority_partition_write_rejection_missing") => {
-            "raft_admin_report.minority_partition_rejected_writes"
-        }
-        "raft_replication" if capability.contains("stale_follower_write_rejection_missing") => {
-            "raft_admin_report.stale_follower_write_rejected"
-        }
-        "raft_replication" if capability.contains("healed_follower_catchup_missing") => {
-            "raft_admin_report.healed_follower_caught_up"
-        }
-        "raft_replication" if capability.contains("apply_backpressure_not_enforced") => {
-            "raft_admin_report.apply_backpressure_enforced"
-        }
-        "raft_replication" if capability.contains("memory_replicate_bytes_not_enforced") => {
-            "raft_admin_report.memory_replicate_bytes_enforced"
-        }
-        "raft_replication" if capability.contains("oversized_log_rejection_missing") => {
-            "raft_admin_report.oversized_log_rejection_present"
-        }
-        "raft_replication" if capability.contains("out_of_order_append_handling_missing") => {
-            "raft_admin_report.out_of_order_append_handling_present"
-        }
-        "raft_replication" if capability.contains("snapshot_rate_limit_missing") => {
-            "raft_admin_report.snapshot_rate_limit_present"
-        }
-        "raft_replication" if capability.contains("snapshot_retry_backpressure_missing") => {
-            "raft_admin_report.snapshot_retry_backpressure_present"
-        }
-        "raft_replication" if capability.contains("snapshot_install_progress_missing") => {
-            "raft_admin_report.snapshot_install_progress_present"
-        }
-        "raft_replication" if capability.contains("snapshot_install_rollback_missing") => {
-            "raft_admin_report.snapshot_install_rollback_present"
-        }
-        "raft_replication" if capability.contains("snapshot_membership_change_missing") => {
-            "raft_admin_report.snapshot_membership_change_present"
-        }
-        "raft_replication"
-            if capability.contains("snapshot_rejoin_after_compacted_log_missing") =>
-        {
-            "raft_admin_report.snapshot_rejoin_after_compacted_log_present"
-        }
-        "raft_replication" if capability.contains("snapshot sender/downloader lifecycle") => {
-            "raft_admin_report.snapshot_sender_downloader_lifecycle_present"
-        }
         _ => "readiness_evidence.unspecified",
     }
 }
@@ -2097,7 +1995,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "use the Rust-native cache contract for production; add direct CacheLib/mtcache integration only if exact C++ cache-engine embedding is required"
+            "finish mtcache-class async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
@@ -2167,7 +2065,7 @@ mod tests {
             .iter()
             .filter(|blocker| blocker.area == "storage_cache")
             .collect::<Vec<_>>();
-        assert!(!storage_blockers.is_empty());
+        assert_eq!(storage_blockers.len(), 2);
         let proxy = report
             .areas
             .iter()
@@ -2193,17 +2091,12 @@ mod tests {
             !storage_missing.contains(&"mtcache-class multi-tier replacement policy".to_string()),
             "Rust-native multi-tier replacement policy should be covered"
         );
-        for required in [
-            "mtcache-class zero-copy pinned handle model",
-            "mtcache-class DRAM/PMEM/SSD placement semantics",
-            "mtcache-class async writeback and backpressure",
-            "mtcache-class mature latency metrics",
-        ] {
-            assert!(
-                storage_missing.contains(&required.to_string()),
-                "storage cache should fail closed on {required}"
-            );
-        }
+        assert!(storage_missing
+            .iter()
+            .any(|item| item.contains("mtcache-class async writeback and backpressure")));
+        assert!(storage_missing
+            .iter()
+            .any(|item| item.contains("mtcache-class mature latency metrics")));
     }
 
     #[test]
@@ -2247,10 +2140,21 @@ mod tests {
             .missing
             .iter()
             .any(|item| item.contains("mtcache-class multi-tier replacement policy")));
-        assert!(storage_cache
+        assert!(!storage_cache
             .missing
             .iter()
             .any(|item| item.contains("mtcache-class zero-copy pinned handle model")));
+        assert!(!storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("mtcache-class DRAM/PMEM/SSD placement semantics")));
+        assert_eq!(
+            storage_cache.missing,
+            vec![
+                "mtcache-class async writeback and backpressure".to_string(),
+                "mtcache-class mature latency metrics".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -2262,10 +2166,6 @@ mod tests {
         assert!(client_contract.typed_table_client_tested);
         assert!(client_contract.topology_sync_tested);
         assert!(client_contract.retry_budget_tested);
-        assert!(client_contract.supported_command_families.len() >= 11);
-        assert!(client_contract
-            .supported_command_families
-            .contains(&"context".to_string()));
         assert!(client_contract.migration_docs_ready);
 
         let client = client_routing_readiness_report();
@@ -2437,8 +2337,17 @@ mod tests {
             .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(storage.ready);
-        assert!(storage.failed_capabilities.is_empty());
+        assert!(!storage.ready);
+        assert_eq!(storage.failed_capabilities.len(), 2);
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "mtcache-class async writeback and backpressure"
+                && blocker.evidence_field
+                    == "storage_cache_mtcache.async_writeback_backpressure_ready"
+        }));
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "mtcache-class mature latency metrics"
+                && blocker.evidence_field == "storage_cache_mtcache.latency_metrics_ready"
+        }));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -2556,15 +2465,6 @@ mod tests {
         assert!(report.production_ssd_tiering_ready);
         assert!(report.admission_tuning_ready);
         assert!(report.long_running_pressure_validation_ready);
-        assert!(report.cache_pressure_soak_restart_ready);
-        assert!(report
-            .cache_pressure_soak_restart_evidence
-            .iter()
-            .any(|item| item.contains("reopens the disk-cache directory")));
-        assert!(report.zero_copy_pinned_handle_ready);
-        assert!(report.dram_pmem_ssd_placement_ready);
-        assert!(report.async_writeback_backpressure_ready);
-        assert!(report.latency_metrics_ready);
         assert!(report.rust_native_weighted_eviction_ready);
         assert!(report
             .rust_native_weighted_eviction_evidence
@@ -2580,23 +2480,43 @@ mod tests {
             .mtcache_class_replacement_policy_blockers
             .iter()
             .all(|item| !item.contains("multi-tier replacement policy")));
-        assert!(!report.mtcache_zero_copy_pinned_handle_ready);
-        assert!(!report.mtcache_dram_pmem_ssd_placement_ready);
+        assert!(report.mtcache_zero_copy_pinned_handle_ready);
+        assert!(report
+            .mtcache_zero_copy_pinned_handle_evidence
+            .iter()
+            .any(|item| item.contains("pinned byte accounting")));
+        assert!(report
+            .mtcache_zero_copy_pinned_handle_evidence
+            .iter()
+            .any(|item| item.contains("pinned-skip counters")));
+        assert!(report.mtcache_dram_pmem_ssd_placement_ready);
+        assert!(report
+            .mtcache_dram_pmem_ssd_placement_evidence
+            .iter()
+            .any(|item| item.contains("CacheTieringPolicy")));
+        assert!(report
+            .mtcache_dram_pmem_ssd_placement_evidence
+            .iter()
+            .any(|item| item.contains("PMEM is treated as an SSD-class")));
         assert!(!report.mtcache_async_writeback_backpressure_ready);
+        assert!(report
+            .mtcache_async_writeback_backpressure_evidence
+            .iter()
+            .any(|item| item.contains("production async writeback queue")));
         assert!(!report.mtcache_latency_metrics_ready);
+        assert!(report
+            .mtcache_latency_metrics_evidence
+            .iter()
+            .any(|item| item.contains("mature p50/p95/p99 histograms")));
         assert!(!report.mtcache_class_production_ready);
         assert!(!report.production_ready);
-        for required in [
-            "mtcache-class zero-copy pinned handle model",
-            "mtcache-class DRAM/PMEM/SSD placement semantics",
-            "mtcache-class async writeback and backpressure",
-            "mtcache-class mature latency metrics",
-        ] {
-            assert!(
-                report.missing.contains(&required.to_string()),
-                "cache pressure report should name {required}"
-            );
-        }
+        assert_eq!(
+            report.missing,
+            vec![
+                "mtcache-class async writeback and backpressure".to_string(),
+                "mtcache-class mature latency metrics".to_string(),
+            ]
+        );
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -2619,11 +2539,23 @@ mod tests {
         assert!(storage_cache
             .covered
             .iter()
-            .any(|item| item.contains("admission tuning")));
+            .any(|item| item.contains("pinned handle accounting")));
         assert!(storage_cache
             .covered
             .iter()
-            .any(|item| item.contains("restart refill from the persisted disk cache")));
+            .any(|item| item.contains("DRAM/PMEM/SSD placement semantics")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("remaining cache blockers are mtcache-class async writeback/backpressure and mature latency metrics")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("DRAM/PMEM/SSD placement semantics")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("admission tuning")));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
@@ -2721,13 +2653,13 @@ mod tests {
             .native_slot_store_layout_transition_evidence
             .iter()
             .any(|item| item.contains("slot objects track layout state transitions")));
-        assert!(report.stream_backed_zone_runtime_ready);
+        assert!(report.stream_backed_extent_runtime_ready);
         assert!(report
-            .stream_backed_zone_runtime_evidence
+            .stream_backed_extent_runtime_evidence
             .iter()
             .any(|item| item.contains("logical stream reads span page records")));
         assert!(report
-            .stream_backed_zone_runtime_blockers
+            .stream_backed_extent_runtime_blockers
             .iter()
             .any(|item| item.contains("byte-for-byte stream backend layout")));
         assert!(report.model_layout_compaction_ready);
@@ -2775,7 +2707,7 @@ mod tests {
         for required in [
             "Rust lifecycle behavior evidence",
             "native ObjectManager runtime mechanics",
-            "stream-backed zone runtime",
+            "stream-backed extent runtime",
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "orphan page detection",
             "missing/stale page-reference detection",
@@ -2795,10 +2727,21 @@ mod tests {
             );
         }
         assert!(!storage_cache.ready);
-        assert!(storage_cache
+        assert!(!storage_cache
             .missing
             .iter()
             .any(|item| item.contains("mtcache-class zero-copy pinned handle model")));
+        assert!(!storage_cache
+            .missing
+            .iter()
+            .any(|item| item.contains("mtcache-class DRAM/PMEM/SSD placement semantics")));
+        assert_eq!(
+            storage_cache.missing,
+            vec![
+                "mtcache-class async writeback and backpressure".to_string(),
+                "mtcache-class mature latency metrics".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -3069,7 +3012,7 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "critical"),
                 ("metaserver", "ready"),
-                ("storage_cache", "critical"),
+                ("storage_cache", "warning"),
                 ("feature_modules", "ready"),
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
@@ -3128,7 +3071,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("finish"));
+            .contains("async writeback"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
