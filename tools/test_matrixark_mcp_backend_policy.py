@@ -1326,6 +1326,29 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(mcp.native_context_pack_required("local"))
 
 
+    def test_python_hot_cache_default_policy(self) -> None:
+        mcp.MATRIXARK_ALLOW_PYTHON_HOT_CACHE = ""
+        mcp.MATRIXARK_MCP_PROFILE = "dev"
+        self.assertTrue(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        self.assertFalse(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
+        self.assertTrue(mcp.python_hot_cache_allowed(backend_label="local"))
+        mcp.MATRIXARK_ALLOW_PYTHON_HOT_CACHE = "1"
+        self.assertTrue(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
+
+    def test_native_candidate_prefilter_default_policy(self) -> None:
+        mcp.MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = ""
+        mcp.MATRIXARK_MCP_PROFILE = "benchmark"
+        self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust"))
+        self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust-direct"))
+        self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-direct"))
+        self.assertFalse(mcp.native_candidate_prefilter_required_for_backend("local"))
+        mcp.MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = "0"
+        self.assertFalse(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust"))
+        mcp.MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = "1"
+        self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust"))
+
+
     def test_direct_append_prefers_native_matrixark_batch_append_records(self) -> None:
         client = _NativeAppendClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
@@ -2320,6 +2343,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(adapter.supports_native_context_pack())
         adapter._client = _NativeCandidateScanClient()
         self.assertFalse(adapter.supports_native_context_pack())
+
+    def test_direct_supports_native_candidate_prefilter_when_client_exposes_api(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = _NativeCandidateScanClient()
+        self.assertTrue(adapter.supports_native_candidate_prefilter())
+        adapter._client = _NativeContextPackClient()
+        self.assertFalse(adapter.supports_native_candidate_prefilter())
 
     def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"

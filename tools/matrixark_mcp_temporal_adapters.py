@@ -300,6 +300,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-cpp"
 
+    def python_hot_cache_enabled(self) -> bool:
+        return python_hot_cache_allowed(backend_label=self._backend_label())
+
     def _ensure_backend_metric_fields(self) -> None:
         if not hasattr(self, "_metrics_lock"):
             self._metrics_lock = threading.RLock()
@@ -564,6 +567,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "append_engine_ms": round(self._append_engine_ms_avg(), 3),
                 "append_engine_count": int(getattr(self, "_append_engine_count", 0) or 0),
                 "entry_count_cache": self._entry_count_cache,
+                "python_hot_cache_allowed": self.python_hot_cache_enabled(),
                 "records_cache_ready": self._records_cache is not None,
                 "commands_total": self._commands_total,
                 "errors_total": self._errors_total,
@@ -1636,12 +1640,17 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def read_all(self) -> list[Json]:
         with self._records_lock:
-            if self._records_cache is not None:
+            hot_cache_enabled = self.python_hot_cache_enabled()
+            if hot_cache_enabled and self._records_cache is not None:
                 return list(self._records_cache)
             count = self._get_count()
             if count > 0:
                 self._legacy_index_mode = False
                 self._entry_count_cache = count
+                if not hot_cache_enabled:
+                    self._records_cache = None
+                    self._drop_direct_record_cache()
+                    return self._load_records_by_count(count)
                 cached = self._get_direct_record_cache(count)
                 if cached is not None:
                     self._records_cache = cached
@@ -1658,8 +1667,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._index_cache = index
             self._legacy_index_mode = bool(index)
             self._entry_count_cache = None
-            self._records_cache = self._load_records(index)
-            return list(self._records_cache)
+            records = self._load_records(index)
+            if hot_cache_enabled:
+                self._records_cache = records
+            else:
+                self._records_cache = None
+            return list(records)
 
     def retrieval_records(
         self,
@@ -1688,6 +1701,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
         if native_candidates is not None:
             return native_candidates
+        if native_candidate_prefilter_required(backend_label=self._backend_label()):
+            raise MatrixArkError(
+                f"backend-native candidate prefilter is required for {self._backend_label()}, "
+                "but matrixark_scan_candidates did not return candidates. Python read_all scan/prefilter is disabled."
+            )
 
         raw_records = self.read_all()
         filtered: list[Json] = []
@@ -1797,6 +1815,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
 
 
+    def supports_native_candidate_prefilter(self) -> bool:
+        return callable(getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None))
+
     def supports_native_context_pack(self) -> bool:
         return callable(getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None))
 
@@ -1884,6 +1905,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return lock
 
     def _get_direct_record_cache(self, count: int) -> list[Json] | None:
+        if not self.python_hot_cache_enabled():
+            return None
         with _DIRECT_RECORD_CACHE_LOCK:
             cached = _DIRECT_RECORD_CACHE.get(self._storage_prefix)
             if cached is None:
@@ -1894,6 +1917,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return list(records)
 
     def _put_direct_record_cache(self, count: int, records: list[Json]) -> None:
+        if not self.python_hot_cache_enabled():
+            return
         with _DIRECT_RECORD_CACHE_LOCK:
             if len(_DIRECT_RECORD_CACHE) >= _DIRECT_RECORD_CACHE_MAX_PREFIXES and self._storage_prefix not in _DIRECT_RECORD_CACHE:
                 oldest = next(iter(_DIRECT_RECORD_CACHE))

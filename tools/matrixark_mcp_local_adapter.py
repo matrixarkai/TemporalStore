@@ -3912,6 +3912,9 @@ class MatrixArkLocalAdapter:
         )
         return compact_context_pack_for_serving(pack)
 
+    def supports_native_candidate_prefilter(self) -> bool:
+        return False
+
     def supports_native_context_pack(self) -> bool:
         return False
 
@@ -4031,7 +4034,11 @@ class MatrixArkLocalAdapter:
             secondary_index_filter_mode=secondary_index_filter_mode,
             reference_time_ms=reference_time_ms,
         )
-        pack_cache_enabled = self._context_pack_cache_max_entries > 0 and self._context_pack_cache_ttl_s > 0
+        pack_cache_enabled = (
+            self._context_pack_cache_max_entries > 0
+            and self._context_pack_cache_ttl_s > 0
+            and python_hot_cache_allowed(backend_label=str(getattr(self, "_backend_label", lambda: "local")()))
+        )
         pack_cache_key = (
             self._retrieval_records_cache_generation,
             canonical_scope_key(scope),
