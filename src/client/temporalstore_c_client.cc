@@ -445,6 +445,8 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     auto& alloc = out.GetAllocator();
     out.AddMember("ok", true, alloc);
     out.AddMember("native_pack_assembly", true, alloc);
+    out.AddMember("raw_records_returned", false, alloc);
+    out.AddMember("python_hot_path_records", 0, alloc);
     rapidjson::Value pack(rapidjson::kObjectType);
     std::string pack_id = "cpp-native-" + std::to_string(static_cast<unsigned long long>(std::time(nullptr))) + "-" + std::to_string(scored.size());
     pack.AddMember("context_pack_id", rapidjson::Value(pack_id.c_str(), alloc), alloc);
@@ -509,6 +511,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     native.AddMember("backend", "cpp_direct", alloc);
     native.AddMember("scan_filter_score_pack", true, alloc);
     recall.AddMember("native_context_pack", native, alloc);
+    rapidjson::Value contract(rapidjson::kObjectType);
+    contract.AddMember("raw_records_returned_to_python", false, alloc);
+    contract.AddMember("python_hot_path_records", 0, alloc);
+    contract.AddMember("python_role", "dispatch_request_receive_context_pack", alloc);
+    contract.AddMember("backend_role", "scan_filter_score_pack", alloc);
+    recall.AddMember("native_response_contract", contract, alloc);
     rapidjson::Value scan_stats(rapidjson::kObjectType);
     scan_stats.AddMember("backend", "temporalstore-direct", alloc);
     scan_stats.AddMember("execution_mode", "cpp_direct_native_context_pack", alloc);

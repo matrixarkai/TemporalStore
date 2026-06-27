@@ -375,12 +375,29 @@ class _NativeContextPackClient:
         self.calls.append(kwargs)
         return {
             "native_pack_assembly": True,
+            "raw_records_returned": False,
+            "python_hot_path_records": 0,
             "context_pack": {
                 "context_pack_id": "native-pack-1",
                 "selected_refs": [{"ref_type": "resource_chunk", "text": "native packed evidence"}],
                 "used_context_tokens": 3,
-                "recall_policy": {"native_context_pack": {"enabled": True}},
+                "recall_policy": {
+                    "native_context_pack": {"enabled": True},
+                    "native_response_contract": {
+                        "raw_records_returned_to_python": False,
+                        "python_hot_path_records": 0,
+                    },
+                },
             },
+        }
+
+
+class _BadNativeContextPackClient:
+    def matrixark_retrieve_context_pack(self, **kwargs):
+        return {
+            "native_pack_assembly": True,
+            "records": [{"record_type": "context_event", "text": "raw record should not cross Python boundary"}],
+            "context_pack": {"context_pack_id": "bad", "selected_refs": []},
         }
 
 
@@ -2278,12 +2295,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(pack["context_pack_id"], "native-pack-1")
         self.assertEqual(pack["context_pack_assembly"], "native_backend")
         self.assertEqual(pack["backend"], "temporalstore-rust")
+        contract = pack["recall_policy"]["native_response_contract"]
+        self.assertFalse(contract["raw_records_returned_to_python"])
+        self.assertEqual(contract["python_hot_path_records"], 0)
         self.assertEqual(len(client.calls), 1)
         call = client.calls[0]
         self.assertEqual(call["count_key"], "matrixark:test:record_count")
         self.assertEqual(call["record_hash_key"], "matrixark:test:records")
         self.assertEqual(call["request"]["query"], "gpu approval")
         self.assertEqual(call["request"]["secondary_index_groups"], [["resource_type:pdf"]])
+
+    def test_native_context_pack_rejects_raw_record_payloads(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = _BadNativeContextPackClient()
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        with self.assertRaisesRegex(mcp.MatrixArkError, "must return a finished ContextPack"):
+            adapter.native_context_pack({"query": "gpu", "scope": {}, "max_context_tokens": 1000})
 
     def test_direct_supports_native_context_pack_only_when_client_exposes_api(self) -> None:
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
@@ -2356,6 +2385,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
         self.assertIn("temporalstore_matrixark_retrieve_context_pack", header)
         self.assertIn("MatrixArkRetrieveContextPackNative", source)
+        self.assertIn("raw_records_returned", source)
+        self.assertIn("native_response_contract", source)
         self.assertIn("def matrixark_retrieve_context_pack", python_sdk)
         self.assertIn("has_matrixark_retrieve_context_pack", python_sdk)
 

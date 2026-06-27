@@ -1815,11 +1815,23 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             return None
         if not isinstance(response, dict) or not response.get("native_pack_assembly"):
             return None
+        if isinstance(response.get("records"), list):
+            raise MatrixArkError(
+                "native matrixark_retrieve_context_pack must return a finished ContextPack, not raw records"
+            )
         pack = response.get("context_pack")
         if not isinstance(pack, dict):
             return None
         pack.setdefault("context_pack_assembly", "native_backend")
         pack.setdefault("backend", self._backend_label())
+        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+        contract = recall_policy.get("native_response_contract") if isinstance(recall_policy.get("native_response_contract"), dict) else {}
+        contract.setdefault("raw_records_returned_to_python", False)
+        contract.setdefault("python_hot_path_records", 0)
+        contract.setdefault("python_role", "dispatch_request_receive_context_pack")
+        contract.setdefault("backend_role", "scan_filter_score_pack")
+        recall_policy["native_response_contract"] = contract
+        pack["recall_policy"] = recall_policy
         return pack
 
     def _native_candidate_scan(

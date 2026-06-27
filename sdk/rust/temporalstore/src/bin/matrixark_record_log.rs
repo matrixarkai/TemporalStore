@@ -1359,6 +1359,12 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "backend": "rust_proxy",
                 "scan_filter_score_pack": true
             },
+            "native_response_contract": {
+                "raw_records_returned_to_python": false,
+                "python_hot_path_records": 0,
+                "python_role": "dispatch_request_receive_context_pack",
+                "backend_role": "scan_filter_score_pack"
+            },
             "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({})),
             "tree_traversal": {"native_backend": true, "fallback_to_flat": false},
             "secondary_index_filter": {"native_backend": true}
@@ -1368,6 +1374,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     Ok(json!({
         "ok": true,
         "native_pack_assembly": true,
+        "raw_records_returned": false,
+        "python_hot_path_records": 0,
         "context_pack": pack,
         "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}))
     }))
