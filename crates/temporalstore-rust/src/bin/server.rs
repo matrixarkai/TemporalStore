@@ -1312,6 +1312,11 @@ fn handle_server_raft_route(
 ) -> Option<(u16, Vec<u8>)> {
     let response = match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/raft/status") => json_response(200, &state.runtime.status()),
+        ("GET", "/raft/control/byteraft_runtime_admin")
+        | ("POST", "/raft/control/byteraft_runtime_admin") => json_response(
+            200,
+            &state.runtime.cluster().byteraft_runtime_admin_report(),
+        ),
         ("POST", "/raft/apply_health") => match parse_json::<RaftApplyHealthRequest>(&request.body)
         {
             Ok(req) => json_response(
@@ -4238,6 +4243,54 @@ mod tests {
         assert_eq!(health.max_apply_lag, 0);
     }
 
+    // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
+    #[test]
+    fn server_exposes_byteraft_runtime_admin_route() {
+        let dir = tempdir().unwrap();
+        let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        let cluster = state.runtime.cluster();
+        cluster
+            .propose(Command::StringSet {
+                key: "server-byteraft-admin-snapshot".to_string(),
+                value: b"seed".to_vec(),
+            })
+            .unwrap();
+        cluster.maybe_trigger_snapshot().unwrap();
+        let snapshot = cluster.build_install_snapshot_request(2).unwrap();
+        cluster.receive_install_snapshot(snapshot).unwrap();
+        cluster.set_alive(3, false).unwrap();
+        cluster
+            .propose(Command::StringSet {
+                key: "server-byteraft-admin-lag".to_string(),
+                value: b"lag".to_vec(),
+            })
+            .unwrap();
+        cluster.set_alive(3, true).unwrap();
+
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            path: "/raft/control/byteraft_runtime_admin".to_string(),
+            body: Vec::new(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 200);
+        let report: temporalstore_rust::raft::ByteRaftRuntimeAdminReport =
+            serde_json::from_slice(&body).unwrap();
+        assert!(report.ready, "{:?}", report.blockers);
+        assert!(report.read_index_validated);
+        assert!(report.lease_read_validated);
+        assert!(report.stale_follower_read_rejected);
+        assert!(report.stale_follower_write_rejected);
+        assert!(report.snapshot_sender_lifecycle_present);
+        assert!(report.snapshot_downloader_lifecycle_present);
+        assert!(report.wal_segment_lifecycle_present);
+        assert!(report.admin_status_surface_complete);
+        assert!(report
+            .peer_pipeline_states
+            .iter()
+            .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+    }
+
     // shared-corpus: server_raft_membership_apply_route
     #[test]
     fn server_exposes_raft_membership_apply_route() {
@@ -4637,7 +4690,13 @@ mod tests {
                 .join(format!("server-raft-node-{local_node_id}"))
                 .display()
                 .to_string(),
-            config: RaftConfig::default(),
+            config: RaftConfig {
+                enable_pre_vote: true,
+                lease_duration_ms: 1_000,
+                max_segment_bytes: 512,
+                min_keep_segment_num: 1,
+                ..RaftConfig::default()
+            },
             rpc: RaftRpcRuntimeOptions {
                 max_retries: 1,
                 deadline_ms: 100,
