@@ -280,6 +280,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return families or {"default", "local", "single_node", "shared_store"}
 
     def _validate_storage_routes_available(self, records: list[Json]) -> None:
+        if not hasattr(self, "_supported_storage_families"):
+            self._supported_storage_families = self._parse_supported_storage_families()
         requested: set[str] = set()
         for record in records:
             route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
