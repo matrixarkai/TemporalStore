@@ -105,12 +105,14 @@ MATRIXARK_TEMPORALSTORE_RUST_CLI=<repo>/sdk/rust/temporalstore/target/release/ma
 MATRIXARK_HOOK_FAIL_OPEN=1
 ```
 
-Production hook mode should not write a local JSONL record log. Set
+Production hook mode must not use local JSONL as the retrieval or serving backend. Set
 `MATRIXARK_MCP_PROFILE=production` and use `MATRIXARK_MCP_BACKEND` with
 `temporalstore-direct` or `temporalstore-rust`; when the backend is omitted in
 production profile, MatrixArk defaults to the native TemporalStore path and
 refuses local `record_log` unless `MATRIXARK_ALLOW_LOCAL_BACKEND=1` is set for
-debugging.
+explicit offline debugging. JSONL files are allowed for MCP line-protocol inputs,
+miss/hypothesis artifacts, and debug event logs only; they are not real full
+retrieval proof.
 
 Local identity defaults for hooks:
 
@@ -665,7 +667,7 @@ Retrieval selects only relevant skill sections, never the full skill bundle by d
 
 ## 10. Manual Hook Smoke Tests
 
-### Local backend hook smoke
+### C++ TemporalStore hook smoke
 
 ```bash
 cd <repo>
@@ -673,8 +675,7 @@ printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-h
   | MATRIXARK_MCP_BACKEND=local \
     python3 tools/matrixark_codex_hook.py \
       --event UserPromptSubmit \
-      --backend local \
-      --event-log /tmp/matrixark-hook-local.jsonl
+      --backend temporalstore-direct
 ```
 
 Expected output includes:
@@ -729,7 +730,7 @@ cd <repo>
 cat > /tmp/matrixark-ingest-call.jsonl <<'JSON'
 {"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"matrixark_ingest","arguments":{"messages":[{"role":"user","content":"Alice approved the GPU request."}],"scope":{"account_id":"acct_local","tenant_id":"tenant_codex","user_id":"deeproute","session_id":"manual-mcp-demo"}}}}
 JSON
-MATRIXARK_MCP_BACKEND=local python3 tools/matrixark_mcp_server.py --line-json < /tmp/matrixark-ingest-call.jsonl
+MATRIXARK_MCP_PROFILE=production tools/matrixark_mcp_cpp_server.sh --line-json < /tmp/matrixark-ingest-call.jsonl
 ```
 
 ## 12. What To Verify In MatrixArk
