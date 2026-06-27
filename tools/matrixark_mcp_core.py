@@ -2529,10 +2529,38 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
 
 
 STORAGE_ROUTE_PRESETS: dict[str, Json] = {
-    "shared_store_async": {"storage_mode": "shared_store", "replication_mode": "shared_store", "oplog_mode": "async", "raft_mode": False},
-    "shared_store_sync": {"storage_mode": "shared_store", "replication_mode": "shared_store", "oplog_mode": "sync", "raft_mode": False},
-    "raft_async": {"storage_mode": "raft", "replication_mode": "raft", "oplog_mode": "async", "raft_mode": True},
-    "raft_sync": {"storage_mode": "raft", "replication_mode": "raft", "oplog_mode": "sync", "raft_mode": True},
+    "shared_store_async": {
+        "storage_family": "shared_store",
+        "write_mode": "async",
+        "storage_mode": "shared_store",
+        "replication_mode": "shared_store",
+        "oplog_mode": "async",
+        "raft_mode": False,
+    },
+    "shared_store_sync": {
+        "storage_family": "shared_store",
+        "write_mode": "sync",
+        "storage_mode": "shared_store",
+        "replication_mode": "shared_store",
+        "oplog_mode": "sync",
+        "raft_mode": False,
+    },
+    "raft_async": {
+        "storage_family": "raft",
+        "write_mode": "async",
+        "storage_mode": "raft",
+        "replication_mode": "raft",
+        "oplog_mode": "async",
+        "raft_mode": True,
+    },
+    "raft_sync": {
+        "storage_family": "raft",
+        "write_mode": "sync",
+        "storage_mode": "raft",
+        "replication_mode": "raft",
+        "oplog_mode": "sync",
+        "raft_mode": True,
+    },
 }
 
 
@@ -2542,26 +2570,42 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
     replication_mode = str(options.get("replication_mode") or "default")
     oplog_mode = str(options.get("oplog_mode") or "default")
     raft_mode = bool(options.get("raft_mode", False))
-    if storage_mode == "raft" or replication_mode == "raft" or raft_mode:
-        route = f"raft_{oplog_mode if oplog_mode in {'async', 'sync'} else 'async'}"
+    requested_family = str(options.get("storage_family") or options.get("family") or "default")
+    requested_write_mode = str(options.get("write_mode") or "default")
+    write_mode = requested_write_mode if requested_write_mode in {"async", "sync"} else oplog_mode
+    if write_mode not in {"async", "sync"}:
+        write_mode = "async"
+    if requested_family == "raft" or storage_mode == "raft" or replication_mode == "raft" or raft_mode:
+        route = f"raft_{write_mode}"
         backend_family = "raft"
-    elif storage_mode == "shared_store" or replication_mode == "shared_store":
-        route = f"shared_store_{oplog_mode if oplog_mode in {'async', 'sync'} else 'async'}"
+        storage_mode = "raft" if storage_mode == "default" else storage_mode
+        replication_mode = "raft" if replication_mode == "default" else replication_mode
+        raft_mode = True
+    elif requested_family == "shared_store" or storage_mode == "shared_store" or replication_mode == "shared_store":
+        route = f"shared_store_{write_mode}"
         backend_family = "shared_store"
+        storage_mode = "shared_store" if storage_mode == "default" else storage_mode
+        replication_mode = "shared_store" if replication_mode == "default" else replication_mode
     else:
-        route = f"{storage_mode}_{oplog_mode}" if storage_mode != "default" else "default"
+        route = f"{storage_mode}_{write_mode}" if storage_mode != "default" else "default"
         backend_family = storage_mode
+    oplog_mode = write_mode if oplog_mode == "default" else oplog_mode
+    background_write = bool(options.get("background_write", write_mode == "async"))
     return {
         "route": route,
         "route_key": route,
         "backend_family": backend_family,
+        "storage_family": backend_family,
+        "write_mode": write_mode,
         "storage_mode": storage_mode,
         "replication_mode": replication_mode,
         "oplog_mode": oplog_mode,
         "raft_mode": raft_mode,
         "consistency": str(options.get("consistency") or "default"),
-        "sync_write": oplog_mode == "sync",
-        "async_write": oplog_mode == "async",
+        "sync_write": write_mode == "sync",
+        "async_write": write_mode == "async",
+        "background_write": background_write,
+        "write_ack_policy": "ack_after_durable_commit" if write_mode == "sync" else "ack_after_memory_append",
         "native_backend_decides_route": True,
     }
 
@@ -2580,6 +2624,9 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "temporalstore_raft_mode": "raft_mode",
         "temporalstore_consistency": "consistency",
         "temporalstore_route": "route",
+        "temporalstore_storage_family": "storage_family",
+        "temporalstore_write_mode": "write_mode",
+        "temporalstore_background_write": "background_write",
     }
     for source, target in aliases.items():
         if source in args:
@@ -2595,6 +2642,9 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "replication_mode": {"default", "none", "shared_store", "raft"},
         "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
         "route": set(STORAGE_ROUTE_PRESETS),
+        "storage_family": {"default", "shared_store", "raft"},
+        "family": {"default", "shared_store", "raft"},
+        "write_mode": {"default", "async", "sync"},
     }
     route_value = options.get("route")
     if route_value is not None:
@@ -2607,9 +2657,9 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
 
     normalized: Json = {}
     for key, value in options.items():
-        if key == "raft_mode":
+        if key in {"raft_mode", "background_write"}:
             if not isinstance(value, bool):
-                raise MatrixArkError("storage_options.raft_mode must be a boolean")
+                raise MatrixArkError(f"storage_options.{key} must be a boolean")
             normalized[key] = value
             continue
         if key not in allowed:
@@ -2621,11 +2671,42 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         if compact not in allowed[key]:
             raise MatrixArkError(f"storage_options.{key} must be one of {sorted(allowed[key])}")
         normalized[key] = compact
+    storage_family = normalized.get("storage_family") or normalized.get("family")
+    if storage_family == "raft":
+        normalized.setdefault("replication_mode", "raft")
+        normalized.setdefault("storage_mode", "raft")
+        normalized["raft_mode"] = True
+    elif storage_family == "shared_store":
+        normalized.setdefault("replication_mode", "shared_store")
+        normalized.setdefault("storage_mode", "shared_store")
+        normalized["raft_mode"] = False
+    if normalized.get("write_mode") in {"async", "sync"}:
+        normalized["oplog_mode"] = normalized["write_mode"]
+    if normalized.get("oplog_mode") == "sync" and normalized.get("background_write") is True:
+        raise MatrixArkError("storage_options.background_write cannot be true when write_mode/oplog_mode is sync")
     if normalized.get("raft_mode") is True:
         normalized.setdefault("replication_mode", "raft")
         normalized.setdefault("storage_mode", "raft")
     route = canonical_storage_route(normalized)
-    normalized.update({key: value for key, value in route.items() if key in {"route", "route_key", "backend_family", "sync_write", "async_write", "native_backend_decides_route"}})
+    normalized.update(
+        {
+            key: value
+            for key, value in route.items()
+            if key
+            in {
+                "route",
+                "route_key",
+                "backend_family",
+                "storage_family",
+                "write_mode",
+                "sync_write",
+                "async_write",
+                "background_write",
+                "write_ack_policy",
+                "native_backend_decides_route",
+            }
+        }
+    )
     normalized["request_level"] = True
     return normalized
 

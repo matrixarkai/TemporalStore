@@ -163,6 +163,10 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual("raft_async", event["storage_route"]["route"])
         self.assertEqual("raft", event["storage_route"]["storage_mode"])
         self.assertEqual("async", event["storage_route"]["oplog_mode"])
+        self.assertEqual("raft", event["storage_route"]["storage_family"])
+        self.assertEqual("async", event["storage_route"]["write_mode"])
+        self.assertTrue(event["storage_route"]["background_write"])
+        self.assertEqual("ack_after_memory_append", event["storage_route"]["write_ack_policy"])
 
         route_cases = [
             ("shared_store_async", "shared_store", "shared_store", "async", False),
@@ -176,8 +180,42 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
             self.assertEqual(storage_mode, normalized["storage_mode"])
             self.assertEqual(replication_mode, normalized["replication_mode"])
             self.assertEqual(oplog_mode, normalized["oplog_mode"])
+            self.assertEqual(oplog_mode, normalized["write_mode"])
+            self.assertEqual(storage_mode, normalized["storage_family"])
             self.assertEqual(raft_mode, normalized["raft_mode"])
             self.assertEqual(route, normalized["route_key"])
+            self.assertEqual(oplog_mode == "async", normalized["background_write"])
+            self.assertEqual("ack_after_durable_commit" if oplog_mode == "sync" else "ack_after_memory_append", normalized["write_ack_policy"])
+
+        friendly = importlib.import_module("tools.matrixark_mcp_core").normalize_storage_options(
+            {
+                "storage_options": {
+                    "storage_family": "shared_store",
+                    "write_mode": "sync",
+                    "consistency": "read_your_writes",
+                }
+            }
+        )
+        self.assertEqual("shared_store_sync", friendly["route"])
+        self.assertEqual("shared_store", friendly["storage_family"])
+        self.assertEqual("sync", friendly["write_mode"])
+        self.assertFalse(friendly["background_write"])
+
+        top_level_alias = importlib.import_module("tools.matrixark_mcp_core").normalize_storage_options(
+            {
+                "temporalstore_storage_family": "raft",
+                "temporalstore_write_mode": "sync",
+            }
+        )
+        self.assertEqual("raft_sync", top_level_alias["route"])
+        self.assertEqual("raft", top_level_alias["storage_family"])
+        self.assertEqual("sync", top_level_alias["write_mode"])
+        self.assertTrue(top_level_alias["raft_mode"])
+
+        with self.assertRaisesRegex(Exception, "background_write cannot be true"):
+            importlib.import_module("tools.matrixark_mcp_core").normalize_storage_options(
+                {"storage_options": {"storage_family": "raft", "write_mode": "sync", "background_write": True}}
+            )
 
         pack = server.call_tool(
             "matrixark_retrieve",
