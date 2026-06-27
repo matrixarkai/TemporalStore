@@ -16,12 +16,46 @@ This lets the backend portal use a normal transactional SQL store for user manag
 | `mysql` | Cloud/control-plane deployment | `MATRIXARK_METADATA_BACKEND=mysql` plus MySQL DSN |
 | `bytekv_sql` | ByteKV SQL-compatible deployment | `MATRIXARK_METADATA_BACKEND=bytekv_sql` plus ByteKV MySQL-compatible DSN |
 
+## Production Requirement
+
+Production/cloud deployment should fail closed unless a live SQL control plane is configured. Set:
+
+```bash
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+export MATRIXARK_METADATA_BACKEND=mysql      # or bytekv_sql
+export MATRIXARK_METADATA_AUTO_INIT=1        # create schema on startup, or pre-create it and keep live checks enabled
+```
+
+When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/ByteKV SQL endpoint fails deployment early.
+
+## Local MySQL Docker
+
+Run a local MySQL metadata backend and keep it running with Docker:
+
+```bash
+./tools/run_matrixark_metadata_mysql_local.sh
+```
+
+Equivalent manual command:
+
+```bash
+docker compose -f docker-compose.matrixark-metadata.yml up -d
+export MATRIXARK_METADATA_BACKEND=mysql
+export MATRIXARK_METADATA_DSN='mysql://matrixark:matrixark_password@127.0.0.1:3307/matrixark'
+export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+PYTHONPATH=tools python3 tools/check_matrixark_metadata_sql.py
+```
+
+The compose file starts `matrixark-mysql-metadata` on local port `3307` and stores data in the `matrixark_mysql_metadata` Docker volume.
+
 ## MySQL
 
 ```bash
 export MATRIXARK_METADATA_BACKEND=mysql
 export MATRIXARK_METADATA_DSN='mysql://matrixark:password@mysql:3306/matrixark'
 export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
 ```
 
 ## ByteKV SQL
@@ -30,6 +64,7 @@ export MATRIXARK_METADATA_AUTO_INIT=1
 export MATRIXARK_METADATA_BACKEND=bytekv_sql
 export MATRIXARK_METADATA_DSN='bytekv+mysql://matrixark:password@bytekv-sql:3306/matrixark'
 export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
 ```
 
 ByteKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.
@@ -59,3 +94,9 @@ The management portal now shows:
 - users, API keys, SSO links, usage, and audit without exposing raw key material.
 
 Switching metadata backends does not automatically migrate old records. Copy existing `matrixark_*` admin records before changing from record-log to SQL in a real deployment.
+
+## Readiness Probe
+
+`tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.
+
+The probe requires `pymysql` or `mysql-connector-python` for MySQL/ByteKV SQL.

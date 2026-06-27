@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from http.server import ThreadingHTTPServer
 import tempfile
 import threading
@@ -60,6 +61,35 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "matrixark_admin_list_api_keys",
                 {"api_key": viewer, "account_id": "acct_gov", "tenant_id": "tenant_gov"},
             )
+
+    def test_production_deployment_requires_live_sql_metadata(self) -> None:
+        saved = {
+            key: os.environ.get(key)
+            for key in [
+                "MATRIXARK_METADATA_BACKEND",
+                "MATRIXARK_METADATA_DSN",
+                "MATRIXARK_METADATA_AUTO_INIT",
+                "MATRIXARK_REQUIRE_SQL_METADATA",
+                "MATRIXARK_METADATA_REQUIRE_SQL",
+                "MATRIXARK_METADATA_REQUIRE_LIVE",
+            ]
+        }
+        try:
+            os.environ["MATRIXARK_REQUIRE_SQL_METADATA"] = "1"
+            os.environ["MATRIXARK_METADATA_BACKEND"] = "record_log"
+            with self.assertRaises(MatrixArkError):
+                self.make_server()
+
+            os.environ["MATRIXARK_METADATA_BACKEND"] = "sqlite"
+            os.environ["MATRIXARK_METADATA_DSN"] = ":memory:"
+            with self.assertRaises(MatrixArkError):
+                self.make_server()
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
     def test_local_api_key_application_gets_resource_skill_management_scopes(self) -> None:
         server = self.make_server()

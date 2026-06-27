@@ -42,6 +42,10 @@ class MatrixArkRecordLogMetadataStore(MatrixArkMetadataStore):
         return [record for record in self.adapter.read_all() if str(record.get("record_type", "")).startswith("matrixark_")]
 
 
+def _matrixark_env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
     """Small SQL metadata store.
 
@@ -179,6 +183,19 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
                 continue
         return records
 
+    def check_ready(self) -> Json:
+        with self._connect() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            row = cur.fetchone()
+        return {
+            "backend": self.backend_name,
+            "status": "ok",
+            "table": self.TABLE,
+            "probe": row[0] if row else 1,
+            "sql_compatible_with": "mysql" if self.backend_name in {"mysql", "bytekv_sql"} else self.backend_name,
+        }
+
     def backend_info(self) -> Json:
         return {
             "backend": self.backend_name,
@@ -191,8 +208,18 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
 
 def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixArkMetadataStore:
     backend = os.environ.get("MATRIXARK_METADATA_BACKEND", "record_log").strip().lower()
+    require_sql = _matrixark_env_truthy("MATRIXARK_REQUIRE_SQL_METADATA") or _matrixark_env_truthy("MATRIXARK_METADATA_REQUIRE_SQL")
+    require_live = require_sql or _matrixark_env_truthy("MATRIXARK_METADATA_REQUIRE_LIVE")
     if backend in {"", "record_log", "temporalstore", "adapter"}:
+        if require_sql:
+            raise MatrixArkError(
+                "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql or bytekv_sql and a live MATRIXARK_METADATA_DSN"
+            )
         return MatrixArkRecordLogMetadataStore(adapter)
+    if backend == "sqlite" and require_sql:
+        raise MatrixArkError(
+            "MATRIXARK_REQUIRE_SQL_METADATA=1 requires MATRIXARK_METADATA_BACKEND=mysql or bytekv_sql; sqlite is local-test only"
+        )
     if backend in {"sqlite", "mysql", "bytekv_sql"}:
         dsn = os.environ.get("MATRIXARK_METADATA_DSN", "").strip()
         if backend == "sqlite" and not dsn:
@@ -200,7 +227,10 @@ def build_matrixark_metadata_store(adapter: "MatrixArkLocalAdapter") -> MatrixAr
         if backend in {"mysql", "bytekv_sql"} and not dsn:
             raise MatrixArkError("MATRIXARK_METADATA_DSN is required for mysql/bytekv_sql metadata backend")
         auto_init = os.environ.get("MATRIXARK_METADATA_AUTO_INIT", "1").strip().lower() in {"1", "true", "yes"}
-        return MatrixArkSqlMetadataStore(backend=backend, dsn=dsn, auto_init=auto_init)
+        store = MatrixArkSqlMetadataStore(backend=backend, dsn=dsn, auto_init=auto_init)
+        if require_live:
+            store.check_ready()
+        return store
     raise MatrixArkError("MATRIXARK_METADATA_BACKEND must be record_log, sqlite, mysql, or bytekv_sql")
 
 class MatrixArkAccessManager:
