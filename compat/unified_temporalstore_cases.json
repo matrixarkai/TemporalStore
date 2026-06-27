@@ -4719,7 +4719,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "suite": "cpp_data_raft_parity",
-            "description": "Shared route contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin with per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
+          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_consensus.h",
@@ -4730,8 +4730,19 @@
             "rust_runner": "cargo test -p temporalstore-rust byteraft_runtime_admin --bins -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft --log <raft-route-validation.json>",
             "report_contract": {
-              "schema": "byteraft_runtime_admin_report_v1",
-              "required_fields": [
+            "schema": "byteraft_runtime_admin_report_v1",
+            "required_metrics": [
+              "temporalstore_raft_byteraft_ready",
+              "temporalstore_raft_byteraft_read_index_validated",
+              "temporalstore_raft_byteraft_lease_read_validated",
+              "temporalstore_raft_byteraft_stale_follower_read_rejected",
+              "temporalstore_raft_byteraft_stale_follower_write_rejected",
+              "temporalstore_raft_byteraft_peer_append_queue_depth",
+              "temporalstore_raft_byteraft_peer_reorder_queue_depth",
+              "temporalstore_raft_byteraft_peer_snapshot_installed_index",
+              "temporalstore_raft_byteraft_wal_segment_count"
+            ],
+            "required_fields": [
                 "leader_id",
                 "commit_index",
                 "leader_lease_valid",

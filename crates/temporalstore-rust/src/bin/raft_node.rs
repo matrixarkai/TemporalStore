@@ -182,6 +182,7 @@ fn handle(
 ) -> (u16, Vec<u8>) {
     match (request.method.as_str(), request.path.as_str()) {
         ("GET", "/health") => json_response(200, &Status::ok()),
+        ("GET", "/metrics") => (200, runtime.cluster().prometheus_metrics().into_bytes()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
         ("GET", "/raft/control/byteraft_runtime_admin")
         | ("POST", "/raft/control/byteraft_runtime_admin") => {
@@ -977,6 +978,13 @@ mod tests {
             .peer_pipeline_states
             .iter()
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+
+        let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
+        assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     }
 
     #[test]
