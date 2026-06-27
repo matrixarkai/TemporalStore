@@ -370,6 +370,26 @@ TOOLS: list[Json] = [
                     "type": "integer",
                     "description": "Optional deterministic refresh timestamp for tests/replay.",
                 },
+                "max_raw_events_per_node": {
+                    "type": "integer",
+                    "default": 256,
+                    "description": "Keep at most this many newest raw ContextEvents per node for normal retrieval; older events are represented by automatic temporal compression summaries.",
+                },
+                "compression_window_events": {
+                    "type": "integer",
+                    "default": 64,
+                    "description": "Maximum number of old source ContextEvents to summarize into one automatic ContextCompressionEvent.",
+                },
+                "min_compression_events": {
+                    "type": "integer",
+                    "default": 8,
+                    "description": "Minimum old uncompressed ContextEvents required before automatic compression writes a new window.",
+                },
+                "max_compression_windows_per_node": {
+                    "type": "integer",
+                    "default": 4,
+                    "description": "Maximum automatic compression windows to create per dirty node refresh.",
+                },
             },
             "additionalProperties": True,
         },

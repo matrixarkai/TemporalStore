@@ -18,6 +18,38 @@ The previous 100K local JSONL attempts hit a 15-minute outer guardrail. That has
 - Switched local JSONL hot-path writes to compact unsorted JSON serialization; record fields are unchanged.
 - Changed C++/Rust direct adapters so hot-path append no longer hydrates the full Python record cache before writing. Direct append now uses the native append counter and writes to TemporalStore first.
 - Added optional direct native write queue with `MATRIXARK_DIRECT_WRITE_QUEUE=1`. Async-route records can be accepted into the queue and flushed by a background worker; sync-route records still write inline.
+- `ContextEvent` also writes a timestamp-ordered native event index: `context_event_by_ingestion_time:<scope>` with field `<ingestion_time_ms>:<event_id_hash>`. Hot event JSON does not need bulky envelope ingestion timestamp; replay/debug keeps full envelope separately.
+- Added automatic temporal compression during dirty-node summary refresh. When a node has more than `MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE` raw events, MatrixArk keeps the newest raw window for normal retrieval and writes `ContextCompressionEvent` summaries for older timestamp-keyed windows. Raw source events stay replayable, but retrieval scores the compression summary plus the newest raw events instead of brute-forcing the whole old tail.
+
+## Automatic Time Compression
+
+`ContextEvent` is keyed by ingestion time, so the cold tail of each node can be compressed by sorted timestamp windows:
+
+1. Event ingestion writes the timestamp-keyed `ContextEvent` and marks the node summary-dirty.
+2. `matrixark_refresh_summaries` reads dirty nodes on the async cadence.
+3. For each dirty node, the worker keeps the newest raw events up to `max_raw_events_per_node`.
+4. Older uncompressed events are summarized into `ContextCompressionEvent` records in `compression_window_events` sized windows.
+5. Retrieval scores `node_l0` / `node_l1`, then selected leaf events/entities/resources/skills, plus compression summaries for older history.
+
+Runtime knobs:
+
+| Knob | Default | Purpose |
+| --- | ---: | --- |
+| `MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE` / `max_raw_events_per_node` | `256` | Maximum newest raw events scored per node before older events are represented by compression summaries. |
+| `MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS` / `compression_window_events` | `64` | Maximum old source events per compression window. |
+| `MATRIXARK_TIME_COMPRESSION_MIN_EVENTS` / `min_compression_events` | `8` | Minimum old events needed before writing a compression record. |
+| `MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH` / `max_compression_windows_per_node` | `4` | Maximum compression records created per dirty-node refresh. |
+
+This is non-destructive. `ContextCompressionEvent.source_event_ids` preserves replay and audit evidence, and the original source `ContextEvent` rows remain available for historical replay/debug.
+
+## Timeout Triage Rule
+
+If async/bundled live C++ or Rust benchmark runs still time out, fix TemporalStore write fan-in and batching first, then scale out:
+
+1. Native batch append for event + index + embedding + audit bundles.
+2. Partitioned prefixes / sharded append keys to avoid one hot write lane.
+3. Write queue backpressure and bounded audit buffering.
+4. Only after those pass on one node, add more data nodes or Raft/multi-node topology for scale and HA.
 
 ## Configuration
 
