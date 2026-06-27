@@ -247,7 +247,96 @@ terminal_output
 
 Codex does not need to send MatrixArk schemas. It sends what it knows. MatrixArk extracts `ContextEvent`, `ContextEntity`, `ContextSegment`, `ContextIndex`, `ContextSummary`, and `ContextEmbedding` internally.
 
-## 6. End-To-End Hook Behavior
+## 6. Universal Agent Lifecycle Contract
+
+This is the installation rule for Codex, Claude, Cursor, and other agent integrations. Put this in the agent-side system/integration instructions:
+
+```text
+Before answering code/design questions, call matrixark_retrieve.
+
+Pass:
+- the raw user query as query
+- visible open files, selected text, relevant tool outputs, and short local summaries as local_context
+- estimated local_context_tokens
+- max_context_tokens based on remaining prompt budget
+- account_id, tenant_id, user_id, session_id when available
+
+Do not send hidden/internal prompt context. Only send visible user/workspace context.
+
+After answering, call matrixark_ingest with the user message, assistant answer, and useful local_context_refs.
+```
+
+The agent owns visible local context. MatrixArk owns durable context. The two should be combined deliberately:
+
+```mermaid
+sequenceDiagram
+  participant Agent
+  participant MatrixArk
+  participant Model
+
+  Agent->>MatrixArk: matrixark_retrieve(query, local_context, token budget, scope)
+  MatrixArk-->>Agent: ContextPack(remote_context_refs, local_context_refs, audit id)
+  Agent->>Model: user query + visible local context + selected MatrixArk context
+  Model-->>Agent: answer/tool plan
+  Agent->>MatrixArk: matrixark_ingest(user message, assistant answer, useful refs)
+```
+
+Important rules:
+
+| Rule | Why |
+|---|---|
+| Send only visible local context | Prevents leakage of hidden prompts, private chain-of-thought, or agent-internal policy. |
+| Send `local_context_tokens` when known | MatrixArk can compute `remote_budget = max_context_tokens - local_context_tokens - safety_margin`. |
+| Send `max_context_tokens` when known | MatrixArk packs remote context to fit the agent's remaining prompt budget. |
+| Keep `local_context_refs` and `remote_context_refs` separate | The agent can dedupe, display, debug, and audit what came from local workspace versus MatrixArk. |
+| Call `matrixark_ingest` after answering | MatrixArk learns from the actual outcome and can update events, entities, summaries, and audit/replay records. |
+
+If an agent cannot estimate token budget, MatrixArk should use a conservative default. For production integrations, prefer explicit values:
+
+```json
+{
+  "query": "How should we implement the MatrixArk context budget?",
+  "local_context": [
+    {"ref": "open-buffer:design.md", "text": "Visible design note..."},
+    {"ref": "tool-output:test", "text": "pytest output summary..."}
+  ],
+  "local_context_tokens": 700,
+  "max_context_tokens": 4000,
+  "scope": {
+    "account_id": "acct_local",
+    "tenant_id": "tenant_codex",
+    "user_id": "deeproute",
+    "session_id": "codex:thread:123"
+  }
+}
+```
+
+For the post-answer ingest call, include the user message, assistant answer, and refs that were actually useful:
+
+```json
+{
+  "kind": "message",
+  "messages": [
+    {"role": "user", "content": "How should we implement the MatrixArk context budget?"},
+    {"role": "assistant", "content": "Use the remaining prompt budget, subtract visible local context, then pack remote refs under the remainder."}
+  ],
+  "metadata": {
+    "source": "agent_post_answer",
+    "local_context_refs": ["open-buffer:design.md", "tool-output:test"],
+    "reply_to_context_pack_id": "ctxpack_123"
+  },
+  "scope": {
+    "account_id": "acct_local",
+    "tenant_id": "tenant_codex",
+    "user_id": "deeproute",
+    "session_id": "codex:thread:123"
+  }
+}
+```
+
+Agents that support automatic hooks should run this lifecycle automatically. Agents that only support MCP tools should still follow the same explicit call order: retrieve first, answer second, ingest third.
+
+## 7. End-To-End Hook Behavior
 
 ```mermaid
 sequenceDiagram
@@ -294,7 +383,7 @@ pending messages >= 20, or Stop/PostCompact, or idle timeout, or manual commit
 -> clear/supersede session buffer markers
 ```
 
-## 7. MCP API Calls
+## 8. MCP API Calls
 
 The examples below are what Codex or any MCP client can call. The MCP server schema enforces required fields; optional fields can be omitted for local debugging.
 
@@ -477,7 +566,7 @@ Replay explains what was selected, dropped, blocked, repaired, or used as prior 
 
 Supported dashboard tables include messages, resources, skills, events, entities, and context packs when enabled by the backend.
 
-## 8. Resource And Skill Ingestion Through MCP
+## 9. Resource And Skill Ingestion Through MCP
 
 ### Local resource file
 
@@ -566,7 +655,7 @@ ContextIndex(skill_name, skill_trigger, skill_tool, source_type=skill)
 
 Retrieval selects only relevant skill sections, never the full skill bundle by default.
 
-## 9. Manual Hook Smoke Tests
+## 10. Manual Hook Smoke Tests
 
 ### Local backend hook smoke
 
@@ -615,7 +704,7 @@ printf '%s\n' '{"prompt":"Alice approved the GPU request.","thread_id":"manual-h
     tools/matrixark_codex_rust_hook.sh --event UserPromptSubmit
 ```
 
-## 10. MCP Smoke Test
+## 11. MCP Smoke Test
 
 List tools through the configured C++ MCP launcher:
 
@@ -635,7 +724,7 @@ JSON
 MATRIXARK_MCP_BACKEND=local python3 tools/matrixark_mcp_server.py --line-json < /tmp/matrixark-ingest-call.jsonl
 ```
 
-## 11. What To Verify In MatrixArk
+## 12. What To Verify In MatrixArk
 
 After a successful hook or MCP ingest, check:
 
@@ -675,7 +764,7 @@ ContextEmbedding(resource_chunk / skill section / summaries)
 ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path, skill_trigger, skill_tool)
 ```
 
-## 12. Troubleshooting
+## 13. Troubleshooting
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
@@ -687,7 +776,7 @@ ContextIndex(source_type, resource_type, unit_kind, heading_slug, relative_path,
 | No stable session id | Codex payload lacks thread/session fields. | Set `MATRIXARK_SESSION_ID` or rely on the fallback state file under `MATRIXARK_CODEX_SESSION_STATE_DIR`. |
 | OSS model fallback | Model path missing or network download failed. | Set `MATRIXARK_EMBEDDING_MODEL_PATH` and use local downloaded model files. |
 
-## 13. Production Defaults
+## 14. Production Defaults
 
 For production-like Codex integration:
 
@@ -701,7 +790,7 @@ Summaries refresh asynchronously; ingestion should not wait for L0/L1 regenerati
 ContextPackAudit and replay should be enabled for every retrieval.
 ```
 
-## 14. Minimal Agent Contract
+## 15. Minimal Agent Contract
 
 For a normal message, the smallest useful MCP call is:
 
