@@ -2066,6 +2066,15 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         cluster.read_index(3),
         Err(RaftError::ReplicaLagging { replica_id: 3, .. })
     ));
+    cluster
+        .check_read(
+            1,
+            RaftReadOptions {
+                strategy: RaftReadStrategy::LeaseRead,
+                ..RaftReadOptions::default()
+            },
+        )
+        .unwrap();
 
     let report = cluster.byteraft_runtime_admin_report();
     assert!(report.ready, "{:?}", report.blockers);
@@ -2081,6 +2090,12 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.wal_segment_lifecycle_present);
     assert!(report.pre_vote_enforced);
     assert!(report.election_controls_enforced);
+    assert_eq!(report.read_index_requests, 2);
+    assert_eq!(report.read_index_accepted, 1);
+    assert_eq!(report.read_index_rejected, 1);
+    assert_eq!(report.lease_read_requests, 1);
+    assert_eq!(report.lease_read_accepted, 1);
+    assert_eq!(report.lease_read_rejected, 0);
     assert!(report.admin_status_surface_complete);
     assert!(report.wal_segment_count >= 1);
     assert!(report
@@ -2101,7 +2116,16 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     let metrics = cluster.prometheus_metrics();
     assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
     assert!(metrics.contains("temporalstore_raft_byteraft_read_index_validated"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_requests"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_validated"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_requests"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_rejected"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_requests"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_stale_follower_write_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
@@ -2115,6 +2139,10 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3], config).unwrap();
     let restored_report = restored.byteraft_runtime_admin_report();
     assert!(restored_report.ready, "{:?}", restored_report.blockers);
+    assert_eq!(restored_report.read_index_requests, 2);
+    assert_eq!(restored_report.read_index_rejected, 1);
+    assert_eq!(restored_report.lease_read_requests, 1);
+    assert_eq!(restored_report.lease_read_accepted, 1);
     assert!(restored_report
         .peer_pipeline_states
         .iter()
@@ -2873,6 +2901,10 @@ fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
         }
     );
     assert_eq!(cluster.leader_id(), 2);
+    let read_safety = cluster.read_safety_runtime_state();
+    assert_eq!(read_safety.pre_vote_requests, 1);
+    assert_eq!(read_safety.pre_vote_accepted, 1);
+    assert_eq!(read_safety.pre_vote_rejected, 0);
 }
 
 #[test]
@@ -2894,6 +2926,10 @@ fn raft_prevote_rejects_candidate_without_quorum() {
         RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
     );
     assert_eq!(cluster.leader_id(), 1);
+    let read_safety = cluster.read_safety_runtime_state();
+    assert_eq!(read_safety.pre_vote_requests, 1);
+    assert_eq!(read_safety.pre_vote_accepted, 0);
+    assert_eq!(read_safety.pre_vote_rejected, 1);
 }
 
 #[test]

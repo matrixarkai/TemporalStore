@@ -521,6 +521,15 @@ pub struct ByteRaftRuntimeAdminReport {
     pub wal_last_retained_segment_id: u64,
     pub pre_vote_enforced: bool,
     pub election_controls_enforced: bool,
+    pub read_index_requests: u64,
+    pub read_index_accepted: u64,
+    pub read_index_rejected: u64,
+    pub lease_read_requests: u64,
+    pub lease_read_accepted: u64,
+    pub lease_read_rejected: u64,
+    pub pre_vote_requests: u64,
+    pub pre_vote_accepted: u64,
+    pub pre_vote_rejected: u64,
     pub admin_status_surface_complete: bool,
     pub ready: bool,
     pub blockers: Vec<String>,
@@ -879,6 +888,8 @@ pub struct RaftWalRecord {
     pub storage_apply_fence: RaftStorageApplyFence,
     #[serde(default)]
     pub pipeline_state: RaftPeerPipelineRuntimeState,
+    #[serde(default)]
+    pub read_safety_state: RaftReadSafetyRuntimeState,
     pub entries: Vec<RaftLogEntry>,
 }
 
@@ -901,6 +912,19 @@ pub struct RaftPeerPipelineRuntimeState {
     pub transfer_leader_target: bool,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReadSafetyRuntimeState {
+    pub read_index_requests: u64,
+    pub read_index_accepted: u64,
+    pub read_index_rejected: u64,
+    pub lease_read_requests: u64,
+    pub lease_read_accepted: u64,
+    pub lease_read_rejected: u64,
+    pub pre_vote_requests: u64,
+    pub pre_vote_accepted: u64,
+    pub pre_vote_rejected: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4848,6 +4872,7 @@ struct RaftClusterInner {
     joint_membership: Option<JointConsensusMembership>,
     latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pending_snapshots: BTreeMap<(RaftNodeId, String), PendingSnapshotChunks>,
+    read_safety_state: RaftReadSafetyRuntimeState,
 }
 
 impl RaftCluster {
@@ -4893,6 +4918,7 @@ impl RaftCluster {
                 joint_membership: None,
                 latest_external_snapshot_ref: None,
                 pending_snapshots: BTreeMap::new(),
+                read_safety_state: RaftReadSafetyRuntimeState::default(),
             })),
         })
     }
@@ -4927,6 +4953,7 @@ impl RaftCluster {
         let mut leader_id = None;
         let mut joint_membership = None;
         let mut latest_external_snapshot_ref = None;
+        let mut read_safety_state = RaftReadSafetyRuntimeState::default();
         for node_id in node_ids {
             let record = wal
                 .load_node(shard_id, node_id)
@@ -4969,6 +4996,7 @@ impl RaftCluster {
                 if latest_external_snapshot_ref.is_none() {
                     latest_external_snapshot_ref = record.latest_external_snapshot_ref;
                 }
+                read_safety_state = record.read_safety_state;
                 node
             } else {
                 new_node(node_id, RaftRole::Follower, shard_id)
@@ -4999,6 +5027,7 @@ impl RaftCluster {
                 joint_membership,
                 latest_external_snapshot_ref,
                 pending_snapshots: BTreeMap::new(),
+                read_safety_state,
             })),
         })
     }
@@ -5423,9 +5452,18 @@ impl RaftCluster {
         }
 
         let candidate_id = inner.best_live_candidate()?;
-        if inner.config.enable_pre_vote && !inner.pre_vote_would_win(candidate_id)? {
-            inner.election_elapsed_tick = 0;
-            return Ok(RaftTickOutcome::PreVoteRejected { candidate_id });
+        if inner.config.enable_pre_vote {
+            inner.read_safety_state.pre_vote_requests =
+                inner.read_safety_state.pre_vote_requests.saturating_add(1);
+            if !inner.pre_vote_would_win(candidate_id)? {
+                inner.read_safety_state.pre_vote_rejected =
+                    inner.read_safety_state.pre_vote_rejected.saturating_add(1);
+                inner.election_elapsed_tick = 0;
+                inner.persist_configured_wal()?;
+                return Ok(RaftTickOutcome::PreVoteRejected { candidate_id });
+            }
+            inner.read_safety_state.pre_vote_accepted =
+                inner.read_safety_state.pre_vote_accepted.saturating_add(1);
         }
         inner.elect_leader(candidate_id)?;
         inner.election_elapsed_tick = 0;
@@ -5819,6 +5857,7 @@ impl RaftCluster {
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
                         storage_apply_fence: raft_storage_apply_fence(inner.shard_id, node),
                         pipeline_state: node.pipeline_state.clone(),
+                        read_safety_state: inner.read_safety_state.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -6907,34 +6946,112 @@ impl RaftCluster {
     }
 
     pub fn read_index(&self, node_id: RaftNodeId) -> Result<ReadIndexResponse, RaftError> {
-        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        self.read_index_accounted(node_id, false)
+    }
+
+    fn read_index_accounted(
+        &self,
+        node_id: RaftNodeId,
+        lease_read: bool,
+    ) -> Result<ReadIndexResponse, RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.read_safety_state.read_index_requests = inner
+            .read_safety_state
+            .read_index_requests
+            .saturating_add(1);
+        if lease_read {
+            inner.read_safety_state.lease_read_requests = inner
+                .read_safety_state
+                .lease_read_requests
+                .saturating_add(1);
+        }
         let status = inner.status();
         if !status.leader_lease_valid {
+            inner.read_safety_state.read_index_rejected = inner
+                .read_safety_state
+                .read_index_rejected
+                .saturating_add(1);
+            if lease_read {
+                inner.read_safety_state.lease_read_rejected = inner
+                    .read_safety_state
+                    .lease_read_rejected
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
             return Err(RaftError::LeaderUnavailable);
         }
-        let node = inner
-            .nodes
-            .get(&node_id)
-            .ok_or(RaftError::NodeNotFound(node_id))?;
-        if !node.alive {
+        let Some(node) = inner.nodes.get(&node_id) else {
+            inner.read_safety_state.read_index_rejected = inner
+                .read_safety_state
+                .read_index_rejected
+                .saturating_add(1);
+            if lease_read {
+                inner.read_safety_state.lease_read_rejected = inner
+                    .read_safety_state
+                    .lease_read_rejected
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
             return Err(RaftError::NodeNotFound(node_id));
-        }
-        if !node.replica_role.can_serve_data() {
+        };
+        if !node.alive || !node.replica_role.can_serve_data() {
+            inner.read_safety_state.read_index_rejected = inner
+                .read_safety_state
+                .read_index_rejected
+                .saturating_add(1);
+            if lease_read {
+                inner.read_safety_state.lease_read_rejected = inner
+                    .read_safety_state
+                    .lease_read_rejected
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
             return Err(RaftError::NodeNotFound(node_id));
         }
         if node.commit_index < status.commit_index {
+            let replica_commit_index = node.commit_index;
+            inner.read_safety_state.read_index_rejected = inner
+                .read_safety_state
+                .read_index_rejected
+                .saturating_add(1);
+            if lease_read {
+                inner.read_safety_state.lease_read_rejected = inner
+                    .read_safety_state
+                    .lease_read_rejected
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
             return Err(RaftError::ReplicaLagging {
                 replica_id: node_id,
-                replica_commit_index: node.commit_index,
+                replica_commit_index,
                 leader_commit_index: status.commit_index,
             });
         }
+        inner.read_safety_state.read_index_accepted = inner
+            .read_safety_state
+            .read_index_accepted
+            .saturating_add(1);
+        if lease_read {
+            inner.read_safety_state.lease_read_accepted = inner
+                .read_safety_state
+                .lease_read_accepted
+                .saturating_add(1);
+        }
+        inner.persist_configured_wal()?;
         Ok(ReadIndexResponse {
             leader_id: inner.leader_id,
             node_id,
             term: status.current_term,
             read_index: status.commit_index,
         })
+    }
+
+    pub fn read_safety_runtime_state(&self) -> RaftReadSafetyRuntimeState {
+        self.inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .read_safety_state
+            .clone()
     }
 
     pub fn check_read(
@@ -6967,7 +7084,8 @@ impl RaftCluster {
                     read_index: self.commit_index(node_id)?,
                 })
             }
-            RaftReadStrategy::LeaseRead | RaftReadStrategy::ReadIndex => self.read_index(node_id),
+            RaftReadStrategy::LeaseRead => self.read_index_accounted(node_id, true),
+            RaftReadStrategy::ReadIndex => self.read_index(node_id),
         }
     }
 
@@ -7591,6 +7709,7 @@ impl RaftClusterInner {
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
                         storage_apply_fence: raft_storage_apply_fence(self.shard_id, node),
                         pipeline_state: node.pipeline_state.clone(),
+                        read_safety_state: self.read_safety_state.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -7877,6 +7996,15 @@ impl RaftClusterInner {
             wal_last_retained_segment_id,
             pre_vote_enforced,
             election_controls_enforced,
+            read_index_requests: self.read_safety_state.read_index_requests,
+            read_index_accepted: self.read_safety_state.read_index_accepted,
+            read_index_rejected: self.read_safety_state.read_index_rejected,
+            lease_read_requests: self.read_safety_state.lease_read_requests,
+            lease_read_accepted: self.read_safety_state.lease_read_accepted,
+            lease_read_rejected: self.read_safety_state.lease_read_rejected,
+            pre_vote_requests: self.read_safety_state.pre_vote_requests,
+            pre_vote_accepted: self.read_safety_state.pre_vote_accepted,
+            pre_vote_rejected: self.read_safety_state.pre_vote_rejected,
             admin_status_surface_complete,
             ready: blockers.is_empty(),
             blockers,
@@ -8787,6 +8915,78 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_wal_segment_count",
         &[("kind", kind.to_string())],
         report.wal_segment_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_read_index_requests Read-index requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_requests counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_read_index_requests",
+        &[("kind", kind.to_string())],
+        report.read_index_requests,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_read_index_accepted Read-index requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_accepted counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_read_index_accepted",
+        &[("kind", kind.to_string())],
+        report.read_index_accepted,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_read_index_rejected Read-index requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_rejected counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_read_index_rejected",
+        &[("kind", kind.to_string())],
+        report.read_index_rejected,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_requests Lease-read requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_requests counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_lease_read_requests",
+        &[("kind", kind.to_string())],
+        report.lease_read_requests,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_accepted Lease-read requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_accepted counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_lease_read_accepted",
+        &[("kind", kind.to_string())],
+        report.lease_read_accepted,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_rejected Lease-read requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_rejected counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_lease_read_rejected",
+        &[("kind", kind.to_string())],
+        report.lease_read_rejected,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_requests Pre-vote attempts observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_requests counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_pre_vote_requests",
+        &[("kind", kind.to_string())],
+        report.pre_vote_requests,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_accepted Pre-vote attempts accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_accepted counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_pre_vote_accepted",
+        &[("kind", kind.to_string())],
+        report.pre_vote_accepted,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_rejected Pre-vote attempts rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_rejected counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_pre_vote_rejected",
+        &[("kind", kind.to_string())],
+        report.pre_vote_rejected,
     );
     out.push_str("# HELP temporalstore_raft_byteraft_peer_match_index ByteRaft-style per-peer match index.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_match_index gauge\n");
