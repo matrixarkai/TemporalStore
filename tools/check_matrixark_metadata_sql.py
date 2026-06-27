@@ -16,8 +16,8 @@ from matrixark_mcp_core import now_ms, stable_hash
 def main() -> int:
     backend = os.environ.get("MATRIXARK_METADATA_BACKEND", "mysql")
     dsn = os.environ.get("MATRIXARK_METADATA_DSN", "")
-    if backend in {"mysql", "bytekv_sql"} and not dsn:
-        raise SystemExit("MATRIXARK_METADATA_DSN is required for mysql/bytekv_sql probe")
+    if backend in {"mysql", "matrixkv_sql", "bytekv_sql"} and not dsn:
+        raise SystemExit("MATRIXARK_METADATA_DSN is required for mysql/matrixkv_sql/bytekv_sql probe")
 
     tmp = tempfile.TemporaryDirectory()
     adapter = MatrixArkLocalAdapter(Path(tmp.name) / "metadata_probe.jsonl")
