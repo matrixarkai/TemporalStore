@@ -713,6 +713,12 @@ def backend_ready_required(backend: str) -> bool:
     return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
 
 
+def native_context_pack_required(backend: str) -> bool:
+    if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
+        return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
+    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+
+
 def default_mcp_backend() -> str:
     configured = os.environ.get("MATRIXARK_MCP_BACKEND")
     if configured:

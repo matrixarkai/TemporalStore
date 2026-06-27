@@ -1797,6 +1797,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
 
 
+    def supports_native_context_pack(self) -> bool:
+        return callable(getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None))
+
     def native_context_pack(self, request: Json) -> Json | None:
         retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
         if not callable(retriever):
