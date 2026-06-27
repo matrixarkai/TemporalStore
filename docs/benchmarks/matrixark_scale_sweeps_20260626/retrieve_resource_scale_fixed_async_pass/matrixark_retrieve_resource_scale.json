@@ -1,0 +1,950 @@
+{
+  "backend": "local-jsonl",
+  "config": {
+    "batch_size": 100,
+    "csv_rows": 200,
+    "embedding_provider": "hash",
+    "max_context_tokens": 700,
+    "pdf_paragraphs": 40,
+    "repo_files": 10,
+    "resource_repeat": 1,
+    "resource_wait": false,
+    "retrieve_ops_per_worker": 2,
+    "retrieve_workers": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "seed_events": 1000,
+    "understanding_provider": "rules"
+  },
+  "event_log": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/matrixark_retrieve_resource_scale.jsonl",
+  "record_counts": {
+    "context_child_ref": 25,
+    "context_debug_record": 1120,
+    "context_embedding": 2420,
+    "context_entity": 120,
+    "context_entity_update_audit": 120,
+    "context_event": 1000,
+    "context_extraction_audit": 10,
+    "context_index": 82,
+    "context_node": 27,
+    "context_pack_audit": 91,
+    "context_pack_telemetry": 50,
+    "context_segment": 40,
+    "context_summary": 1261,
+    "context_summary_dirty": 45,
+    "context_summary_refresh_audit": 622,
+    "matrixark_audit_log": 431,
+    "resource_import_task": 5,
+    "resource_manifest": 1,
+    "resource_registry": 1
+  },
+  "resource_fixtures": {
+    "large_csv": {
+      "node_path": [
+        "resources",
+        "scale",
+        "csv"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/fixtures/large_approvals.csv",
+      "resource_type": "csv",
+      "size_bytes": 14727
+    },
+    "large_pdf": {
+      "node_path": [
+        "resources",
+        "scale",
+        "pdf"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/fixtures/large_budget_policy.pdf",
+      "resource_type": "pdf",
+      "size_bytes": 5788
+    },
+    "repo_directory": {
+      "file_count": 10,
+      "node_path": [
+        "resources",
+        "scale",
+        "repo"
+      ],
+      "path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/fixtures/sample_repo",
+      "resource_type": "directory"
+    }
+  },
+  "resource_imports": [
+    {
+      "elapsed_ms": 15449.456,
+      "file_count": null,
+      "name": "large_pdf",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "pdf",
+      "resource_version": null,
+      "size_bytes": 5788,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 20957.663,
+      "file_count": null,
+      "name": "large_csv",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "csv",
+      "resource_version": null,
+      "size_bytes": 14727,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 2472.951,
+      "file_count": 10,
+      "name": "repo_directory",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "directory",
+      "resource_version": null,
+      "size_bytes": null,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 0.0,
+      "name": "post_resource_summary_refresh",
+      "reason": "resource_import_wait_false_tasks_queued",
+      "status": "skipped"
+    }
+  ],
+  "retrieve_sweep": [
+    {
+      "avg_selected_refs": 41.75,
+      "avg_used_context_tokens": 494.75,
+      "elapsed_sec": 0.963,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 408.545,
+        "count": 8,
+        "max": 577.66,
+        "p50": 429.596,
+        "p95": 577.66,
+        "p99": 577.66
+      },
+      "max_context_tokens": 700,
+      "qps": 8.305,
+      "status": "passed",
+      "total_ops": 8,
+      "workers": 4
+    },
+    {
+      "avg_selected_refs": 35.375,
+      "avg_used_context_tokens": 412.375,
+      "elapsed_sec": 7.583,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 3254.86,
+        "count": 16,
+        "max": 5168.227,
+        "p50": 3034.126,
+        "p95": 4876.252,
+        "p99": 5168.227
+      },
+      "max_context_tokens": 700,
+      "qps": 2.11,
+      "status": "passed",
+      "total_ops": 16,
+      "workers": 8
+    },
+    {
+      "avg_selected_refs": 13.062,
+      "avg_used_context_tokens": 512.719,
+      "elapsed_sec": 23.347,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 9410.093,
+        "count": 32,
+        "max": 13720.94,
+        "p50": 9438.426,
+        "p95": 12206.698,
+        "p99": 13720.94
+      },
+      "max_context_tokens": 700,
+      "qps": 1.371,
+      "status": "passed",
+      "total_ops": 32,
+      "workers": 16
+    },
+    {
+      "avg_selected_refs": 8,
+      "avg_used_context_tokens": 521.312,
+      "elapsed_sec": 39.287,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 18066.065,
+        "count": 64,
+        "max": 22304.811,
+        "p50": 17168.799,
+        "p95": 21842.026,
+        "p99": 22302.055
+      },
+      "max_context_tokens": 700,
+      "qps": 1.629,
+      "status": "passed",
+      "total_ops": 64,
+      "workers": 32
+    }
+  ],
+  "seed": {
+    "batch_count": 10,
+    "batch_size": 100,
+    "ingest_latency_ms": {
+      "avg": 58.313,
+      "count": 10,
+      "max": 73.214,
+      "p50": 54.22,
+      "p95": 73.214,
+      "p99": 73.214
+    },
+    "scope": {
+      "account_id": "acct_scale",
+      "agent_name": "scale_runner",
+      "session_id": "session_retrieve_scale",
+      "tenant_id": "tenant_scale",
+      "user_id": "user_scale"
+    },
+    "seed_events_requested": 1000,
+    "seed_events_written": 1000,
+    "summary_refresh": {
+      "access": {
+        "account_id": "acct_scale",
+        "agent_name": "scale_runner",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "scope_key": "t=3823117250029978076|u=5172441694772987983|s=8268125161419006472|",
+        "session_hash": 8268125161419006472,
+        "session_id": "session_retrieve_scale",
+        "tenant_hash": 3823117250029978076,
+        "tenant_id": "tenant_scale",
+        "user_hash": 5172441694772987983,
+        "user_id": "user_scale"
+      },
+      "compression_created_count": 0,
+      "refreshed": [
+        {
+          "dirty_hash": 2904347099228133541,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 6025066374489355495,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_0"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 4767266791123117411,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 4275880168613244458,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4335767568383908923,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_0",
+            "topic_0"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 6185153138621757405,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 7842401462486137388,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5729357460913547841,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_1"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 1671487899416939747,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 8274923134395227954,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5109677731576304563,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_1",
+            "topic_1"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 4502062926628672667,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3612983132742491763,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 8098084367660167709,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_2"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 5137357941477105691,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3695618678897205559,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 8873368607679409574,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_2",
+            "topic_2"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 575954106318780808,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 987837431747014763,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 6920081392849965770,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_3"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 1785853910500730919,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 1661142791932078931,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 9159771800418959982,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_3",
+            "topic_3"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 8568205163815841491,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 852679156112865417,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 3804848088574246844,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_4"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 8157192914175670027,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3338928092439417331,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4510159217867143391,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_4",
+            "topic_4"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 5491793417323675098,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 8591548353347355256,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 1709698789622994577,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_5"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 122032971102088264,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 5480499636279784682,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 9153612399212971530,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_5",
+            "topic_0"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 2320931667558952402,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3497694187062485541,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5656046992901106490,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_6"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 5099640661717925229,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 6769714373562054175,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4617939580320533347,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_6",
+            "topic_1"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 2748379702033880521,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 7907054135500836389,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 3991249014498892849,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_7"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 7594585033520050325,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 6249240477213390675,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 1016437133086313523,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_7",
+            "topic_2"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 1031455584001823424,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 5455851121718383827,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 3025646238993786331,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_8"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 5296843336175661805,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 2140627121363776731,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 574836199272572809,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_8",
+            "topic_3"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 7880876038103070583,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 8970072852478609116,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 7671761716597775914,
+          "node_path": [
+            "context"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 8,
+          "summary_generation_policy": {
+            "child_summary_count": 8,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 1402
+          },
+          "summary_version_hash": 9074993447675379815,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3297151120980301429,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 682485312310361849,
+          "node_path": [
+            "context",
+            "scale_runner"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 8,
+          "summary_generation_policy": {
+            "child_summary_count": 8,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 1402
+          },
+          "summary_version_hash": 1947646362978154296,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3327168888300752171,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4882055323904538657,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_9"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 8810762283127420768,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 7851454682668074560,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 102969511486378702,
+          "node_path": [
+            "context",
+            "scale_runner",
+            "project_9",
+            "topic_4"
+          ],
+          "source_event_count": 8,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 8,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 175
+          },
+          "summary_version_hash": 4575669534690083884,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 100,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        }
+      ],
+      "refreshed_count": 22,
+      "status": "ok"
+    },
+    "summary_refresh_ms": 754.695
+  },
+  "status": "passed"
+}

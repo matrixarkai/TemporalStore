@@ -187,6 +187,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._readiness_cache: Json | None = None
         self._readiness_lock = threading.RLock()
         self._storage_prefix = storage_prefix.rstrip(":")
+        self._supported_storage_families = self._parse_supported_storage_families()
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
         self._count_key = f"{self._storage_prefix}:record_count"
@@ -258,6 +259,27 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
         return
+
+    def _parse_supported_storage_families(self) -> set[str]:
+        raw = os.environ.get("MATRIXARK_NATIVE_STORAGE_FAMILIES") or os.environ.get("MATRIXARK_SUPPORTED_STORAGE_FAMILIES") or "default,local,single_node,shared_store"
+        families = {part.strip().lower().replace("-", "_") for part in raw.split(",") if part.strip()}
+        return families or {"default", "local", "single_node", "shared_store"}
+
+    def _validate_storage_routes_available(self, records: list[Json]) -> None:
+        requested: set[str] = set()
+        for record in records:
+            route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+            family = str(route.get("storage_family") or route.get("selected_storage_family") or "default").strip().lower().replace("-", "_")
+            if family and family != "default":
+                requested.add(family)
+        if len(requested) > 1:
+            raise MatrixArkError(f"one MatrixArk write batch cannot mix storage families: {sorted(requested)}")
+        unsupported = requested - set(getattr(self, "_supported_storage_families", {"default"}))
+        if unsupported:
+            raise MatrixArkError(
+                f"requested storage_family {sorted(unsupported)} is not configured for backend {self._backend_label()}; "
+                f"configured families={sorted(getattr(self, '_supported_storage_families', []))}"
+            )
 
     def _backend_label(self) -> str:
         return "temporalstore-cpp"
@@ -1261,6 +1283,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        self._validate_storage_routes_available(records)
         if self._queue_batched_records(records):
             return
         if allow_queue and self._records_can_use_direct_write_queue(records):
@@ -3146,6 +3169,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._readiness_cache: Json | None = None
         self._readiness_lock = threading.RLock()
         self._storage_prefix = storage_prefix.rstrip(":")
+        self._supported_storage_families = self._parse_supported_storage_families()
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
         self._count_key = f"{self._storage_prefix}:record_count"

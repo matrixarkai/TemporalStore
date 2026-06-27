@@ -31,6 +31,11 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 }
 
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
+LOCAL_READ_CACHE_COPY = os.environ.get("MATRIXARK_LOCAL_READ_CACHE_COPY", "1").strip().lower() not in {"0", "false", "no"}
+
+_LOCAL_READ_CACHE_LOCK = threading.RLock()
+_LOCAL_READ_CACHE: dict[str, tuple[int, int, list[Json]]] = {}
+
 
 
 def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
@@ -115,6 +120,10 @@ class MatrixArkLocalAdapter:
         self._context_node_hashes: set[int] = set()
         self._context_child_ref_hashes: set[int] = set()
         self._context_node_cache_loaded = False
+        self._read_cache_lock = threading.RLock()
+        self._read_cache_records: list[Json] | None = None
+        self._read_cache_size = -1
+        self._read_cache_mtime_ns = -1
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -185,6 +194,30 @@ class MatrixArkLocalAdapter:
                 metrics.observe_model_latency(stage, elapsed_ms)
             except Exception:
                 pass
+
+    def _update_read_cache_after_append(self, records: list[Json]) -> None:
+        if not records:
+            return
+        cache_key = str(self.event_log.resolve())
+        with self._read_cache_lock:
+            if self._read_cache_records is not None:
+                self._read_cache_records.extend(records)
+            try:
+                stat = self.event_log.stat()
+                self._read_cache_size = int(stat.st_size)
+                self._read_cache_mtime_ns = int(stat.st_mtime_ns)
+            except FileNotFoundError:
+                self._read_cache_records = None
+                self._read_cache_size = -1
+                self._read_cache_mtime_ns = -1
+        with _LOCAL_READ_CACHE_LOCK:
+            cached = _LOCAL_READ_CACHE.get(cache_key)
+            if cached is not None:
+                _, _, cached_records = cached
+                cached_records = list(cached_records) + list(records)
+                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
+            elif self._read_cache_records is not None:
+                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, list(self._read_cache_records))
 
     def append(self, record: Json) -> None:
         records = materialize_serving_record_batch([record])
@@ -439,7 +472,16 @@ class MatrixArkLocalAdapter:
         return {"status": "ready", "backend": "local", "reason": reason}
 
     def read_all(self) -> list[Json]:
-        if not self.event_log.exists():
+        cache_key = str(self.event_log.resolve())
+        try:
+            stat = self.event_log.stat()
+        except FileNotFoundError:
+            with self._read_cache_lock:
+                self._read_cache_records = []
+                self._read_cache_size = -1
+                self._read_cache_mtime_ns = -1
+            with _LOCAL_READ_CACHE_LOCK:
+                _LOCAL_READ_CACHE.pop(cache_key, None)
             return []
         records = []
         with self._event_log_lock:
@@ -4767,11 +4809,21 @@ class MatrixArkLocalAdapter:
             quality_warnings.append(f"retrieval_deadline_exceeded:{dropped_over_budget.get('deadline_reason', 'deadline_during_context_pack')}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
-        reinforcement = self.append_recall_reinforcement_markers(
-            context_pack_id=context_pack_id_text,
-            selected_refs=selected,
-            reinforced_at_ms=now_ms(),
-        )
+        recall_reinforcement_enabled = bool(ranking.get("recall_reinforcement", True))
+        if recall_reinforcement_enabled:
+            reinforcement = self.append_recall_reinforcement_markers(
+                context_pack_id=context_pack_id_text,
+                selected_refs=selected,
+                reinforced_at_ms=now_ms(),
+            )
+        else:
+            reinforcement = {
+                "reinforced_event_count": 0,
+                "protect_ms": 0,
+                "protected_until_ms": 0,
+                "skipped": True,
+                "reason": "disabled_for_read_only_scale_or_benchmark_run",
+            }
         pack_summary = summarize_text(
             " ".join(str(item.get("text", "")) for item in selected),
             limit=512,
