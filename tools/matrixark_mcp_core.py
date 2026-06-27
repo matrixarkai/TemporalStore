@@ -3718,7 +3718,9 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
         return 0.02 if ref_type in {"resource_chunk", "event", "entity"} else 0.0
     if ref_type == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
-        return 0.32 if source_count >= 2 else 0.18
+        # Multi-event TIME_COMPRESS records should win tight fact/current/multi-hop packs
+        # because they preserve an old answer-bearing window in fewer tokens.
+        return 0.50 if source_count >= 2 else 0.24
     if question_type == "current_state":
         if ref_type == "entity":
             return 0.30
@@ -3767,6 +3769,10 @@ def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float,
     score = float(candidate.get("score", 0.0))
     boosted = clamp01(score + question_type_ref_boost(candidate, question_type))
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
+    if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
+        source_count = len(candidate.get("source_event_ids", []) or [])
+        if source_count >= 2:
+            token_efficiency *= 1.5
     return (boosted, token_efficiency, score)
 
 

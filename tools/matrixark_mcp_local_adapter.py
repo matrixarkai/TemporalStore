@@ -4735,7 +4735,7 @@ class MatrixArkLocalAdapter:
                 continue
             if not admit_candidate_for_node(record):
                 continue
-            text = f"TIME_COMPRESS: {record.get('summary_text', '')}"
+            text = f"TIME_COMPRESS: {summarize_text(str(record.get('summary_text', '')), limit=96)}"
             sparse_score = sparse_lexical_score(query_terms, text)
             keyword_score = len(query_terms.intersection(tokens(text)))
             compression_hash = int(record.get("compression_id_hash") or 0)
