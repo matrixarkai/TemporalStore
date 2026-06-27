@@ -548,7 +548,7 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
                 .unwrap_or(0);
             stats.bytes_read = result.to_string().len() as u64;
         }
-        "scan_hash" | "matrixark_scan_candidates" => {
+        "scan_hash" | "matrixark_scan_candidates" | "matrixark_retrieve_context_pack" => {
             stats.records_read = result.get("count").and_then(Value::as_u64).unwrap_or(0);
             stats.bytes_read = result.to_string().len() as u64;
         }
@@ -1152,6 +1152,227 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
     }))
 }
 
+fn candidate_text(record: &Value) -> String {
+    for field in ["text", "content", "summary_text", "state", "observation"] {
+        if let Some(text) = record.get(field).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    if let Some(text) =
+        json_field(record, &["internal_extraction", "observation"]).and_then(Value::as_str)
+    {
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+fn token_estimate(text: &str) -> u64 {
+    let words = text.split_whitespace().count() as u64;
+    words.max((text.len() as u64 + 3) / 4).max(1)
+}
+
+fn sparse_query_score(query_terms: &HashSet<String>, text: &str) -> f64 {
+    if query_terms.is_empty() || text.is_empty() {
+        return 0.0;
+    }
+    let lower = text.to_ascii_lowercase();
+    let hits = query_terms
+        .iter()
+        .filter(|term| lower.contains(term.as_str()))
+        .count() as f64;
+    (hits / query_terms.len() as f64).clamp(0.0, 1.0)
+}
+
+fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let text = candidate_text(record);
+    json!({
+        "ref_type": record_type,
+        "ref_hash": record_ref_hash(record).unwrap_or_else(|| record.get("record_id").and_then(Value::as_str).unwrap_or("").to_string()),
+        "node_hash": record_node_hash(record),
+        "node_path": record.get("node_path").cloned().unwrap_or_else(|| json!([])),
+        "text": text,
+        "token_estimate": token_estimate(&candidate_text(record)),
+        "score": (score * 1000000.0).round() / 1000000.0,
+        "selection_reason": reason,
+        "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Value, String> {
+    let request = command.record.clone().unwrap_or_else(|| json!({}));
+    let query = request
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let query_terms: HashSet<String> = query
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| part.len() > 2)
+        .map(str::to_string)
+        .collect();
+    let remote_budget = json_field(&request, &["local_budget", "remote_budget_tokens"])
+        .and_then(Value::as_u64)
+        .or_else(|| request.get("max_context_tokens").and_then(Value::as_u64))
+        .unwrap_or(4000);
+    let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
+        .and_then(Value::as_u64)
+        .unwrap_or(48)
+        .max(1);
+    let mut scan_command = command.clone();
+    scan_command.scope = request
+        .get("scope")
+        .cloned()
+        .or_else(|| command.scope.clone());
+    scan_command.secondary_index_groups = request
+        .get("secondary_index_groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .map(|group| {
+                    group
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .or_else(|| command.secondary_index_groups.clone());
+    if scan_command
+        .record_types
+        .as_ref()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        scan_command.record_types = Some(vec![
+            "context_compression_event".to_string(),
+            "context_entity".to_string(),
+            "context_event".to_string(),
+            "context_segment".to_string(),
+            "context_summary".to_string(),
+            "resource_chunk".to_string(),
+            "skill_section".to_string(),
+        ]);
+    }
+    let scan = scan_matrixark_candidates(client, &scan_command)?;
+    let records = scan
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut scored: Vec<(f64, Value)> = records
+        .into_iter()
+        .filter(|record| {
+            matches!(
+                record
+                    .get("record_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                "context_compression_event"
+                    | "context_entity"
+                    | "context_event"
+                    | "context_segment"
+                    | "context_summary"
+                    | "resource_chunk"
+                    | "skill_section"
+            ) && !candidate_text(record).is_empty()
+        })
+        .map(|record| {
+            let text = candidate_text(&record);
+            let mut score = sparse_query_score(&query_terms, &text);
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_entity")
+            ) {
+                score += 0.08;
+            }
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_compression_event")
+            ) {
+                score += 0.06;
+            }
+            (score, record)
+        })
+        .collect();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut selected = Vec::new();
+    let mut dropped_over_budget = 0_u64;
+    let mut used_tokens = 0_u64;
+    for (score, record) in scored {
+        if selected.len() as u64 >= max_refs {
+            break;
+        }
+        let text = candidate_text(&record);
+        let tokens = token_estimate(&text);
+        if used_tokens + tokens > remote_budget {
+            dropped_over_budget += 1;
+            continue;
+        }
+        used_tokens += tokens;
+        selected.push(pack_ref_from_record(
+            &record,
+            score,
+            "native_rust_proxy_score_pack",
+        ));
+    }
+    let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
+    let pack = json!({
+        "context_pack_id": context_pack_id,
+        "query": query,
+        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "selected_refs": selected,
+        "dropped_refs": {
+            "over_budget": dropped_over_budget,
+            "reason_counts": {"over_budget": dropped_over_budget}
+        },
+        "used_context_tokens": used_tokens,
+        "used_remote_context_tokens": used_tokens,
+        "remote_context_budget_tokens": remote_budget,
+        "requested_max_context_tokens": request.get("max_context_tokens").cloned().unwrap_or_else(|| json!(remote_budget)),
+        "packing_policy": "native_rust_proxy_question_type_aware",
+        "context_pack_assembly": "native_rust_proxy",
+        "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
+        "recall_policy": {
+            "native_context_pack": {
+                "enabled": true,
+                "backend": "rust_proxy",
+                "scan_filter_score_pack": true
+            },
+            "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({})),
+            "tree_traversal": {"native_backend": true, "fallback_to_flat": false},
+            "secondary_index_filter": {"native_backend": true}
+        },
+        "quality_warnings": []
+    });
+    Ok(json!({
+        "ok": true,
+        "native_pack_assembly": true,
+        "context_pack": pack,
+        "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}))
+    }))
+}
+
 fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
     match command.op.as_str() {
         "put_string" => {
@@ -1241,6 +1462,7 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             Ok(json!({"ok": true, "count": records.len(), "read": records.len(), "records": records}))
         }
         "matrixark_scan_candidates" => scan_matrixark_candidates(client, &command),
+        "matrixark_retrieve_context_pack" => retrieve_context_pack_native(client, &command),
         "write_matrixark_record" => {
             let record = command
                 .record

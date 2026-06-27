@@ -1797,6 +1797,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         }
 
 
+    def native_context_pack(self, request: Json) -> Json | None:
+        retriever = getattr(getattr(self, "_client", None), "matrixark_retrieve_context_pack", None)
+        if not callable(retriever):
+            return None
+        try:
+            response = retriever(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                request=request,
+            )
+        except Exception:
+            return None
+        if not isinstance(response, dict) or not response.get("native_pack_assembly"):
+            return None
+        pack = response.get("context_pack")
+        if not isinstance(pack, dict):
+            return None
+        pack.setdefault("context_pack_assembly", "native_backend")
+        pack.setdefault("backend", self._backend_label())
+        return pack
+
     def _native_candidate_scan(
         self,
         *,
@@ -3224,6 +3246,37 @@ class MatrixArkRustProxyClient:
         ordered = sorted(values)
         index = min(len(ordered) - 1, max(0, math.ceil(percentile * len(ordered)) - 1))
         return ordered[index]
+
+    def matrixark_retrieve_context_pack(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: Json,
+    ) -> Json:
+        return self._call_json(
+            "matrixark_retrieve_context_pack",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            record_types=[
+                "context_compression_event",
+                "context_embedding",
+                "context_entity",
+                "context_event",
+                "context_index",
+                "context_segment",
+                "context_summary",
+                "resource_chunk",
+                "resource_manifest",
+                "skill_registry_update",
+                "skill_section",
+            ],
+            scope=request.get("scope", {}),
+            secondary_index_groups=request.get("secondary_index_groups", []),
+            record=request,
+        )
 
     def metrics_snapshot(self) -> Json:
         with self._metrics_lock:

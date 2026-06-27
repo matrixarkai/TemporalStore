@@ -3912,6 +3912,15 @@ class MatrixArkLocalAdapter:
         )
         return compact_context_pack_for_serving(pack)
 
+    def native_context_pack(self, request: Json) -> Json | None:
+        """Return a backend-assembled ContextPack when the native backend supports it.
+
+        Python remains responsible for MCP/auth/model glue and request shaping.
+        C++/Rust backends should own scan, secondary-index filtering, scoring, and
+        budget-aware pack assembly through this boundary when available.
+        """
+        return None
+
     def retrieve(self, args: Json) -> Json:
         started_perf = time.perf_counter()
         query = require_string(args, "query")
@@ -4043,6 +4052,38 @@ class MatrixArkLocalAdapter:
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         finish_retrieval_stage("query_understanding", stage_started_perf)
+        native_pack = self.native_context_pack({
+            "query": query,
+            "query_embedding": query_embedding,
+            "scope": scope,
+            "question_type": question_type,
+            "query_plan": query_plan,
+            "secondary_index_groups": [sorted(group) for group in secondary_index_filter_groups],
+            "secondary_index_filter_mode": secondary_index_filter_mode,
+            "max_context_tokens": max_context_tokens,
+            "local_budget": {
+                "token_estimate": int(local_budget.get("token_estimate", 0)),
+                "safety_margin_tokens": int(local_budget.get("safety_margin_tokens", 0)),
+                "remote_budget_tokens": int(local_budget.get("remote_budget_tokens", max_context_tokens)),
+            },
+            "ranking": ranking,
+            "deadline_ms": deadline_ms,
+            "reference_time_ms": reference_time_ms,
+            "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
+            "audit_mode": audit_mode,
+        })
+        if native_pack is not None:
+            recall_policy = native_pack.get("recall_policy") if isinstance(native_pack.get("recall_policy"), dict) else {}
+            recall_policy.setdefault("native_context_pack", {
+                "enabled": True,
+                "python_role": "mcp_auth_model_request_shaping_only",
+                "backend_role": "scan_filter_score_pack",
+            })
+            recall_policy.setdefault("stage_latency_budgets", stage_budget_snapshot())
+            native_pack["recall_policy"] = recall_policy
+            native_pack.setdefault("context_pack_cache_hit", False)
+            native_pack.setdefault("context_pack_assembly", "native_backend")
+            return native_pack
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
             scope=scope,
