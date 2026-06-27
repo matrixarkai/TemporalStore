@@ -10,7 +10,7 @@ The shared defaults live in `tools/temporalstore_runtime_env.sh`.
 
 | Environment variable | Default in smoke | Default in 3-node scale | Meaning |
 | --- | ---: | ---: | --- |
-| `TEMPORALSTORE_STORAGE_ZONE_SIZE` | `10485760` | `268435456` | Zone size for storage streams. Larger values reduce zone/blob switching under high write QPS. |
+| `TEMPORALSTORE_STORAGE_EXTENT_SIZE` | `10485760` | `268435456` | Extent size for storage streams. Larger values reduce extent/blob switching under high write QPS. |
 | `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE` | `10485760` | `268435456` | Maximum stream blob size. Larger values reduce frequent blob freeze/open overhead. |
 | `TEMPORALSTORE_STORAGE_ASYNC` | `false` | `false` | Whether storage writes use async mode. |
 | `TEMPORALSTORE_STORAGE_OPLOG_DELAY_DUMP_LENGTH` | `0` | `0` | Oplog bytes to buffer before dump/replay visibility. Use carefully because it directly affects secondary lag. |
@@ -18,7 +18,7 @@ The shared defaults live in `tools/temporalstore_runtime_env.sh`.
 For AWS scale runs, start with 256 MB:
 
 ```bash
-TEMPORALSTORE_STORAGE_ZONE_SIZE=$((256 * 1024 * 1024)) \
+TEMPORALSTORE_STORAGE_EXTENT_SIZE=$((256 * 1024 * 1024)) \
 TEMPORALSTORE_STREAM_MAX_BLOB_SIZE=$((256 * 1024 * 1024)) \
 bash tools/run_shared_file_3node_scale_ubuntu22.sh
 ```
@@ -26,7 +26,7 @@ bash tools/run_shared_file_3node_scale_ubuntu22.sh
 For heavier ingestion, test 512 MB or 1 GB before increasing batch delays:
 
 ```bash
-TEMPORALSTORE_STORAGE_ZONE_SIZE=$((512 * 1024 * 1024)) \
+TEMPORALSTORE_STORAGE_EXTENT_SIZE=$((512 * 1024 * 1024)) \
 TEMPORALSTORE_STREAM_MAX_BLOB_SIZE=$((512 * 1024 * 1024)) \
 bash tools/run_shared_file_3node_scale_ubuntu22.sh
 ```

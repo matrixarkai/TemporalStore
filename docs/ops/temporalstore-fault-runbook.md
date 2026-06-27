@@ -86,7 +86,7 @@ Recovery checks:
 
 Symptoms:
 - `TemporalStoreStorageCacheBlockers` fires.
-- Storage readiness reports dirty-slot, stale-zone, unreadable-page, or
+- Storage readiness reports dirty-slot, stale-extent, unreadable-page, or
   owner-mismatch blockers.
 - Cache memory or disk bytes keep increasing while hit rate drops.
 
@@ -100,7 +100,7 @@ Immediate actions:
 
 Recovery checks:
 - `storage_cache` readiness blockers decrease.
-- Stale-zone and dirty-slot counts return below policy thresholds.
+- Stale-extent and dirty-slot counts return below policy thresholds.
 - `all_live_pages_readable` is true in the storage recovery report.
 - Follower replay cursors still resume without oplog gaps.
 

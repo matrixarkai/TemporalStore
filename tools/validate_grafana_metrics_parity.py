@@ -116,7 +116,7 @@ METRIC_FAMILIES = {
             "temporalstore_storage_slot_bytes",
             "temporalstore_cache_operations_total",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_zone_bytes",
+            "temporalstore_block_store_extent_bytes",
         ],
         "alerts": [
             "TemporalStoreStorageCacheBlockers",
@@ -132,7 +132,7 @@ METRIC_FAMILIES = {
             "temporalstore_cache_operations_total",
             "temporalstore_cache_bytes",
             "temporalstore_block_store_operations_total",
-            "temporalstore_block_store_zone_bytes",
+            "temporalstore_block_store_extent_bytes",
         ],
     },
     "data_node": {

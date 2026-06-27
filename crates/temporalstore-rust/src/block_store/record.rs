@@ -45,7 +45,7 @@ struct PageRecordHeader {
     page_id: Option<u64>,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
-    zone_id: Option<u64>,
+    extent_id: Option<u64>,
     pub(super) compression: PageRecordCompression,
 }
 
@@ -75,7 +75,7 @@ pub(super) fn encode_page_record(
     page_id: u64,
     object_id: Option<u64>,
     routing_slot: Option<u32>,
-    zone_id: u64,
+    extent_id: u64,
     options: BlockStoreOptions,
 ) -> Result<EncodedPageRecord, BlockStoreError> {
     let digest = Sha256::digest(payload);
@@ -94,7 +94,7 @@ pub(super) fn encode_page_record(
     record.push(u8::from(routing_slot.is_some()));
     record.extend_from_slice(&[0, 0, 0]);
     record.extend_from_slice(&routing_slot.unwrap_or_default().to_le_bytes());
-    record.extend_from_slice(&zone_id.to_le_bytes());
+    record.extend_from_slice(&extent_id.to_le_bytes());
     record.push(match compression {
         PageRecordCompression::None => PAGE_RECORD_COMPRESSION_NONE,
         PageRecordCompression::Zstd => PAGE_RECORD_COMPRESSION_ZSTD,
@@ -174,11 +174,14 @@ pub(super) fn decode_page_record(
             ));
         }
     }
-    if let (Some(address_zone_id), Some(record_zone_id)) = (address.zone_id, header.zone_id) {
-        if address_zone_id != record_zone_id {
+    if let (Some(address_extent_id), Some(record_extent_id)) = (address.extent_id, header.extent_id)
+    {
+        if address_extent_id != record_extent_id {
             return Err(corrupt_page_envelope(
                 address,
-                format!("zone id mismatch: address {address_zone_id}, record {record_zone_id}"),
+                format!(
+                    "extent id mismatch: address {address_extent_id}, record {record_extent_id}"
+                ),
             ));
         }
     }
@@ -239,7 +242,7 @@ pub(super) fn logical_range_from_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -264,7 +267,7 @@ pub(super) fn logical_range_from_segment(
             page_id: header.page_id,
             object_id: header.object_id,
             routing_slot: header.routing_slot,
-            zone_id: header.zone_id,
+            extent_id: header.extent_id,
             ..address
         };
         let payload = decode_page_record_payload(
@@ -385,11 +388,11 @@ fn parse_page_record_header(
     } else {
         None
     };
-    let zone_id = if version >= 5 {
+    let extent_id = if version >= 5 {
         Some(u64::from_le_bytes(
             record[84..92]
                 .try_into()
-                .expect("page envelope zone id slice"),
+                .expect("page envelope extent id slice"),
         ))
     } else {
         None
@@ -428,7 +431,7 @@ fn parse_page_record_header(
         page_id,
         object_id,
         routing_slot,
-        zone_id,
+        extent_id,
         compression,
     })
 }
@@ -521,7 +524,7 @@ pub(super) fn summarize_segment(
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -589,7 +592,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
             page_id: None,
             object_id: None,
             routing_slot: None,
-            zone_id: None,
+            extent_id: None,
             sha256: None,
         };
         if !remaining.starts_with(PAGE_RECORD_MAGIC) {
@@ -628,7 +631,7 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
         address.page_id = header.page_id;
         address.object_id = header.object_id;
         address.routing_slot = header.routing_slot;
-        address.zone_id = header.zone_id;
+        address.extent_id = header.extent_id;
         match decode_page_record(&remaining[..record_len], &address) {
             Ok(decoded) => {
                 report.page_count = report.page_count.saturating_add(1);

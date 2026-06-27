@@ -139,7 +139,7 @@ Important files:
 
 Storage recovery is designed around the order:
 
-1. zone/page manifest inspection
+1. extent/page manifest inspection
 2. page segment inspection
 3. checkpoint or slot dump manifest
 4. index-log tail

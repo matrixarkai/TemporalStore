@@ -27,15 +27,17 @@ pub mod page_store {
     pub use crate::block_store::{
         BlockAddress as PageAddress,
         BlockStoreDelayedDestroySegmentReport as PageStoreDelayedDestroySegmentReport,
-        BlockStoreError as PageStoreError, BlockStoreGcPolicy as PageStoreGcPolicy,
+        BlockStoreError as PageStoreError, BlockStoreExtentDescriptor as PageStoreExtentDescriptor,
+        BlockStoreExtentDescriptor as PageStoreZoneDescriptor,
+        BlockStoreExtentState as PageStoreExtentState, BlockStoreExtentState as PageStoreZoneState,
+        BlockStoreExtentSummary as PageStoreExtentSummary,
+        BlockStoreExtentSummary as PageStoreZoneSummary, BlockStoreGcPolicy as PageStoreGcPolicy,
         BlockStoreGcPolicyPlan as PageStoreGcPolicyPlan, BlockStoreGcReport as PageStoreGcReport,
         BlockStoreGcUtilityCandidate as PageStoreGcUtilityCandidate,
         BlockStoreOptions as PageStoreOptions,
         BlockStorePurgeDelayedDestroyReport as PageStorePurgeDelayedDestroyReport,
         BlockStoreRollReport as PageStoreRollReport,
         BlockStoreSegmentReport as PageStoreSegmentReport, BlockStoreStats as PageStoreStats,
-        BlockStoreZoneDescriptor as PageStoreZoneDescriptor,
-        BlockStoreZoneState as PageStoreZoneState, BlockStoreZoneSummary as PageStoreZoneSummary,
         LocalBlockStore as LocalPageStore,
     };
 }
@@ -46,7 +48,8 @@ pub mod oplog {
 }
 
 pub use block_store::{
-    BlockAddress, BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
+    BlockAddress, BlockStoreExtentDescriptor, BlockStoreExtentState, BlockStoreExtentSummary,
+    BlockStoreOptions, BlockStoreSegmentReport, BlockStoreStats, LocalBlockStore,
 };
 pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
