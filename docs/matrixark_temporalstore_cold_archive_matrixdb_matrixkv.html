@@ -300,6 +300,48 @@ The production rule should be:
 - if raw data was already archived, object/MatrixDB reads may be cheaper and
   more controllable than TemporalStore page scans.
 
+### Cold Scans Must Not Pollute Hot Cache
+
+If a backfill, repair, compliance, or replay job must read old TemporalStore
+blocks/pages, those reads should be treated as **cold lifecycle reads**, not
+normal serving reads. They should not promote old pages into the hot cache or
+resident memory set.
+
+Required policy:
+
+- cold scans use a separate low-priority scan path;
+- cold scan reads are `no_cache_fill` / `no_promote` by default;
+- cold scan reads do not update hot LRU admission except when explicitly
+  reinforced by a user retrieval;
+- cold scan buffers are bounded and separate from the serving cache;
+- cold scan workers have lower IO and CPU priority than serving retrieval;
+- cold scan metrics are separate from serving scan metrics;
+- a cold scan can write a warm compression summary, but it must not warm all raw
+  source pages unless the query/replay explicitly requests raw evidence.
+
+In storage-engine terms, this means C++ and Rust should expose read options like:
+
+```json
+{
+  "read_path": "cold_lifecycle_scan",
+  "cache_policy": "no_fill",
+  "promote_on_hit": false,
+  "priority": "background",
+  "deadline_ms": 30000,
+  "max_bytes": 33554432
+}
+```
+
+For local files, the implementation can use bounded scan buffers and OS cache
+advice such as `POSIX_FADV_SEQUENTIAL` plus `POSIX_FADV_DONTNEED` after the
+window is processed. For object storage or MatrixDB archive reads, the scanner
+should stream into worker-local buffers and never backfill the TemporalStore hot
+page cache unless a recall reinforcement policy asks for it.
+
+The one exception is **recall reinforcement**: if a user query actually needs an
+old raw event, MatrixArk may pin or warm that specific event/window. That should
+be narrow and explicit, not a side effect of background compression.
+
 ### What To Use Instead
 
 Maintain compact metadata that lets workers find compression candidates without
