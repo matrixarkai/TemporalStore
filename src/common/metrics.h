@@ -35,6 +35,7 @@ class MetricsEnv : public std::enable_shared_from_this<MetricsEnv> {
         void Increment() { value_ << 1; }
         void Add(uint64_t value) { value_ << static_cast<int64_t>(value); }
         void Set(double value) { value_ << static_cast<int64_t>(value); }
+        int64_t GetValue() const { return value_.get_value(); }
 
      private:
         bvar::Adder<int64_t> value_;
