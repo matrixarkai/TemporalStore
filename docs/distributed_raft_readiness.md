@@ -113,13 +113,14 @@ The Rust code currently has:
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
 - ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
   match/next index, inflight bytes/entries, append/reorder queue depth, snapshot send/install
-  state, leader-transfer target state, pre-vote/election rejection counters, read-index plus
-  lease-read evidence, stale follower read/write rejection, WAL segment retention, and process-path
+  state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
+  leader-transfer target state, pre-vote/election rejection counters, read-index plus lease-read
+  evidence, stale follower read/write rejection, WAL segment retention, and process-path
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
-  process path. Per-peer pipeline state is maintained as runtime node state and persisted through
-  the local WAL restore path, instead of being only reconstructed at report time. This is
-  Rust-native OpenRaft/raft-rs readiness evidence, not direct C++ ByteRaft FFI.
+  process path. Per-peer pipeline and snapshot lifecycle state is maintained as runtime node state
+  and persisted through the local WAL restore path, instead of being only reconstructed at report
+  time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct C++ ByteRaft FFI.
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior

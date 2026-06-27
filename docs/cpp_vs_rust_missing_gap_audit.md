@@ -895,8 +895,9 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - Rust now emits a `ByteRaftRuntimeAdminReport` from the Raft process path. It makes the
   ByteRaft-derived runtime fields executable instead of only documented: per-peer match/next index,
   inflight bytes/entries, append and reorder queue depth, snapshot sender/downloader lifecycle
-  state, leader-transfer target state, pre-vote/election rejection counters, read-index and
-  lease-read evidence, stale follower read/write rejection, WAL segment retention, and admin-status
+  state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
+  leader-transfer target state, pre-vote/election rejection counters, read-index and lease-read
+  evidence, stale follower read/write rejection, WAL segment retention, and admin-status
   completeness. The standalone Raft node `/metrics` route and raft-enabled data-node `/metrics`
   output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
   read-safety gauges for scrape-based operator parity. The per-peer pipeline/reorder/snapshot

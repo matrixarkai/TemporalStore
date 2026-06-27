@@ -1542,6 +1542,15 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     assert!(second.success);
     assert!(!second.snapshot_complete);
     assert_eq!(cluster.commit_index(3).unwrap(), 0);
+    let in_progress = cluster.byteraft_runtime_admin_report();
+    let peer3 = in_progress
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert!(peer3.snapshot_installing);
+    assert_eq!(peer3.snapshot_install_received_chunks, 2);
+    assert_eq!(peer3.snapshot_install_total_chunks, 3);
 
     let final_chunk = cluster
         .receive_install_snapshot_chunk(chunks[2].clone())
@@ -1562,6 +1571,15 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
             value: Some(vec![4])
         }
     );
+    let complete = cluster.byteraft_runtime_admin_report();
+    let peer3 = complete
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert!(!peer3.snapshot_installing);
+    assert_eq!(peer3.snapshot_install_received_chunks, 3);
+    assert_eq!(peer3.snapshot_install_total_chunks, 3);
 }
 
 #[test]
@@ -2073,6 +2091,12 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .peer_pipeline_states
         .iter()
         .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
+    assert!(report.peer_pipeline_states.iter().any(|peer| {
+        peer.peer_id == 2
+            && peer.snapshot_send_attempts > 0
+            && peer.snapshot_install_received_chunks == 1
+            && peer.snapshot_install_total_chunks == 1
+    }));
 
     let metrics = cluster.prometheus_metrics();
     assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
@@ -2082,6 +2106,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_attempts"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
 
     let restored =
@@ -2096,6 +2123,10 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .peer_pipeline_states
         .iter()
         .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
+    assert!(restored_report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 2 && peer.snapshot_send_attempts > 0));
 }
 
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route

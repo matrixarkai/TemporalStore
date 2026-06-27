@@ -488,6 +488,11 @@ pub struct ByteRaftPeerPipelineState {
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
+    pub snapshot_send_attempts: u64,
+    pub snapshot_install_received_chunks: u64,
+    pub snapshot_install_total_chunks: u64,
+    pub snapshot_retry_count: u64,
+    pub snapshot_backpressure_rejections: u64,
     pub transfer_leader_target: bool,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
@@ -888,6 +893,11 @@ pub struct RaftPeerPipelineRuntimeState {
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
+    pub snapshot_send_attempts: u64,
+    pub snapshot_install_received_chunks: u64,
+    pub snapshot_install_total_chunks: u64,
+    pub snapshot_retry_count: u64,
+    pub snapshot_backpressure_rejections: u64,
     pub transfer_leader_target: bool,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
@@ -6131,6 +6141,12 @@ impl RaftCluster {
             target.pipeline_state.snapshot_sending = true;
             target.pipeline_state.snapshot_installing = true;
             target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
+            target.pipeline_state.snapshot_send_attempts = target
+                .pipeline_state
+                .snapshot_send_attempts
+                .saturating_add(1);
+            target.pipeline_state.snapshot_install_received_chunks = 0;
+            target.pipeline_state.snapshot_install_total_chunks = 1;
         }
         Ok(InstallSnapshotRequest {
             rpc: None,
@@ -6199,6 +6215,8 @@ impl RaftCluster {
                 .get_mut(&request.target_id)
                 .ok_or(RaftError::NodeNotFound(request.target_id))?;
             if request.term < node.current_term {
+                node.pipeline_state.snapshot_retry_count =
+                    node.pipeline_state.snapshot_retry_count.saturating_add(1);
                 return Ok(InstallSnapshotResponse {
                     term: node.current_term,
                     success: false,
@@ -6211,6 +6229,8 @@ impl RaftCluster {
             node.voted_for = None;
             node.pipeline_state.snapshot_installing = true;
             node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
+            node.pipeline_state.snapshot_install_received_chunks = 0;
+            node.pipeline_state.snapshot_install_total_chunks = 1;
         }
         let result = self.install_snapshot(request.target_id, request.snapshot.clone());
         {
@@ -6219,7 +6239,10 @@ impl RaftCluster {
                 node.pipeline_state.snapshot_installing = false;
                 node.pipeline_state.snapshot_sending = false;
                 node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
+                node.pipeline_state.snapshot_install_received_chunks = 1;
+                node.pipeline_state.snapshot_install_total_chunks = 1;
             }
+            inner.persist_configured_wal()?;
         }
         let term = self
             .hard_state(request.target_id)
@@ -6247,24 +6270,44 @@ impl RaftCluster {
         max_entries_per_chunk: usize,
     ) -> Result<Vec<InstallSnapshotChunkRequest>, RaftError> {
         let snapshot = self.create_snapshot()?;
-        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let leader = inner
             .nodes
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_term = leader.current_term;
+        let leader_id = inner.leader_id;
+        let max_inflights_replicate = inner.config.max_inflights_replicate;
         let chunk_size = max_entries_per_chunk.max(1);
         let chunk_count = snapshot.entries.len().max(1).div_ceil(chunk_size);
         let snapshot_id = format!(
             "{}-{}-{}",
             snapshot.shard_id, snapshot.last_included_term, snapshot.last_included_index
         );
+        if let Some(target) = inner.nodes.get_mut(&target_id) {
+            target.pipeline_state.snapshot_sending = true;
+            target.pipeline_state.snapshot_installing = true;
+            target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
+            target.pipeline_state.snapshot_send_attempts = target
+                .pipeline_state
+                .snapshot_send_attempts
+                .saturating_add(chunk_count as u64);
+            target.pipeline_state.snapshot_install_received_chunks = 0;
+            target.pipeline_state.snapshot_install_total_chunks = chunk_count as u64;
+            if chunk_count as u64 > max_inflights_replicate {
+                target.pipeline_state.snapshot_backpressure_rejections = target
+                    .pipeline_state
+                    .snapshot_backpressure_rejections
+                    .saturating_add(1);
+            }
+        }
         let mut chunks = Vec::new();
         if snapshot.entries.is_empty() {
             chunks.push(InstallSnapshotChunkRequest {
                 rpc: None,
                 shard_id: snapshot.shard_id,
-                term: leader.current_term,
-                leader_id: inner.leader_id,
+                term: leader_term,
+                leader_id,
                 target_id,
                 snapshot_id,
                 last_included_term: snapshot.last_included_term,
@@ -6279,8 +6322,8 @@ impl RaftCluster {
             chunks.push(InstallSnapshotChunkRequest {
                 rpc: None,
                 shard_id: snapshot.shard_id,
-                term: leader.current_term,
-                leader_id: inner.leader_id,
+                term: leader_term,
+                leader_id,
                 target_id,
                 snapshot_id: snapshot_id.clone(),
                 last_included_term: snapshot.last_included_term,
@@ -6318,6 +6361,8 @@ impl RaftCluster {
             .get_mut(&request.target_id)
             .ok_or(RaftError::NodeNotFound(request.target_id))?;
         if request.term < node.current_term {
+            node.pipeline_state.snapshot_retry_count =
+                node.pipeline_state.snapshot_retry_count.saturating_add(1);
             return Ok(InstallSnapshotChunkResponse {
                 term: node.current_term,
                 success: false,
@@ -6332,6 +6377,7 @@ impl RaftCluster {
         node.voted_for = None;
         node.pipeline_state.snapshot_installing = true;
         node.pipeline_state.snapshot_installed_index = request.last_included_index;
+        node.pipeline_state.snapshot_install_total_chunks = request.chunk_count;
         let key = (request.target_id, request.snapshot_id.clone());
         let pending = inner
             .pending_snapshots
@@ -6347,6 +6393,10 @@ impl RaftCluster {
             || pending.last_included_index != request.last_included_index
             || pending.chunks.len() != request.chunk_count as usize
         {
+            if let Some(node) = inner.nodes.get_mut(&request.target_id) {
+                node.pipeline_state.snapshot_retry_count =
+                    node.pipeline_state.snapshot_retry_count.saturating_add(1);
+            }
             return Err(RaftError::InvalidSnapshotChunk(
                 "chunk metadata changed within snapshot".to_string(),
             ));
@@ -6357,6 +6407,10 @@ impl RaftCluster {
             .iter()
             .filter(|chunk| chunk.is_some())
             .count() as u64;
+        if let Some(node) = inner.nodes.get_mut(&request.target_id) {
+            node.pipeline_state.snapshot_install_received_chunks = received_chunks;
+            node.pipeline_state.snapshot_install_total_chunks = request.chunk_count;
+        }
         if received_chunks < request.chunk_count {
             let term = inner
                 .nodes
@@ -6399,6 +6453,8 @@ impl RaftCluster {
                 node.pipeline_state.snapshot_installing = false;
                 node.pipeline_state.snapshot_sending = false;
                 node.pipeline_state.snapshot_installed_index = request.last_included_index;
+                node.pipeline_state.snapshot_install_received_chunks = received_chunks;
+                node.pipeline_state.snapshot_install_total_chunks = request.chunk_count;
             }
         }
         let term = self
@@ -7670,6 +7726,11 @@ impl RaftClusterInner {
                     snapshot_sending: pipeline.snapshot_sending,
                     snapshot_installing: pipeline.snapshot_installing,
                     snapshot_installed_index: pipeline.snapshot_installed_index,
+                    snapshot_send_attempts: pipeline.snapshot_send_attempts,
+                    snapshot_install_received_chunks: pipeline.snapshot_install_received_chunks,
+                    snapshot_install_total_chunks: pipeline.snapshot_install_total_chunks,
+                    snapshot_retry_count: pipeline.snapshot_retry_count,
+                    snapshot_backpressure_rejections: pipeline.snapshot_backpressure_rejections,
                     transfer_leader_target: pipeline.transfer_leader_target,
                     pre_vote_rejections: pipeline.pre_vote_rejections,
                     election_rejections: pipeline.election_rejections,
@@ -7702,8 +7763,11 @@ impl RaftClusterInner {
         let snapshot_downloader_lifecycle_present = peer_pipeline_states
             .iter()
             .any(|peer| peer.snapshot_installing || peer.snapshot_installed_index > 0);
-        let snapshot_retry_backpressure_present =
-            self.config.send_snapshot_timeout_ms > 0 && self.config.max_inflights_replicate > 0;
+        let snapshot_retry_backpressure_present = self.config.send_snapshot_timeout_ms > 0
+            && self.config.max_inflights_replicate > 0
+            && peer_pipeline_states.iter().any(|peer| {
+                peer.snapshot_send_attempts > 0 && peer.snapshot_install_total_chunks > 0
+            });
         let (
             wal_segment_count,
             wal_active_segment_id,
@@ -8744,6 +8808,20 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installing gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installed_index Last installed snapshot index per peer.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installed_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_attempts Snapshot send attempts per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_attempts counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_received_chunks Snapshot chunks received per peer.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_peer_snapshot_install_received_chunks gauge\n",
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_total_chunks Snapshot chunks expected per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_total_chunks gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_retry_count Snapshot retry/rejection count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_retry_count counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections Snapshot backpressure rejection count per peer.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections counter\n",
+    );
     for peer in report.peer_pipeline_states {
         let labels = &[
             ("kind", kind.to_string()),
@@ -8807,6 +8885,36 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_snapshot_installed_index",
             labels,
             peer.snapshot_installed_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_send_attempts",
+            labels,
+            peer.snapshot_send_attempts,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_install_received_chunks",
+            labels,
+            peer.snapshot_install_received_chunks,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_install_total_chunks",
+            labels,
+            peer.snapshot_install_total_chunks,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_retry_count",
+            labels,
+            peer.snapshot_retry_count,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
+            labels,
+            peer.snapshot_backpressure_rejections,
         );
     }
 }
