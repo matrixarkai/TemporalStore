@@ -1562,6 +1562,8 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     assert!(peer3.snapshot_installing);
     assert_eq!(peer3.snapshot_install_received_chunks, 2);
     assert_eq!(peer3.snapshot_install_total_chunks, 3);
+    assert_eq!(peer3.snapshot_install_started, 1);
+    assert_eq!(peer3.snapshot_install_completed, 0);
 
     let final_chunk = cluster
         .receive_install_snapshot_chunk(chunks[2].clone())
@@ -1591,6 +1593,13 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     assert!(!peer3.snapshot_installing);
     assert_eq!(peer3.snapshot_install_received_chunks, 3);
     assert_eq!(peer3.snapshot_install_total_chunks, 3);
+    assert_eq!(peer3.snapshot_send_attempts, 3);
+    assert_eq!(peer3.snapshot_send_completed, 1);
+    assert_eq!(peer3.snapshot_send_failed, 1);
+    assert_eq!(peer3.snapshot_install_started, 1);
+    assert_eq!(peer3.snapshot_install_completed, 1);
+    assert_eq!(peer3.snapshot_install_rejected, 0);
+    assert_eq!(peer3.snapshot_install_rolled_back, 0);
 }
 
 #[test]
@@ -1611,6 +1620,14 @@ fn raft_snapshot_transport_rejects_stale_term_before_install() {
     assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
     assert_eq!(cluster.commit_index(3).unwrap(), 1);
     assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
+    let report = cluster.byteraft_runtime_admin_report();
+    let peer3 = report
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert_eq!(peer3.snapshot_install_rejected, 1);
+    assert_eq!(peer3.snapshot_send_failed, 1);
 }
 
 #[test]
@@ -1635,6 +1652,14 @@ fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
     assert!(!response.snapshot_complete);
     assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
     assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
+    let report = cluster.byteraft_runtime_admin_report();
+    let peer3 = report
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert_eq!(peer3.snapshot_install_rejected, 1);
+    assert_eq!(peer3.snapshot_send_failed, 1);
 
     chunks[0].term = 2;
     let response = cluster
@@ -2143,6 +2168,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.peer_pipeline_states.iter().any(|peer| {
         peer.peer_id == 2
             && peer.snapshot_send_attempts > 0
+            && peer.snapshot_send_completed > 0
+            && peer.snapshot_install_started > 0
+            && peer.snapshot_install_completed > 0
             && peer.snapshot_install_received_chunks == 1
             && peer.snapshot_install_total_chunks == 1
     }));
@@ -2171,6 +2199,12 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_attempts"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_completed"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_failed"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_started"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_completed"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_rejected"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_rolled_back"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
@@ -2209,7 +2243,10 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(restored_report
         .peer_pipeline_states
         .iter()
-        .any(|peer| peer.peer_id == 2 && peer.snapshot_send_attempts > 0));
+        .any(|peer| peer.peer_id == 2
+            && peer.snapshot_send_attempts > 0
+            && peer.snapshot_send_completed > 0
+            && peer.snapshot_install_completed > 0));
 }
 
 // shared-corpus: raft_byteraft_replication_backpressure raft_byteraft_metrics_admin_pipeline_status

@@ -896,7 +896,8 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   ByteRaft-derived runtime fields executable instead of only documented: per-peer match/next index,
   append request/accept/reject counters, inflight bytes/entries, append and reorder queue depth,
   reorder accept/release/reject counters,
-  snapshot sender/downloader lifecycle state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
+  snapshot sender/downloader lifecycle state, snapshot send attempt/complete/failure counters,
+  snapshot install start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
   leader-transfer target state and request/accept/reject/complete counters,
   pre-vote/election rejection counters, read-index and lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
@@ -909,7 +910,8 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   that exceed the configured reorder window and records accepted/released/rejected entries.
   Snapshot sender construction now
   rejects concurrent single-shot or chunked transfers for the same peer and records snapshot
-  backpressure. WAL segment lifecycle evidence now includes per-segment valid record counts and
+  backpressure; successful, failed, rejected, and rolled-back snapshot lifecycle outcomes are
+  counted per peer. WAL segment lifecycle evidence now includes per-segment valid record counts and
   sequence bounds, plus aggregate byte and retained-record gauges. The per-peer pipeline/reorder/snapshot
   fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
   local WAL records, so the process-path evidence survives restart instead of being only a
