@@ -2036,8 +2036,12 @@ mod tests {
             assert!(report
                 .missing_by_area("storage_cache")
                 .expect("storage cache area must exist")
+                .is_empty());
+            assert!(report
+                .missing_by_area("raft_replication")
+                .expect("raft replication area must exist")
                 .iter()
-                .any(|item| item.contains("mtcache-class")));
+                .any(|item| item.contains("multi-process rollout evidence")));
             assert!(report
                 .missing_by_area("scale_testing")
                 .expect("scale testing area must exist")
@@ -2178,7 +2182,7 @@ mod tests {
             "temporalstore_proxy_service_registry_events_total{kind=\"heartbeat_failure\"} 0"
         ));
         assert!(metrics.contains("# TYPE temporalstore_production_readiness_ready gauge"));
-        assert!(metrics.contains("temporalstore_production_readiness_ready 1"));
+        assert!(metrics.contains("temporalstore_production_readiness_ready 0"));
         let readiness = crate::production_readiness_report();
         assert!(metrics.contains(&format!(
             "temporalstore_production_readiness_blockers {}",

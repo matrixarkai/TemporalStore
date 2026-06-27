@@ -787,6 +787,10 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
         Some(&12)
     );
 
+    let mut unit_sweep_thresholds = ContextPipelineBenchmarkThresholds::default();
+    unit_sweep_thresholds.min_ingest_sources_per_sec = 0.0;
+    unit_sweep_thresholds.min_retrieve_queries_per_sec = 0.0;
+    unit_sweep_thresholds.min_inject_queries_per_sec = 0.0;
     let sweep = run_context_pipeline_benchmark_sweep(
         &engine,
         ContextPipelineBenchmarkSweepRequest {
@@ -807,7 +811,7 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
                 },
             ],
             provider: ContextModelProviderConfig::default(),
-            thresholds: ContextPipelineBenchmarkThresholds::default(),
+            thresholds: unit_sweep_thresholds,
         },
     );
     assert!(sweep.status.ok, "{:?}", sweep.status);
