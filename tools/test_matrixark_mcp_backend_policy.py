@@ -346,6 +346,26 @@ class _FailingWarmupClient:
     def hget(self, key: str, field: str) -> str:
         return ""
 
+class _NativeCandidateScanClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def matrixark_scan_candidates(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "records": [
+                {"record_type": "resource_chunk", "scope": kwargs["scope"], "text": "native filtered pdf"}
+            ],
+            "scan_stats": {
+                "execution_mode": "rust_proxy_native_candidate_prefilter",
+                "native_prefix_scan": True,
+                "native_secondary_index_prefilter": True,
+                "scanned_records": 9,
+                "returned_records": 1,
+                "secondary_index_dropped_candidate_count": 3,
+            },
+        }
+
 
 def _direct_adapter_for_readiness(*, metaserver: str, client: object | None = None) -> mcp.MatrixArkTemporalStoreDirectAdapter:
     adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
@@ -2177,6 +2197,34 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(stats["dropped_by_type"], 1)
         self.assertEqual(stats["dropped_by_scope"], 1)
 
+    def test_direct_retrieval_prefers_native_candidate_scan_when_available(self) -> None:
+        client = _NativeCandidateScanClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-rust"
+        scope = {"account_id": "acct", "tenant_id": "tenant", "user_id": "user"}
+
+        result = adapter.retrieval_records(
+            scope=scope,
+            record_types={"resource_chunk"},
+            secondary_index_groups=[{"resource_type:pdf"}],
+            selected_node_hashes={123},
+        )
+
+        self.assertEqual(result["records"][0]["text"], "native filtered pdf")
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(client.calls[0]["count_key"], "matrixark:test:record_count")
+        self.assertEqual(client.calls[0]["record_hash_key"], "matrixark:test:records")
+        self.assertEqual(client.calls[0]["secondary_index_groups"], [["resource_type:pdf"]])
+        self.assertEqual(client.calls[0]["selected_node_hashes"], [123])
+        stats = result["scan_stats"]
+        self.assertTrue(stats["native_prefix_scan"])
+        self.assertTrue(stats["native_secondary_index_prefilter"])
+        self.assertEqual(stats["pack_assembly_location"], "python_reference_packer")
+
     def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "src/client/temporalstore_c_client.cc").read_text()
@@ -2256,6 +2304,9 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertTrue(metrics["supports_batch_append"])
         self.assertTrue(metrics["supports_prefix_scan"])
         self.assertEqual(metrics["prefix_scan_path"], "rust_proxy_scan_hash")
+        self.assertTrue(metrics["supports_native_candidate_prefilter"])
+        self.assertEqual(metrics["candidate_prefilter_path"], "rust_proxy_matrixark_scan_candidates")
+        self.assertFalse(metrics["supports_native_pack_assembly"])
         self.assertFalse(metrics["requires_c_sdk_hgetall_for_prefix_scan"])
         self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_append_records")
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
