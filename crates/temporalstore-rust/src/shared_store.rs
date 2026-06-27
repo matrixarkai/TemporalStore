@@ -31,19 +31,19 @@ pub enum SharedStoreReplicationError {
     },
     #[error("no shared-store checkpoint found for shard {0}")]
     CheckpointNotFound(ShardId),
-    #[error("replicated command failed at oplog index {oplog_index}: {status:?}")]
+    #[error("replicated command failed at WAL index {oplog_index}: {status:?}")]
     ApplyFailed { oplog_index: u64, status: Status },
-    #[error("oplog replay gap: expected index {expected}, got {actual}")]
+    #[error("WAL replay gap: expected index {expected}, got {actual}")]
     ReplayGap { expected: u64, actual: u64 },
     #[error(
-        "shared-store GC would remove oplog needed by replay cursor {cursor_oplog_index} before retain {retain_from_oplog_index}"
+        "shared-store GC would remove WAL entry needed by replay cursor {cursor_oplog_index} before retain {retain_from_oplog_index}"
     )]
     GcBlockedByReplayCursor {
         cursor_oplog_index: u64,
         retain_from_oplog_index: u64,
     },
     #[error(
-        "shared-store checkpoint GC would remove checkpoint {checkpoint_id} at oplog {checkpoint_oplog_index} needed by replay cursor {cursor_oplog_index}"
+        "shared-store checkpoint GC would remove checkpoint {checkpoint_id} at WAL index {checkpoint_oplog_index} needed by replay cursor {cursor_oplog_index}"
     )]
     CheckpointGcBlockedByReplayCursor {
         cursor_oplog_index: u64,
@@ -65,6 +65,9 @@ pub struct SharedStoreOplogObject {
     pub entry_byte_size: u64,
     pub entry_sha256: String,
 }
+
+pub type SharedStoreWalEntry = SharedStoreOplogEntry;
+pub type SharedStoreWalObject = SharedStoreOplogObject;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStorePageSegment {
@@ -228,9 +231,16 @@ where
         &self,
         entry: SharedStoreOplogEntry,
     ) -> Result<(), SharedStoreReplicationError> {
+        self.publish_wal_entry(entry).await
+    }
+
+    pub async fn publish_wal_entry(
+        &self,
+        entry: SharedStoreWalEntry,
+    ) -> Result<(), SharedStoreReplicationError> {
         let key = self.oplog_key(entry.shard_id, entry.oplog_index);
         let entry_bytes = serde_json::to_vec(&entry)?;
-        let object = SharedStoreOplogObject {
+        let object = SharedStoreWalObject {
             entry,
             entry_byte_size: entry_bytes.len() as u64,
             entry_sha256: sha256_hex(&entry_bytes),
@@ -428,18 +438,27 @@ where
         after_oplog_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal(shard_id, after_oplog_index, engine).await
+    }
+
+    pub async fn replay_wal(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
         let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
         keys.sort();
 
         let mut report = ReplayReport {
             applied: 0,
-            last_oplog_index: after_oplog_index,
+            last_oplog_index: after_wal_index,
         };
         for key in keys {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
             };
-            if oplog_index <= after_oplog_index {
+            if oplog_index <= after_wal_index {
                 continue;
             }
             let entry = self.read_oplog_entry(&key).await?;
@@ -465,19 +484,29 @@ where
         after_oplog_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_strict(shard_id, after_oplog_index, engine)
+            .await
+    }
+
+    pub async fn replay_wal_strict(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
         let mut keys = self.object_store.list(&self.oplog_prefix(shard_id)).await?;
         keys.sort();
 
-        let mut expected = after_oplog_index + 1;
+        let mut expected = after_wal_index + 1;
         let mut report = ReplayReport {
             applied: 0,
-            last_oplog_index: after_oplog_index,
+            last_oplog_index: after_wal_index,
         };
         for key in keys {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
             };
-            if oplog_index <= after_oplog_index {
+            if oplog_index <= after_wal_index {
                 continue;
             }
             if oplog_index != expected {
@@ -541,9 +570,17 @@ where
         shard_id: ShardId,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_strict_with_cursor(shard_id, engine).await
+    }
+
+    pub async fn replay_wal_strict_with_cursor(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
         let mut cursor = self.load_replay_cursor(shard_id).await?;
         let report = self
-            .replay_oplog_strict(shard_id, cursor.last_oplog_index, engine)
+            .replay_wal_strict(shard_id, cursor.last_oplog_index, engine)
             .await?;
         if report.last_oplog_index > cursor.last_oplog_index {
             cursor.last_oplog_index = report.last_oplog_index;
@@ -558,12 +595,20 @@ where
         shard_id: ShardId,
         retain_from_oplog_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        self.gc_wal_before(shard_id, retain_from_oplog_index).await
+    }
+
+    pub async fn gc_wal_before(
+        &self,
+        shard_id: ShardId,
+        retain_from_wal_index: u64,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
         let mut deleted_oplog_objects = 0usize;
         for key in self.object_store.list(&self.oplog_prefix(shard_id)).await? {
             let Some(oplog_index) = parse_oplog_index(&key) else {
                 continue;
             };
-            if oplog_index < retain_from_oplog_index {
+            if oplog_index < retain_from_wal_index {
                 self.object_store.delete(&key).await?;
                 deleted_oplog_objects += 1;
             }
@@ -580,18 +625,25 @@ where
         shard_id: ShardId,
         retain_from_oplog_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
+        self.gc_wal_before_cursor_safe(shard_id, retain_from_oplog_index)
+            .await
+    }
+
+    pub async fn gc_wal_before_cursor_safe(
+        &self,
+        shard_id: ShardId,
+        retain_from_wal_index: u64,
+    ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
         let cursor = self.load_replay_cursor(shard_id).await?;
         if cursor.last_oplog_index > 0
-            && retain_from_oplog_index > cursor.last_oplog_index.saturating_add(1)
+            && retain_from_wal_index > cursor.last_oplog_index.saturating_add(1)
         {
             return Err(SharedStoreReplicationError::GcBlockedByReplayCursor {
                 cursor_oplog_index: cursor.last_oplog_index,
-                retain_from_oplog_index,
+                retain_from_oplog_index: retain_from_wal_index,
             });
         }
-        let mut report = self
-            .gc_oplog_before(shard_id, retain_from_oplog_index)
-            .await?;
+        let mut report = self.gc_wal_before(shard_id, retain_from_wal_index).await?;
         if cursor.last_oplog_index > 0 {
             report.retained_for_cursor_oplog_index = Some(cursor.last_oplog_index);
         }
@@ -1080,11 +1132,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shared_store_strict_replay_rejects_oplog_gaps() {
+    async fn shared_store_strict_replay_rejects_wal_gaps() {
         let dir = tempfile::tempdir().unwrap();
         let (_store, replicator) = test_shared_store(dir.path());
         replicator
-            .publish_oplog_entry(SharedStoreOplogEntry {
+            .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 oplog_index: 2,
                 command: Command::StringSet {
@@ -1099,7 +1151,7 @@ mod tests {
         follower.load_shard(1);
         assert!(matches!(
             replicator
-                .replay_oplog_strict(1, 0, &follower)
+                .replay_wal_strict(1, 0, &follower)
                 .await
                 .unwrap_err(),
             SharedStoreReplicationError::ReplayGap {

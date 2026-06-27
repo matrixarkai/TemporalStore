@@ -21,6 +21,7 @@ pub mod replica_replay;
 pub mod sdk;
 pub mod shared_store;
 pub mod types;
+pub mod wal;
 
 pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
@@ -121,7 +122,10 @@ pub use meta::{
     ServerShardServingState, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
     StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
-pub use oplog::{LocalOplogStore, OplogRecord, OplogStats};
+pub use oplog::{
+    LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
+    WalStats,
+};
 pub use page_store::{
     LocalPageStore, PageAddress, PageStoreOptions, PageStoreSegmentReport, PageStoreStats,
 };
@@ -189,7 +193,8 @@ pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
-    SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
+    SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWalEntry, SharedStoreWalObject,
+    SharedStoreWriteReport,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,

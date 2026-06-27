@@ -506,7 +506,7 @@
     "crates/temporalstore-rust/src/sdk.rs::tonic_adapter_exposes_client_open_sync_and_preflight_paths",
     "crates/temporalstore-rust/src/shared_store.rs::shared_store_restores_index_pages_and_replays_later_oplog",
     "crates/temporalstore-rust/src/shared_store.rs::shared_store_checkpoint_rejects_corrupt_page_segment",
-    "crates/temporalstore-rust/src/shared_store.rs::shared_store_strict_replay_rejects_oplog_gaps",
+    "crates/temporalstore-rust/src/shared_store.rs::shared_store_strict_replay_rejects_wal_gaps",
     "crates/temporalstore-rust/src/shared_store.rs::shared_store_sync_storage_publishes_and_cursor_replay_resumes",
     "crates/temporalstore-rust/src/shared_store.rs::shared_store_async_storage_flushes_in_order_with_limit",
     "crates/temporalstore-rust/src/shared_store.rs::shared_store_replays_chunked_timestamped_kv_pages_in_sync_and_async_modes",

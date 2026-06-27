@@ -131,7 +131,7 @@ The Rust code currently has:
   maintained as runtime state and persisted through the local WAL restore path, instead of being only
   reconstructed at report time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
   C++ ByteRaft FFI.
-- strict shared-store oplog gap rejection
+- strict shared-store WAL gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
 

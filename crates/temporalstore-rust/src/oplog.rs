@@ -50,6 +50,12 @@ pub struct LocalOplogStore {
     inner: Arc<Mutex<OplogInner>>,
 }
 
+pub type WalError = OplogError;
+pub type WalRecord = OplogRecord;
+pub type WalStats = OplogStats;
+pub type WalGcReport = OplogGcReport;
+pub type LocalWalStore = LocalOplogStore;
+
 #[derive(Debug)]
 struct OplogInner {
     root: PathBuf,
@@ -297,6 +303,27 @@ fn unique_temp_path(kind: &str) -> PathBuf {
 mod tests {
     use super::*;
     use crate::types::Command;
+
+    // rust-internal: verifies Rust WAL alias exports remain wired to the local mutation log API.
+    #[test]
+    fn wal_aliases_cover_local_mutation_log_api() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWalStore::new(dir.path());
+        let record: WalRecord = store
+            .append(
+                5,
+                Command::StringSet {
+                    key: "wal-key".to_string(),
+                    value: b"wal-value".to_vec(),
+                },
+            )
+            .unwrap();
+        assert_eq!(record.sequence, 1);
+        let stats: WalStats = store.stats(5);
+        assert_eq!(stats.last_sequence, 1);
+        let gc: WalGcReport = store.gc_before_sequence(5, 1).unwrap();
+        assert_eq!(gc.records_removed, 0);
+    }
 
     #[test]
     fn gc_before_sequence_rewrites_oplog_with_retained_tail() {
