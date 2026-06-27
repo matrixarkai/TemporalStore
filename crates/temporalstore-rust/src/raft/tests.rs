@@ -2166,6 +2166,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_accepted"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_released"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_attempts"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
@@ -2203,6 +2206,46 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .peer_pipeline_states
         .iter()
         .any(|peer| peer.peer_id == 2 && peer.snapshot_send_attempts > 0));
+}
+
+// shared-corpus: raft_byteraft_replication_backpressure raft_byteraft_metrics_admin_pipeline_status
+#[test]
+fn raft_reorder_queue_rejects_batches_beyond_window_and_reports_counters() {
+    let config = RaftConfig {
+        reorder_window_size: 1,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_config(214, [1, 2, 3], config).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    for index in 0..2 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("reorder-window-{index}"),
+                value: vec![index as u8],
+            })
+            .unwrap();
+    }
+    cluster.set_alive(3, true).unwrap();
+
+    let request = cluster.build_append_entries_request(3).unwrap();
+    assert_eq!(request.entries.len(), 2);
+    let response = cluster.receive_append_entries(request).unwrap();
+    assert!(!response.success);
+    assert_eq!(
+        response.reject_reason.as_deref(),
+        Some("reorder_window_exceeded")
+    );
+
+    let report = cluster.byteraft_runtime_admin_report();
+    let peer3 = report
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert_eq!(peer3.reorder_entries_accepted, 0);
+    assert_eq!(peer3.reorder_entries_released, 0);
+    assert_eq!(peer3.reorder_entries_rejected, 2);
+    assert_eq!(cluster.commit_index(3).unwrap(), 0);
 }
 
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
