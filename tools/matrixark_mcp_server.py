@@ -121,6 +121,7 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_temporal_adapters import (
         MatrixArkRustCliClient,
+        MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
@@ -129,6 +130,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_temporal_adapters import (
         MatrixArkRustCliClient,
+        MatrixArkRustProxyClient,
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )

@@ -17,6 +17,12 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Add Rust direct SDK parity as an embedded/local optimization after the Rust proxy path is stable.
+  - Current production decision: use the existing long-lived Rust proxy, currently `matrixark_record_log --serve`, for MCP, benchmark, and production MatrixArk paths.
+  - New configuration should use `MATRIXARK_TEMPORALSTORE_RUST_PROXY` / `--rust-proxy`; `MATRIXARK_TEMPORALSTORE_RUST_CLI` / `--rust-cli` stay as compatibility aliases and debug wording only.
+  - Direct SDK parity target: expose an in-process Rust SDK/binding with the same contract as C++ direct SDK for local embedded deployments, while keeping proxy/client mode as the operational default for isolation, health/readiness, metrics, backpressure, graceful restart, and deployment consistency.
+  - Shared tests must prove proxy path first, then direct SDK path as an additional mode, not a replacement for production proxy mode.
+
 - Add cold archive from TemporalStore to MatrixKV/MatrixDB without synchronous double-write.
   - Design doc: `docs/matrixark_temporalstore_cold_archive_matrixdb_matrixkv.md`.
   - Product decision: TemporalStore remains the hot serving store for active events, entities, summaries, embeddings, indexes, resources, skills, and compact telemetry. MatrixKV stores control-plane/archive metadata such as cold refs, retention policies, watermarks, and idempotency state. MatrixDB stores historical replay/debug payloads, benchmark traces, token/quality metrics, and offline analytics.

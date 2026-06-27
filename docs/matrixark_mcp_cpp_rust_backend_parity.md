@@ -10,7 +10,7 @@ The MatrixArk extraction, ingestion, retrieval, summary refresh, and context-pac
 
 ## Rust Path
 
-The Rust path uses a small direct-SDK CLI that supports both single-shot commands and persistent serve mode:
+The Rust production path uses the existing long-lived Rust proxy boundary. The current binary is `matrixark_record_log --serve`, but MatrixArk should treat it as the Rust proxy, not as a process-per-operation CLI. Single-shot mode remains debug-only. Rust direct SDK parity is still useful for a future embedded/local optimization, but production and benchmark paths should prefer the proxy first:
 
 ```bash
 sdk/rust/temporalstore/target/release/matrixark_record_log
@@ -24,7 +24,7 @@ Supported operations:
 - `hset`
 - `hget`
 
-The MCP server calls `matrixark_record_log --serve` through `MatrixArkRustCliClient`, keeping one Rust process alive and reusing the Rust SDK client across storage operations. This gives Rust backend parity without process-per-operation latency.
+The MCP server calls `matrixark_record_log --serve` through `MatrixArkRustProxyClient`, keeping one Rust process alive and reusing the Rust SDK client across storage operations. `MatrixArkRustCliClient` remains only a compatibility alias. New configuration should use `MATRIXARK_TEMPORALSTORE_RUST_PROXY` or `--rust-proxy`; `MATRIXARK_TEMPORALSTORE_RUST_CLI` and `--rust-cli` are compatibility/debug names. This gives Rust backend parity without process-per-operation latency.
 
 ## Launchers
 
@@ -37,7 +37,8 @@ bash tools/matrixark_mcp_cpp_server.sh --line-json
 Rust backend:
 
 ```bash
-bash tools/matrixark_mcp_rust_server.sh --line-json
+MATRIXARK_TEMPORALSTORE_RUST_PROXY=/path/to/matrixark_record_log \
+  bash tools/matrixark_mcp_rust_server.sh --line-json
 ```
 
 Both launchers default to:

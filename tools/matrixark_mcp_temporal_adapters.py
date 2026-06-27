@@ -2673,27 +2673,31 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return records
 
 
-class MatrixArkRustCliClient:
-    """Persistent process boundary around the Rust TemporalStore SDK.
+class MatrixArkRustProxyClient:
+    """Persistent Rust proxy boundary around the Rust TemporalStore SDK.
 
-    The Rust binary owns direct SDK linkage and runs in JSON-lines serve mode.
-    Keeping one process alive avoids spawning the CLI and reconnecting the Rust
-    SDK for every hset/hget, which was the main Rust MCP latency source.
+    The Rust binary owns SDK linkage and runs in JSON-lines ``--serve`` mode.
+    MatrixArk production and benchmark paths should use this long-lived proxy
+    instead of process-per-operation CLI calls. Rust direct SDK embedding remains
+    a future local/embedded optimization, not the default serving contract.
     """
 
     def __init__(
         self,
         *,
-        cli_path: str,
+        proxy_path: str = "",
+        cli_path: str = "",
         metaserver: str,
         namespace: str,
         table: str,
         request_timeout_ms: int,
         io_timeout_ms: int,
     ) -> None:
-        if not cli_path:
-            raise MatrixArkError("--rust-cli or MATRIXARK_TEMPORALSTORE_RUST_CLI is required for temporalstore-rust")
-        self.cli_path = cli_path
+        proxy_path = proxy_path or cli_path
+        if not proxy_path:
+            raise MatrixArkError("--rust-proxy or MATRIXARK_TEMPORALSTORE_RUST_PROXY is required for temporalstore-rust")
+        self.cli_path = proxy_path
+        self.proxy_path = proxy_path
         self.metaserver = metaserver
         self.namespace = namespace
         self.table = table
@@ -2977,6 +2981,7 @@ class MatrixArkRustCliClient:
                 "gateway_mode": "rust_direct_sdk_bridge",
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
                 "transport": "stdio",
+                "proxy_path": self.proxy_path,
                 "cli_path": self.cli_path,
                 "shared_process_mode": self._shared_process_mode,
                 "max_inflight": 1
@@ -3134,13 +3139,17 @@ class MatrixArkRustCliClient:
             self.close()
 
 
+MatrixArkRustCliClient = MatrixArkRustProxyClient
+
+
 class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
-    """MatrixArk record-log adapter backed by the Rust TemporalStore SDK."""
+    """MatrixArk adapter backed by the long-lived Rust TemporalStore proxy."""
 
     def __init__(
         self,
         *,
-        rust_cli: str,
+        rust_cli: str = "",
+        rust_proxy: str = "",
         metaserver: str,
         namespace: str,
         table: str,
@@ -3155,8 +3164,9 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table
-        self._client = MatrixArkRustCliClient(
-            cli_path=rust_cli,
+        proxy_path = rust_proxy or rust_cli
+        self._client = MatrixArkRustProxyClient(
+            proxy_path=proxy_path,
             metaserver=metaserver,
             namespace=namespace,
             table=table,

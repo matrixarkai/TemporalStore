@@ -2123,7 +2123,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("->HSet(", body)
         self.assertNotIn("->PutString(", body)
 
-    def test_rust_matrixark_append_uses_native_gateway_path(self) -> None:
+    def test_rust_matrixark_append_uses_native_proxy_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
 
@@ -2154,6 +2154,18 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(result["checks"]["slot_coverage_verified_by_warmup_hset_hget"])
         self.assertEqual(result["topology"]["namespace"], "deploy_ns")
         self.assertEqual(result["topology"]["table"], "deploy_table")
+
+
+class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
+    def test_rust_proxy_client_alias_keeps_cli_compatibility(self) -> None:
+        self.assertIs(mcp.MatrixArkRustCliClient, mcp.MatrixArkRustProxyClient)
+
+    def test_rust_server_exposes_rust_proxy_argument(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "tools" / "matrixark_mcp_server.py").read_text()
+        self.assertIn("--rust-proxy", source)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_PROXY", source)
+        self.assertIn("single-shot CLI mode is debug-only", source)
 
 
 if __name__ == "__main__":
