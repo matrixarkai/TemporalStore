@@ -134,15 +134,14 @@ def default_hook_backend() -> str:
     configured = os.environ.get("MATRIXARK_MCP_BACKEND")
     if configured:
         return configured
-    return "temporalstore-direct" if production_profile_enabled() else "local"
+    return "temporalstore-direct"
 
 
 def validate_hook_backend_policy(backend: str) -> None:
-    if production_profile_enabled() and backend == "local" and not local_backend_allowed():
+    if backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
         raise RuntimeError(
-            "MatrixArk hook production/benchmark profile requires --backend temporalstore-direct, "
-            "--backend temporalstore-rust, or --backend temporalstore-rust-direct. "
-            "Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+            "MatrixArk hooks no longer support local JSONL event logs; "
+            "use --backend temporalstore-direct, --backend temporalstore-rust, or --backend temporalstore-rust-direct."
         )
 
 
@@ -158,10 +157,9 @@ def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
-    parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_CODEX_EVENT_LOG", "/tmp/matrixark-codex-hook.jsonl")))
     parser.add_argument(
         "--backend",
-        choices=["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
+        choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
         default=default_hook_backend(),
     )
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
@@ -593,7 +591,10 @@ def build_server(args: argparse.Namespace):
             io_timeout_ms=args.io_timeout_ms,
         )
     else:
-        adapter = MatrixArkLocalAdapter(args.event_log)
+        raise RuntimeError(
+            "MatrixArk hooks no longer support local JSONL event logs; "
+            "use temporalstore-direct, temporalstore-rust, or temporalstore-rust-direct."
+        )
     return MatrixArkMcpServer(adapter)
 
 
@@ -769,7 +770,6 @@ def main() -> int:
                     "entities_written": commit.get("entities_written", 0),
                     "raw_events_duplicated": commit.get("raw_events_duplicated"),
                 } if commit else {},
-                "event_log": str(args.event_log),
             },
             sort_keys=True,
         )
