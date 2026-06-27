@@ -111,9 +111,14 @@ Before answering, call matrixark_retrieve when the request may depend on:
 
 Pass:
 - query: the raw user request
-- scope: account_id/tenant_id plus user_id and preferably session_id
-- max_context_tokens: the remote context budget
-- local_context: short refs or summaries of current files/buffers when useful
+- scope: account_id/tenant_id plus user_id and preferably session_id when known
+- local_context: visible open files, selected text, tool output, terminal summaries, browser/page refs
+- local_context_tokens: estimated visible local-context tokens when known
+- max_context_tokens: remaining prompt budget for local plus remote context when known
+
+Do not send hidden/internal prompt context. Send only visible user/workspace
+context. MatrixArk dedupes local refs and fills the remaining budget with remote
+events, entities, resources, skills, and summaries.
 
 After answering or using tools, call matrixark_ingest or matrixark_feedback when
 the turn produced durable information:
@@ -123,6 +128,13 @@ the turn produced durable information:
 
 At task/session boundaries, call matrixark_session_commit so MatrixArk can run
 one-pass batch extraction over the same-session buffer.
+
+MatrixArk decides the route from the payload:
+- before_llm/query -> lightweight ingest + retrieve ContextPack
+- after_llm/tool_result -> ingest durable answer/tool evidence
+- ResourceAdded/SkillAdded/raw_uri -> resource or skill import task
+- Feedback/accepted_refs/rejected_refs -> feedback and replay linkage
+- Stop/PostCompact/idle -> session commit and batch extraction
 """
 
 

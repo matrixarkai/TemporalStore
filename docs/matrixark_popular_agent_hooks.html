@@ -5,78 +5,225 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MatrixArk Hooks For Popular AI Agents</title>
   <style>
-    body { font-family: Arial, sans-serif; line-height: 1.55; margin: 0; background: #f7f8fb; color: #172033; }
-    main { max-width: 1020px; margin: 0 auto; background: #fff; padding: 36px 24px 64px; }
-    h1 { font-size: 34px; margin: 0 0 8px; }
-    h2 { border-top: 1px solid #e5e7eb; padding-top: 24px; margin-top: 34px; }
-    table { width: 100%; border-collapse: collapse; margin: 16px 0; }
-    th, td { border: 1px solid #e5e7eb; padding: 9px 10px; text-align: left; vertical-align: top; }
-    th { background: #f1f5f9; }
-    pre { overflow: auto; background: #0f172a; color: #e5e7eb; padding: 14px 16px; border-radius: 8px; }
-    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .date { color: #64748b; margin-bottom: 24px; }
+    :root { color-scheme: light; --ink:#17202a; --line:#d6dbdf; --bg:#f8fafc; --panel:#ffffff; }
+    body { margin:0; font-family: Inter, Segoe UI, Arial, sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+    main { max-width: 1120px; margin: 0 auto; padding: 40px 28px 80px; }
+    article { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.06); }
+    h1 { margin-top:0; font-size:32px; line-height:1.15; }
+    pre { overflow:auto; white-space:pre-wrap; background:#111827; color:#f8fafc; padding:18px; border-radius:7px; font-size:13px; line-height:1.45; }
   </style>
 </head>
-<body>
-<main>
-  <h1>MatrixArk Hooks For Popular AI Agents</h1>
-  <div class="date">Date: 2026-06-24</div>
+<body><main><article><pre># MatrixArk Hooks For Popular AI Agents
 
-  <h2>Summary</h2>
-  <pre><code>MCP first:
+Date: 2026-06-24
+
+## Summary
+
+MatrixArk supports two integration styles for popular agents:
+
+```text
+MCP first:
   Codex, Claude, Cursor, Windsurf, Cline, Continue, vertical agents
 
 Hook adapter:
-  agents that expose lifecycle hooks or external command runners</code></pre>
-  <p>This follows the OpenViking-style integration lesson: the context system should be agent-facing, not app-specific. Agents get a stable interface for memory, resources, and skills; products can add automatic recall/capture through hooks when their runtime exposes lifecycle events.</p>
-  <p><code>tools/matrixark_agent_hook.py</code> reads an agent JSON hook payload from stdin and normalizes it into MatrixArk MCP calls.</p>
+  agents that expose lifecycle hooks or external command runners
+```
 
-  <h2>Universal Hook Command</h2>
-  <pre><code>cd /root/src/github-services/TemporalStore
-echo '{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}' |
+This follows the OpenViking-style integration lesson: the context system should
+be agent-facing, not app-specific. Agents get a stable interface for memory,
+resources, and skills; products can add automatic recall/capture through hooks
+when their runtime exposes lifecycle events.
+
+Use `tools/matrixark_agent_hook.py` as the universal hook adapter. It reads the
+agent&#39;s JSON payload from stdin and normalizes it into MatrixArk MCP calls:
+
+```text
+User prompt / before LLM -&gt; matrixark_ingest + matrixark_retrieve
+Tool result / after LLM -&gt; matrixark_ingest
+ResourceAdded / SkillAdded -&gt; matrixark_ingest(kind=resource|skill)
+Feedback / accepted_refs / rejected_refs -&gt; matrixark_feedback
+Stop / compact / idle -&gt; matrixark_session_commit
+```
+
+## Payload Contract For Every Agent
+
+Teach each agent installation to send as much visible context as it already
+knows. MatrixArk will decide the route and fill local/cloud defaults.
+
+```json
+{
+  &quot;prompt&quot;: &quot;raw user query or task&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;same user query if available&quot;}
+  ],
+  &quot;session_id&quot;: &quot;agent-thread-or-run-id&quot;,
+  &quot;thread_id&quot;: &quot;optional alternate thread id&quot;,
+  &quot;conversation_id&quot;: &quot;optional alternate conversation id&quot;,
+  &quot;account_id&quot;: &quot;optional account hint&quot;,
+  &quot;tenant_id&quot;: &quot;optional workspace/tenant hint&quot;,
+  &quot;user_id&quot;: &quot;optional agent/user hint&quot;,
+  &quot;workspace_root&quot;: &quot;/repo/or/project&quot;,
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-file:src/main.py&quot;, &quot;text&quot;: &quot;visible snippet or summary&quot;},
+    {&quot;ref&quot;: &quot;tool-output:pytest&quot;, &quot;text&quot;: &quot;relevant test output summary&quot;}
+  ],
+  &quot;local_context_tokens&quot;: 700,
+  &quot;max_context_tokens&quot;: 4000,
+  &quot;raw_uri&quot;: &quot;optional file:/// or s3:// resource&quot;,
+  &quot;resource_type&quot;: &quot;optional pdf/md/skill&quot;,
+  &quot;accepted_refs&quot;: [],
+  &quot;rejected_refs&quot;: [],
+  &quot;context_pack_id&quot;: &quot;optional prior pack id&quot;
+}
+```
+
+Agents should not send hidden/internal prompt context. They should send only
+visible local context: open buffers, selected text, file refs, tool outputs,
+terminal summaries, browser/page refs, and user-approved summaries.
+
+MatrixArk routing rules:
+
+| Agent event | Required or useful fields | MatrixArk action |
+|---|---|---|
+| `UserPromptSubmit` / `before_llm` | `prompt` or `messages`, `session_id`, `local_context`, token budget | lightweight ingest, then `matrixark_retrieve` with local-context dedupe. |
+| `PostToolUse` / `tool_result` | tool name/input/output summary, status, session id | ingest replayable tool evidence and update session buffer. |
+| assistant answer / `after_llm` | assistant message, selected refs, context pack id | ingest durable answer summary and link prior refs. |
+| `ResourceAdded` / `SkillAdded` | `raw_uri`, `resource_type`, scope/session hints | resource/skill import task, chunking, embeddings, extraction. |
+| `Feedback` | confirmation/correction text, accepted/rejected refs, pack id | feedback memory plus audit/replay update. |
+| `Stop` / `PostCompact` / `idle_timeout` | session id, compacted summary if present | one-pass batch extraction and async summary refresh. |
+
+If a field is missing, MatrixArk should not fail unnecessarily. It resolves
+local defaults, derives session ids from thread/conversation/path hints, and
+records what was inferred in audit.
+
+## Universal Hook Command
+
+```bash
+cd /root/src/github-services/TemporalStore
+echo &#39;{&quot;prompt&quot;:&quot;Alice approved the GPU request.&quot;,&quot;session_id&quot;:&quot;demo-thread&quot;}&#39; |
   python3 tools/matrixark_agent_hook.py \
     --agent generic \
     --event UserPromptSubmit \
-    --backend local</code></pre>
+    --backend local
+```
 
-  <h2>Event Mapping</h2>
-  <pre><code>Before LLM / retrieve:
-  UserPromptSubmit, before_llm, prompt, chat_prompt, session_start
+For C++ TemporalStore-backed operation:
+
+```bash
+python3 tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event UserPromptSubmit \
+  --backend temporalstore-direct \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --storage-prefix matrixark:agent-hook
+```
+
+## Supported Agent Labels
+
+```text
+codex
+claude
+cursor
+windsurf
+cline
+roo
+continue
+copilot
+opencode
+openclaw
+aider
+gemini
+qwen-code
+autogen
+langgraph
+crewai
+llamaindex
+semantic-kernel
+dify
+n8n
+generic
+```
+
+These are presets, not a closed list. `--agent` accepts any string. The label is
+used in `metadata.source`, `agent_hook.source`, session id fallbacks, and audit
+logs.
+
+## Event Mapping
+
+```text
+Before LLM / retrieve:
+  UserPromptSubmit
+  user_prompt_submit
+  before_llm
+  prompt
+  chat_prompt
+  session_start
 
 After LLM / ingest:
-  Stop, after_llm, assistant_message, response
+  Stop
+  after_llm
+  assistant_message
+  response
 
 Tool events / ingest:
-  PreToolUse, PostToolUse, tool_call, tool_result, PermissionRequest
+  PreToolUse
+  PostToolUse
+  tool_call
+  tool_result
+  PermissionRequest
+
+Resource and skill events / import lifecycle:
+  ResourceAdded
+  SkillAdded
+  FileAdded
+  DocumentAdded
+  resource_import
+
+Feedback events / confirmation and correction memory:
+  Feedback
+  accepted_refs
+  rejected_refs
+  confirmation
+  correction
 
 Commit events / one-pass batch extraction:
-  Stop, SubagentStop, PostCompact, PreCompact, session_end,
-  task_complete, idle_timeout</code></pre>
+  Stop
+  SubagentStop
+  PostCompact
+  PreCompact
+  session_end
+  task_complete
+  idle_timeout
+```
 
-  <h2>Agent Matrix</h2>
-  <table>
-    <thead><tr><th>Agent</th><th>Best MatrixArk integration</th><th>Notes</th></tr></thead>
-    <tbody>
-      <tr><td>Codex Desktop / CLI</td><td>MCP plus hook adapter</td><td>MCP tools are explicit. Hooks can auto-capture prompt/tool/stop events when configured.</td></tr>
-      <tr><td>Claude Desktop</td><td>MCP</td><td>Add MatrixArk as an MCP stdio server. Claude keeps local context and calls MatrixArk for durable context.</td></tr>
-      <tr><td>Claude Code-style agents</td><td>MCP plus native hook command where available</td><td>Use hook adapter for prompt/tool/stop/compact lifecycle events.</td></tr>
-      <tr><td>Cursor</td><td>MCP first</td><td>Cursor keeps local code context and calls MatrixArk for team memory, runbooks, prior decisions, and skills.</td></tr>
-      <tr><td>Windsurf</td><td>MCP first, external runner if available</td><td>Use the same MatrixArk MCP server; hook adapter works if the client can run external commands.</td></tr>
-      <tr><td>Cline / Roo-style agents</td><td>MCP first</td><td>These loops are tool-heavy; MatrixArk should be a durable memory/tool provider.</td></tr>
-      <tr><td>Continue</td><td>MCP or HTTP</td><td>Good fit for local IDE context plus MatrixArk durable memory.</td></tr>
-      <tr><td>OpenCode / OpenClaw-style agents</td><td>MCP plus hook adapter</td><td>Same model as OpenViking integrations: explicit context tools plus automatic lifecycle capture where available.</td></tr>
-      <tr><td>Aider</td><td>CLI wrapper or MCP bridge</td><td>Wrap the CLI invocation or use a supervising script to call MatrixArk before/after prompts.</td></tr>
-      <tr><td>Gemini CLI / Qwen Code</td><td>MCP or CLI wrapper</td><td>Use MatrixArk as a durable context tool; hook adapter works when wrapping command execution.</td></tr>
-      <tr><td>AutoGen / LangGraph / CrewAI</td><td>HTTP or Python-side hook calls</td><td>Integrate at graph node boundaries: before model call, after model call, after tool call, and workflow end.</td></tr>
-      <tr><td>LlamaIndex / Semantic Kernel</td><td>HTTP or tool plugin</td><td>Register MatrixArk as memory/context tool and call retrieve before synthesis.</td></tr>
-      <tr><td>Dify / n8n / workflow agents</td><td>HTTP nodes</td><td>Use retrieve/ingest/session_commit nodes in the workflow.</td></tr>
-      <tr><td>GitHub Copilot-style agents</td><td>HTTP/MCP gateway</td><td>Native lifecycle hooks are not a stable public boundary; integrate through extension/server workflows.</td></tr>
-      <tr><td>Enterprise vertical agents</td><td>MCP, HTTP, and hooks</td><td>Best target. They can send before-LLM, after-LLM, feedback, tool-result, idle, and commit events.</td></tr>
-    </tbody>
-  </table>
+## Agent Matrix
 
-  <h2>Claude Hook Example</h2>
-  <pre><code>python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+| Agent | Best MatrixArk integration | Notes |
+|---|---|---|
+| Codex Desktop / CLI | MCP plus hook adapter | MCP tools are explicit. Hooks can auto-capture prompt/tool/stop events when configured. |
+| Claude Desktop | MCP | Add MatrixArk as an MCP stdio server. Claude keeps local context and calls MatrixArk for durable context. |
+| Claude Code-style agents | MCP plus native hook command where available | Use hook adapter for prompt/tool/stop/compact lifecycle events. |
+| Cursor | MCP first | Cursor should keep local code context and call MatrixArk for team memory, runbooks, prior decisions, and skills. |
+| Windsurf | MCP first, external runner if available | Use the same MatrixArk MCP server; hook adapter works if the client can run external commands. |
+| Cline / Roo-style agents | MCP first | These agent loops are tool-heavy; MatrixArk should be a durable memory/tool provider. |
+| Continue | MCP or HTTP | Good fit for local IDE context plus MatrixArk durable memory. |
+| OpenCode / OpenClaw-style agents | MCP plus hook adapter | Same model as OpenViking integrations: explicit context tools plus automatic lifecycle capture where available. |
+| Aider | CLI wrapper or MCP bridge | Wrap the CLI invocation or use a supervising script to call MatrixArk before/after prompts. |
+| Gemini CLI / Qwen Code | MCP or CLI wrapper | Use MatrixArk as a durable context tool; hook adapter works when wrapping command execution. |
+| AutoGen / LangGraph / CrewAI | HTTP or Python-side hook calls | Integrate at graph node boundaries: before model call, after model call, after tool call, and workflow end. |
+| LlamaIndex / Semantic Kernel | HTTP or tool plugin | Register MatrixArk as memory/context tool and call retrieve before synthesis. |
+| Dify / n8n / workflow agents | HTTP nodes | Use retrieve/ingest/session_commit nodes in the workflow. |
+| GitHub Copilot-style agents | HTTP/MCP gateway | Native lifecycle hooks are not a stable public boundary; integrate through extension/server-side workflow where available. |
+| Enterprise vertical agents | MCP, HTTP, and hooks | Best target. They can send before-LLM, after-LLM, feedback, tool-result, idle, and session-commit events. |
+
+## Claude Hook Example
+
+Use these commands in the hook entries exposed by the Claude installation:
+
+```bash
+python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
   --agent claude \
   --event UserPromptSubmit \
   --backend temporalstore-direct
@@ -89,59 +236,221 @@ python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
 python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
   --agent claude \
   --event Stop \
-  --backend temporalstore-direct</code></pre>
+  --backend temporalstore-direct
+```
 
-  <h2>Cursor Payload Example</h2>
-  <pre><code>{
-  "prompt": "What did we decide about the GPU approval?",
-  "session_id": "cursor-thread-123",
-  "workspace_root": "/repo/acme",
-  "open_files": [
-    {"path": "infra/budget.md", "summary": "Current capex budget notes"}
+Expected payload fields can be any of:
+
+```text
+prompt
+input
+text
+message
+messages[].content
+session_id
+thread_id
+conversation_id
+workspace_root
+cwd
+open_files[]
+tool_outputs[]
+raw_uri / uri / path / resource_path
+resource_type
+context_pack_id
+accepted_refs[] / rejected_refs[]
+local_context[]
+local_context_tokens
+max_context_tokens
+```
+
+## Cursor Hook/Fallback Example
+
+Cursor should primarily use MCP. If a project or enterprise wrapper can call an
+external command before/after the agent loop, use:
+
+```bash
+python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent cursor \
+  --event UserPromptSubmit \
+  --backend temporalstore-direct
+```
+
+Payload:
+
+```json
+{
+  &quot;prompt&quot;: &quot;What did we decide about the GPU approval?&quot;,
+  &quot;session_id&quot;: &quot;cursor-thread-123&quot;,
+  &quot;workspace_root&quot;: &quot;/repo/acme&quot;,
+  &quot;local_context_tokens&quot;: 640,
+  &quot;max_context_tokens&quot;: 3000,
+  &quot;open_files&quot;: [
+    {&quot;path&quot;: &quot;infra/budget.md&quot;, &quot;summary&quot;: &quot;Current capex budget notes&quot;}
+  ],
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-file:infra/budget.md&quot;, &quot;text&quot;: &quot;Current capex budget notes&quot;}
   ]
-}</code></pre>
+}
+```
 
-  <h2>What The Hook Sends</h2>
-  <pre><code>{
-  "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
-  "scope": {
-    "account_id": "acct_agent",
-    "tenant_id": "tenant_agent",
-    "user_id": "agent_user",
-    "session_id": "claude:demo-thread"
-  },
-  "metadata": {
-    "source": "claude_hook",
-    "agent": "claude",
-    "agent_event": "UserPromptSubmit"
-  },
-  "agent_hook": {
-    "source": "claude",
-    "hook_type": "before_llm",
-    "auto_captured": true
-  }
-}</code></pre>
+## Cline / Roo / Continue Example
 
-  <h2>Multi-Agent Framework Example</h2>
-  <pre><code>Before model node:
-  call matrixark_retrieve(query, scope, local_context, max_context_tokens)
+Use MCP as the default. If the agent can run a command after tool calls:
+
+```bash
+python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent cline \
+  --event PostToolUse \
+  --backend temporalstore-direct
+```
+
+This captures durable tool outcomes and keeps raw tool output out of future
+prompts unless it becomes relevant.
+
+## Multi-Agent Framework Example
+
+For AutoGen, LangGraph, CrewAI, LlamaIndex, Semantic Kernel, Dify, or n8n,
+place MatrixArk at workflow boundaries:
+
+```text
+Before model node:
+  call matrixark_retrieve(query, scope, local_context, local_context_tokens, max_context_tokens)
 
 After model node:
-  call matrixark_ingest(messages=[assistant answer], metadata.source=&lt;framework&gt;)
+  call matrixark_ingest(messages=[user message, assistant answer], metadata.source=&lt;framework&gt;, reply_to_context_pack_id=&lt;pack&gt;)
 
 After tool node:
   call matrixark_ingest(messages=[tool result], metadata.event=tool_result)
 
 At graph/workflow end:
-  call matrixark_feedback and matrixark_session_commit</code></pre>
+  call matrixark_feedback and matrixark_session_commit
+```
 
-  <pre><code>cat payload.json | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+CLI wrapper pattern:
+
+```bash
+cat payload.json | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
   --agent langgraph \
   --event UserPromptSubmit \
-  --backend temporalstore-direct</code></pre>
+  --backend temporalstore-direct
+```
 
-  <h2>Why MCP Still Matters</h2>
-  <p>Not every popular agent exposes reliable lifecycle hooks. MCP gives a stable portable tool boundary. Hooks are best for automatic capture; MCP is best for agent-controlled retrieval and feedback.</p>
-</main>
-</body>
+HTTP workflow node pattern:
+
+```http
+POST /v1/context/retrieve
+Authorization: Bearer mk_live_...
+Content-Type: application/json
+
+{
+  &quot;query&quot;: &quot;raw user or workflow task&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_prod&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;workflow_run_456&quot;
+  },
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;workflow:visible-state&quot;, &quot;text&quot;: &quot;visible workflow state summary&quot;}
+  ],
+  &quot;local_context_tokens&quot;: 500,
+  &quot;max_context_tokens&quot;: 2048
+}
+```
+
+## What The Hook Sends To MatrixArk
+
+For a prompt event:
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU request.&quot;}
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_agent&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_agent&quot;,
+    &quot;user_id&quot;: &quot;agent_user&quot;,
+    &quot;session_id&quot;: &quot;claude:demo-thread&quot;
+  },
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;claude_hook&quot;,
+    &quot;agent&quot;: &quot;claude&quot;,
+    &quot;agent_event&quot;: &quot;UserPromptSubmit&quot;
+  },
+  &quot;agent_hook&quot;: {
+    &quot;source&quot;: &quot;claude&quot;,
+    &quot;hook_type&quot;: &quot;before_llm&quot;,
+    &quot;auto_captured&quot;: true
+  }
+}
+```
+
+Then it calls `matrixark_retrieve` and returns a summary including:
+
+```text
+context_pack_id
+selected_ref_count
+used_context_tokens
+local_context_refs
+remote_context_refs
+dropped_ref_reasons
+```
+
+
+## Resource And Feedback Hooks
+
+OpenViking-style context systems do not only capture chat turns. MatrixArk now
+normalizes resource and feedback lifecycle events through the same universal hook
+adapter:
+
+```bash
+cat &lt;&lt;&#39;JSON&#39; | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent cursor \
+  --event ResourceAdded \
+  --backend temporalstore-direct
+{
+  &quot;raw_uri&quot;: &quot;/repo/runbooks/gpu-approval.md&quot;,
+  &quot;resource_type&quot;: &quot;md&quot;,
+  &quot;session_id&quot;: &quot;cursor-thread-123&quot;,
+  &quot;message&quot;: &quot;New GPU approval runbook added.&quot;
+}
+JSON
+
+cat &lt;&lt;&#39;JSON&#39; | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+  --agent claude \
+  --event Feedback \
+  --backend temporalstore-direct
+{
+  &quot;message&quot;: &quot;Yes, that answer is correct.&quot;,
+  &quot;context_pack_id&quot;: &quot;123456&quot;,
+  &quot;accepted_refs&quot;: [&quot;event:approval:gpu&quot;],
+  &quot;rejected_refs&quot;: []
+}
+JSON
+```
+
+Resource hooks call `matrixark_ingest(kind=resource|skill)` and preserve raw
+bytes by URI. Feedback hooks call `matrixark_feedback` so accepted/rejected refs
+and confirmations affect the next retrieval.
+
+## Why MCP Still Matters
+
+Not every popular agent exposes reliable lifecycle hooks. MCP gives a stable
+portable tool boundary. Hooks are best for automatic capture; MCP is best for
+agent-controlled retrieval and feedback.
+
+Recommended enterprise setup:
+
+```text
+MCP:
+  retrieval, replay, resource lookup, skill lookup
+
+hooks:
+  automatic event ingestion, tool-result capture, session commit
+
+HTTP:
+  server-side vertical agents and SaaS backends
+```
+</pre></article></main></body>
 </html>

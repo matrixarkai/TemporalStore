@@ -5,45 +5,94 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MatrixArk Agent Integrations</title>
   <style>
-    body { font-family: Arial, sans-serif; line-height: 1.55; margin: 0; color: #16202a; background: #f7f8fb; }
-    main { max-width: 980px; margin: 0 auto; padding: 36px 24px 64px; background: #fff; }
-    h1 { font-size: 34px; margin: 0 0 8px; }
-    h2 { margin-top: 34px; border-top: 1px solid #e5e7eb; padding-top: 24px; }
-    h3 { margin-top: 24px; }
-    p { margin: 10px 0; }
-    pre { overflow: auto; padding: 14px 16px; background: #0f172a; color: #e5e7eb; border-radius: 8px; }
-    code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
-    .date { color: #64748b; margin-bottom: 26px; }
-    .callout { background: #eef6ff; border-left: 4px solid #2563eb; padding: 12px 16px; margin: 18px 0; }
-    ul { padding-left: 22px; }
+    :root { color-scheme: light; --ink:#17202a; --line:#d6dbdf; --bg:#f8fafc; --panel:#ffffff; }
+    body { margin:0; font-family: Inter, Segoe UI, Arial, sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+    main { max-width: 1120px; margin: 0 auto; padding: 40px 28px 80px; }
+    article { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.06); }
+    h1 { margin-top:0; font-size:32px; line-height:1.15; }
+    pre { overflow:auto; white-space:pre-wrap; background:#111827; color:#f8fafc; padding:18px; border-radius:7px; font-size:13px; line-height:1.45; }
   </style>
 </head>
-<body>
-<main>
-  <h1>MatrixArk Agent Integrations</h1>
-  <div class="date">Date: 2026-06-24</div>
+<body><main><article><pre># MatrixArk Agent Integrations
 
-  <h2>Goal</h2>
-  <p>MatrixArk integrates with Codex, Claude Desktop, Cursor, and vertical AI agents through one stable context boundary.</p>
-  <pre><code>Agent local context
+Date: 2026-06-24
+
+## Goal
+
+MatrixArk should integrate with Codex, Claude Desktop, Cursor, and vertical AI
+agent products through one stable context boundary:
+
+```text
+Agent local context
 -&gt; MatrixArk MCP or HTTP API
 -&gt; TemporalStore-backed context retrieval / ingestion / feedback
 -&gt; ContextPack returned to the agent
--&gt; agent combines ContextPack with local files, buffers, tools, and prompt</code></pre>
-  <p>MatrixArk does not replace the agent's local context engine. It adds durable, time-aware, cross-session, cross-device, team-governed context.</p>
+-&gt; agent combines ContextPack with local files, buffers, tools, and prompt
+```
 
-  <h2>Integration Modes</h2>
-  <h3>MCP Tool Integration</h3>
-  <p>Best for Codex, Claude Desktop, Cursor, and other MCP-capable agents. The agent explicitly calls:</p>
-  <pre><code>matrixark_retrieve
+MatrixArk does not replace the agent&#39;s local context engine.  It adds durable,
+time-aware, cross-session, cross-device, team-governed context that local prompt
+assembly usually does not have.
+
+## Universal Agent Contract
+
+Every MatrixArk agent installation should teach the agent this one rule:
+
+```text
+Before answering code/design/context questions:
+  call matrixark_retrieve(query, scope, local_context, local_context_tokens, max_context_tokens)
+
+After answering or after useful tool output:
+  call matrixark_ingest(messages, scope, local_context_refs, reply_to_context_pack_id)
+
+At task boundaries:
+  call matrixark_session_commit(scope)
+```
+
+The agent should send what it can see, not MatrixArk internals:
+
+| Field | Agent should send when available | MatrixArk decides |
+|---|---|---|
+| `query` | Raw user request or workflow task. | Query type, temporal window, secondary-index filters, and retrieval policy. |
+| `messages` | User message, assistant answer, tool result, compacted summary. | Whether to write online `ContextEvent`, append session buffer, run extraction, or commit. |
+| `scope` | `account_id`, `tenant_id`, `user_id`, `session_id` if the agent knows them. | Final identity from API key, SSO/local defaults, role/scope enforcement, and audit. |
+| `local_context` | Visible open files, selected text, tool outputs, terminal summaries, current URL, local refs. | Deduping, remaining remote token budget, and selected `local_context_refs`. |
+| `local_context_tokens` | Estimated visible local-context token count. | `remote_budget = max_context_tokens - local_context_tokens - safety_margin`. |
+| `max_context_tokens` | Remaining budget for local plus remote context when known. | Token-budget packing and partial ContextPack fallback. |
+| `raw_uri` / file refs | Local file URI, S3/object URI, repo path, `SKILL.md`, resource type. | Upload/import decision, parser dispatch, chunking, embeddings, extraction, and versioning. |
+| lifecycle event | `before_llm`, `after_llm`, `tool_result`, `feedback`, `stop`, `compact`, `idle`. | Ingest, retrieve, feedback, resource import, or session commit route. |
+
+Do not send hidden/internal prompt context. Only send visible user/workspace
+context, explicit local summaries, selected refs, and tool outputs that the
+agent is allowed to expose.
+
+## Integration Modes
+
+### 1. MCP Tool Integration
+
+Best for Codex, Claude Desktop, Cursor, and other MCP-capable agents.
+
+The agent explicitly calls:
+
+```text
+matrixark_retrieve
 matrixark_ingest
 matrixark_feedback
 matrixark_session_commit
-matrixark_replay</code></pre>
+matrixark_replay
+```
 
-  <h3>Hook Integration</h3>
-  <p>Best for enterprise agent platforms and local tools that expose lifecycle hooks.</p>
-  <pre><code>Before LLM:
+This is the safest default because the agent can decide when remote context is
+useful and how much token budget to allocate.
+
+### 2. Hook Integration
+
+Best for enterprise agent platforms and local tools that expose lifecycle hooks.
+
+Typical hook points:
+
+```text
+Before LLM:
   ingest current user message
   retrieve ContextPack
 
@@ -55,58 +104,161 @@ On Stop / task finished:
 
 On PostCompact:
   ingest compacted summary
-  commit pending same-session buffer</code></pre>
+  commit pending same-session buffer
 
-  <h3>HTTP API Integration</h3>
-  <p>Best for SaaS agents, enterprise gateways, and vertical Cursor-like products.</p>
-  <pre><code>{
-  "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "thread_456"
+Idle timeout:
+  background commit
+```
+
+Hooks are useful when the customer wants automatic capture.  MCP is better when
+the agent wants explicit control.
+
+### 3. HTTP API Integration
+
+Best for SaaS agents, enterprise gateways, and vertical Cursor-like products.
+
+The public API shape remains simple:
+
+```json
+{
+  &quot;messages&quot;: [{&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU request.&quot;}],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;thread_456&quot;
   },
-  "metadata": {"source": "cursor", "task_type": "code_review"}
-}</code></pre>
+  &quot;metadata&quot;: {&quot;source&quot;: &quot;cursor&quot;, &quot;task_type&quot;: &quot;code_review&quot;}
+}
+```
 
-  <h2>Client Setup</h2>
-  <p>Generate config snippets:</p>
-  <pre><code>cd /root/src/github-services/TemporalStore
-python3 tools/matrixark_agent_config.py --client all</code></pre>
+The caller does not need to know MatrixArk internal data models.  MatrixArk owns
+extraction into `ContextNode`, `ContextEvent`, `ContextEntity`,
+`ContextSummary`, `ContextIndex`, `ResourceChunk`, and `ContextPackAudit`.
 
-  <h3>Codex Desktop</h3>
-  <pre><code>[mcp_servers.matrixark]
-command = 'wsl.exe'
-args = [ '--cd', '/root/src/github-services/TemporalStore', '-e', 'bash', '-lc', 'exec tools/matrixark_mcp_cpp_server.sh' ]
-startup_timeout_sec = 120</code></pre>
+## MatrixArk Workflow From Agent Payloads
 
-  <h3>Claude Desktop</h3>
-  <pre><code>{
-  "mcpServers": {
-    "matrixark": {
-      "args": [
-        "--cd",
-        "/root/src/github-services/TemporalStore",
-        "-e",
-        "bash",
-        "-lc",
-        "exec tools/matrixark_mcp_cpp_server.sh"
+MatrixArk routes each payload by intent and available fields:
+
+```mermaid
+flowchart TD
+  A[&quot;Agent payload&quot;] --&gt; B[&quot;Normalize envelope&quot;]
+  B --&gt; C[&quot;Resolve scope: API key / SSO / local defaults&quot;]
+  C --&gt; D{&quot;Lifecycle or kind&quot;}
+  D --&gt;|&quot;before_llm / query&quot;| E[&quot;retrieve ContextPack&quot;]
+  D --&gt;|&quot;message / after_llm / tool_result&quot;| F[&quot;lightweight ingest&quot;]
+  D --&gt;|&quot;resource / skill raw_uri&quot;| G[&quot;resource or skill import task&quot;]
+  D --&gt;|&quot;feedback / accepted refs&quot;| H[&quot;feedback + replay links&quot;]
+  D --&gt;|&quot;stop / compact / idle&quot;| I[&quot;session commit&quot;]
+  F --&gt; J[&quot;ContextEvent + embedding + session buffer + dirty summary marker&quot;]
+  I --&gt; K[&quot;one-pass batch extraction: segments + entities + indexes&quot;]
+  G --&gt; L[&quot;chunks + summaries + embeddings + resource facts&quot;]
+  E --&gt; M[&quot;query understanding + L0/L1 traversal + index prefilter + pack + audit&quot;]
+```
+
+Retrieval pipeline:
+
+```text
+raw query
+-&gt; infer question type and optional secondary-index filters
+-&gt; enforce account/tenant/user/session access
+-&gt; subtract visible local_context from token budget
+-&gt; traverse ContextNode L0/L1 summary embeddings
+-&gt; fetch leaf ContextEvent, ContextEntity, ContextSegment, ResourceChunk, SkillSection
+-&gt; score with similarity, time decay, business/importance hints, and stale blockers
+-&gt; pack answer-dense refs under token budget
+-&gt; write ContextPackAudit for replay/debug
+```
+
+Extraction pipeline:
+
+```text
+single message
+-&gt; write lightweight ContextEvent
+-&gt; append session buffer
+-&gt; mark node summary dirty
+-&gt; return quickly
+
+same-session threshold / stop / compact / idle / manual commit
+-&gt; one-pass batch extraction
+-&gt; create ContextSegment records for coherent topics
+-&gt; update ContextEntity state and stale blockers
+-&gt; write ContextIndex records
+-&gt; refresh summaries and embeddings asynchronously
+```
+
+## Client Setup
+
+Generate config snippets:
+
+```bash
+cd /root/src/github-services/TemporalStore
+python3 tools/matrixark_agent_config.py --client all
+python3 tools/matrixark_agent_config.py --client policy
+```
+
+### Codex Desktop
+
+Add to `C:\Users\&lt;you&gt;\.codex\config.toml`:
+
+```toml
+[mcp_servers.matrixark]
+command = &#39;wsl.exe&#39;
+args = [ &#39;--cd&#39;, &#39;/root/src/github-services/TemporalStore&#39;, &#39;-e&#39;, &#39;bash&#39;, &#39;-lc&#39;, &#39;exec tools/matrixark_mcp_cpp_server.sh&#39; ]
+startup_timeout_sec = 120
+```
+
+Codex can then call MatrixArk MCP tools.  MCP calls are explicit; they do not
+fire for every message unless Codex is instructed or a hook is configured.
+
+### Claude Desktop
+
+Add to Claude Desktop&#39;s MCP config file:
+
+```json
+{
+  &quot;mcpServers&quot;: {
+    &quot;matrixark&quot;: {
+      &quot;args&quot;: [
+        &quot;--cd&quot;,
+        &quot;/root/src/github-services/TemporalStore&quot;,
+        &quot;-e&quot;,
+        &quot;bash&quot;,
+        &quot;-lc&quot;,
+        &quot;exec tools/matrixark_mcp_cpp_server.sh&quot;
       ],
-      "command": "wsl.exe",
-      "env": {
-        "MATRIXARK_LOCAL_MODE": "cluster",
-        "MATRIXARK_MCP_BACKEND": "temporalstore-direct",
-        "MATRIXARK_RETRIEVAL_TIMEOUT_MS": "5000"
+      &quot;command&quot;: &quot;wsl.exe&quot;,
+      &quot;env&quot;: {
+        &quot;MATRIXARK_LOCAL_MODE&quot;: &quot;cluster&quot;,
+        &quot;MATRIXARK_MCP_BACKEND&quot;: &quot;temporalstore-direct&quot;,
+        &quot;MATRIXARK_RETRIEVAL_TIMEOUT_MS&quot;: &quot;5000&quot;
       }
     }
   }
-}</code></pre>
+}
+```
 
-  <h3>Claude Code / Claude CLI-Style Agents</h3>
-  <p>Claude Code-style agents should use the same MatrixArk MCP stdio server when their local installation supports MCP. Generate the server block and paste it into that installation's MCP registry:</p>
-  <pre><code>python3 tools/matrixark_agent_config.py --client claude-code</code></pre>
-  <pre><code>before analysis:
+Claude should use `matrixark_retrieve` before answering when prior durable memory
+or shared resources may matter, and `matrixark_ingest` or
+`matrixark_feedback` after the answer when a new durable fact, correction,
+commitment, or accepted/rejected reference should be remembered.
+
+### Claude Code / Claude CLI-Style Agents
+
+Claude Code-style agents should use the same MatrixArk MCP stdio server when
+their local installation supports MCP.  The exact config location can differ by
+Claude product/version, so generate the server block and paste it into the MCP
+server registry used by that installation:
+
+```bash
+python3 tools/matrixark_agent_config.py --client claude-code
+```
+
+Claude should treat MatrixArk as remote durable context, not as a replacement
+for local file reading.  Recommended usage:
+
+```text
+before analysis:
   call matrixark_retrieve with raw user query, user/session scope, and token budget
 
 during answer:
@@ -114,38 +266,136 @@ during answer:
 
 after answer:
   call matrixark_feedback when the user confirms/corrects/accepts refs
-  call matrixark_ingest for durable tool outcomes or decisions</code></pre>
+  call matrixark_ingest for durable tool outcomes or decisions
+```
 
-  <h3>Cursor</h3>
-  <p>Use the same MCP server shape. Cursor should keep its local codebase context and call MatrixArk for durable context such as decisions, team memory, resources, skills, and prior debugging outcomes.</p>
-  <pre><code>Use MatrixArk MCP for durable context. Before answering questions that may depend
+### Cursor
+
+Use the same MCP server shape:
+
+```json
+{
+  &quot;mcpServers&quot;: {
+    &quot;matrixark&quot;: {
+      &quot;command&quot;: &quot;wsl.exe&quot;,
+      &quot;args&quot;: [
+        &quot;--cd&quot;,
+        &quot;/root/src/github-services/TemporalStore&quot;,
+        &quot;-e&quot;,
+        &quot;bash&quot;,
+        &quot;-lc&quot;,
+        &quot;exec tools/matrixark_mcp_cpp_server.sh&quot;
+      ],
+      &quot;env&quot;: {
+        &quot;MATRIXARK_LOCAL_MODE&quot;: &quot;cluster&quot;,
+        &quot;MATRIXARK_MCP_BACKEND&quot;: &quot;temporalstore-direct&quot;,
+        &quot;MATRIXARK_RETRIEVAL_TIMEOUT_MS&quot;: &quot;5000&quot;
+      }
+    }
+  }
+}
+```
+
+Cursor should keep using its local codebase context.  MatrixArk should be called
+for durable context such as historical decisions, team runbooks, project memory,
+prior debugging outcomes, approvals, resource chunks, and skills.
+
+Suggested Cursor policy text can be placed in project instructions:
+
+```text
+Use MatrixArk MCP for durable context. Before answering questions that may depend
 on prior decisions, resources, team memory, user preferences, or historical
 debugging attempts, call matrixark_retrieve. Keep using Cursor local code context
-for current files. After a final answer, tool result, accepted ref, rejected ref,
-decision, correction, or user confirmation, call matrixark_ingest or
-matrixark_feedback. On task completion, call matrixark_session_commit.</code></pre>
+for current files. Pass visible open files, selected text, tool outputs,
+local_context_tokens, max_context_tokens, and session_id when available. After a
+final answer, tool result, accepted ref, rejected ref, decision, correction, or
+user confirmation, call matrixark_ingest or matrixark_feedback. On task
+completion, call matrixark_session_commit.
+```
 
-  <h3>Generic HTTP Agent</h3>
-  <p>For agents that cannot use MCP, expose the same operations over HTTP. The request body should stay close to the MCP tool schema:</p>
-  <pre><code>POST /v1/context/retrieve
+Cursor should pass a stable scope when possible:
+
+```json
+{
+  &quot;account_id&quot;: &quot;acct_customer&quot;,
+  &quot;tenant_id&quot;: &quot;tenant_workspace&quot;,
+  &quot;user_id&quot;: &quot;cursor_user_123&quot;,
+  &quot;session_id&quot;: &quot;cursor_workspace_thread_456&quot;,
+  &quot;source&quot;: &quot;cursor&quot;
+}
+```
+
+### Generic HTTP Agent
+
+For agents that cannot use MCP, expose the same operations over HTTP.  The
+request body should stay close to the MCP tool schema:
+
+```http
+POST /v1/context/retrieve
+Content-Type: application/json
 Authorization: Bearer mk_live_...
 
 {
-  "query": "What did we decide about GPU budget approvals?",
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "thread_456"
+  &quot;query&quot;: &quot;What did we decide about GPU budget approvals?&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;thread_456&quot;
   },
-  "max_context_tokens": 2048,
-  "local_context": [
-    {"ref": "open-buffer:infra/budget.md", "text": "short local summary"}
+  &quot;max_context_tokens&quot;: 2048,
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-buffer:infra/budget.md&quot;, &quot;text&quot;: &quot;short local summary&quot;}
   ]
-}</code></pre>
+}
+```
 
-  <h2>What Each Agent Sends</h2>
-  <pre><code>Codex:
+```http
+POST /v1/context/ingest
+Content-Type: application/json
+Authorization: Bearer mk_live_...
+
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;The GPU request is approved under capex.&quot;}
+  ],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;thread_456&quot;
+  },
+  &quot;metadata&quot;: {&quot;source&quot;: &quot;vertical_agent&quot;, &quot;event&quot;: &quot;after_llm&quot;}
+}
+```
+
+### Vertical Agents
+
+Vertical agents can integrate through MCP or HTTP.  They should send:
+
+```text
+required:
+  messages or raw query
+  account_id or tenant_id
+  user_id or session_id
+
+strongly recommended:
+  session_id
+  source
+  task_type
+  max_context_tokens
+  local_context refs or summary
+  accepted_refs / rejected_refs after final answer
+```
+
+If a session id is missing, MatrixArk can fall back to user scope, but
+confirmation detection and same-session batch extraction are much better when
+`session_id` is present.
+
+## What Each Agent Sends
+
+```text
+Codex:
   MCP explicit tool calls, or hook payloads such as UserPromptSubmit, Stop,
   PostCompact, and PostToolUse. MatrixArk wrapper normalizes raw hook payloads.
 
@@ -159,28 +409,59 @@ Cursor:
 
 Vertical AI harness:
   MCP or HTTP. Best integration can also send lifecycle hooks before LLM,
-  after LLM, tool-result, feedback, idle-timeout, and session-commit events.</code></pre>
+  after LLM, tool-result, feedback, idle-timeout, and session-commit events.
+```
 
-  <h2>Agent Policy File</h2>
-  <p>Use <code>docs/matrixark_agent_policy.md</code> as project or agent instruction material. It tells agents when to call retrieve, ingest, feedback, and session commit.</p>
+## Agent Policy File
 
-  <h2>Runtime Flow</h2>
-  <pre><code>User query
--&gt; local context scan
--&gt; matrixark_retrieve(query, scope, token budget, local refs)
--&gt; MatrixArk query understanding
--&gt; tree-first ContextNode traversal using L0/L1 embeddings
--&gt; TemporalStore event/entity/resource/skill retrieval
--&gt; staleness scoring + token-budget packing
--&gt; ContextPack
--&gt; agent combines local context + ContextPack
--&gt; LLM answer/tool calls
--&gt; matrixark_ingest / feedback / session_commit
--&gt; async summaries, embeddings, compression, audit</code></pre>
+Use this local policy doc as project/agent instruction material:
 
-  <h2>Context Combination Policy</h2>
-  <div class="callout">Agents should not blindly append MatrixArk context on top of unchanged local context forever. They should budget local and remote context together.</div>
-  <pre><code>code-local question:
+```text
+docs/matrixark_agent_policy.md
+```
+
+It describes exactly when to call `matrixark_retrieve`, `matrixark_ingest`,
+`matrixark_feedback`, and `matrixark_session_commit`.
+
+For automatic lifecycle capture across popular agents, use:
+
+```text
+docs/matrixark_popular_agent_hooks.md
+tools/matrixark_agent_hook.py
+```
+
+## Runtime Flow
+
+```mermaid
+flowchart TD
+  A[&quot;Agent receives user query&quot;] --&gt; B[&quot;Local context scan: open files, buffers, tools&quot;]
+  B --&gt; C[&quot;matrixark_retrieve(query, scope, token budget, local refs)&quot;]
+  C --&gt; D[&quot;MatrixArk query understanding&quot;]
+  D --&gt; E[&quot;Tree-first ContextNode traversal using L0/L1 embeddings&quot;]
+  E --&gt; F[&quot;TemporalStore event/entity/resource/skill retrieval&quot;]
+  F --&gt; G[&quot;Staleness scoring + token-budget packing&quot;]
+  G --&gt; H[&quot;ContextPack&quot;]
+  H --&gt; I[&quot;Agent combines local context + ContextPack&quot;]
+  I --&gt; J[&quot;LLM answer/tool calls&quot;]
+  J --&gt; K[&quot;matrixark_ingest / feedback / session_commit&quot;]
+  K --&gt; L[&quot;Async summaries, embeddings, compression, audit&quot;]
+```
+
+## Context Combination Policy
+
+Agents should not blindly append MatrixArk context on top of unchanged local
+context forever.  They should budget both:
+
+```text
+local_context_tokens
+remote_context_tokens
+max_prompt_tokens
+```
+
+Recommended policy:
+
+```text
+code-local question:
   local files first
   MatrixArk only for prior decisions, team memory, resources, skills
 
@@ -194,13 +475,43 @@ current-state question:
 
 resource/runbook question:
   selected ResourceChunk + citation
-  do not inject full raw files by default</code></pre>
+  do not inject full raw files by default
+```
 
-  <h2>Access And Isolation</h2>
-  <p>Every integration must carry account, tenant, user, and/or session scope. MatrixArk API keys enforce scopes, account and tenant isolation, allowed users and sessions, audit logs, key rotation, revocation, and optional SSO mapping.</p>
+This is how MatrixArk lowers token usage: it returns a dense, replayable
+ContextPack instead of forcing the agent to stuff every old thread, file, or
+resource into the prompt.
 
-  <h2>What Is Automatic Today</h2>
-  <pre><code>MCP:
+## Access And Isolation
+
+Every integration must carry scope:
+
+```text
+account_id
+tenant_id
+user_id and/or session_id
+optional team/project/source labels
+```
+
+MatrixArk API keys enforce:
+
+```text
+scopes/roles
+account and tenant isolation
+allowed users and sessions
+audit logs
+key rotation and revocation
+optional SSO mapping
+```
+
+Claude, Cursor, Codex, and vertical agents should never share one global key for
+all users in production.  Use tenant-scoped or service-scoped keys and pass the
+actual end-user/session scope on every request.
+
+## What Is Automatic Today
+
+```text
+MCP:
   tools are available to the agent, but calls are explicit
 
 Codex hook:
@@ -210,16 +521,19 @@ MatrixArk:
   extracts internal event/entity/segment/index data
   writes TemporalStore records
   refreshes summaries asynchronously
-  returns ContextPacks</code></pre>
+  returns ContextPacks
+```
 
-  <h2>Backlog</h2>
-  <pre><code>Claude and Cursor first-party hook packages
+## What Remains Product Backlog
+
+```text
+Claude and Cursor first-party hook packages
 Cursor project-level config templates
 Claude Desktop installer helper
 HTTP gateway parity with MCP tools
 per-agent default retrieval policies
 automatic local-context token budget negotiation
-enterprise SSO provisioning</code></pre>
-</main>
-</body>
+enterprise SSO provisioning
+```
+</pre></article></main></body>
 </html>
