@@ -67,17 +67,24 @@ node_path  = tenant:<tenant_id> / user:<user_id> / session:<session_id>
 
 ## Quickstart
 
-Native MCP/server path:
+Production C++/Rust MCP/server path:
 
 ```bash
 export MATRIXARK_ACCESS_MODE=dev
 export MATRIXARK_LOCAL_AGENT_NAME=codex
 export MATRIXARK_LOCAL_USER_ID="$(whoami)"
-export MATRIXARK_MCP_EVENT_LOG="$HOME/.matrixark/data/events.jsonl"
+export MATRIXARK_MCP_PROFILE=production
+export MATRIXARK_MCP_BACKEND=temporalstore-rust     # or temporalstore-direct
+export MATRIXARK_DIRECT_WRITE_QUEUE=1
+export MATRIXARK_DIRECT_WRITE_QUEUE_MODE=temporalstore
 
 python3 tools/matrixark_mcp_server.py \
-  --event-log "$MATRIXARK_MCP_EVENT_LOG"
+  --backend "$MATRIXARK_MCP_BACKEND"
 ```
+
+The local JSONL `record_log` adapter is now a debug/CI path. Production should
+write context data directly to TemporalStore, using TemporalStore oplog,
+MatrixArk audit records, and replay records for durability and inspection.
 
 Apply a local API key:
 

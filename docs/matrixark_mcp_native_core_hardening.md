@@ -19,6 +19,10 @@ benchmark and production profiles:
 
 The Python `local` and `temporalstore-local` adapters are debug-only in
 production/benchmark profiles unless `MATRIXARK_ALLOW_LOCAL_BACKEND=1` is set.
+Production does not need the local JSONL `record_log`: TemporalStore already
+has the oplog/write path, MatrixArk ContextPack audit, and replay records. Keep
+local record-log writes only for offline debugging, deterministic CI fixtures,
+and tiny demos.
 
 ## Production Guard
 
@@ -32,6 +36,9 @@ export MATRIXARK_MCP_BACKEND=temporalstore-rust   # or temporalstore-direct
 In this profile, `matrixark_mcp_server.py` refuses local JSONL storage. It also
 runs backend readiness before serving for C++ and Rust backends, so ingestion and
 retrieval cannot silently start on an unhealthy native store.
+If `MATRIXARK_MCP_BACKEND` is omitted in this profile, the server and hooks
+default to `temporalstore-direct` instead of `local`; set
+`MATRIXARK_ALLOW_LOCAL_BACKEND=1` only when deliberately debugging local JSONL.
 
 For benchmark/parity runs, use:
 

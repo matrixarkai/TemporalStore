@@ -21,21 +21,27 @@ try:
     from tools.matrixark_codex_hook import (
         build_server,
         call_tool,
+        default_hook_backend,
         first_string_at,
         generated_session_id,
+        hook_idempotency_key,
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        validate_hook_backend_policy,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_codex_hook import (  # type: ignore
         build_server,
         call_tool,
+        default_hook_backend,
         first_string_at,
         generated_session_id,
+        hook_idempotency_key,
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        validate_hook_backend_policy,
     )
 
 
@@ -173,7 +179,7 @@ def parse_args() -> argparse.Namespace:
         or "UserPromptSubmit",
     )
     parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_AGENT_EVENT_LOG", "/tmp/matrixark-agent-hook.jsonl")))
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct"], default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"))
+    parser.add_argument("--backend", choices=["local", "temporalstore-direct"], default=default_hook_backend() if default_hook_backend() != "temporalstore-rust" else "temporalstore-direct")
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_agent"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_agent"))
@@ -424,6 +430,7 @@ def scope_from_args(args: argparse.Namespace) -> Json:
 
 def main() -> int:
     args = parse_args()
+    validate_hook_backend_policy(args.backend)
     payload = read_stdin_payload()
     args.session_id, session_id_source = resolve_session_id(payload, args)
     text = payload_text(payload) or args.query
@@ -446,7 +453,7 @@ def main() -> int:
         "hook_type": event_hook_type,
         "hook_id": f"{args.agent}:{args.event}:{int(time.time() * 1000)}",
         "observed_at_ms": int(time.time() * 1000),
-        "idempotency_key": str(payload.get("id") or payload.get("turn_id") or payload.get("message_id") or raw_uri or ""),
+        "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
         "trigger": args.event,
         "auto_captured": True,
         "session_id_source": session_id_source,
@@ -537,7 +544,7 @@ def main() -> int:
                     "hook_type": "session_commit",
                     "hook_id": f"{args.agent}:session_commit:{args.event}:{int(time.time() * 1000)}",
                     "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": str(payload.get("id") or payload.get("turn_id") or payload.get("message_id") or ""),
+                    "idempotency_key": hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
                     "trigger": args.event,
                     "auto_captured": True,
                     "session_id_source": session_id_source,

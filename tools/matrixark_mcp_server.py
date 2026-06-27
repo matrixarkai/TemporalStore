@@ -751,6 +751,13 @@ def backend_ready_required(backend: str) -> bool:
     return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust"}
 
 
+def default_mcp_backend() -> str:
+    configured = os.environ.get("MATRIXARK_MCP_BACKEND")
+    if configured:
+        return configured
+    return "temporalstore-direct" if production_profile_enabled() else "local"
+
+
 def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
     local_backends = {"local", "temporalstore-local"}
     if production_profile_enabled() and args.backend in local_backends and not MATRIXARK_ALLOW_LOCAL_BACKEND:
@@ -765,7 +772,7 @@ def main() -> int:
     parser.add_argument(
         "--backend",
         choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust"],
-        default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"),
+        default=default_mcp_backend(),
         help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK.",
     )
     parser.add_argument(
