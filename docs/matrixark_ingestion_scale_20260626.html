@@ -108,7 +108,23 @@ Message ingestion can now request one of four compact native write routes:
 {&quot;storage_options&quot;: {&quot;route&quot;: &quot;raft_sync&quot;}}
 ```
 
-The same request can also use expanded fields:
+A message can also say the same thing in a friendlier form: choose the storage family, then choose whether this particular write is async or sync.
+
+```json
+{
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Alice approved the GPU request.&quot;}
+  ],
+  &quot;storage_options&quot;: {
+    &quot;storage_family&quot;: &quot;raft&quot;,
+    &quot;write_mode&quot;: &quot;async&quot;
+  }
+}
+```
+
+`storage_family` is either `shared_store` or `raft`. `write_mode=async` lets the native backend acknowledge after the fast in-memory append and run oplog/shared-store/Raft persistence work in the background where that topology supports it. `write_mode=sync` waits for the durable route before acknowledging the message. The top-level aliases `temporalstore_storage_family` and `temporalstore_write_mode` are also accepted for agents that prefer flat request fields.
+
+The same request can still use expanded low-level fields:
 
 ```json
 {
@@ -122,7 +138,7 @@ The same request can also use expanded fields:
 }
 ```
 
-MatrixArk normalizes either form into `storage_route` and attaches it to hot records, debug/audit context, and C++/Rust batch-write entries. The native backend can use `storage_route.route_key` to dispatch to shared-store async/sync or Raft async/sync paths. Benchmark parity still requires the actual C++/Rust data-node topology to be launched in the same route and proven with `--topology-report-json` when using fail-closed parity mode.
+MatrixArk normalizes all forms into `storage_route` and attaches it to hot records, debug/audit context, and C++/Rust batch-write entries. The native backend can use `storage_route.route_key`, `storage_route.storage_family`, `storage_route.write_mode`, `storage_route.background_write`, and `storage_route.write_ack_policy` to dispatch to shared-store async/sync or Raft async/sync paths. Benchmark parity still requires the actual C++/Rust data-node topology to be launched in the same route and proven with `--topology-report-json` when using fail-closed parity mode.
 
 ## Storage Mode Nuance
 

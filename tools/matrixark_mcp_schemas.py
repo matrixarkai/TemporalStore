@@ -78,6 +78,20 @@ STORAGE_OPTIONS_SCHEMA: Json = {
             "enum": ["shared_store_async", "shared_store_sync", "raft_async", "raft_sync"],
             "description": "Compact write-route preset. Expands into storage_mode, replication_mode, oplog_mode, and raft_mode.",
         },
+        "storage_family": {
+            "type": "string",
+            "enum": ["default", "shared_store", "raft"],
+            "description": "Friendly route selector. Choose shared_store or raft, then combine with write_mode=async|sync.",
+        },
+        "write_mode": {
+            "type": "string",
+            "enum": ["default", "async", "sync"],
+            "description": "Per-message write behavior. async lets the native backend acknowledge after memory append/background oplog work; sync waits for the durable route.",
+        },
+        "background_write": {
+            "type": "boolean",
+            "description": "Optional explicit background-write hint for native backends. Defaults to true for async write_mode and false for sync write_mode.",
+        },
         "storage_mode": {
             "type": "string",
             "enum": ["default", "local", "single_node", "multi_node", "shared_store", "raft"],
@@ -181,6 +195,9 @@ TOOLS: list[Json] = [
                 "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
                 "temporalstore_raft_mode": {"type": "boolean", "description": "Convenience alias for storage_options.raft_mode."},
                 "temporalstore_route": {"type": "string", "description": "Convenience alias for storage_options.route, e.g. shared_store_async, shared_store_sync, raft_async, raft_sync."},
+                "temporalstore_storage_family": {"type": "string", "description": "Convenience alias for storage_options.storage_family, e.g. shared_store or raft."},
+                "temporalstore_write_mode": {"type": "string", "description": "Convenience alias for storage_options.write_mode, e.g. async or sync."},
+                "temporalstore_background_write": {"type": "boolean", "description": "Convenience alias for storage_options.background_write."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,
