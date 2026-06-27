@@ -4092,6 +4092,36 @@ class MatrixArkLocalAdapter:
             native_pack["recall_policy"] = recall_policy
             native_pack.setdefault("context_pack_cache_hit", False)
             native_pack.setdefault("context_pack_assembly", "native_backend")
+            native_pack.setdefault("remote_context_refs", native_pack.get("selected_refs", []))
+            native_pack.setdefault("selected_ref_counts", selected_context_class_counts(native_pack.get("selected_refs", [])))
+            selected_refs = native_pack.get("selected_refs", []) if isinstance(native_pack.get("selected_refs"), list) else []
+            context_pack_id_text = str(native_pack.get("context_pack_id") or stable_hash(f"native:{query}:{selected_refs}:{now_ms()}"))
+            native_pack["context_pack_id"] = context_pack_id_text
+            if audit_mode == "full" and audit_sample_rate > 0 and (audit_sample_rate >= 1.0 or stable_hash(context_pack_id_text) % 10000 < int(audit_sample_rate * 10000)):
+                self.append_audit(
+                    {
+                        "record_type": "context_pack_audit",
+                        "context_pack_id": context_pack_id_text,
+                        "query": query,
+                        "scope": scope,
+                        "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected_refs), limit=512),
+                        "selected_refs": compact_refs_for_audit(selected_refs),
+                        "local_context_refs": compact_local_context_refs(local_budget),
+                        "context_sources_order": native_pack.get("context_sources_order", []),
+                        "selected_ref_counts": native_pack.get("selected_ref_counts", {}),
+                        "dropped_refs": native_pack.get("dropped_refs", {}),
+                        "quality_warnings": native_pack.get("quality_warnings", []),
+                        "question_type": question_type,
+                        "packing_policy": native_pack.get("packing_policy", "native_backend"),
+                        "recall_policy": recall_policy,
+                        "stage_latency_budgets": recall_policy.get("stage_latency_budgets", {}),
+                        "storage_options": storage_options,
+                        "used_remote_context_tokens": native_pack.get("used_remote_context_tokens", native_pack.get("used_context_tokens", 0)),
+                        "remote_context_budget_tokens": native_pack.get("remote_context_budget_tokens", max_context_tokens),
+                        "requested_max_context_tokens": native_pack.get("requested_max_context_tokens", max_context_tokens),
+                        "created_at_ms": now_ms(),
+                    }
+                )
             return native_pack
         if self.native_context_pack_required():
             raise MatrixArkError(

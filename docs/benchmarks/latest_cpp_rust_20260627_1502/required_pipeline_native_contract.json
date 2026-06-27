@@ -1,0 +1,1524 @@
+{
+  "all_ok": true,
+  "comparison": {
+    "checks": {
+      "embedding_types_equal": true,
+      "memory_ref_counts_equal": false,
+      "record_types_equal": false,
+      "resource_ref_counts_equal": false,
+      "skill_ref_counts_equal": false,
+      "summary_types_equal": true
+    },
+    "status": "warning"
+  },
+  "failures": [],
+  "required_pipeline": [
+    "ingest",
+    "extraction",
+    "async_summary_refresh",
+    "tree_traversal_node_l0_l1",
+    "secondary_index_prefilter",
+    "retrieve_events_entities_resources_skills",
+    "context_pack",
+    "audit_replay"
+  ],
+  "required_record_types": [
+    "context_child_ref",
+    "context_embedding",
+    "context_entity",
+    "context_event",
+    "context_index",
+    "context_node",
+    "context_pack_audit",
+    "context_segment",
+    "context_summary",
+    "context_summary_dirty",
+    "context_summary_refresh_audit",
+    "resource_chunk",
+    "resource_import_task",
+    "resource_manifest",
+    "resource_registry",
+    "session_buffer_event",
+    "skill_manifest",
+    "skill_registry",
+    "skill_section"
+  ],
+  "results": [
+    {
+      "audit": {
+        "actions": [
+          "context.batch_extract",
+          "context.ingest",
+          "context.refresh_summaries",
+          "context.replay",
+          "context.retrieve"
+        ],
+        "count": 12
+      },
+      "backend": "cpp",
+      "checks": {
+        "admin_audit_ingest_refresh_retrieve_replay": true,
+        "audit_replay_memory": true,
+        "audit_replay_resource": true,
+        "audit_replay_skill": true,
+        "batch_extraction_wrote_entities": true,
+        "batch_extraction_wrote_segments": true,
+        "context_packs_written": true,
+        "memory_secondary_index_prefilter": true,
+        "memory_tree_traversal_l0_l1": true,
+        "online_ingest_extracted_event": true,
+        "required_embedding_types_present": true,
+        "required_record_types_present": true,
+        "required_summary_types_present": true,
+        "resource_ingest_extracted_facts": true,
+        "resource_ingest_wrote_chunks": true,
+        "resource_secondary_index_prefilter": true,
+        "resource_tree_traversal_l0_l1": true,
+        "retrieve_events_or_entities": true,
+        "retrieve_resources": true,
+        "retrieve_skills": true,
+        "secondary_indexes_present": true,
+        "skill_ingest_wrote_skill_hash": true,
+        "skill_secondary_index_prefilter": true,
+        "skill_tree_traversal_l0_l1": true,
+        "summary_refresh_completed": true
+      },
+      "elapsed_ms": 1003.97,
+      "ingest": {
+        "batch": {
+          "entities_written": 9,
+          "events_written": 20,
+          "indexes_written": 8,
+          "segments_written": 4,
+          "status": "accepted"
+        },
+        "online": {
+          "classification": "NEW_EVENT",
+          "status": "accepted"
+        },
+        "resource": {
+          "chunks": [
+            31000,
+            31001
+          ],
+          "entities": 8,
+          "facts": 8,
+          "status": "accepted"
+        },
+        "skill": {
+          "skill_hash": 1663028582513362874,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-direct",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "required_pipeline_parity:cpp:latest_cpp_rust_native_pack_contract_20260627",
+        "status": "ready",
+        "storage_prefix": "matrixark:required-pipeline:cpp:latest_cpp_rust_native_pack_contract_20260627",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:required-pipeline:cpp:latest_cpp_rust_native_pack_contract_20260627",
+          "table": "deploy_table",
+          "warmup_field": "1094559:1782599533340:690599719733039431",
+          "warmup_key": "matrixark:required-pipeline:cpp:latest_cpp_rust_native_pack_contract_20260627:readiness"
+        },
+        "warmup_key": "matrixark:required-pipeline:cpp:latest_cpp_rust_native_pack_contract_20260627:readiness"
+      },
+      "replay": {
+        "memory": {
+          "context_pack_id": "cpp-native-1782599533-76",
+          "event_count": 439
+        },
+        "resource": {
+          "context_pack_id": "cpp-native-1782599533-76",
+          "event_count": 440
+        },
+        "skill": {
+          "context_pack_id": "cpp-native-1782599533-73",
+          "event_count": 441
+        }
+      },
+      "retrieval": {
+        "memory": {
+          "context_pack_id": "cpp-native-1782599533-76",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 6,
+            "enabled": true,
+            "matched_candidate_count": 57,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 1,
+            "event": 2,
+            "segment": 1,
+            "summary": 10
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 76,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 6,
+            "selected_node_count": 6,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "resource": {
+          "context_pack_id": "cpp-native-1782599533-76",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 6,
+            "enabled": true,
+            "matched_candidate_count": 57,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 7,
+            "resource_fact": 3,
+            "summary": 5
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 76,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 4,
+            "selected_node_count": 4,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        },
+        "skill": {
+          "context_pack_id": "cpp-native-1782599533-73",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 9,
+            "enabled": true,
+            "matched_candidate_count": 54,
+            "native_backend": true
+          },
+          "selected_ref_counts": {
+            "entity": 2,
+            "resource_chunk": 1,
+            "resource_fact": 2,
+            "skill_section": 1,
+            "summary": 5
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 73,
+            "enabled": true,
+            "fallback_to_flat": false,
+            "native_backend": true,
+            "selected_leaf_count": 5,
+            "selected_node_count": 5,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ]
+          }
+        }
+      },
+      "storage_prefix": "matrixark:required-pipeline:cpp:latest_cpp_rust_native_pack_contract_20260627",
+      "storage_records": {
+        "embedding_types": [
+          "batch_l0",
+          "entity_state",
+          "event_text",
+          "node_l0",
+          "node_l1",
+          "resource_chunk",
+          "resource_l0",
+          "segment_text",
+          "session_l0",
+          "skill_l0",
+          "skill_section",
+          "skill_summary"
+        ],
+        "index_name_sample": [
+          "classification:batch_memory",
+          "classification:new_event",
+          "entity_type:job_status",
+          "entity_type:location",
+          "entity_type:preference",
+          "entity_type:relationship",
+          "entity_type:resource_api_contract",
+          "entity_type:resource_approval",
+          "entity_type:resource_cost",
+          "entity_type:resource_deadline",
+          "entity_type:resource_fact",
+          "entity_type:resource_owner",
+          "entity_type:resource_troubleshooting",
+          "event_type:confirmation",
+          "event_type:dialogue_batch",
+          "event_type:resource_api_contract",
+          "event_type:resource_approval",
+          "event_type:resource_cost",
+          "event_type:resource_deadline",
+          "event_type:resource_owner",
+          "event_type:resource_troubleshooting_step",
+          "heading_slug:context-pack-debugger",
+          "heading_slug:gpu-runbook",
+          "heading_slug:steps",
+          "heading_slug:troubleshooting",
+          "keyword:approval",
+          "keyword:budget",
+          "keyword:context",
+          "keyword:evidence",
+          "keyword:finance",
+          "keyword:gpu",
+          "keyword:inspect",
+          "keyword:missing",
+          "keyword:requests",
+          "keyword:require",
+          "keyword:runbook",
+          "keyword:steps",
+          "keyword:troubleshooting",
+          "resource_type:md",
+          "resource_type:skill",
+          "skill_name:context-pack-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_context_pack",
+          "skill_trigger:replay_evidence",
+          "source_type:message",
+          "source_type:resource",
+          "source_type:resource_fact",
+          "source_type:skill",
+          "status:observed",
+          "unit_kind:markdown_section"
+        ],
+        "missing_embedding_types": [],
+        "missing_record_types": [],
+        "missing_summary_types": [],
+        "record_counts": {
+          "context_child_ref": 7,
+          "context_debug_record": 45,
+          "context_embedding": 83,
+          "context_entity": 17,
+          "context_entity_update_audit": 9,
+          "context_event": 31,
+          "context_extraction_audit": 1,
+          "context_index": 149,
+          "context_node": 10,
+          "context_pack_audit": 3,
+          "context_segment": 4,
+          "context_summary": 24,
+          "context_summary_dirty": 16,
+          "context_summary_refresh_audit": 10,
+          "matrixark_audit_log": 12,
+          "matrixark_metric": 2,
+          "resource_chunk": 4,
+          "resource_import_task": 6,
+          "resource_manifest": 1,
+          "resource_registry": 1,
+          "session_buffer_event": 3,
+          "skill_manifest": 1,
+          "skill_registry": 1,
+          "skill_section": 2
+        },
+        "record_types": [
+          "context_child_ref",
+          "context_debug_record",
+          "context_embedding",
+          "context_entity",
+          "context_entity_update_audit",
+          "context_event",
+          "context_extraction_audit",
+          "context_index",
+          "context_node",
+          "context_pack_audit",
+          "context_segment",
+          "context_summary",
+          "context_summary_dirty",
+          "context_summary_refresh_audit",
+          "matrixark_audit_log",
+          "matrixark_metric",
+          "resource_chunk",
+          "resource_import_task",
+          "resource_manifest",
+          "resource_registry",
+          "session_buffer_event",
+          "skill_manifest",
+          "skill_registry",
+          "skill_section"
+        ],
+        "summary_types": [
+          "batch_l0",
+          "node_l0",
+          "node_l1",
+          "resource_l0",
+          "session_l0",
+          "skill_l0"
+        ]
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_required_pipeline",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=7793525581527636093|u=3029598273137875271|s=7055238219664705120|",
+          "session_hash": 7055238219664705120,
+          "session_id": "session_cpp_latest_cpp_rust_native_pack_contract_20260627",
+          "tenant_hash": 7793525581527636093,
+          "tenant_id": "tenant_required_pipeline",
+          "user_hash": 3029598273137875271,
+          "user_id": "user_cpp"
+        },
+        "compression_created_count": 0,
+        "refreshed": [
+          {
+            "dirty_hash": 9086412590661192128,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8469443316281102029,
+            "node_path": [
+              "memory",
+              "approvals"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 3711374591020758296,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6353474326553345662,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 6203580366243551195,
+            "node_path": [
+              "memory",
+              "approvals",
+              "gpu"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 7745920573107957673,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 5439839895959524627,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4640110363744790749,
+            "node_path": [
+              "memory"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 191
+            },
+            "summary_version_hash": 10568372786611075,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 8913248814996448939,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6481239486833258144,
+            "node_path": [
+              "memory",
+              "profile"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 175
+            },
+            "summary_version_hash": 5795577778417574112,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 1165650861492437075,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6374091839316063018,
+            "node_path": [
+              "memory",
+              "profile",
+              "session_batch"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 106
+            },
+            "summary_version_hash": 2919624754942123682,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 20,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6319077891970133402,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4743154237302771655,
+            "node_path": [
+              "resources"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 125
+            },
+            "summary_version_hash": 8930463691547890928,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 9095612247910564397,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 5687419598181529931,
+            "node_path": [
+              "resources",
+              "runbooks"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 125
+            },
+            "summary_version_hash": 5806442312511131617,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6976419692775946832,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8224798363037858282,
+            "node_path": [
+              "resources",
+              "runbooks",
+              "gpu"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 188
+            },
+            "summary_version_hash": 5435227102151043354,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 9,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 4211022597565870783,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 3657432287575731750,
+            "node_path": [
+              "skills"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 187
+            },
+            "summary_version_hash": 3130102282022100846,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 4913935217720482768,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 1442724107412651879,
+            "node_path": [
+              "skills",
+              "context-pack-debugger"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 8
+            },
+            "summary_version_hash": 3201360777532759624,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          }
+        ],
+        "refreshed_count": 10,
+        "status": "ok"
+      }
+    },
+    {
+      "audit": {
+        "actions": [
+          "context.batch_extract",
+          "context.ingest",
+          "context.refresh_summaries",
+          "context.replay",
+          "context.retrieve"
+        ],
+        "count": 12
+      },
+      "backend": "rust",
+      "checks": {
+        "admin_audit_ingest_refresh_retrieve_replay": true,
+        "audit_replay_memory": true,
+        "audit_replay_resource": true,
+        "audit_replay_skill": true,
+        "batch_extraction_wrote_entities": true,
+        "batch_extraction_wrote_segments": true,
+        "context_packs_written": true,
+        "memory_secondary_index_prefilter": true,
+        "memory_tree_traversal_l0_l1": true,
+        "online_ingest_extracted_event": true,
+        "required_embedding_types_present": true,
+        "required_record_types_present": true,
+        "required_summary_types_present": true,
+        "resource_ingest_extracted_facts": true,
+        "resource_ingest_wrote_chunks": true,
+        "resource_secondary_index_prefilter": true,
+        "resource_tree_traversal_l0_l1": true,
+        "retrieve_events_or_entities": true,
+        "retrieve_resources": true,
+        "retrieve_skills": true,
+        "secondary_indexes_present": true,
+        "skill_ingest_wrote_skill_hash": true,
+        "skill_secondary_index_prefilter": true,
+        "skill_tree_traversal_l0_l1": true,
+        "summary_refresh_completed": true
+      },
+      "elapsed_ms": 1059.35,
+      "ingest": {
+        "batch": {
+          "entities_written": 9,
+          "events_written": 20,
+          "indexes_written": 8,
+          "segments_written": 4,
+          "status": "accepted"
+        },
+        "online": {
+          "classification": "NEW_EVENT",
+          "status": "accepted"
+        },
+        "resource": {
+          "chunks": [
+            31000,
+            31001
+          ],
+          "entities": 8,
+          "facts": 8,
+          "status": "accepted"
+        },
+        "skill": {
+          "skill_hash": 8513244281227775068,
+          "status": "accepted"
+        }
+      },
+      "ok": true,
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-rust",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "required_pipeline_parity:rust:latest_cpp_rust_native_pack_contract_20260627",
+        "status": "ready",
+        "storage_prefix": "matrixark:required-pipeline:rust:latest_cpp_rust_native_pack_contract_20260627",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:required-pipeline:rust:latest_cpp_rust_native_pack_contract_20260627",
+          "table": "deploy_table",
+          "warmup_field": "1094619:1782599534120:5697105611131750706",
+          "warmup_key": "matrixark:required-pipeline:rust:latest_cpp_rust_native_pack_contract_20260627:readiness"
+        },
+        "warmup_key": "matrixark:required-pipeline:rust:latest_cpp_rust_native_pack_contract_20260627:readiness"
+      },
+      "replay": {
+        "memory": {
+          "context_pack_id": "5236991314979306421",
+          "event_count": 517
+        },
+        "resource": {
+          "context_pack_id": "3349728508173183802",
+          "event_count": 518
+        },
+        "skill": {
+          "context_pack_id": "5264707744491297864",
+          "event_count": 519
+        }
+      },
+      "retrieval": {
+        "memory": {
+          "context_pack_id": "5236991314979306421",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 0,
+            "effective_mode": "any_group",
+            "enabled": true,
+            "fanout_cap_applied_before_embedding_scoring": true,
+            "matched_candidate_count": 37,
+            "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+            "required_groups": [
+              [
+                "entity_type:preference",
+                "event_type:preference_update"
+              ],
+              [
+                "classification:confirmation",
+                "classification:resource_fact",
+                "entity_type:approval_state",
+                "entity_type:confirmation",
+                "entity_type:resource_fact",
+                "event_type:confirmation",
+                "event_type:resource_approval_fact",
+                "segment_topic:approval_budget",
+                "source_type:resource",
+                "source_type:resource_fact"
+              ]
+            ]
+          },
+          "selected_ref_counts": {
+            "compression": 0,
+            "entity": 3,
+            "event": 23,
+            "resource_chunk": 2,
+            "resource_entity_fact": 0,
+            "resource_fact": 2,
+            "segment": 1,
+            "skill_section": 0,
+            "summary": 0
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 296,
+            "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
+            "cold_events_represented_by_compression": false,
+            "enabled": true,
+            "fallback_reason": "",
+            "fallback_to_flat": false,
+            "hard_max_children_scored_per_parent": 100000,
+            "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
+            "max_candidates_per_node": 256,
+            "max_children_scored_per_parent": 100000,
+            "max_raw_events_per_node": 256,
+            "max_selected_refs": 256,
+            "raw_events_dropped_by_time_window": 0,
+            "records_dropped_by_node_fanout": 0,
+            "records_dropped_by_tree": 0,
+            "selected_leaf_count": 4,
+            "selected_node_count": 10,
+            "selected_path_count": 10,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ],
+            "top_k_per_layer": 8
+          }
+        },
+        "resource": {
+          "context_pack_id": "3349728508173183802",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 0,
+            "effective_mode": "any_group",
+            "enabled": true,
+            "fanout_cap_applied_before_embedding_scoring": true,
+            "matched_candidate_count": 36,
+            "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+            "required_groups": [
+              [
+                "classification:confirmation",
+                "classification:resource_fact",
+                "entity_type:approval_state",
+                "entity_type:confirmation",
+                "entity_type:resource_fact",
+                "event_type:confirmation",
+                "event_type:resource_approval_fact",
+                "segment_topic:approval_budget",
+                "source_type:resource",
+                "source_type:resource_fact"
+              ],
+              [
+                "source_type:resource",
+                "source_type:resource_fact"
+              ],
+              [
+                "keyword:approval",
+                "keyword:budget",
+                "keyword:finance",
+                "keyword:requests",
+                "keyword:require",
+                "keyword:says"
+              ]
+            ]
+          },
+          "selected_ref_counts": {
+            "compression": 0,
+            "entity": 2,
+            "event": 23,
+            "resource_chunk": 2,
+            "resource_entity_fact": 0,
+            "resource_fact": 2,
+            "segment": 1,
+            "skill_section": 0,
+            "summary": 0
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 295,
+            "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
+            "cold_events_represented_by_compression": false,
+            "enabled": true,
+            "fallback_reason": "",
+            "fallback_to_flat": false,
+            "hard_max_children_scored_per_parent": 100000,
+            "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
+            "max_candidates_per_node": 256,
+            "max_children_scored_per_parent": 100000,
+            "max_raw_events_per_node": 256,
+            "max_selected_refs": 256,
+            "raw_events_dropped_by_time_window": 0,
+            "records_dropped_by_node_fanout": 0,
+            "records_dropped_by_tree": 0,
+            "selected_leaf_count": 4,
+            "selected_node_count": 10,
+            "selected_path_count": 10,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ],
+            "top_k_per_layer": 8
+          }
+        },
+        "skill": {
+          "context_pack_id": "5264707744491297864",
+          "secondary_index_filter": {
+            "applied_before_embedding_scoring": true,
+            "dropped_candidate_count": 21,
+            "effective_mode": "any_group",
+            "enabled": true,
+            "fanout_cap_applied_before_embedding_scoring": true,
+            "matched_candidate_count": 34,
+            "mode": "ANY group for multi-intent raw query, otherwise AND across groups; OR within each group",
+            "required_groups": [
+              [
+                "keyword:context",
+                "keyword:evidence",
+                "keyword:helps",
+                "keyword:inspect",
+                "keyword:pack",
+                "keyword:refs",
+                "keyword:replay",
+                "keyword:selected"
+              ],
+              [
+                "source_type:skill"
+              ],
+              [
+                "skill_tool:replay"
+              ],
+              [
+                "skill_trigger:context",
+                "skill_trigger:context_pack",
+                "skill_trigger:context_pack_selected",
+                "skill_trigger:evidence",
+                "skill_trigger:helps",
+                "skill_trigger:helps_inspect",
+                "skill_trigger:helps_inspect_context",
+                "skill_trigger:inspect",
+                "skill_trigger:inspect_context",
+                "skill_trigger:inspect_context_pack",
+                "skill_trigger:pack",
+                "skill_trigger:pack_selected",
+                "skill_trigger:pack_selected_refs",
+                "skill_trigger:refs",
+                "skill_trigger:refs_replay",
+                "skill_trigger:refs_replay_evidence",
+                "skill_trigger:replay",
+                "skill_trigger:replay_evidence",
+                "skill_trigger:selected",
+                "skill_trigger:selected_refs",
+                "skill_trigger:selected_refs_replay"
+              ],
+              [
+                "source_type:feedback",
+                "source_type:message"
+              ]
+            ]
+          },
+          "selected_ref_counts": {
+            "compression": 0,
+            "entity": 0,
+            "event": 23,
+            "resource_chunk": 1,
+            "resource_entity_fact": 0,
+            "resource_fact": 2,
+            "segment": 0,
+            "skill_section": 2,
+            "summary": 0
+          },
+          "tree_traversal": {
+            "candidate_records_after_tree": 314,
+            "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
+            "cold_events_represented_by_compression": false,
+            "enabled": true,
+            "fallback_reason": "",
+            "fallback_to_flat": false,
+            "hard_max_children_scored_per_parent": 100000,
+            "leaf_record_fetch_policy": "events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders",
+            "max_candidates_per_node": 256,
+            "max_children_scored_per_parent": 100000,
+            "max_raw_events_per_node": 256,
+            "max_selected_refs": 256,
+            "raw_events_dropped_by_time_window": 0,
+            "records_dropped_by_node_fanout": 0,
+            "records_dropped_by_tree": 0,
+            "selected_leaf_count": 4,
+            "selected_node_count": 10,
+            "selected_path_count": 10,
+            "summary_embeddings": [
+              "node_l0",
+              "node_l1"
+            ],
+            "top_k_per_layer": 8
+          }
+        }
+      },
+      "storage_prefix": "matrixark:required-pipeline:rust:latest_cpp_rust_native_pack_contract_20260627",
+      "storage_records": {
+        "embedding_types": [
+          "batch_l0",
+          "entity_state",
+          "event_text",
+          "node_l0",
+          "node_l1",
+          "resource_chunk",
+          "resource_l0",
+          "segment_text",
+          "session_l0",
+          "skill_l0",
+          "skill_section",
+          "skill_summary"
+        ],
+        "index_name_sample": [
+          "classification:batch_memory",
+          "classification:new_event",
+          "entity_type:job_status",
+          "entity_type:location",
+          "entity_type:preference",
+          "entity_type:relationship",
+          "entity_type:resource_api_contract",
+          "entity_type:resource_approval",
+          "entity_type:resource_cost",
+          "entity_type:resource_deadline",
+          "entity_type:resource_fact",
+          "entity_type:resource_owner",
+          "entity_type:resource_troubleshooting",
+          "event_type:confirmation",
+          "event_type:dialogue_batch",
+          "event_type:resource_api_contract",
+          "event_type:resource_approval",
+          "event_type:resource_cost",
+          "event_type:resource_deadline",
+          "event_type:resource_owner",
+          "event_type:resource_troubleshooting_step",
+          "heading_slug:context-pack-debugger",
+          "heading_slug:gpu-runbook",
+          "heading_slug:steps",
+          "heading_slug:troubleshooting",
+          "keyword:approval",
+          "keyword:budget",
+          "keyword:context",
+          "keyword:evidence",
+          "keyword:finance",
+          "keyword:gpu",
+          "keyword:inspect",
+          "keyword:missing",
+          "keyword:requests",
+          "keyword:require",
+          "keyword:runbook",
+          "keyword:steps",
+          "keyword:troubleshooting",
+          "resource_type:md",
+          "resource_type:skill",
+          "skill_name:context-pack-debugger",
+          "skill_tool:matrixark_audit",
+          "skill_tool:matrixark_replay",
+          "skill_trigger:inspect_context_pack",
+          "skill_trigger:replay_evidence",
+          "source_type:message",
+          "source_type:resource",
+          "source_type:resource_fact",
+          "source_type:skill",
+          "status:observed",
+          "unit_kind:markdown_section"
+        ],
+        "missing_embedding_types": [],
+        "missing_record_types": [],
+        "missing_summary_types": [],
+        "record_counts": {
+          "context_child_ref": 7,
+          "context_debug_record": 45,
+          "context_embedding": 83,
+          "context_entity": 17,
+          "context_entity_update_audit": 9,
+          "context_event": 31,
+          "context_extraction_audit": 1,
+          "context_index": 149,
+          "context_node": 10,
+          "context_pack_audit": 3,
+          "context_pack_telemetry": 3,
+          "context_recall_reinforcement": 75,
+          "context_segment": 4,
+          "context_summary": 24,
+          "context_summary_dirty": 16,
+          "context_summary_refresh_audit": 10,
+          "matrixark_audit_log": 12,
+          "matrixark_metric": 2,
+          "resource_chunk": 4,
+          "resource_import_task": 6,
+          "resource_manifest": 1,
+          "resource_registry": 1,
+          "session_buffer_event": 3,
+          "skill_manifest": 1,
+          "skill_registry": 1,
+          "skill_section": 2
+        },
+        "record_types": [
+          "context_child_ref",
+          "context_debug_record",
+          "context_embedding",
+          "context_entity",
+          "context_entity_update_audit",
+          "context_event",
+          "context_extraction_audit",
+          "context_index",
+          "context_node",
+          "context_pack_audit",
+          "context_pack_telemetry",
+          "context_recall_reinforcement",
+          "context_segment",
+          "context_summary",
+          "context_summary_dirty",
+          "context_summary_refresh_audit",
+          "matrixark_audit_log",
+          "matrixark_metric",
+          "resource_chunk",
+          "resource_import_task",
+          "resource_manifest",
+          "resource_registry",
+          "session_buffer_event",
+          "skill_manifest",
+          "skill_registry",
+          "skill_section"
+        ],
+        "summary_types": [
+          "batch_l0",
+          "node_l0",
+          "node_l1",
+          "resource_l0",
+          "session_l0",
+          "skill_l0"
+        ]
+      },
+      "summary_refresh": {
+        "access": {
+          "account_id": "acct_required_pipeline",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=7793525581527636093|u=1286033426559290006|s=586184472271941702|",
+          "session_hash": 586184472271941702,
+          "session_id": "session_rust_latest_cpp_rust_native_pack_contract_20260627",
+          "tenant_hash": 7793525581527636093,
+          "tenant_id": "tenant_required_pipeline",
+          "user_hash": 1286033426559290006,
+          "user_id": "user_rust"
+        },
+        "compression_created_count": 0,
+        "refreshed": [
+          {
+            "dirty_hash": 4081640909123441668,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8469443316281102029,
+            "node_path": [
+              "memory",
+              "approvals"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 2065114722830016617,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 1492161527059552925,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 6203580366243551195,
+            "node_path": [
+              "memory",
+              "approvals",
+              "gpu"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 16
+            },
+            "summary_version_hash": 249165578113039545,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 782154783520679438,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4640110363744790749,
+            "node_path": [
+              "memory"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 191
+            },
+            "summary_version_hash": 8031773088602196693,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 74447106111241820,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6481239486833258144,
+            "node_path": [
+              "memory",
+              "profile"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 1,
+            "summary_generation_policy": {
+              "child_summary_count": 1,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 175
+            },
+            "summary_version_hash": 3684350701290969032,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 3757370705041637387,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 6374091839316063018,
+            "node_path": [
+              "memory",
+              "profile",
+              "session_batch"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 106
+            },
+            "summary_version_hash": 342184941779412357,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 20,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 2048190444516956160,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 4743154237302771655,
+            "node_path": [
+              "resources"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 126
+            },
+            "summary_version_hash": 1137734196026507315,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6274468134491364811,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 5687419598181529931,
+            "node_path": [
+              "resources",
+              "runbooks"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 126
+            },
+            "summary_version_hash": 823869925833637450,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 1489688009599253077,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 8224798363037858282,
+            "node_path": [
+              "resources",
+              "runbooks",
+              "gpu"
+            ],
+            "source_event_count": 8,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 8,
+              "generate_l1": true,
+              "reason": "event_count_threshold",
+              "token_estimate": 188
+            },
+            "summary_version_hash": 7819408823607334962,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 9,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 7347320814652474972,
+            "generated_summary_types": [
+              "node_l0",
+              "node_l1"
+            ],
+            "node_hash": 3657432287575731750,
+            "node_path": [
+              "skills"
+            ],
+            "source_event_count": 0,
+            "source_summary_count": 2,
+            "summary_generation_policy": {
+              "child_summary_count": 2,
+              "event_count": 0,
+              "generate_l1": true,
+              "reason": "has_child_summaries",
+              "token_estimate": 187
+            },
+            "summary_version_hash": 7438473688426966405,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 0,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          },
+          {
+            "dirty_hash": 6202556514062232889,
+            "generated_summary_types": [
+              "node_l0"
+            ],
+            "node_hash": 1442724107412651879,
+            "node_path": [
+              "skills",
+              "context-pack-debugger"
+            ],
+            "source_event_count": 1,
+            "source_summary_count": 0,
+            "summary_generation_policy": {
+              "child_summary_count": 0,
+              "event_count": 1,
+              "generate_l1": false,
+              "reason": "l0_sufficient",
+              "token_estimate": 8
+            },
+            "summary_version_hash": 3295855435211261223,
+            "time_compression": {
+              "created": [],
+              "created_count": 0,
+              "max_raw_events_per_node": 256,
+              "raw_event_count": 1,
+              "reason": "raw_event_count_within_threshold",
+              "status": "skipped"
+            }
+          }
+        ],
+        "refreshed_count": 10,
+        "status": "ok"
+      }
+    }
+  ],
+  "run_id": "latest_cpp_rust_native_pack_contract_20260627"
+}
