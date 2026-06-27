@@ -390,6 +390,16 @@ TOOLS: list[Json] = [
                     "default": 4,
                     "description": "Maximum automatic compression windows to create per dirty node refresh.",
                 },
+                "min_compression_event_age_ms": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Only compress source ContextEvents at least this old. Use 0 for threshold-only dev/test compression; use a positive cold-window age in production.",
+                },
+                "raw_event_ttl_after_compression_ms": {
+                    "type": "integer",
+                    "default": 2592000000,
+                    "description": "TTL marker for raw source events after compression. Events are not deleted inline; eviction workers must also check recall reinforcement markers.",
+                },
             },
             "additionalProperties": True,
         },

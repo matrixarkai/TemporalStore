@@ -27,9 +27,12 @@ The previous 100K local JSONL attempts hit a 15-minute outer guardrail. That has
 
 1. Event ingestion writes the timestamp-keyed `ContextEvent` and marks the node summary-dirty.
 2. `matrixark_refresh_summaries` reads dirty nodes on the async cadence.
-3. For each dirty node, the worker keeps the newest raw events up to `max_raw_events_per_node`.
-4. Older uncompressed events are summarized into `ContextCompressionEvent` records in `compression_window_events` sized windows.
-5. Retrieval scores `node_l0` / `node_l1`, then selected leaf events/entities/resources/skills, plus compression summaries for older history.
+3. The worker also performs a scheduled scan for nodes whose timestamped event tail exceeds the raw-event threshold or cold age policy, even when no new dirty marker exists.
+4. For each eligible node, the worker keeps the newest raw events up to `max_raw_events_per_node`.
+5. Older uncompressed events are summarized into `ContextCompressionEvent` records in `compression_window_events` sized windows.
+6. Each compression writes `context_event_retention_marker` rows. These are TTL/eviction policy markers, not inline deletes.
+7. Retrieval scores `node_l0` / `node_l1`, then selected leaf events/entities/resources/skills, plus compression summaries for older history.
+8. Any recalled event or compression source event writes `context_recall_reinforcement`, protecting useful old evidence from pruning.
 
 Runtime knobs:
 
@@ -39,8 +42,19 @@ Runtime knobs:
 | `MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS` / `compression_window_events` | `64` | Maximum old source events per compression window. |
 | `MATRIXARK_TIME_COMPRESSION_MIN_EVENTS` / `min_compression_events` | `8` | Minimum old events needed before writing a compression record. |
 | `MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH` / `max_compression_windows_per_node` | `4` | Maximum compression records created per dirty-node refresh. |
+| `MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS` / `min_compression_event_age_ms` | `0` | Optional cold-window age. Set this in production to compress only older events. |
+| `MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS` / `raw_event_ttl_after_compression_ms` | `2592000000` | TTL marker duration for compressed raw events. Eviction workers must also check recall reinforcement. |
+| `MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER` | `deterministic` | Use `openai_compatible` to call an OSS/OpenAI-compatible chat endpoint for richer `TIME_COMPRESS` summaries. |
+| `MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION` | unset | When true, fail compression if the LLM summary provider is unavailable instead of falling back. |
 
-This is non-destructive. `ContextCompressionEvent.source_event_ids` preserves replay and audit evidence, and the original source `ContextEvent` rows remain available for historical replay/debug.
+This is non-destructive. `ContextCompressionEvent.source_event_ids` preserves replay and audit evidence, and the original source `ContextEvent` rows remain available for historical replay/debug until a separate eviction worker proves the TTL marker is due and no `context_recall_reinforcement` protects the source event.
+
+Compression safety is now explicit in each compression record:
+
+- `compression_safety.source_event_ids_retained=true`
+- `compression_safety.raw_events_remain_replayable=true`
+- `retention_policy.evict_after_ms` records the earliest possible pruning time
+- benchmark reports include a `compression_safety_gate` section so full LOCOMO/LongMemEval/import runs can fail closed when hidden-answer evidence is detected
 
 ## Timeout Triage Rule
 

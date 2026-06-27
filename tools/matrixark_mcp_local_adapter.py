@@ -623,6 +623,8 @@ class MatrixArkLocalAdapter:
         summary: str = "",
         truncated: bool = False,
         mode: str = "manual",
+        raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
+        summary_provider_meta: Json | None = None,
     ) -> Json:
         if not selected:
             raise MatrixArkError("no source events matched compression window")
@@ -655,6 +657,26 @@ class MatrixArkLocalAdapter:
             "truncated_source_events": truncated,
             "operator": "TIME_COMPRESS",
             "compression_mode": mode,
+            "summary_provider": summary_provider_meta
+            or {
+                "provider": "deterministic",
+                "model": "",
+                "fallback_used": False,
+            },
+            "compression_safety": {
+                "source_event_ids_retained": bool(source_event_ids),
+                "source_event_count": len(source_event_ids),
+                "summary_non_empty": bool(summary.strip()),
+                "raw_events_remain_replayable": True,
+                "ttl_marker_only": True,
+            },
+            "retention_policy": {
+                "raw_event_ttl_after_compression_ms": max(0, int(raw_event_ttl_after_compression_ms)),
+                "evict_after_ms": compressed_time_ms + max(0, int(raw_event_ttl_after_compression_ms))
+                if raw_event_ttl_after_compression_ms > 0
+                else 0,
+                "requires_no_recent_reinforcement": True,
+            },
             "updated_at_ms": compressed_time_ms,
         }
         self.append(record)
@@ -674,6 +696,27 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": compressed_time_ms,
             }
         )
+        retention_records = []
+        evict_after_ms = int(record["retention_policy"]["evict_after_ms"] or 0)
+        for event_id in source_event_ids:
+            retention_records.append(
+                {
+                    "record_type": "context_event_retention_marker",
+                    "event_id_hash": event_id,
+                    "compression_id_hash": compression_id_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "scope": scope,
+                    "retention_state": "compressed_retained",
+                    "evict_after_ms": evict_after_ms,
+                    "raw_events_remain_replayable": True,
+                    "requires_no_recent_reinforcement": True,
+                    "created_at_ms": compressed_time_ms,
+                    "updated_at_ms": compressed_time_ms,
+                }
+            )
+        if retention_records:
+            self.append_many(retention_records)
         return record
 
     def auto_time_compress_node_events(
@@ -688,6 +731,8 @@ class MatrixArkLocalAdapter:
         max_source_events: int = TIME_COMPRESSION_WINDOW_EVENTS,
         min_source_events: int = TIME_COMPRESSION_MIN_EVENTS,
         max_windows: int = TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        min_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
     ) -> Json:
         max_raw_events_per_node = max(1, int(max_raw_events_per_node))
         max_source_events = max(1, int(max_source_events))
@@ -701,8 +746,20 @@ class MatrixArkLocalAdapter:
             if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
         }
         compressed_source_ids: set[int] = set()
+        reinforced_source_ids: set[int] = set()
         for record in records:
             if record.get("record_type") != "context_compression_event":
+                if record.get("record_type") == "context_recall_reinforcement":
+                    if int(record.get("node_hash") or 0) != node_hash:
+                        continue
+                    if not scope_matches(candidate_access_scope(record), scope):
+                        continue
+                    if int(record.get("protected_until_ms") or 0) < compressed_time_ms:
+                        continue
+                    try:
+                        reinforced_source_ids.add(int(record.get("event_id_hash")))
+                    except (TypeError, ValueError):
+                        pass
                 continue
             if int(record.get("node_hash") or 0) != node_hash:
                 continue
@@ -748,11 +805,17 @@ class MatrixArkLocalAdapter:
             for record in events[-max_raw_events_per_node:]
             if record.get("event_id_hash") is not None
         }
+        cold_cutoff_ms = compressed_time_ms - max(0, int(min_event_age_ms))
         old_uncompressed = [
             record
             for record in events
             if int(record.get("event_id_hash") or 0) not in newest_raw_ids
             and int(record.get("event_id_hash") or 0) not in compressed_source_ids
+            and int(record.get("event_id_hash") or 0) not in reinforced_source_ids
+            and (
+                min_event_age_ms <= 0
+                or event_times.get(int(record.get("event_id_hash") or 0), compressed_time_ms) <= cold_cutoff_ms
+            )
         ]
         created: list[Json] = []
         for window_start in range(0, len(old_uncompressed), max_source_events):
@@ -764,11 +827,13 @@ class MatrixArkLocalAdapter:
             first_hash = int(window[0].get("event_id_hash") or 0)
             compression_scope = event_scopes.get(first_hash, scope)
             source_ids = [int(record["event_id_hash"]) for record in window if record.get("event_id_hash") is not None]
-            summary = (
-                "Automatic temporal compression for old ContextEvents before the hot raw-event window. "
-                f"The raw source events remain replayable; normal retrieval scores this summary plus the newest "
-                f"{max_raw_events_per_node} raw events. "
-                + " | ".join(summarize_text(str(record.get("text", "")), limit=160) for record in window[:5])
+            source_times = [event_times.get(event_id, 0) for event_id in source_ids if event_times.get(event_id, 0) > 0]
+            summary_result = generate_time_compression_summary(
+                node_path=node_path,
+                source_start_ms=min(source_times) if source_times else compressed_time_ms,
+                source_end_ms=max(source_times) if source_times else compressed_time_ms,
+                event_texts=[str(record.get("text", "")) for record in window if record.get("text")],
+                max_raw_events_per_node=max_raw_events_per_node,
             )
             created.append(
                 self._write_time_compression_from_events(
@@ -778,9 +843,16 @@ class MatrixArkLocalAdapter:
                     selected=window,
                     event_times=event_times,
                     compressed_time_ms=compressed_time_ms,
-                    summary=summary,
+                    summary=str(summary_result.get("summary", "")),
                     truncated=len(old_uncompressed) > len(source_ids),
                     mode="automatic",
+                    raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
+                    summary_provider_meta={
+                        "provider": summary_result.get("provider", "deterministic"),
+                        "model": summary_result.get("model", ""),
+                        "fallback_used": bool(summary_result.get("fallback_used", False)),
+                        "warning": summary_result.get("warning", ""),
+                    },
                 )
             )
         return {
@@ -788,7 +860,10 @@ class MatrixArkLocalAdapter:
             "reason": "" if created else "no_uncompressed_old_window_met_minimum",
             "raw_event_count": len(events),
             "max_raw_events_per_node": max_raw_events_per_node,
+            "min_event_age_ms": max(0, int(min_event_age_ms)),
+            "cold_cutoff_ms": cold_cutoff_ms,
             "old_uncompressed_event_count": len(old_uncompressed),
+            "reinforced_event_count": len(reinforced_source_ids),
             "created_count": len(created),
             "created": [
                 {
@@ -853,6 +928,8 @@ class MatrixArkLocalAdapter:
         compression_window_events: int = TIME_COMPRESSION_WINDOW_EVENTS,
         min_compression_events: int = TIME_COMPRESSION_MIN_EVENTS,
         max_compression_windows_per_node: int = TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+        min_compression_event_age_ms: int = TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+        raw_event_ttl_after_compression_ms: int = TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
     ) -> Json:
         refreshed_at_ms = refreshed_at_ms or now_ms()
         records = self.read_all()
@@ -879,6 +956,68 @@ class MatrixArkLocalAdapter:
             current = pending_by_node.get(node_hash)
             if current is None or int(record.get("updated_at_ms") or 0) >= int(current.get("updated_at_ms") or 0):
                 pending_by_node[node_hash] = record
+        if len(pending_by_node) < limit:
+            event_counts_by_node: dict[int, int] = {}
+            event_path_by_node: dict[int, list[str]] = {}
+            event_scope_by_node: dict[int, Json] = {}
+            oldest_event_time_by_node: dict[int, int] = {}
+            debug_by_ref = {
+                record.get("ref_hash"): record.get("debug_payload", {})
+                for record in records
+                if record.get("record_type") == "context_debug_record" and record.get("ref_type") == "event"
+            }
+            for record in records:
+                if record.get("record_type") != "context_event":
+                    continue
+                if record.get("source_chunk_hash"):
+                    continue
+                if not scope_matches(candidate_access_scope(record), scope):
+                    continue
+                try:
+                    event_node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    continue
+                event_counts_by_node[event_node_hash] = event_counts_by_node.get(event_node_hash, 0) + 1
+                event_path_by_node[event_node_hash] = [str(part) for part in record.get("node_path", [])]
+                event_scope_by_node[event_node_hash] = candidate_access_scope(record)
+                event_time = self.context_event_ingestion_time_ms(record, debug_by_ref)
+                if event_time > 0:
+                    existing_time = oldest_event_time_by_node.get(event_node_hash)
+                    if existing_time is None or event_time < existing_time:
+                        oldest_event_time_by_node[event_node_hash] = event_time
+            cold_cutoff_ms = refreshed_at_ms - max(0, int(min_compression_event_age_ms))
+            for node_hash, event_count in sorted(event_counts_by_node.items(), key=lambda item: item[1], reverse=True):
+                if len(pending_by_node) >= limit:
+                    break
+                if node_hash in pending_by_node:
+                    continue
+                if event_count <= max_raw_events_per_node:
+                    continue
+                if min_compression_event_age_ms > 0 and oldest_event_time_by_node.get(node_hash, refreshed_at_ms) > cold_cutoff_ms:
+                    continue
+                node_path = event_path_by_node.get(node_hash, [])
+                if not node_path:
+                    continue
+                synthetic_dirty_hash = stable_hash(
+                    f"scheduled_time_compression:{node_hash}:{event_count}:{oldest_event_time_by_node.get(node_hash, 0)}:{refreshed_at_ms}"
+                )
+                if synthetic_dirty_hash in completed_dirty_hashes:
+                    continue
+                pending_by_node[node_hash] = {
+                    "record_type": "context_summary_dirty",
+                    "dirty_hash": synthetic_dirty_hash,
+                    "node_hash": node_hash,
+                    "node_path": node_path,
+                    "depth": len(node_path),
+                    "dirty_reason": "scheduled_time_compression",
+                    "source_ref_type": "event_window",
+                    "changed_ref_count": event_count,
+                    "propagate_depth": 0,
+                    "scope": event_scope_by_node.get(node_hash, scope),
+                    "status": "pending",
+                    "created_at_ms": refreshed_at_ms,
+                    "updated_at_ms": refreshed_at_ms,
+                }
         refreshed = []
         for dirty in sorted(pending_by_node.values(), key=lambda item: int(item.get("updated_at_ms") or 0))[:limit]:
             node_path = [str(part) for part in dirty.get("node_path", [])]
@@ -971,6 +1110,8 @@ class MatrixArkLocalAdapter:
                 max_source_events=compression_window_events,
                 min_source_events=min_compression_events,
                 max_windows=max_compression_windows_per_node,
+                min_event_age_ms=min_compression_event_age_ms,
+                raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
             )
             self.append(
                 {
@@ -991,6 +1132,8 @@ class MatrixArkLocalAdapter:
                         "compression_window_events": compression_window_events,
                         "min_compression_events": min_compression_events,
                         "max_compression_windows_per_node": max_compression_windows_per_node,
+                        "min_compression_event_age_ms": min_compression_event_age_ms,
+                        "raw_event_ttl_after_compression_ms": raw_event_ttl_after_compression_ms,
                     },
                     "time_compression": compression_refresh,
                     "status": "refreshed",
@@ -1064,6 +1207,18 @@ class MatrixArkLocalAdapter:
                 args,
                 "max_compression_windows_per_node",
                 TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH,
+                minimum=0,
+            ),
+            min_compression_event_age_ms=integer_arg(
+                args,
+                "min_compression_event_age_ms",
+                TIME_COMPRESSION_MIN_EVENT_AGE_MS,
+                minimum=0,
+            ),
+            raw_event_ttl_after_compression_ms=integer_arg(
+                args,
+                "raw_event_ttl_after_compression_ms",
+                TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS,
                 minimum=0,
             ),
         )
@@ -3168,6 +3323,64 @@ class MatrixArkLocalAdapter:
         matches.sort(key=lambda record: (int(record.get("source_end_ms") or 0), int(record.get("compressed_time_ms") or 0)), reverse=True)
         return matches[:limit]
 
+    def append_recall_reinforcement_markers(
+        self,
+        *,
+        context_pack_id: str,
+        selected_refs: list[Json],
+        reinforced_at_ms: int,
+        protect_ms: int = TIME_COMPRESSION_REINFORCEMENT_PROTECT_MS,
+    ) -> Json:
+        protect_ms = max(0, int(protect_ms))
+        protected_until_ms = reinforced_at_ms + protect_ms if protect_ms else 0
+        records: list[Json] = []
+        seen: set[tuple[int, int]] = set()
+        for ref in selected_refs:
+            source_ids: list[int] = []
+            if ref.get("ref_type") == "event" and ref.get("ref_hash") is not None:
+                try:
+                    source_ids.append(int(ref.get("ref_hash")))
+                except (TypeError, ValueError):
+                    pass
+            for event_id in ref.get("source_event_ids", []) or []:
+                try:
+                    source_ids.append(int(event_id))
+                except (TypeError, ValueError):
+                    pass
+            for event_id in source_ids:
+                try:
+                    node_hash = int(ref.get("node_hash") or 0)
+                except (TypeError, ValueError):
+                    node_hash = 0
+                key = (event_id, node_hash)
+                if key in seen:
+                    continue
+                seen.add(key)
+                records.append(
+                    {
+                        "record_type": "context_recall_reinforcement",
+                        "event_id_hash": event_id,
+                        "node_hash": node_hash,
+                        "node_path": ref.get("node_path", []),
+                        "context_pack_id": context_pack_id,
+                        "source_ref_type": ref.get("ref_type"),
+                        "source_ref_hash": ref.get("ref_hash"),
+                        "scope": ref.get("scope", {}),
+                        "reinforced_at_ms": reinforced_at_ms,
+                        "protected_until_ms": protected_until_ms,
+                        "reason": "selected_in_context_pack",
+                        "created_at_ms": reinforced_at_ms,
+                        "updated_at_ms": reinforced_at_ms,
+                    }
+                )
+        if records:
+            self.append_many(records)
+        return {
+            "reinforced_event_count": len(records),
+            "protect_ms": protect_ms,
+            "protected_until_ms": protected_until_ms,
+        }
+
     def deadline_fallback_pack(
         self,
         *,
@@ -4055,6 +4268,11 @@ class MatrixArkLocalAdapter:
             quality_warnings.append(f"retrieval_deadline_exceeded:{dropped_over_budget.get('deadline_reason', 'deadline_during_context_pack')}")
         context_pack_id = stable_hash(f"{query}:{selected}:{now_ms()}")
         context_pack_id_text = str(context_pack_id)
+        reinforcement = self.append_recall_reinforcement_markers(
+            context_pack_id=context_pack_id_text,
+            selected_refs=selected,
+            reinforced_at_ms=now_ms(),
+        )
         pack_summary = summarize_text(
             " ".join(str(item.get("text", "")) for item in selected),
             limit=512,
@@ -4071,6 +4289,7 @@ class MatrixArkLocalAdapter:
                 "access_scope_before_scoring": True,
                 "skill_selection": "skill_section_only",
                 "resource_selection": "resource_facts_entities_and_chunks_are_ranked_separately",
+                "recall_reinforcement": "selected event refs and compression source ids receive protection markers before raw-event pruning",
             },
             "layer_scores": layer_scores[:24],
             "question_type": question_type,
@@ -4118,6 +4337,7 @@ class MatrixArkLocalAdapter:
                     "freshness_tolerance_ms": ranking.get("freshness_tolerance_ms", DEFAULT_TIME_DECAY_TOLERANCE_MS),
                     "half_life_ms": ranking.get("half_life_ms", DEFAULT_TIME_DECAY_HALFLIFE_MS),
                 },
+                "recall_reinforcement": reinforcement,
                 "weights": {
                     "time": optional_object(ranking, "weights").get("time", DEFAULT_TIME_WEIGHT),
                     "business": optional_object(ranking, "weights").get("business", DEFAULT_BUSINESS_WEIGHT),

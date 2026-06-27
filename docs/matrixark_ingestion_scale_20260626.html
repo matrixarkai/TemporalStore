@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html><head><meta charset="utf-8"><title>MatrixArk Event Ingestion Scale Test</title>
 <style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:980px;margin:40px auto;line-height:1.55;color:#172033}pre{background:#101828;color:#f2f4f7;padding:16px;border-radius:8px;overflow:auto;white-space:pre-wrap}code{background:#eef2f7;padding:1px 4px;border-radius:4px}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border:1px solid #d0d5dd;padding:7px;vertical-align:top}th{background:#f2f4f7}h1,h2{line-height:1.2}</style></head><body><pre># MatrixArk Event Ingestion Scale Test - 2026-06-26
 
@@ -29,9 +29,12 @@ The previous 100K local JSONL attempts hit a 15-minute outer guardrail. That has
 
 1. Event ingestion writes the timestamp-keyed `ContextEvent` and marks the node summary-dirty.
 2. `matrixark_refresh_summaries` reads dirty nodes on the async cadence.
-3. For each dirty node, the worker keeps the newest raw events up to `max_raw_events_per_node`.
-4. Older uncompressed events are summarized into `ContextCompressionEvent` records in `compression_window_events` sized windows.
-5. Retrieval scores `node_l0` / `node_l1`, then selected leaf events/entities/resources/skills, plus compression summaries for older history.
+3. The worker also performs a scheduled scan for nodes whose timestamped event tail exceeds the raw-event threshold or cold age policy, even when no new dirty marker exists.
+4. For each eligible node, the worker keeps the newest raw events up to `max_raw_events_per_node`.
+5. Older uncompressed events are summarized into `ContextCompressionEvent` records in `compression_window_events` sized windows.
+6. Each compression writes `context_event_retention_marker` rows. These are TTL/eviction policy markers, not inline deletes.
+7. Retrieval scores `node_l0` / `node_l1`, then selected leaf events/entities/resources/skills, plus compression summaries for older history.
+8. Any recalled event or compression source event writes `context_recall_reinforcement`, protecting useful old evidence from pruning.
 
 Runtime knobs:
 
@@ -41,8 +44,19 @@ Runtime knobs:
 | `MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS` / `compression_window_events` | `64` | Maximum old source events per compression window. |
 | `MATRIXARK_TIME_COMPRESSION_MIN_EVENTS` / `min_compression_events` | `8` | Minimum old events needed before writing a compression record. |
 | `MATRIXARK_TIME_COMPRESSION_MAX_WINDOWS_PER_REFRESH` / `max_compression_windows_per_node` | `4` | Maximum compression records created per dirty-node refresh. |
+| `MATRIXARK_TIME_COMPRESSION_MIN_EVENT_AGE_MS` / `min_compression_event_age_ms` | `0` | Optional cold-window age. Set this in production to compress only older events. |
+| `MATRIXARK_TIME_COMPRESSION_RAW_EVENT_TTL_AFTER_COMPRESSION_MS` / `raw_event_ttl_after_compression_ms` | `2592000000` | TTL marker duration for compressed raw events. Eviction workers must also check recall reinforcement. |
+| `MATRIXARK_TIME_COMPRESSION_SUMMARY_PROVIDER` | `deterministic` | Use `openai_compatible` to call an OSS/OpenAI-compatible chat endpoint for richer `TIME_COMPRESS` summaries. |
+| `MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION` | unset | When true, fail compression if the LLM summary provider is unavailable instead of falling back. |
 
-This is non-destructive. `ContextCompressionEvent.source_event_ids` preserves replay and audit evidence, and the original source `ContextEvent` rows remain available for historical replay/debug.
+This is non-destructive. `ContextCompressionEvent.source_event_ids` preserves replay and audit evidence, and the original source `ContextEvent` rows remain available for historical replay/debug until a separate eviction worker proves the TTL marker is due and no `context_recall_reinforcement` protects the source event.
+
+Compression safety is now explicit in each compression record:
+
+- `compression_safety.source_event_ids_retained=true`
+- `compression_safety.raw_events_remain_replayable=true`
+- `retention_policy.evict_after_ms` records the earliest possible pruning time
+- benchmark reports include a `compression_safety_gate` section so full LOCOMO/LongMemEval/import runs can fail closed when hidden-answer evidence is detected
 
 ## Timeout Triage Rule
 
@@ -184,7 +198,7 @@ The local JSONL backend is for development and deterministic CI. It is not the s
 - The direct adapter no longer calls `read_all()` before append, so it avoids full-log scans before the native write.
 - The compact append log stores records in sharded TemporalStore hash fields plus a tiny `record_count` string.
 - `ContextEvent` also writes a timestamp-ordered native event index: `context_event_by_ingestion_time:&lt;scope&gt;` with field `&lt;ingestion_time_ms&gt;:&lt;event_id_hash&gt;`. The hot event JSON does not need the bulky envelope ingestion timestamp; replay/debug keeps the full envelope separately.
-- `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables a process-local background queue for async-route writes. This lets message ingest return after accepting records into the queue while the worker flushes to C++/Rust TemporalStore.
+- `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables a process-local background queue for async-route writes. This lets message ingest retun after accepting records into the queue while the worker flushes to C++/Rust TemporalStore.
 - `write_mode=sync` is never queued and waits for the native write path.
 
 So the correct scale matrix is:
@@ -197,7 +211,7 @@ So the correct scale matrix is:
 
 `storage_options` are now dynamic at the MatrixArk API, audit, and report layer. Native C++/Rust benchmark runs also call `matrixark_backend_ready` before ingestion and record `backend_readiness`, `requested_storage_options`, `native_topology_storage_mode`, and `native_topology_storage_mode_confirmed`.
 
-That does not magically relaunch a data-node. For C++/Rust runs, the native TemporalStore topology still must be launched externally in the matching async/sync/Raft mode. To prove that in benchmark artifacts, pass `--topology-report-json` with the deployment/topology report, and use `--require-native-storage-mode-confirmed` for fail-closed parity runs.
+That does not magically relaunch a data-node. For C++/Rust runs, the native TemporalStore topology still must be launched extenally in the matching async/sync/Raft mode. To prove that in benchmark artifacts, pass `--topology-report-json` with the deployment/topology report, and use `--require-native-storage-mode-confirmed` for fail-closed parity runs.
 
 ## Remaining Work
 
