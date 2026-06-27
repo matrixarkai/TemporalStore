@@ -81,6 +81,11 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 )
                 self.assertEqual(client.hget(key, "00000000000000000004"), "four")
                 self.assertEqual(client.hget(key, "00000000000000000005"), "five")
+                scanned = client.scan_hash(key)
+                self.assertTrue(scanned.get("native_prefix_scan"), scanned)
+                scanned_values = {record.get("value") for record in scanned.get("records", [])}
+                self.assertIn("four", scanned_values)
+                self.assertIn("five", scanned_values)
                 self.assertEqual(client.get_string(count_key), "5")
                 scan = client.scan_hash(key)
                 self.assertEqual(scan.get("count"), 5)

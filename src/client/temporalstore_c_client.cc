@@ -4,6 +4,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "client/temporalstore_client.h"
@@ -450,6 +451,40 @@ int temporalstore_hdel(temporalstore_client_t* client, const char* key, const ch
     bcache2::Status status = CheckClient(client);
     if (status.ok()) {
         status = client->impl->HDel(key ? key : "", field ? field : "");
+    }
+    return Finish(status, error_message);
+}
+
+int temporalstore_hgetall(temporalstore_client_t* client, const char* key,
+                          temporalstore_string_array_t* field_values,
+                          char** error_message) {
+    if (field_values == nullptr) {
+        return Finish(NullError("field_values"), error_message);
+    }
+    ClearStringArray(field_values);
+    bcache2::Status status = CheckClient(client);
+    std::vector<std::pair<std::string, std::string>> values;
+    if (status.ok()) {
+        status = client->impl->HGetAll(key ? key : "", &values);
+    }
+    if (status.ok()) {
+        const size_t output_count = values.size() * 2;
+        field_values->values = static_cast<char**>(std::calloc(output_count, sizeof(char*)));
+        if (field_values->values == nullptr && output_count != 0) {
+            status = bcache2::Status::ResourceExhausted("failed to allocate string array");
+        } else {
+            field_values->count = output_count;
+            for (size_t i = 0; i < values.size(); ++i) {
+                field_values->values[i * 2] = CopyCString(values[i].first);
+                field_values->values[i * 2 + 1] = CopyCString(values[i].second);
+                if (field_values->values[i * 2] == nullptr ||
+                    field_values->values[i * 2 + 1] == nullptr) {
+                    status = bcache2::Status::ResourceExhausted("failed to allocate array value");
+                    ClearStringArray(field_values);
+                    break;
+                }
+            }
+        }
     }
     return Finish(status, error_message);
 }

@@ -283,7 +283,8 @@ impl MetricsSnapshot {
             "gauge",
             "MatrixArk storage backend command QPS.",
         );
-        let elapsed_seconds = ((unix_ms().saturating_sub(self.started_at_unix_ms)) as f64 / 1000.0).max(0.001);
+        let elapsed_seconds =
+            ((unix_ms().saturating_sub(self.started_at_unix_ms)) as f64 / 1000.0).max(0.001);
         line(
             &mut out,
             "matrixark_backend_qps",
@@ -371,7 +372,13 @@ impl MetricsSnapshot {
         let le_100 = self
             .op
             .values()
-            .map(|metrics| if metrics.latency_ms_max <= 100 { metrics.ok + metrics.failed } else { 0 })
+            .map(|metrics| {
+                if metrics.latency_ms_max <= 100 {
+                    metrics.ok + metrics.failed
+                } else {
+                    0
+                }
+            })
             .sum::<u64>();
         line(
             &mut out,
@@ -446,14 +453,18 @@ fn escape_label(value: &str) -> String {
 
 fn matrixark_rust_storage_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => "rust-direct-sdk-bridge",
+        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => {
+            "rust-direct-sdk-bridge"
+        }
         _ => "rust-proxy",
     }
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => "long_lived_rust_direct_sdk_bridge",
+        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => {
+            "long_lived_rust_direct_sdk_bridge"
+        }
         _ => "rust_proxy_stdio",
     }
 }
@@ -528,6 +539,10 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
                 .or_else(|| result.get("count").and_then(Value::as_u64))
                 .or_else(|| Some(command_entry_count(command)))
                 .unwrap_or(0);
+            stats.bytes_read = result.to_string().len() as u64;
+        }
+        "scan_hash" => {
+            stats.records_read = result.get("count").and_then(Value::as_u64).unwrap_or(0);
             stats.bytes_read = result.to_string().len() as u64;
         }
         "write_matrixark_record" => {
