@@ -1,20 +1,82 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MatrixArk Management Metadata Store</title><style>body{font-family:Inter,system-ui,sans-serif;max-width:980px;margin:32px auto;padding:0 18px;line-height:1.6;color:#1f2933}pre,code{background:#101828;color:#f9fafb;border-radius:8px}code{padding:2px 5px}pre{padding:14px;overflow:auto}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d7dde5;padding:8px;text-align:left}h1,h2{line-height:1.2}</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>MatrixArk Management Metadata Store</title><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,sans-serif;max-width:1040px;margin:40px auto;padding:0 24px;line-height:1.58;color:#172033}pre,code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}pre{background:#0f172a;color:#e5e7eb;padding:16px;border-radius:8px;overflow:auto}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d7dde8;padding:8px;text-align:left}th{background:#f5f7fb}h1,h2{letter-spacing:0;line-height:1.2}p code,li code{background:#eef2f7;padding:2px 5px;border-radius:5px}</style></head>
 <body>
 <h1>MatrixArk Management Metadata Store</h1>
-<p>MatrixArk separates <strong>context serving data</strong> from <strong>control-plane metadata</strong>.</p>
-<ul><li>TemporalStore stores ContextNode, ContextEvent, ContextEntity, ContextSummary, ContextEmbedding, resources, skills, ContextPacks, and replay audit.</li><li>The metadata store can store accounts, tenants, users, SSO mappings, API-key metadata, usage rows, and admin audit.</li></ul>
+<p>MatrixArk separates **context serving data** from **control-plane metadata**.</p>
+<ul>
+<li>TemporalStore stores ContextNode, ContextEvent, ContextEntity, ContextSummary, ContextEmbedding, resources, skills, ContextPacks, and replay audit.</li>
+<li>The metadata store can store accounts, tenants, users, SSO mappings, API-key metadata, usage rows, and admin audit.</li>
+</ul>
 <p>This lets the backend portal use a normal transactional SQL store for user management while keeping context retrieval TemporalStore-native.</p>
 <h2>Backends</h2>
-<table><thead><tr><th>Backend</th><th>Use case</th><th>Configuration</th></tr></thead><tbody><tr><td><code>record_log</code></td><td>Local/dev, no database dependency</td><td><code>MATRIXARK_METADATA_BACKEND=record_log</code></td></tr><tr><td><code>sqlite</code></td><td>Local tests and single-node demos</td><td><code>MATRIXARK_METADATA_BACKEND=sqlite</code></td></tr><tr><td><code>mysql</code></td><td>Cloud/control-plane deployment</td><td>MySQL DSN</td></tr><tr><td><code>bytekv_sql</code></td><td>ByteKV SQL-compatible deployment</td><td>ByteKV MySQL-compatible DSN</td></tr></tbody></table>
-<h2>MySQL</h2><pre>export MATRIXARK_METADATA_BACKEND=mysql
-export MATRIXARK_METADATA_DSN='mysql://matrixark:password@mysql:3306/matrixark'
-export MATRIXARK_METADATA_AUTO_INIT=1</pre>
-<h2>ByteKV SQL</h2><pre>export MATRIXARK_METADATA_BACKEND=bytekv_sql
-export MATRIXARK_METADATA_DSN='bytekv+mysql://matrixark:password@bytekv-sql:3306/matrixark'
-export MATRIXARK_METADATA_AUTO_INIT=1</pre>
+<table><tbody>
+<tr><th>Backend</th><th>Use case</th><th>Configuration</th></tr>
+<tr><td>record_log</td><td>Local/dev, no database dependency</td><td>MATRIXARK_METADATA_BACKEND=record_log</td></tr>
+<tr><td>sqlite</td><td>Local tests and single-node demos</td><td>MATRIXARK_METADATA_BACKEND=sqlite` plus `MATRIXARK_METADATA_DSN=/tmp/matrixark_metadata.sqlite3</td></tr>
+<tr><td>mysql</td><td>Cloud/control-plane deployment</td><td>MATRIXARK_METADATA_BACKEND=mysql` plus MySQL DSN</td></tr>
+<tr><td>bytekv_sql</td><td>ByteKV SQL-compatible deployment</td><td>MATRIXARK_METADATA_BACKEND=bytekv_sql` plus ByteKV MySQL-compatible DSN</td></tr>
+</tbody></table>
+<h2>Production Requirement</h2>
+<p>Production/cloud deployment should fail closed unless a live SQL control plane is configured. Set:</p>
+<pre><code>
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+export MATRIXARK_METADATA_BACKEND=mysql      # or bytekv_sql
+export MATRIXARK_METADATA_AUTO_INIT=1        # create schema on startup, or pre-create it and keep live checks enabled
+</code></pre>
+<p>When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/ByteKV SQL endpoint fails deployment early.</p>
+<h2>Local MySQL Docker</h2>
+<p>Run a local MySQL metadata backend and keep it running with Docker:</p>
+<pre><code>
+./tools/run_matrixark_metadata_mysql_local.sh
+</code></pre>
+<p>Equivalent manual command:</p>
+<pre><code>
+docker compose -f docker-compose.matrixark-metadata.yml up -d
+export MATRIXARK_METADATA_BACKEND=mysql
+export MATRIXARK_METADATA_DSN=&#x27;mysql://matrixark:matrixark_password@127.0.0.1:3307/matrixark&#x27;
+export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+PYTHONPATH=tools python3 tools/check_matrixark_metadata_sql.py
+</code></pre>
+<p>The compose file starts `matrixark-mysql-metadata` on local port `3307` and stores data in the `matrixark_mysql_metadata` Docker volume.</p>
+<h2>MySQL</h2>
+<pre><code>
+export MATRIXARK_METADATA_BACKEND=mysql
+export MATRIXARK_METADATA_DSN=&#x27;mysql://matrixark:password@mysql:3306/matrixark&#x27;
+export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+</code></pre>
+<h2>ByteKV SQL</h2>
+<pre><code>
+export MATRIXARK_METADATA_BACKEND=bytekv_sql
+export MATRIXARK_METADATA_DSN=&#x27;bytekv+mysql://matrixark:password@bytekv-sql:3306/matrixark&#x27;
+export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+</code></pre>
 <p>ByteKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.</p>
-<h2>Table</h2><pre>matrixark_metadata_records(record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json)</pre>
-<p>Indexes cover scope, record type/time, and API-key id. Switching metadata backends does not automatically migrate old records; copy existing <code>matrixark_*</code> admin records before changing stores.</p>
+<h2>Table</h2>
+<p>`matrixark_metadata_records` stores append-only JSON payloads with compact indexed columns:</p>
+<pre><code>
+record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json
+</code></pre>
+<p>Indexes:</p>
+<ul>
+<li>`(account_id, tenant_id, user_id)` for portal/user inventory.</li>
+<li>`(record_type, created_at_ms)` for audit and lifecycle queries.</li>
+<li>`(api_key_id)` for API-key lookup and revocation.</li>
+</ul>
+<h2>Portal Behavior</h2>
+<p>The management portal now shows:</p>
+<ul>
+<li>configured metadata backend;</li>
+<li>active runtime backend from `matrixark_management_portal`;</li>
+<li>env snippets for record-log, MySQL, and ByteKV SQL;</li>
+<li>the metadata schema and storage policy;</li>
+<li>users, API keys, SSO links, usage, and audit without exposing raw key material.</li>
+</ul>
+<p>Switching metadata backends does not automatically migrate old records. Copy existing `matrixark_*` admin records before changing from record-log to SQL in a real deployment.</p>
+<h2>Readiness Probe</h2>
+<p>`tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.</p>
+<p>The probe requires `pymysql` or `mysql-connector-python` for MySQL/ByteKV SQL.</p>
 </body></html>
