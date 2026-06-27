@@ -1210,7 +1210,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "C++ ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
-                "crash recovery reports and tests cover oplog, index-log, page stream, and zone-manifest ordering"
+                "crash recovery reports and tests cover WAL, index-log, page stream, and zone-manifest ordering"
                     .to_string(),
                 "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, crash recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process lifecycle validation"
                     .to_string(),
@@ -1232,7 +1232,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local stale candidate, lagging read-index, and stale snapshot guards".to_string(),
                 "kill switches for proxy reads/writes, replication, async storage, and scale changes"
                     .to_string(),
-                "local combined recovery proof covers Raft WAL restore plus oplog, index-log, page-file, and packed timestamped KV recovery"
+                "local combined recovery proof covers Raft WAL restore plus storage WAL, index-log, page-file, and packed timestamped KV recovery"
                     .to_string(),
                 "Prometheus alert rules and fault runbook cover stuck replica, split-brain risk, slow follower, and storage pressure triage"
                     .to_string(),
@@ -1255,7 +1255,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
                     .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
-                "shared-store checkpoint/oplog replay model and GC tests".to_string(),
+                "shared-store checkpoint/WAL replay model and GC tests".to_string(),
                 "storage recovery integrity report summarizes indexed/discovered/live/orphan/corrupt segments, stale refs, unreadable bytes, and ownership mismatches"
                     .to_string(),
                 "storage lifecycle plan ranks reclaim candidates by stale bytes, live-ref density, orphan status, and delayed-destroy pressure"
@@ -1272,7 +1272,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, page-store read count, and warmed bytes"
                     .to_string(),
-                "storage production report exposes Rust JSONL oplog/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
+                "storage production report exposes Rust JSONL WAL/index-log format, replay-safe status, sequence/record/byte counts, and C++ binary compatibility gaps"
                     .to_string(),
                 "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, zone bytes, and C++ page-header compatibility gaps"
                     .to_string(),
@@ -1282,7 +1282,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
-                "storage migration corpus converts C++ logical object/page/slot/index/oplog exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
+                "storage migration corpus converts C++ logical object/page/slot/index/WAL exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
                 "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external C++ binary-artifact export, CI-published golden artifacts, and the unified C++/Rust runner"
                     .to_string(),
@@ -1290,7 +1290,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
                     .to_string(),
-                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, oplog cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
+                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, WAL cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),

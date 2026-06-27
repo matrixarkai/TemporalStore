@@ -172,18 +172,18 @@ C++ execution should progressively cover every executable case.
 | `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |
 | `storage_fault_matrix` | Rust validates checksum mismatch, partial manifest, missing segment, stale manifest, and corrupt page-segment rejection. |
 | `storage_follower_safe_gc` | Rust runs storage lifecycle with a lagging follower cursor and verifies recovery stays clean. |
-| `storage_shared_store_oplog_cursor_retention` | Shared-store oplog GC refuses to reclaim oplog objects still needed by a saved follower replay cursor. |
+| `storage_shared_store_oplog_cursor_retention` | Shared-store WAL GC refuses to reclaim WAL objects still needed by a saved follower replay cursor. |
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
-| `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
+| `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
 | `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
-| `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and oplog/index-log ordering. |
-| `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up. |
+| `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and WAL/index-log ordering. |
+| `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up. |
 
 ## C++ Existing-Test Parity Surface Cases
 
@@ -198,7 +198,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | --- | --- |
 | `cpp_storage_object_page_slot_parity_surfaces` | C++ object/page/slot ownership sources. |
 | `cpp_storage_manager_compaction_gc_parity_surfaces` | Storage manager, compaction, GC, and delayed-destroy surfaces. |
-| `cpp_storage_oplog_index_replay_parity_surfaces` | Oplog, index-log, checkpoint/replay surfaces. |
+| `cpp_storage_oplog_index_replay_parity_surfaces` | WAL, index-log, checkpoint/replay surfaces. |
 | `cpp_storage_slot_context_test_parity_surfaces` | Slot/page/object and context storage test surfaces. |
 | `cpp_data_raft_consensus_parity_surfaces` | Data-Raft consensus implementation surfaces. |
 | `cpp_data_raft_replication_parity_surfaces` | Data-Raft replication payload/log surfaces. |

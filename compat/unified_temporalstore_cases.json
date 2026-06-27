@@ -2935,9 +2935,9 @@
             "expected_blocker": "replay_cursor",
             "kind": "storage_follower_safe_gc",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
-            "retention_object": "oplog"
+            "retention_object": "wal"
           },
-          "name": "storage_gc_refuses_oplog_needed_by_replay_cursor",
+          "name": "storage_gc_refuses_wal_needed_by_replay_cursor",
           "skip_client": true
         }
       ]
@@ -3052,7 +3052,7 @@
       "steps": [
         {
           "command": {
-            "description": "C++ storage oplog replay surface must remain present for durability and recovery parity comparison.",
+            "description": "C++ storage WAL replay surface must remain present for durability and recovery parity comparison.",
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
@@ -5191,7 +5191,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: corrupt page/index/oplog/manifest, checksum mismatch, partial manifest, missing segment, and stale sequence rejection.",
+            "description": "Storage shared case: corrupt page/index/WAL/manifest, checksum mismatch, partial manifest, missing segment, and stale sequence rejection.",
             "kind": "storage_fault_matrix",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
@@ -5236,7 +5236,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: local shared-store replay preserves converted pages and oplog/index-log ordering in sync mode.",
+            "description": "Storage shared case: local shared-store replay preserves converted pages and WAL/index-log ordering in sync mode.",
             "kind": "storage_shared_store_replay",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "mode": "Sync"
@@ -5252,7 +5252,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
+            "description": "Storage shared case: async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up.",
             "kind": "storage_shared_store_replay",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "mode": "Async"
