@@ -24,6 +24,7 @@
 #include "common/proto_enhance.h"
 #include "common/scoped_invoker.h"
 #include "common/sync_closure.h"
+#include "common/coclosure.h"
 #include "common/env.h"
 
 namespace brpc {

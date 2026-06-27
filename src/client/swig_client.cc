@@ -9,6 +9,7 @@
 #include "client/bcache2.h"
 #include "client/client_impl.h"
 #include "common/logging.h"
+#include "common/coclosure.h"
 #include "common/scoped_invoker.h"
 #include "common/string_utils.h"
 

@@ -15,6 +15,7 @@
 #include "client/client_impl.h"
 #include "common/cmd_manager.h"
 #include "common/controller.h"
+#include "common/coclosure.h"
 #include "common/sync_closure.h"
 #include "extension/feature/interface.pb.h"
 #include "extension/context/interface.pb.h"

@@ -181,6 +181,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             max_write_retries=1,
         )
         self._client = Client(options, library_path=library_path or None)
+        self._matrixark_native_batch_append_available = bool(
+            getattr(getattr(self._client, "_native", None), "has_matrixark_batch_append_records", False)
+        )
+        self._matrixark_append_write_path = (
+            "native_c_api_hash_mset_grouped"
+            if self._matrixark_native_batch_append_available
+            else "fallback_python_batch_hset_loop"
+        )
+        self._matrixark_append_uses_per_record_hset = not self._matrixark_native_batch_append_available
+        # C++ has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
+        # but the generic JSON record-log adapter still persists through the
+        # MatrixArk batch hash API. Keep this explicit in metrics/reports so the
+        # deeper append-queue optimization is not confused with the API boundary.
+        self._matrixark_context_extension_append_selected = False
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table
@@ -458,6 +472,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "# HELP matrixark_backend_cached_clients MatrixArk storage backend cached clients.",
                     "# TYPE matrixark_backend_cached_clients gauge",
                     f'matrixark_backend_cached_clients{{backend="{backend}"}} 1',
+                    "# HELP matrixark_backend_matrixark_native_batch_append_available MatrixArk native batch append C API availability.",
+                    "# TYPE matrixark_backend_matrixark_native_batch_append_available gauge",
+                    f'matrixark_backend_matrixark_native_batch_append_available{{backend="{backend}",write_path="{getattr(self, "_matrixark_append_write_path", "unknown")}"}} {1 if bool(getattr(self, "_matrixark_native_batch_append_available", False)) else 0}',
+                    "# HELP matrixark_backend_matrixark_per_record_hset_fallback MatrixArk write path is using the old per-record HSet fallback.",
+                    "# TYPE matrixark_backend_matrixark_per_record_hset_fallback gauge",
+                    f'matrixark_backend_matrixark_per_record_hset_fallback{{backend="{backend}",write_path="{getattr(self, "_matrixark_append_write_path", "unknown")}"}} {1 if bool(getattr(self, "_matrixark_append_uses_per_record_hset", True)) else 0}',
+                    "# HELP matrixark_backend_context_extension_append_selected MatrixArk writes are using native CONTEXT extension append commands.",
+                    "# TYPE matrixark_backend_context_extension_append_selected gauge",
+                    f'matrixark_backend_context_extension_append_selected{{backend="{backend}"}} {1 if bool(getattr(self, "_matrixark_context_extension_append_selected", False)) else 0}',
                     "# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.",
                     "# TYPE matrixark_backend_audit_buffered_records gauge",
                     f'matrixark_backend_audit_buffered_records{{backend="{backend}"}} {len(getattr(self, "_audit_buffer", []))}',
