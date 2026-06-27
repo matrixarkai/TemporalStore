@@ -288,11 +288,13 @@ Latest AWS/test state:
     - this keeps MatrixArk closer to production observability while preserving stronger replay/debug governance as an opt-in capability.
   - Implemented MVP:
     - `audit_mode=full|telemetry_only|off` on retrieval, also configurable with `MATRIXARK_CONTEXT_AUDIT_MODE`;
+    - `MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE` / `audit_sample_rate` for tunable rich audit sampling when `audit_mode=full`;
     - `context_pack_telemetry` records with compact operational counters and no raw selected/dropped text;
     - `telemetry_only` writes telemetry but skips heavy `context_pack_audit` replay payloads;
+    - rich audit is forced for partial ContextPacks, insufficient context, or quality warnings when `audit_mode=full`;
     - dashboard context-pack listing can show telemetry rows as well as audit rows.
   - Next production work:
-    - add sampling policy, for example `full_audit_sample_rate` and force-full-audit on errors, low confidence, explicit debug, or compliance scopes;
+    - add policy routing for force-full-audit on low confidence, explicit debug, or compliance scopes;
     - add retention tiers: telemetry hot, audit warm/cold, replay artifacts object-store backed;
     - expose Prometheus counters directly from telemetry fields;
     - add portal controls for per-account audit mode and retention.
