@@ -38,6 +38,9 @@ class MatrixArkLocalAdapter:
     event_log: Path
 
     def __post_init__(self) -> None:
+        self._init_local_runtime_state()
+
+    def _init_local_runtime_state(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
         self._write_batch_local = threading.local()
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
