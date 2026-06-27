@@ -2404,6 +2404,60 @@ fn byteraft_offline_timeout_state_is_reported_per_peer() {
     assert_eq!(peer3.offline_timeout_rejections, 1);
 }
 
+// shared-corpus: raft_byteraft_snapshot_lifecycle_depth raft_byteraft_metrics_admin_pipeline_status
+#[test]
+fn byteraft_snapshot_sender_timeout_clears_pipeline_and_reports_retry() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        215,
+        [1, 2, 3],
+        RaftConfig {
+            send_snapshot_timeout_ms: 10,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "snapshot-timeout".to_string(),
+            value: b"seed".to_vec(),
+        })
+        .unwrap();
+    let _request = cluster.build_install_snapshot_request(3).unwrap();
+
+    cluster.advance_time_ms(9);
+    let before = cluster.byteraft_runtime_admin_report();
+    let peer3 = before
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert!(peer3.snapshot_sending);
+    assert_eq!(peer3.snapshot_send_elapsed_ms, 9);
+    assert_eq!(peer3.snapshot_send_timeouts, 0);
+
+    cluster.advance_time_ms(1);
+    let after = cluster.byteraft_runtime_admin_report();
+    let peer3 = after
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert!(!peer3.snapshot_sending);
+    assert!(!peer3.snapshot_installing);
+    assert_eq!(peer3.snapshot_send_elapsed_ms, 10);
+    assert_eq!(peer3.snapshot_send_timeouts, 1);
+    assert_eq!(peer3.snapshot_retry_count, 1);
+    assert_eq!(peer3.snapshot_send_failed, 1);
+    assert_eq!(peer3.snapshot_backpressure_rejections, 1);
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_timeouts"));
+
+    let retry = cluster.build_install_snapshot_request(3);
+    assert!(retry.is_ok(), "timed-out sender should allow retry");
+}
+
 #[test]
 fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
     let readiness = raft_openraft_rollout_readiness();
