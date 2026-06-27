@@ -86,6 +86,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         io_timeout_ms: int = 20000,
     ) -> None:
         super().__init__(Path("/tmp/matrixark-mcp-unused-direct.jsonl"))
+        MatrixArkLocalAdapter._init_local_runtime_state(self)
         sdk_root = Path(__file__).resolve().parents[1] / "sdk" / "python"
         sys.path.insert(0, str(sdk_root))
         from temporalstore import Client, Options  # type: ignore
@@ -1469,6 +1470,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         io_timeout_ms: int = 20000,
     ) -> None:
         MatrixArkLocalAdapter.__init__(self, Path("/tmp/matrixark-mcp-unused-rust.jsonl"))
+        MatrixArkLocalAdapter._init_local_runtime_state(self)
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table

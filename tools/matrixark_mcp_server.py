@@ -14,6 +14,7 @@ storage adapters for compatibility with existing scripts.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import traceback
 
 try:
     from tools.matrixark_mcp_core import *
@@ -269,6 +270,7 @@ class MatrixArkMcpServer:
             return self.error_response(request_id, -32000, str(exc), data={"error_type": exc.__class__.__name__})
         except Exception as exc:  # MCP errors should stay JSON-RPC shaped.
             _mcp_debug_log(f"handle: internal error for method={method!r}: {exc}")
+            _mcp_debug_log(traceback.format_exc())
             return self.error_response(request_id, -32603, "internal MatrixArk MCP server error", data={"error_type": exc.__class__.__name__})
 
     def _raw_idempotency_key(self, args: Json, hook: Json | None) -> str:
