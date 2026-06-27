@@ -522,6 +522,14 @@ pub struct ByteRaftPeerPipelineState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftCapabilityEvidence {
+    pub capability: String,
+    pub ready: bool,
+    pub evidence_field: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ByteRaftRuntimeAdminReport {
     pub shard_id: ShardId,
     pub leader_id: RaftNodeId,
@@ -559,6 +567,8 @@ pub struct ByteRaftRuntimeAdminReport {
     pub pre_vote_accepted: u64,
     pub pre_vote_rejected: u64,
     pub admin_status_surface_complete: bool,
+    #[serde(default)]
+    pub capability_matrix: Vec<ByteRaftCapabilityEvidence>,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
@@ -8603,6 +8613,76 @@ impl RaftClusterInner {
                     .map(|node| node.commit_index)
                     .max()
                     .unwrap_or_default();
+        let per_peer_pipeline_state_present = !peer_pipeline_states.is_empty()
+            && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
+            && peer_pipeline_states.iter().any(|peer| {
+                peer.append_queue_depth > 0 || peer.inflight_entries > 0 || peer.append_requests > 0
+            });
+        let capability_matrix = vec![
+            ByteRaftCapabilityEvidence {
+                capability: "per_peer_replication_pipeline_state".to_string(),
+                ready: per_peer_pipeline_state_present && append_backpressure_enforced,
+                evidence_field: "peer_pipeline_states[*].{match_index,next_index,inflight_bytes,append_queue_depth,append_*}".to_string(),
+                detail: format!(
+                    "{} peers reported; append_backpressure_enforced={append_backpressure_enforced}",
+                    peer_pipeline_states.len()
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "reorder_queue_runtime".to_string(),
+                ready: reorder_queue_enabled
+                    && peer_pipeline_states
+                        .iter()
+                        .all(|peer| peer.reorder_queue_depth <= peer.match_index),
+                evidence_field:
+                    "peer_pipeline_states[*].{reorder_queue_depth,reorder_entries_*}".to_string(),
+                detail: format!(
+                    "enabled={reorder_queue_enabled}; window={}",
+                    self.config.reorder_window_size
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "snapshot_sender_downloader_lifecycle".to_string(),
+                ready: snapshot_sender_lifecycle_present
+                    && snapshot_downloader_lifecycle_present
+                    && snapshot_retry_backpressure_present,
+                evidence_field: "peer_pipeline_states[*].{snapshot_sending,snapshot_installing,snapshot_*}; snapshot_retry_backpressure_present".to_string(),
+                detail: format!(
+                    "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}"
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "lease_read_index_pre_vote_semantics".to_string(),
+                ready: read_index_validated
+                    && lease_read_validated
+                    && stale_follower_read_rejected
+                    && pre_vote_enforced,
+                evidence_field: "read_index_*; lease_read_*; stale_follower_read_rejected; pre_vote_*"
+                    .to_string(),
+                detail: format!(
+                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}"
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "wal_segment_lifecycle".to_string(),
+                ready: wal_segment_lifecycle_present,
+                evidence_field: "wal_{segment_count,active_segment_id,first_retained_segment_id,last_retained_segment_id,total_bytes,total_records,first_sequence,last_sequence}".to_string(),
+                detail: format!(
+                    "segments={wal_segment_count}; bytes={wal_total_bytes}; records={wal_total_records}; seq={wal_first_sequence}..{wal_last_sequence}"
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "admin_status_surface".to_string(),
+                ready: admin_status_surface_complete,
+                evidence_field: "admin_status_surface_complete; /raft/control/byteraft_runtime_admin; prometheus byteraft metrics".to_string(),
+                detail: format!(
+                    "majority={}; commit_index={}; peer_rows={}",
+                    status.majority,
+                    status.commit_index,
+                    peer_pipeline_states.len()
+                ),
+            },
+        ];
 
         let mut blockers = Vec::new();
         if !read_index_validated {
@@ -8682,6 +8762,7 @@ impl RaftClusterInner {
             pre_vote_accepted: self.read_safety_state.pre_vote_accepted,
             pre_vote_rejected: self.read_safety_state.pre_vote_rejected,
             admin_status_surface_complete,
+            capability_matrix,
             ready: blockers.is_empty(),
             blockers,
         }
@@ -9502,6 +9583,20 @@ fn append_byteraft_runtime_admin_prometheus(
         &[("kind", kind.to_string())],
         u64::from(report.ready),
     );
+    out.push_str("# HELP temporalstore_raft_byteraft_capability_ready ByteRaft-style capability readiness matrix.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_capability_ready gauge\n");
+    for capability in &report.capability_matrix {
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_capability_ready",
+            &[
+                ("kind", kind.to_string()),
+                ("capability", capability.capability.clone()),
+                ("evidence_field", capability.evidence_field.clone()),
+            ],
+            u64::from(capability.ready),
+        );
+    }
     out.push_str("# HELP temporalstore_raft_byteraft_read_index_validated Whether read-index evidence was validated.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_read_index_validated gauge\n");
     push_raft_metric(

@@ -982,6 +982,23 @@ mod tests {
         assert!(report.snapshot_downloader_lifecycle_present);
         assert!(report.wal_segment_lifecycle_present);
         assert!(report.admin_status_surface_complete);
+        let expected_capabilities = [
+            "per_peer_replication_pipeline_state",
+            "reorder_queue_runtime",
+            "snapshot_sender_downloader_lifecycle",
+            "lease_read_index_pre_vote_semantics",
+            "wal_segment_lifecycle",
+            "admin_status_surface",
+        ];
+        for capability in expected_capabilities {
+            let row = report
+                .capability_matrix
+                .iter()
+                .find(|row| row.capability == capability)
+                .unwrap_or_else(|| panic!("missing capability row {capability}"));
+            assert!(row.ready, "{capability}: {row:?}");
+            assert!(!row.evidence_field.is_empty());
+        }
         assert!(report
             .peer_pipeline_states
             .iter()
@@ -989,6 +1006,8 @@ mod tests {
 
         let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
         assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
+        assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));

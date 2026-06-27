@@ -4685,7 +4685,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose peer lag, apply health, read-index, leader transfer elapsed/timeout counters, per-peer pipeline state, reorder queues, snapshot lifecycle including send elapsed/timeout counters, WAL segments, offline timeout state/rejections, and stale follower rejection evidence.",
+            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose a capability matrix plus peer lag, apply health, read-index, leader transfer elapsed/timeout counters, per-peer pipeline state, reorder queues, snapshot lifecycle including send elapsed/timeout counters, WAL segments, offline timeout state/rejections, and stale follower rejection evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4719,7 +4719,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "suite": "cpp_data_raft_parity",
-          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with durable per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
+          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with a capability matrix and durable per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_consensus.h",
@@ -4733,6 +4733,7 @@
             "schema": "byteraft_runtime_admin_report_v1",
             "required_metrics": [
               "temporalstore_raft_byteraft_ready",
+              "temporalstore_raft_byteraft_capability_ready",
               "temporalstore_raft_byteraft_read_index_validated",
               "temporalstore_raft_byteraft_read_index_requests",
               "temporalstore_raft_byteraft_read_index_accepted",

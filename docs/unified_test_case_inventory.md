@@ -115,9 +115,9 @@ Recent shared-case additions moved seven Rust data-node Raft API tests into the 
 `server_raft_control_accept_leadership`, `server_raft_admin_wait_applied`, and
 `server_raft_byteraft_runtime_admin_route`. C++ currently contributes static server/Raft source and
 test surfaces for those cases until a native C++ shared runner executes the same case IDs. The new
-ByteRaft runtime-admin case requires a shared JSON shape for per-peer match/next index, inflight
-bytes, append request/accept/reject counters, append/reorder queues, reorder accept/release/reject
-counters, snapshot sender/downloader
+ByteRaft runtime-admin case requires a shared JSON shape with a capability matrix plus per-peer
+match/next index, inflight bytes, append request/accept/reject counters, append/reorder queues,
+reorder accept/release/reject counters, snapshot sender/downloader
 lifecycle, WAL segments with bytes/record counts/sequence bounds, read-index/lease evidence, stale
 follower rejection, and matching Prometheus metrics for scrape-based operator
 parity. Snapshot lifecycle fields include send attempt/complete/failure counters,
@@ -224,8 +224,8 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and OpenRaft process-rollout/log-store evidence. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
-| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, leader-transfer request/accept/reject/complete/elapsed/timeout counters, snapshot send elapsed/timeout counters, offline timeout state/rejection counters, and `/raft/control/byteraft_runtime_admin` evidence. |
-| `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin report on both standalone `raft_node` and raft-enabled `server`. |
+| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus capability matrix, peer pipeline, apply health, read-index, leader-transfer request/accept/reject/complete/elapsed/timeout counters, snapshot send elapsed/timeout counters, offline timeout state/rejection counters, and `/raft/control/byteraft_runtime_admin` evidence. |
+| `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin report, including capability matrix rows, on both standalone `raft_node` and raft-enabled `server`. |
 | `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, sender timeout/retry, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
 | `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
 | `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |

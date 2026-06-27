@@ -915,7 +915,11 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   rejects concurrent single-shot or chunked transfers for the same peer and records snapshot
   backpressure; successful, failed, rejected, and rolled-back snapshot lifecycle outcomes are
   counted per peer. WAL segment lifecycle evidence now includes per-segment valid record counts and
-  sequence bounds, plus aggregate byte and retained-record gauges. The per-peer pipeline/reorder/snapshot
+  sequence bounds, plus aggregate byte and retained-record gauges. The report now also carries a
+  `capability_matrix` with explicit rows and evidence-field names for per-peer pipeline state,
+  reorder queue runtime, snapshot sender/downloader lifecycle, lease/read-index/pre-vote semantics,
+  WAL segment lifecycle, and admin/status surface completeness; Prometheus exports the same rows via
+  `temporalstore_raft_byteraft_capability_ready`. The per-peer pipeline/reorder/snapshot
   fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
   local WAL records, so the process-path evidence survives restart instead of being only a
   report-time derivation.
