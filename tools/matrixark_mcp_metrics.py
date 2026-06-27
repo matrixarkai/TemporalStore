@@ -57,6 +57,45 @@ class MatrixArkServiceMetrics:
             )
             row["error"] += 1
 
+    def _pool_row(self, group: str, capacity: int = 0) -> Json:
+        row = self._pool.setdefault(
+            group,
+            {
+                "active": 0,
+                "max_active": 0,
+                "capacity": int(capacity or 0),
+                "wait_count": 0,
+                "wait_ms_samples": [],
+                "wait_buckets": [0 for _ in self.LATENCY_BUCKETS_MS],
+            },
+        )
+        if capacity:
+            row["capacity"] = int(capacity)
+        return row
+
+    def observe_pool_wait(self, group: str, wait_ms: float, *, capacity: int = 0) -> None:
+        with self._lock:
+            row = self._pool_row(group, capacity)
+            row["wait_count"] += 1
+            samples = row["wait_ms_samples"]
+            samples.append(float(wait_ms))
+            if len(samples) > 4096:
+                del samples[: len(samples) - 4096]
+            for index, bucket in enumerate(self.LATENCY_BUCKETS_MS):
+                if wait_ms <= bucket:
+                    row["wait_buckets"][index] += 1
+
+    def observe_pool_acquire(self, group: str, *, capacity: int = 0) -> None:
+        with self._lock:
+            row = self._pool_row(group, capacity)
+            row["active"] = int(row.get("active", 0)) + 1
+            row["max_active"] = max(int(row.get("max_active", 0)), int(row["active"]))
+
+    def observe_pool_release(self, group: str) -> None:
+        with self._lock:
+            row = self._pool_row(group)
+            row["active"] = max(0, int(row.get("active", 0)) - 1)
+
     def observe_model_latency(self, stage: str, elapsed_ms: float) -> None:
         with self._lock:
             row = self._model.setdefault(stage, {"count": 0, "latencies": [], "buckets": [0 for _ in self.LATENCY_BUCKETS_MS]})
@@ -81,6 +120,40 @@ class MatrixArkServiceMetrics:
             self._token_pressure_samples.append(pressure)
             if len(self._token_pressure_samples) > 4096:
                 del self._token_pressure_samples[: len(self._token_pressure_samples) - 4096]
+            selected_refs = result.get("selected_refs", [])
+            selected_count = len(selected_refs) if isinstance(selected_refs, list) else 0
+            dropped_refs = result.get("dropped_refs", {})
+            dropped_count = 0
+            if isinstance(dropped_refs, dict):
+                refs = dropped_refs.get("refs", [])
+                if isinstance(refs, list) and refs:
+                    dropped_count = len(refs)
+                else:
+                    dropped_count = sum(
+                        int(value)
+                        for key, value in dropped_refs.items()
+                        if isinstance(value, int) and key != "deadline_exceeded"
+                    )
+            self._selected_refs_total += selected_count
+            self._dropped_refs_total += dropped_count
+            self._last_selected_refs = selected_count
+            self._last_dropped_refs = dropped_count
+
+            recall_policy = result.get("recall_policy") if isinstance(result.get("recall_policy"), dict) else {}
+            pushdown = recall_policy.get("backend_retrieval_pushdown") if isinstance(recall_policy.get("backend_retrieval_pushdown"), dict) else {}
+            scanned = int(pushdown.get("scanned_records") or pushdown.get("scan_count") or 0)
+            returned = int(pushdown.get("returned_records") or 0)
+            if scanned or returned:
+                self._retrieve_scan_count += 1
+                self._retrieve_scanned_records_total += scanned
+                self._last_scan_count = scanned
+            cache_hit = result.get("context_pack_cache_hit")
+            if cache_hit is None:
+                cache_hit = pushdown.get("cache_hit")
+            if cache_hit is True:
+                self._retrieve_cache_hits += 1
+            elif cache_hit is False:
+                self._retrieve_cache_misses += 1
 
     def observe_ingest_result(self, result: Json) -> None:
         task = result.get("resource_import_task") if isinstance(result, dict) else {}
@@ -100,12 +173,21 @@ class MatrixArkServiceMetrics:
             self._last_backend_ready = 1 if ready else 0
             self._last_backend_ready_status = status or ("ready" if ready else "not_ready")
 
-    def update_gauges(self, *, dirty_summary_lag_ms: int, resource_import_lag_ms: int, queue_depth: int, audit_write_failures: int) -> None:
+    def update_gauges(
+        self,
+        *,
+        dirty_summary_lag_ms: int,
+        resource_import_lag_ms: int,
+        queue_depth: int,
+        audit_write_failures: int,
+        audit_queue_depth: int = 0,
+    ) -> None:
         with self._lock:
             self._last_dirty_summary_lag_ms = max(0, int(dirty_summary_lag_ms))
             self._last_resource_import_lag_ms = max(0, int(resource_import_lag_ms))
             self._last_resource_queue_depth = max(0, int(queue_depth))
             self._last_audit_write_failures = max(0, int(audit_write_failures))
+            self._last_audit_queue_depth = max(0, int(audit_queue_depth))
 
     def update_model_fallback_flags(self, **flags: object) -> None:
         with self._lock:

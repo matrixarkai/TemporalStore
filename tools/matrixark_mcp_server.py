@@ -279,11 +279,17 @@ class MatrixArkMcpServer:
             except Exception:
                 queue_depth = 0
         audit_write_failures = int(getattr(self.adapter, "_audit_flush_failures", 0) or 0)
+        audit_buffer = getattr(self.adapter, "_audit_buffer", [])
+        try:
+            audit_queue_depth = len(audit_buffer)
+        except Exception:
+            audit_queue_depth = 0
         self.metrics.update_gauges(
             dirty_summary_lag_ms=dirty_lag_ms,
             resource_import_lag_ms=import_lag_ms,
             queue_depth=queue_depth,
             audit_write_failures=audit_write_failures,
+            audit_queue_depth=audit_queue_depth,
         )
 
     def _merge_service_prometheus(self, result: Json) -> Json:
@@ -528,6 +534,7 @@ class MatrixArkMcpServer:
         if limiter is None:
             yield
             return
+        capacity = int(self.DEFAULT_OPERATION_CONCURRENCY.get(group, 0) or 0)
         wait_ms = self._operation_backpressure_timeout_ms
         if request_deadline_ms > 0:
             wait_ms = min(wait_ms, request_deadline_ms)
@@ -545,6 +552,7 @@ class MatrixArkMcpServer:
             acquired = limiter.acquire(timeout=max(0.0, wait_ms / 1000.0)) if wait_ms > 0 else limiter.acquire(blocking=False)
         if not acquired:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self.metrics.observe_pool_wait(group, elapsed_ms, capacity=capacity)
             if group == "retrieve" and self._retrieve_shed_cooldown_ms > 0:
                 with self._retrieve_shed_lock:
                     self._retrieve_shed_until_perf = max(
@@ -553,10 +561,13 @@ class MatrixArkMcpServer:
                     )
             self.metrics.observe_backpressure(name)
             raise MatrixArkBackpressureError(f"{name} rejected by service backpressure after {round(elapsed_ms, 3)}ms")
+        self.metrics.observe_pool_wait(group, (time.perf_counter() - started) * 1000.0, capacity=capacity)
+        self.metrics.observe_pool_acquire(group, capacity=capacity)
         try:
             yield
         finally:
             limiter.release()
+            self.metrics.observe_pool_release(group)
 
     def call_tool(self, name: str, args: Json) -> Json:
         if not isinstance(name, str) or not name:
