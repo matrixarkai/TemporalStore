@@ -47,6 +47,11 @@ class MatrixArkLocalAdapter:
         self._resource_import_worker_lock = threading.RLock()
         self._resource_import_stop = threading.Event()
         self._resource_import_threads: list[threading.Thread] = []
+        self._latest_entity_by_hash: dict[int, Json] = {}
+        self._entity_cache_loaded = False
+        self._context_node_hashes: set[int] = set()
+        self._context_child_ref_hashes: set[int] = set()
+        self._context_node_cache_loaded = False
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -124,7 +129,8 @@ class MatrixArkLocalAdapter:
             return
         with self.event_log.open("a", encoding="utf-8") as handle:
             for item in records:
-                handle.write(json.dumps(item, sort_keys=True) + "\n")
+                handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+        self._update_latest_entity_cache(records)
 
     def append_many(self, records: list[Json]) -> None:
         records = materialize_serving_record_batch(records)
@@ -134,7 +140,70 @@ class MatrixArkLocalAdapter:
             return
         with self.event_log.open("a", encoding="utf-8") as handle:
             for record in records:
-                handle.write(json.dumps(record, sort_keys=True) + "\n")
+                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        self._update_latest_entity_cache(records)
+
+    def _update_latest_entity_cache(self, records: list[Json]) -> None:
+        for record in records:
+            record_type = record.get("record_type")
+            if record_type == "context_node":
+                try:
+                    node_hash = int(record.get("node_hash", 0))
+                except (TypeError, ValueError):
+                    node_hash = 0
+                if node_hash:
+                    self._context_node_hashes.add(node_hash)
+                continue
+            if record_type == "context_child_ref":
+                try:
+                    child_ref_hash = int(record.get("child_ref_hash", 0))
+                except (TypeError, ValueError):
+                    child_ref_hash = 0
+                if child_ref_hash:
+                    self._context_child_ref_hashes.add(child_ref_hash)
+                continue
+            if record_type != "context_entity":
+                continue
+            try:
+                entity_hash = int(record.get("entity_hash", 0))
+            except (TypeError, ValueError):
+                continue
+            if entity_hash:
+                self._latest_entity_by_hash[entity_hash] = record
+
+    def _ensure_context_node_cache_loaded(self) -> None:
+        if self._context_node_cache_loaded:
+            return
+        self._context_node_hashes = set()
+        self._context_child_ref_hashes = set()
+        for record in self.read_all():
+            if record.get("record_type") == "context_node" and record.get("node_hash") is not None:
+                try:
+                    self._context_node_hashes.add(int(record.get("node_hash")))
+                except (TypeError, ValueError):
+                    pass
+            elif record.get("record_type") == "context_child_ref" and record.get("child_ref_hash") is not None:
+                try:
+                    self._context_child_ref_hashes.add(int(record.get("child_ref_hash")))
+                except (TypeError, ValueError):
+                    pass
+        self._context_node_cache_loaded = True
+
+    def _ensure_latest_entity_cache_loaded(self) -> None:
+        if self._entity_cache_loaded:
+            return
+        records = self.read_all()
+        self._latest_entity_by_hash = {}
+        for record in records:
+            if record.get("record_type") != "context_entity":
+                continue
+            try:
+                entity_hash = int(record.get("entity_hash", 0))
+            except (TypeError, ValueError):
+                continue
+            if entity_hash:
+                self._latest_entity_by_hash[entity_hash] = record
+        self._entity_cache_loaded = True
 
     def append_audit(self, record: Json) -> None:
         self.append(record)
@@ -232,10 +301,10 @@ class MatrixArkLocalAdapter:
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
         entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
-        for record in reversed(self.read_all()):
-            if record.get("record_type") == "context_entity" and record.get("entity_hash") == entity_hash:
-                return record
-        return None
+        if entity_hash in self._latest_entity_by_hash:
+            return self._latest_entity_by_hash[entity_hash]
+        self._ensure_latest_entity_cache_loaded()
+        return self._latest_entity_by_hash.get(entity_hash)
 
     def pending_session_events(self, scope: Json, *, limit: int | None = None) -> list[Json]:
         key = session_buffer_key_from_scope(scope)
@@ -305,17 +374,9 @@ class MatrixArkLocalAdapter:
         if not prefixes:
             return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
 
-        records = self.read_all()
-        existing_nodes = {
-            int(record.get("node_hash"))
-            for record in records
-            if record.get("record_type") == "context_node" and record.get("node_hash") is not None
-        }
-        existing_child_refs = {
-            int(record.get("child_ref_hash"))
-            for record in records
-            if record.get("record_type") == "context_child_ref" and record.get("child_ref_hash") is not None
-        }
+        self._ensure_context_node_cache_loaded()
+        existing_nodes = self._context_node_hashes
+        existing_child_refs = self._context_child_ref_hashes
         node_hashes: list[int] = []
         nodes_created = 0
         child_refs_created = 0
@@ -2467,11 +2528,15 @@ class MatrixArkLocalAdapter:
 
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
+        event_rows: list[tuple[int, Json, str, int]] = []
         if not derive_from_existing_events:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
                 event_id_hash = stable_hash(f"{batch_id_hash}:event:{index}:{event_text}")
                 event_hashes.append(event_id_hash)
+                event_rows.append((index, message, event_text, event_id_hash))
+            event_vectors = embeddings_for_texts([event_text for _index, _message, event_text, _event_id_hash in event_rows])
+            for (_index, message, event_text, event_id_hash), event_vector in zip(event_rows, event_vectors):
                 records_to_append.append(
                     {
                         "record_type": "context_event",
@@ -2504,9 +2569,9 @@ class MatrixArkLocalAdapter:
                         "ref_hash": event_id_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "dim": len(embedding_for_text(event_text)),
+                        "dim": len(event_vector),
                         "model": embedding_model_name(),
-                        "vector": embedding_for_text(event_text),
+                        "vector": event_vector,
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -2564,6 +2629,8 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            entity_embedding_text = updated_entity["entity_type"] + " " + updated_entity["state"]
+            entity_vector = embedding_for_text(entity_embedding_text)
             records_to_append.append(
                 {
                     "record_type": "context_embedding",
@@ -2572,9 +2639,9 @@ class MatrixArkLocalAdapter:
                     "ref_hash": entity_hash,
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "dim": len(embedding_for_text(updated_entity["entity_type"] + " " + updated_entity["state"])),
+                    "dim": len(entity_vector),
                     "model": embedding_model_name(),
-                    "vector": embedding_for_text(updated_entity["entity_type"] + " " + updated_entity["state"]),
+                    "vector": entity_vector,
                     "scope": envelope["scope"],
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
@@ -2603,6 +2670,8 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
+            segment_embedding_text = segment["topic"] + " " + segment["summary_text"]
+            segment_vector = embedding_for_text(segment_embedding_text)
             records_to_append.append(
                 {
                     "record_type": "context_embedding",
@@ -2611,9 +2680,9 @@ class MatrixArkLocalAdapter:
                     "ref_hash": segment_hash,
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "dim": len(embedding_for_text(segment["topic"] + " " + segment["summary_text"])),
+                    "dim": len(segment_vector),
                     "model": embedding_model_name(),
-                    "vector": embedding_for_text(segment["topic"] + " " + segment["summary_text"]),
+                    "vector": segment_vector,
                     "scope": envelope["scope"],
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
@@ -2636,6 +2705,8 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
+        summary_embedding_text = " ".join(node_path + [batch_summary])
+        summary_vector = embedding_for_text(summary_embedding_text)
         records_to_append.append(
             {
                 "record_type": "context_embedding",
@@ -2644,9 +2715,9 @@ class MatrixArkLocalAdapter:
                 "ref_hash": summary_hash,
                 "node_hash": node_hash,
                 "node_path": node_path,
-                "dim": len(embedding_for_text(" ".join(node_path + [batch_summary]))),
+                "dim": len(summary_vector),
                 "model": embedding_model_name(),
-                "vector": embedding_for_text(" ".join(node_path + [batch_summary])),
+                "vector": summary_vector,
                 "scope": envelope["scope"],
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }

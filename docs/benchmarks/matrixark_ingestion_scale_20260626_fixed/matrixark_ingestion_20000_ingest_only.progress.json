@@ -1,0 +1,13 @@
+{
+  "backend": "local",
+  "batch_size": 1000,
+  "batches": 20,
+  "elapsed_sec": 92.638,
+  "events_requested": 20000,
+  "ingest_mode": "batch",
+  "last_error": "",
+  "message_qps_so_far": 215.895,
+  "messages_ingested": 20000,
+  "report_json": "docs/benchmarks/matrixark_ingestion_scale_20260626_fixed/matrixark_ingestion_20000_ingest_only.json",
+  "status": "passed"
+}
