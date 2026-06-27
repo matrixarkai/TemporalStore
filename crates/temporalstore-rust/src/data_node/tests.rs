@@ -1854,6 +1854,157 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
     assert_eq!(runtime.stats().background_queue_depth, 1);
 }
 
+// shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+#[test]
+fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert!(
+        runtime
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "storage-manager".to_string(),
+                shard_uri: "local://storage-manager/1".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 16_383,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    assert!(
+        runtime
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "storage-manager-background".to_string(),
+                    value: b"value".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    let submitted = runtime.submit_storage_manager_cycle(
+        StorageManagerCycleRequest {
+            shard_id: 1,
+            max_dump_slots_per_round: 8,
+            warm_cache: true,
+            ..StorageManagerCycleRequest::default()
+        },
+        RequestController { timeout_ms: 30_000 },
+    );
+    assert!(submitted.status.ok, "{submitted:?}");
+
+    let finished = wait_for_job(&runtime, submitted.job_id);
+    assert!(finished.status.ok, "{finished:?}");
+    let Some(DataNodeTaskOutput::StorageManager(response)) = finished.output else {
+        panic!("expected storage manager output: {finished:?}");
+    };
+    assert!(response.status.ok, "{response:?}");
+    assert!(response.report.completed, "{:#?}", response.report);
+    assert!(
+        response.report.production_parity_slice,
+        "{:#?}",
+        response.report
+    );
+    assert_eq!(
+        response.report.cxx_stage_order,
+        vec![
+            "prepare",
+            "reclaim_oplog",
+            "expire",
+            "evict",
+            "reclaim_page",
+            "index_gc",
+            "compact",
+            "reap_metrics",
+        ]
+    );
+    assert!(response
+        .report
+        .stages
+        .iter()
+        .any(|stage| stage.stage == "reclaim_oplog" && stage.dumped_slot_count >= 1));
+    assert_eq!(runtime.stats().storage_manager_runs, 1);
+    assert_eq!(runtime.stats().background_queue_depth, 0);
+}
+
+// shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+#[test]
+fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        512,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 1,
+        },
+    );
+    assert!(
+        runtime
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 1,
+                table_name: "storage-manager-scheduler".to_string(),
+                shard_uri: "local://storage-manager-scheduler/1".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 16_383,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    runtime.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "storage-manager-scheduler".to_string(),
+            value: b"value".to_vec(),
+        },
+    });
+
+    let scheduler = runtime.start_storage_manager_scheduler(
+        Duration::from_millis(5),
+        StorageManagerCycleRequest {
+            shard_id: 1,
+            max_dump_slots_per_round: 8,
+            warm_cache: true,
+            ..StorageManagerCycleRequest::default()
+        },
+        RequestController { timeout_ms: 30_000 },
+    );
+
+    wait_until(Duration::from_secs(5), || {
+        runtime.stats().storage_manager_runs >= 1
+    });
+    scheduler.stop();
+    assert!(runtime.stats().storage_manager_runs >= 1);
+    assert_eq!(runtime.stats().rejected_background_total, 0);
+}
+
 fn queued_string_set(job_id: u64, shard_id: ShardId, key: &str) -> QueuedTask {
     QueuedTask {
         job_id,

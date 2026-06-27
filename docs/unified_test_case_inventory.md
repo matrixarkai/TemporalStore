@@ -178,10 +178,10 @@ C++ execution should progressively cover every executable case.
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
-| `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
+| `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution. |
 | `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
-| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
+| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, refill failures, and periodic StorageManager scheduler queue safety. |
 | `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and WAL/index-log ordering. |
 | `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up. |
 

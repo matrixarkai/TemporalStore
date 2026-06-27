@@ -16,7 +16,8 @@ use crate::control::{
 };
 use crate::engine::reports::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
-    StorageLifecycleRequest, StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
+    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -76,6 +77,7 @@ pub enum DataNodeTaskKind {
     Dump,
     Compact,
     Gc,
+    StorageManager,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -88,6 +90,7 @@ pub enum DataNodeTaskOutput {
     Dump(DumpShardResponse),
     Compact(CompactionResponse),
     Gc(GcResponse),
+    StorageManager(StorageManagerResponse),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -124,6 +127,8 @@ pub struct DataNodeRuntimeStats {
     pub gc_runs: u64,
     #[serde(default)]
     pub storage_lifecycle_runs: u64,
+    #[serde(default)]
+    pub storage_manager_runs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -402,6 +407,12 @@ pub struct StorageLifecycleResponse {
     pub report: StorageLifecycleReport,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerResponse {
+    pub status: Status,
+    pub report: StorageManagerCycleReport,
+}
+
 #[derive(Debug, Clone)]
 pub struct DataNodeRuntime {
     inner: Arc<DataNodeRuntimeInner>,
@@ -421,6 +432,12 @@ pub struct ExpirySweepScheduler {
 
 #[derive(Debug)]
 pub struct StorageLifecycleScheduler {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+pub struct StorageManagerScheduler {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
 }
@@ -479,6 +496,24 @@ impl Drop for StorageLifecycleScheduler {
     }
 }
 
+impl StorageManagerScheduler {
+    pub fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for StorageManagerScheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
     engine: TemporalEngine,
@@ -511,6 +546,7 @@ struct MutableRuntimeStats {
     compaction_runs: u64,
     gc_runs: u64,
     storage_lifecycle_runs: u64,
+    storage_manager_runs: u64,
 }
 
 #[derive(Debug)]
@@ -548,6 +584,7 @@ enum TaskRequest {
     Dump(DumpShardRequest),
     Compact(CompactionRequest),
     Gc(GcRequest),
+    StorageManager(StorageManagerCycleRequest),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -567,6 +604,7 @@ impl TaskRequest {
             TaskRequest::Dump(request) => request.shard_id,
             TaskRequest::Compact(request) => request.shard_id,
             TaskRequest::Gc(request) => request.shard_id,
+            TaskRequest::StorageManager(request) => request.shard_id,
         }
     }
 
@@ -577,9 +615,10 @@ impl TaskRequest {
             | TaskRequest::Unload(_)
             | TaskRequest::Execute(_)
             | TaskRequest::CheckedExecute(_) => TaskPriority::Foreground,
-            TaskRequest::Dump(_) | TaskRequest::Compact(_) | TaskRequest::Gc(_) => {
-                TaskPriority::Background
-            }
+            TaskRequest::Dump(_)
+            | TaskRequest::Compact(_)
+            | TaskRequest::Gc(_)
+            | TaskRequest::StorageManager(_) => TaskPriority::Background,
         }
     }
 }
@@ -710,6 +749,18 @@ impl RuntimeQueues {
                     .background
                     .iter()
                     .any(|task| matches!(task.request, TaskRequest::Dump(_)))
+            })
+            .unwrap_or(false)
+    }
+
+    fn has_pending_storage_manager(&self, shard_id: ShardId) -> bool {
+        self.by_shard
+            .get(&shard_id)
+            .map(|queue| {
+                queue
+                    .background
+                    .iter()
+                    .any(|task| matches!(task.request, TaskRequest::StorageManager(_)))
             })
             .unwrap_or(false)
     }
@@ -1086,6 +1137,18 @@ impl DataNodeRuntime {
         self.submit(TaskRequest::Gc(request), DataNodeTaskKind::Gc, controller)
     }
 
+    pub fn submit_storage_manager_cycle(
+        &self,
+        request: StorageManagerCycleRequest,
+        controller: RequestController,
+    ) -> DataNodeTaskStatus {
+        self.submit(
+            TaskRequest::StorageManager(request),
+            DataNodeTaskKind::StorageManager,
+            controller,
+        )
+    }
+
     pub fn job_status(&self, job_id: u64) -> Option<DataNodeTaskStatus> {
         self.inner
             .jobs
@@ -1307,6 +1370,39 @@ impl DataNodeRuntime {
         }
     }
 
+    pub fn start_storage_manager_scheduler(
+        &self,
+        interval: Duration,
+        request: StorageManagerCycleRequest,
+        controller: RequestController,
+    ) -> StorageManagerScheduler {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let scheduler_stop = Arc::clone(&stop);
+        let sleep_interval = interval.max(Duration::from_millis(1));
+        let handle = thread::spawn(move || {
+            while !scheduler_stop.load(Ordering::Relaxed) {
+                thread::sleep(sleep_interval);
+                if scheduler_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                let should_submit = !runtime
+                    .inner
+                    .queue
+                    .lock()
+                    .expect("runtime queue lock poisoned")
+                    .has_pending_storage_manager(request.shard_id);
+                if should_submit {
+                    runtime.submit_storage_manager_cycle(request.clone(), controller);
+                }
+            }
+        });
+        StorageManagerScheduler {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
     pub fn sweep_expired_records(&self) -> usize {
         let reports = self.inner.engine.sweep_all_expired_records();
         let removed = reports
@@ -1390,6 +1486,7 @@ impl DataNodeRuntime {
             compaction_runs: stats.compaction_runs,
             gc_runs: stats.gc_runs,
             storage_lifecycle_runs: stats.storage_lifecycle_runs,
+            storage_manager_runs: stats.storage_manager_runs,
         }
     }
 
@@ -2445,6 +2542,26 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
                 lifecycle_plan,
             })
         }
+        TaskRequest::StorageManager(request) => {
+            if cancellation.is_requested() {
+                return task_canceled_output(
+                    task,
+                    "data node storage manager canceled before prepare",
+                );
+            }
+            let report = inner.engine.run_storage_manager_cycle(request.clone());
+            let status = if report.completed && report.errors.is_empty() {
+                Status::ok()
+            } else {
+                Status::error("storage_manager_failed", report.errors.join(";"))
+            };
+            inner
+                .stats
+                .lock()
+                .expect("runtime stats lock poisoned")
+                .storage_manager_runs += 1;
+            DataNodeTaskOutput::StorageManager(StorageManagerResponse { status, report })
+        }
     }
 }
 
@@ -2510,6 +2627,12 @@ fn task_timeout_output(kind: DataNodeTaskKind) -> DataNodeTaskOutput {
             page_segments_retained_live_physical_bytes: 0,
             lifecycle_plan: None,
         }),
+        DataNodeTaskKind::StorageManager => {
+            DataNodeTaskOutput::StorageManager(StorageManagerResponse {
+                status,
+                report: StorageManagerCycleReport::default(),
+            })
+        }
     }
 }
 
@@ -2565,6 +2688,15 @@ fn task_canceled_output(task: &QueuedTask, message: &str) -> DataNodeTaskOutput 
             page_segments_retained_live_physical_bytes: 0,
             lifecycle_plan: None,
         }),
+        DataNodeTaskKind::StorageManager => {
+            DataNodeTaskOutput::StorageManager(StorageManagerResponse {
+                status,
+                report: StorageManagerCycleReport {
+                    shard_id,
+                    ..StorageManagerCycleReport::default()
+                },
+            })
+        }
     }
 }
 
@@ -2594,6 +2726,7 @@ fn task_output_status(output: &DataNodeTaskOutput) -> Status {
         DataNodeTaskOutput::Dump(response) => response.status.clone(),
         DataNodeTaskOutput::Compact(response) => response.status.clone(),
         DataNodeTaskOutput::Gc(response) => response.status.clone(),
+        DataNodeTaskOutput::StorageManager(response) => response.status.clone(),
     }
 }
 

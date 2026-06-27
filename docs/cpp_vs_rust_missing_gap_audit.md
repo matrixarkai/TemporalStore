@@ -2176,6 +2176,16 @@ planning:
     needed by a lagging follower, reports the follower/manifest block reason,
     and allows pruning again once the follower cursor advances past the latest
     retained generation.
+27. Closed the C++ `StorageManager` runtime-loop gap for the Rust-native
+    data-node path: `DataNodeRuntime` can now submit the full C++-ordered
+    StorageManager cycle as bounded background work, exposes async
+    `/storage_manager/cycle` and `/server/storage/manager/cycle` admin routes,
+    exposes a stoppable periodic StorageManager scheduler, de-duplicates
+    pending per-shard StorageManager jobs, preserves foreground priority, and
+    reports `storage_manager_runs` in runtime stats. Focused tests verify the
+    queued cycle executes prepare/reclaim/expire/evict/page-reclaim/index-GC/
+    compact/metrics stages and that the periodic scheduler does not overflow
+    the background queue.
 
 Eight storage audit passes completed against C++ storage code:
 
@@ -2187,15 +2197,17 @@ Eight storage audit passes completed against C++ storage code:
 5. `storage_dump_slots_per_round` -> Rust max dump slots per lifecycle round.
 6. `PageGc`/delayed destroy -> Rust live-ref page GC and delayed purge.
 7. `PageCompactor` -> Rust live-page compaction and stale-segment reports.
-8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, runtime
-   stats, Prometheus storage metrics, and local scale validation.
+8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, bounded
+   data-node background StorageManager scheduling, runtime stats, Prometheus
+   storage metrics, and local scale validation.
 
 Remaining explicit non-goals for this pass: legacy C++ wire surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache
 FFI. Remaining future parity depth is the larger C++ object/page allocator and
 stream-backend internals, but the Rust storage lifecycle now has concrete
-slot-scoped ownership summaries, dump/install validation, scheduler hooks,
-cursor-safe local shared-store oplog/checkpoint GC, and local cache warmup coverage.
+slot-scoped ownership summaries, dump/install validation, bounded data-node
+StorageManager worker scheduling, cursor-safe local shared-store oplog/checkpoint
+GC, and local cache warmup coverage.
 13. Remaining gap: Rust still does not have C++ binary/protobuf logs,
     production cleaner weights, or CacheLib/mtcache-equivalent SSD cache.
     Rust-native merged dump/load policy is now covered through the
