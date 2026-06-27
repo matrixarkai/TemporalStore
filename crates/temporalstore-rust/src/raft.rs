@@ -505,6 +505,8 @@ pub struct ByteRaftPeerPipelineState {
     pub snapshot_install_total_chunks: u64,
     pub snapshot_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
+    pub snapshot_send_elapsed_ms: u64,
+    pub snapshot_send_timeouts: u64,
     pub transfer_leader_target: bool,
     pub transfer_leader_requests: u64,
     pub transfer_leader_accepted: u64,
@@ -945,6 +947,9 @@ pub struct RaftPeerPipelineRuntimeState {
     pub snapshot_install_total_chunks: u64,
     pub snapshot_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
+    pub snapshot_send_started_ms: Option<u64>,
+    pub snapshot_send_elapsed_ms: u64,
+    pub snapshot_send_timeouts: u64,
     pub transfer_leader_target: bool,
     pub transfer_leader_requests: u64,
     pub transfer_leader_accepted: u64,
@@ -6390,6 +6395,7 @@ impl RaftCluster {
         let shard_id = inner.shard_id;
         let term = leader.current_term;
         let leader_id = inner.leader_id;
+        let logical_time_ms = inner.logical_time_ms;
         {
             let target = inner
                 .nodes
@@ -6407,6 +6413,8 @@ impl RaftCluster {
             }
             target.pipeline_state.snapshot_sending = true;
             target.pipeline_state.snapshot_installing = true;
+            target.pipeline_state.snapshot_send_started_ms = Some(logical_time_ms);
+            target.pipeline_state.snapshot_send_elapsed_ms = 0;
             target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
             target.pipeline_state.snapshot_send_attempts = target
                 .pipeline_state
@@ -6519,6 +6527,8 @@ impl RaftCluster {
             if let Some(node) = inner.nodes.get_mut(&request.target_id) {
                 node.pipeline_state.snapshot_installing = false;
                 node.pipeline_state.snapshot_sending = false;
+                node.pipeline_state.snapshot_send_started_ms = None;
+                node.pipeline_state.snapshot_send_elapsed_ms = 0;
                 node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
                 node.pipeline_state.snapshot_install_received_chunks = 1;
                 node.pipeline_state.snapshot_install_total_chunks = 1;
@@ -6574,6 +6584,8 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(target_id))?;
         node.pipeline_state.snapshot_sending = false;
         node.pipeline_state.snapshot_installing = false;
+        node.pipeline_state.snapshot_send_started_ms = None;
+        node.pipeline_state.snapshot_send_elapsed_ms = 0;
         if success {
             node.pipeline_state.snapshot_send_completed = node
                 .pipeline_state
@@ -6601,6 +6613,7 @@ impl RaftCluster {
         let leader_term = leader.current_term;
         let leader_id = inner.leader_id;
         let max_inflights_replicate = inner.config.max_inflights_replicate;
+        let logical_time_ms = inner.logical_time_ms;
         let chunk_size = max_entries_per_chunk.max(1);
         let chunk_count = snapshot.entries.len().max(1).div_ceil(chunk_size);
         let snapshot_id = format!(
@@ -6624,6 +6637,8 @@ impl RaftCluster {
             }
             target.pipeline_state.snapshot_sending = true;
             target.pipeline_state.snapshot_installing = true;
+            target.pipeline_state.snapshot_send_started_ms = Some(logical_time_ms);
+            target.pipeline_state.snapshot_send_elapsed_ms = 0;
             target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
             target.pipeline_state.snapshot_send_attempts = target
                 .pipeline_state
@@ -7275,6 +7290,7 @@ impl RaftCluster {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         inner.logical_time_ms = inner.logical_time_ms.saturating_add(elapsed_ms);
         inner.refresh_offline_timeout_states();
+        inner.refresh_snapshot_send_timeouts();
         let _ = inner.persist_configured_wal();
     }
 
@@ -7614,6 +7630,41 @@ impl RaftClusterInner {
                     .saturating_add(1);
             }
             node.pipeline_state.offline_timeout_reached = reached;
+        }
+    }
+
+    fn refresh_snapshot_send_timeouts(&mut self) {
+        if self.config.send_snapshot_timeout_ms == 0 {
+            return;
+        }
+        for node in self.nodes.values_mut() {
+            if !node.pipeline_state.snapshot_sending {
+                node.pipeline_state.snapshot_send_started_ms = None;
+                node.pipeline_state.snapshot_send_elapsed_ms = 0;
+                continue;
+            }
+            let started_ms = node
+                .pipeline_state
+                .snapshot_send_started_ms
+                .get_or_insert(self.logical_time_ms);
+            node.pipeline_state.snapshot_send_elapsed_ms =
+                self.logical_time_ms.saturating_sub(*started_ms);
+            if node.pipeline_state.snapshot_send_elapsed_ms >= self.config.send_snapshot_timeout_ms
+            {
+                node.pipeline_state.snapshot_sending = false;
+                node.pipeline_state.snapshot_installing = false;
+                node.pipeline_state.snapshot_send_started_ms = None;
+                node.pipeline_state.snapshot_send_timeouts =
+                    node.pipeline_state.snapshot_send_timeouts.saturating_add(1);
+                node.pipeline_state.snapshot_retry_count =
+                    node.pipeline_state.snapshot_retry_count.saturating_add(1);
+                node.pipeline_state.snapshot_send_failed =
+                    node.pipeline_state.snapshot_send_failed.saturating_add(1);
+                node.pipeline_state.snapshot_backpressure_rejections = node
+                    .pipeline_state
+                    .snapshot_backpressure_rejections
+                    .saturating_add(1);
+            }
         }
     }
 
@@ -8247,6 +8298,8 @@ impl RaftClusterInner {
                     snapshot_install_total_chunks: pipeline.snapshot_install_total_chunks,
                     snapshot_retry_count: pipeline.snapshot_retry_count,
                     snapshot_backpressure_rejections: pipeline.snapshot_backpressure_rejections,
+                    snapshot_send_elapsed_ms: pipeline.snapshot_send_elapsed_ms,
+                    snapshot_send_timeouts: pipeline.snapshot_send_timeouts,
                     transfer_leader_target: pipeline.transfer_leader_target,
                     transfer_leader_requests: pipeline.transfer_leader_requests,
                     transfer_leader_accepted: pipeline.transfer_leader_accepted,
@@ -9538,6 +9591,10 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str(
         "# TYPE temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections counter\n",
     );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms Snapshot sender elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_timeouts Snapshot sender timeout count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_timeouts counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_requests Leader-transfer requests per peer.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_requests counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_accepted Leader-transfer requests accepted per peer.\n");
@@ -9717,6 +9774,18 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
             labels,
             peer.snapshot_backpressure_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms",
+            labels,
+            peer.snapshot_send_elapsed_ms,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_send_timeouts",
+            labels,
+            peer.snapshot_send_timeouts,
         );
         push_raft_metric(
             out,
