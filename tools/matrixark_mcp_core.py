@@ -154,17 +154,13 @@ def matrixark_production_profile_enabled() -> bool:
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
     if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
         return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
-    if matrixark_production_profile_enabled() and backend_label != "local":
-        return False
-    return True
+    return backend_label == "local"
 
 
 def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
     if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
-    if matrixark_production_profile_enabled() and backend_label != "local":
-        return True
-    return False
+    return backend_label != "local"
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,

@@ -718,9 +718,7 @@ def production_profile_enabled() -> bool:
 def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
     if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
         return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
-    if production_profile_enabled() and backend_label != "local":
-        return False
-    return True
+    return backend_label == "local"
 
 
 def backend_ready_required(backend: str) -> bool:
@@ -732,7 +730,7 @@ def backend_ready_required(backend: str) -> bool:
 def native_context_pack_required(backend: str) -> bool:
     if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
         return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
-    return production_profile_enabled() and backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
+    return backend in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}
 
 
 def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
@@ -740,7 +738,7 @@ def native_candidate_prefilter_required_for_backend(backend: str) -> bool:
         return False
     if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
         return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
-    return production_profile_enabled()
+    return True
 
 
 def default_mcp_backend() -> str:

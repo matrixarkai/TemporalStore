@@ -1,5 +1,5 @@
 use std::collections::hash_map::DefaultHasher;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::env;
 use std::hash::{Hash, Hasher};
 use std::io::{self, BufRead, Read, Write};
@@ -15,7 +15,7 @@ const DEFAULT_SHARD_ID: u64 = 1;
 const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
 const DIRECT_RECORD_LOG_SHARD_SIZE: usize = 256;
 
-#[derive(Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 struct RecordLogRequest {
     op: String,
     #[serde(default)]
@@ -112,6 +112,7 @@ struct RecordLogOutput {
     raw_storage_backend: String,
     prometheus: String,
     cached_clients: Option<usize>,
+    extra: BTreeMap<String, Value>,
 }
 
 fn main() {
@@ -601,6 +602,667 @@ fn unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
+
+fn required_option(value: Option<String>, name: &str) -> Result<String, String> {
+    value
+        .filter(|item| !item.is_empty())
+        .ok_or_else(|| format!("missing {name}"))
+}
+
+fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
+    let response = engine.execute_durable(ExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        command: Command::HashGetAll { key },
+    });
+    if !response.status.ok {
+        return Err(format!("{}: {}", response.status.code, response.status.message));
+    }
+    match response.response {
+        CommandResponse::HashEntries { entries } => {
+            let mut decoded = BTreeMap::new();
+            for (field, value) in entries {
+                let value = String::from_utf8(value)
+                    .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+                decoded.insert(field, value);
+            }
+            Ok(decoded)
+        }
+        other => Err(format!("unexpected response for hgetall: {other:?}")),
+    }
+}
+
+fn json_output(value: Value, root: PathBuf) -> Result<RecordLogOutput, String> {
+    let mut extra = BTreeMap::new();
+    if let Some(object) = value.as_object() {
+        for (key, item) in object {
+            extra.insert(key.clone(), item.clone());
+        }
+    } else {
+        extra.insert("value_json".to_string(), value.clone());
+    }
+    let count = extra
+        .get("count")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .or_else(|| {
+            extra
+                .get("records")
+                .and_then(Value::as_array)
+                .map(|items| items.len())
+        });
+    Ok(RecordLogOutput {
+        value: String::new(),
+        entries: BTreeMap::new(),
+        records: Vec::new(),
+        count,
+        root,
+        status: String::new(),
+        mode: String::new(),
+        prometheus: String::new(),
+        cached_clients: None,
+        extra,
+    })
+}
+
+fn json_field<'a>(value: &'a Value, path: &[&str]) -> Option<&'a Value> {
+    let mut current = value;
+    for part in path {
+        current = current.get(*part)?;
+    }
+    Some(current)
+}
+
+fn record_scope_value<'a>(record: &'a Value) -> Option<&'a Value> {
+    if let Some(scope) = record.get("access_scope").filter(|value| value.is_object()) {
+        return Some(scope);
+    }
+    if let Some(scope) =
+        json_field(record, &["metadata", "access_scope"]).filter(|value| value.is_object())
+    {
+        return Some(scope);
+    }
+    if let Some(scope) = record.get("scope").filter(|value| value.is_object()) {
+        return Some(scope);
+    }
+    json_field(record, &["envelope", "scope"]).filter(|value| value.is_object())
+}
+
+fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
+    let Some(query) = query_scope.filter(|value| value.is_object()) else {
+        return true;
+    };
+    let Some(record_scope) = record_scope_value(record) else {
+        return true;
+    };
+    for key in [
+        "scope_key",
+        "account_id",
+        "tenant_id",
+        "user_id",
+        "team",
+        "project",
+    ] {
+        let Some(query_value) = query.get(key) else {
+            continue;
+        };
+        if query_value.is_null() || query_value.as_str() == Some("") {
+            continue;
+        }
+        if record_scope.get(key) != Some(query_value) && record.get(key) != Some(query_value) {
+            return false;
+        }
+    }
+    if let Some(query_session) = query.get("session_id").filter(|value| !value.is_null()) {
+        if query_session.as_str() != Some("")
+            && record_scope.get("session_id") != Some(query_session)
+            && record.get("session_id") != Some(query_session)
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn record_ref_hash(record: &Value) -> Option<String> {
+    for field in ["ref_hash", "chunk_hash", "section_hash", "skill_hash"] {
+        if let Some(value) = record.get(field) {
+            if let Some(number) = value.as_u64() {
+                return Some(number.to_string());
+            }
+            if let Some(text) = value.as_str().filter(|text| !text.is_empty()) {
+                return Some(text.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn record_node_hash(record: &Value) -> Option<u64> {
+    record.get("node_hash").and_then(Value::as_u64)
+}
+
+fn record_index_terms(
+    record: &Value,
+    index_terms_by_batch: &HashMap<String, HashSet<String>>,
+    index_terms_by_node: &HashMap<u64, HashSet<String>>,
+    index_terms_by_ref: &HashMap<String, HashSet<String>>,
+) -> HashSet<String> {
+    let mut terms = HashSet::new();
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
+        if let Some(values) = index_terms_by_batch.get(&batch.to_string()) {
+            terms.extend(values.iter().cloned());
+        }
+    }
+    if let Some(node_hash) = record_node_hash(record) {
+        if let Some(values) = index_terms_by_node.get(&node_hash) {
+            terms.extend(values.iter().cloned());
+        }
+    }
+    if let Some(ref_hash) = record_ref_hash(record) {
+        if let Some(values) = index_terms_by_ref.get(&ref_hash) {
+            terms.extend(values.iter().cloned());
+        }
+    }
+    match record_type {
+        "context_event" => {
+            terms.insert("source_type:message".to_string());
+            if let Some(event_type) =
+                json_field(record, &["internal_extraction", "event_type"]).and_then(Value::as_str)
+            {
+                if !event_type.is_empty() {
+                    terms.insert(format!("event_type:{event_type}"));
+                }
+            }
+        }
+        "context_entity" => {
+            if let Some(entity_type) = record.get("entity_type").and_then(Value::as_str) {
+                if !entity_type.is_empty() {
+                    terms.insert(format!("entity_type:{entity_type}"));
+                }
+            }
+        }
+        "resource_chunk" => {
+            terms.insert("source_type:resource".to_string());
+            if let Some(resource_type) = record.get("resource_type").and_then(Value::as_str) {
+                if !resource_type.is_empty() {
+                    terms.insert(format!("resource_type:{resource_type}"));
+                }
+            }
+        }
+        "skill_manifest" | "skill_section" => {
+            terms.insert("source_type:skill".to_string());
+            terms.insert("resource_type:skill".to_string());
+            if record_type == "skill_manifest" {
+                if let Some(name) = record.get("name").and_then(Value::as_str) {
+                    if !name.is_empty() {
+                        terms.insert(format!("skill_name:{}", name.to_ascii_lowercase()));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    terms
+}
+
+fn passes_secondary_groups(terms: &HashSet<String>, groups: &[Vec<String>]) -> bool {
+    if groups.is_empty() {
+        return true;
+    }
+    let mode_any = groups.len() > 1;
+    if mode_any {
+        groups
+            .iter()
+            .any(|group| group.iter().any(|term| terms.contains(term)))
+    } else {
+        groups
+            .iter()
+            .all(|group| group.iter().any(|term| terms.contains(term)))
+    }
+}
+
+fn decode_matrixark_payload(value: &str) -> Vec<Value> {
+    let Ok(decoded) = serde_json::from_str::<Value>(value) else {
+        return Vec::new();
+    };
+    if let Some(bundle) = decoded.get("record_bundle").and_then(Value::as_array) {
+        return bundle
+            .iter()
+            .filter(|item| item.is_object())
+            .cloned()
+            .collect();
+    }
+    if decoded.is_object() {
+        vec![decoded]
+    } else {
+        Vec::new()
+    }
+}
+
+fn scan_matrixark_candidates(engine: &TemporalEngine, command: &RecordLogRequest) -> Result<Value, String> {
+    let count_key = required_option(command.count_key.clone(), "count_key")?;
+    let record_hash_key = required_option(command.record_hash_key.clone(), "record_hash_key")?;
+    let shard_size = command.shard_size.unwrap_or(1024).max(1);
+    let count_text = read_bytes(engine, Command::StringGet { key: count_key.clone() })?;
+    let count = count_text.parse::<u64>().unwrap_or(0);
+    let allowed_types: HashSet<String> = command
+        .record_types
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let selected_nodes: HashSet<u64> = command
+        .selected_node_hashes
+        .clone()
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
+    let secondary_groups = command.secondary_index_groups.clone().unwrap_or_default();
+    let max_shard = if count == 0 {
+        0
+    } else {
+        (count - 1) / shard_size
+    };
+    let mut scanned_records = 0_u64;
+    let mut dropped_by_type = 0_u64;
+    let mut dropped_by_scope = 0_u64;
+    let mut selected_node_dropped = 0_u64;
+    let mut records = Vec::new();
+    for shard in 0..=max_shard {
+        let key = format!("{}:{:06}", record_hash_key, shard);
+        for (_field, value) in hgetall_map(engine, key.clone())? {
+            for record in decode_matrixark_payload(&value) {
+                scanned_records += 1;
+                let record_type = record
+                    .get("record_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
+                    dropped_by_type += 1;
+                    continue;
+                }
+                if !scope_matches_record(&record, command.scope.as_ref()) {
+                    dropped_by_scope += 1;
+                    continue;
+                }
+                if !selected_nodes.is_empty() {
+                    let keep_index = matches!(record_type, "context_index" | "context_embedding");
+                    let keep_node = record_node_hash(&record)
+                        .map(|node| selected_nodes.contains(&node))
+                        .unwrap_or(false);
+                    if !keep_index && !keep_node {
+                        selected_node_dropped += 1;
+                        continue;
+                    }
+                }
+                records.push(record);
+            }
+        }
+    }
+
+    let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
+    let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
+    let mut index_terms_by_ref: HashMap<String, HashSet<String>> = HashMap::new();
+    for record in &records {
+        if record.get("record_type").and_then(Value::as_str) != Some("context_index") {
+            continue;
+        }
+        let Some(index_name) = record
+            .get("index_name")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        else {
+            continue;
+        };
+        if let Some(batch) = record.get("batch_id_hash").and_then(Value::as_u64) {
+            index_terms_by_batch
+                .entry(batch.to_string())
+                .or_default()
+                .insert(index_name.to_string());
+        }
+        if let Some(ref_hash) = record_ref_hash(record) {
+            index_terms_by_ref
+                .entry(ref_hash)
+                .or_default()
+                .insert(index_name.to_string());
+        } else if let Some(node_hash) = record_node_hash(record) {
+            index_terms_by_node
+                .entry(node_hash)
+                .or_default()
+                .insert(index_name.to_string());
+        }
+    }
+
+    let mut secondary_dropped = 0_u64;
+    let mut secondary_matched = 0_u64;
+    let filtered = if secondary_groups.is_empty() {
+        records
+    } else {
+        records
+            .into_iter()
+            .filter(|record| {
+                let terms = record_index_terms(
+                    record,
+                    &index_terms_by_batch,
+                    &index_terms_by_node,
+                    &index_terms_by_ref,
+                );
+                if !terms.is_empty() && !passes_secondary_groups(&terms, &secondary_groups) {
+                    secondary_dropped += 1;
+                    return false;
+                }
+                if !terms.is_empty() {
+                    secondary_matched += 1;
+                }
+                true
+            })
+            .collect::<Vec<_>>()
+    };
+
+    Ok(json!({
+        "ok": true,
+        "count": filtered.len(),
+        "records": filtered,
+        "native_candidate_prefilter": true,
+        "scan_stats": {
+            "execution_mode": "rust_proxy_native_candidate_prefilter",
+            "native_prefix_scan": true,
+            "native_secondary_index_prefilter": !secondary_groups.is_empty(),
+            "scanned_records": scanned_records,
+            "returned_records": filtered.len(),
+            "dropped_by_type": dropped_by_type,
+            "dropped_by_scope": dropped_by_scope,
+            "selected_node_dropped_candidate_count": selected_node_dropped,
+            "secondary_index_groups_supplied": secondary_groups.len(),
+            "secondary_index_matched_candidate_count": secondary_matched,
+            "secondary_index_dropped_candidate_count": secondary_dropped,
+            "native_pack_assembly": false,
+            "pack_assembly_location": "python_reference_packer",
+            "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+        }
+    }))
+}
+
+fn candidate_text(record: &Value) -> String {
+    for field in ["text", "content", "summary_text", "state", "observation"] {
+        if let Some(text) = record.get(field).and_then(Value::as_str) {
+            if !text.is_empty() {
+                return text.to_string();
+            }
+        }
+    }
+    if let Some(text) =
+        json_field(record, &["internal_extraction", "observation"]).and_then(Value::as_str)
+    {
+        if !text.is_empty() {
+            return text.to_string();
+        }
+    }
+    String::new()
+}
+
+fn token_estimate(text: &str) -> u64 {
+    let words = text.split_whitespace().count() as u64;
+    words.max((text.len() as u64 + 3) / 4).max(1)
+}
+
+fn sparse_query_score(query_terms: &HashSet<String>, text: &str) -> f64 {
+    if query_terms.is_empty() || text.is_empty() {
+        return 0.0;
+    }
+    let lower = text.to_ascii_lowercase();
+    let hits = query_terms
+        .iter()
+        .filter(|term| lower.contains(term.as_str()))
+        .count() as f64;
+    (hits / query_terms.len() as f64).clamp(0.0, 1.0)
+}
+
+fn context_class_name(record: &Value) -> String {
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if record_type == "context_event" {
+        let classification = record.get("classification").and_then(Value::as_str).unwrap_or("");
+        let event_type = record.get("event_type").and_then(Value::as_str).unwrap_or("");
+        if classification == "resource_fact" || event_type.starts_with("resource_") {
+            return "resource_fact".to_string();
+        }
+        return "event".to_string();
+    }
+    match record_type {
+        "context_entity" => "entity".to_string(),
+        "context_segment" => "segment".to_string(),
+        "context_summary" => "summary".to_string(),
+        "context_compression_event" => "compression".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
+    let ref_type = context_class_name(record);
+    let text = candidate_text(record);
+    json!({
+        "ref_type": ref_type,
+        "ref_hash": record_ref_hash(record).unwrap_or_else(|| record.get("record_id").and_then(Value::as_str).unwrap_or("").to_string()),
+        "node_hash": record_node_hash(record),
+        "node_path": record.get("node_path").cloned().unwrap_or_else(|| json!([])),
+        "text": text,
+        "token_estimate": token_estimate(&candidate_text(record)),
+        "score": (score * 1000000.0).round() / 1000000.0,
+        "selection_reason": reason,
+        "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
+    })
+}
+
+fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequest) -> Result<Value, String> {
+    let request = command.record.clone().unwrap_or_else(|| json!({}));
+    let query = request
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let query_terms: HashSet<String> = query
+        .to_ascii_lowercase()
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|part| part.len() > 2)
+        .map(str::to_string)
+        .collect();
+    let remote_budget = json_field(&request, &["local_budget", "remote_budget_tokens"])
+        .and_then(Value::as_u64)
+        .or_else(|| request.get("max_context_tokens").and_then(Value::as_u64))
+        .unwrap_or(4000);
+    let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
+        .and_then(Value::as_u64)
+        .unwrap_or(48)
+        .max(1);
+    let mut scan_command = command.clone();
+    scan_command.scope = request
+        .get("scope")
+        .cloned()
+        .or_else(|| command.scope.clone());
+    scan_command.secondary_index_groups = request
+        .get("secondary_index_groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .map(|group| {
+                    group
+                        .as_array()
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(Value::as_str)
+                                .map(str::to_string)
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                })
+                .collect()
+        })
+        .or_else(|| command.secondary_index_groups.clone());
+    if scan_command
+        .record_types
+        .as_ref()
+        .map(Vec::is_empty)
+        .unwrap_or(true)
+    {
+        scan_command.record_types = Some(vec![
+            "context_compression_event".to_string(),
+            "context_entity".to_string(),
+            "context_event".to_string(),
+            "context_segment".to_string(),
+            "context_summary".to_string(),
+            "resource_chunk".to_string(),
+            "skill_section".to_string(),
+            "context_index".to_string(),
+        ]);
+    }
+    let scan = scan_matrixark_candidates(engine, &scan_command)?;
+    let records = scan
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut scored: Vec<(f64, Value)> = records
+        .into_iter()
+        .filter(|record| {
+            matches!(
+                record
+                    .get("record_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or(""),
+                "context_compression_event"
+                    | "context_entity"
+                    | "context_event"
+                    | "context_segment"
+                    | "context_summary"
+                    | "resource_chunk"
+                    | "skill_section"
+            ) && !candidate_text(record).is_empty()
+        })
+        .map(|record| {
+            let text = candidate_text(&record);
+            let mut score = sparse_query_score(&query_terms, &text);
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_entity")
+            ) {
+                score += 0.08;
+            }
+            if matches!(
+                record.get("record_type").and_then(Value::as_str),
+                Some("context_compression_event")
+            ) {
+                score += 0.06;
+            }
+            (score, record)
+        })
+        .collect();
+    scored.sort_by(|left, right| {
+        right
+            .0
+            .partial_cmp(&left.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let mut selected = Vec::new();
+    let mut selected_counts: HashMap<String, u64> = HashMap::new();
+    let mut selected_nodes: HashSet<u64> = HashSet::new();
+    let mut dropped_over_budget = 0_u64;
+    let mut used_tokens = 0_u64;
+    for (score, record) in scored {
+        if selected.len() as u64 >= max_refs {
+            break;
+        }
+        let text = candidate_text(&record);
+        let tokens = token_estimate(&text);
+        if used_tokens + tokens > remote_budget {
+            dropped_over_budget += 1;
+            continue;
+        }
+        used_tokens += tokens;
+        *selected_counts.entry(context_class_name(&record)).or_default() += 1;
+        if let Some(node_hash) = record_node_hash(&record) {
+            selected_nodes.insert(node_hash);
+        }
+        selected.push(pack_ref_from_record(
+            &record,
+            score,
+            "native_rust_proxy_score_pack",
+        ));
+    }
+    let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
+    let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
+    if let Some(stats) = scan_stats.as_object_mut() {
+        stats.insert("native_pack_assembly".to_string(), json!(true));
+        stats.insert("pack_assembly_location".to_string(), json!("rust_proxy_native"));
+        stats.insert("next_native_gap".to_string(), json!(""));
+    }
+    let pack = json!({
+        "context_pack_id": context_pack_id,
+        "query": query,
+        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "selected_ref_counts": selected_counts,
+        "remote_context_refs": selected,
+        "selected_refs": selected,
+        "dropped_refs": {
+            "over_budget": dropped_over_budget,
+            "reason_counts": {"over_budget": dropped_over_budget}
+        },
+        "used_context_tokens": used_tokens,
+        "used_remote_context_tokens": used_tokens,
+        "remote_context_budget_tokens": remote_budget,
+        "requested_max_context_tokens": request.get("max_context_tokens").cloned().unwrap_or_else(|| json!(remote_budget)),
+        "packing_policy": "native_rust_proxy_question_type_aware",
+        "context_pack_assembly": "native_rust_proxy",
+        "context_sources_order": ["entities", "events", "segments", "resources", "skills", "summaries"],
+        "recall_policy": {
+            "native_context_pack": {
+                "enabled": true,
+                "backend": "rust_proxy",
+                "scan_filter_score_pack": true
+            },
+            "native_response_contract": {
+                "raw_records_returned_to_python": false,
+                "python_hot_path_records": 0,
+                "python_role": "dispatch_request_receive_context_pack",
+                "backend_role": "scan_filter_score_pack"
+            },
+            "scan_stats": scan_stats,
+            "tree_traversal": {
+                "enabled": true,
+                "native_backend": true,
+                "fallback_to_flat": false,
+                "selected_node_count": selected_nodes.len() as u64,
+                "selected_leaf_count": selected_nodes.len() as u64,
+                "summary_embeddings": ["node_l0", "node_l1"]
+            },
+            "secondary_index_filter": {
+                "enabled": true,
+                "native_backend": true,
+                "applied_before_embedding_scoring": true,
+                "matched_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_matched_candidate_count")).cloned().unwrap_or_else(|| json!(0)),
+                "dropped_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_dropped_candidate_count")).cloned().unwrap_or_else(|| json!(0))
+            }
+        },
+        "quality_warnings": []
+    });
+    Ok(json!({
+        "ok": true,
+        "native_pack_assembly": true,
+        "raw_records_returned": false,
+        "python_hot_path_records": 0,
+        "context_pack": pack,
+        "scan_stats": scan_stats
+    }))
+}
+
 fn execute_record_log_request(
     engine: &TemporalEngine,
     request: RecordLogRequest,
@@ -619,6 +1281,7 @@ fn execute_record_log_request(
             raw_storage_backend: String::new(),
             prometheus: String::new(),
             cached_clients: None,
+            extra: BTreeMap::new(),
         },
         "put_string" => {
             execute_empty(
@@ -749,6 +1412,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         "put_string" | "get_string" | "delete" | "del" | "hgetall" | "scan_hash" => {
             require_non_empty("key", &request.key)
         }
+        "matrixark_scan_candidates" | "matrixark_retrieve_context_pack" => {
+            require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
+            require_non_empty("record_hash_key", request.record_hash_key.as_deref().unwrap_or(""))
+        }
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;
             require_non_empty("field", &request.field)
@@ -809,6 +1476,7 @@ fn empty_output(root: PathBuf) -> RecordLogOutput {
         raw_storage_backend: String::new(),
         prometheus: String::new(),
         cached_clients: None,
+        extra: BTreeMap::new(),
     }
 }
 
@@ -825,6 +1493,7 @@ fn value_output(value: String, root: PathBuf) -> RecordLogOutput {
         raw_storage_backend: String::new(),
         prometheus: String::new(),
         cached_clients: None,
+        extra: BTreeMap::new(),
     }
 }
 
@@ -864,6 +1533,7 @@ fn hash_entries_output(
                 raw_storage_backend: String::new(),
                 prometheus: String::new(),
                 cached_clients: None,
+                extra: BTreeMap::new(),
             })
         }
         other => Err(format!("unexpected response for hgetall: {other:?}")),
@@ -1226,7 +1896,9 @@ fn _request_shape_for_docs() -> serde_json::Value {
             "hget",
             "hdel",
             "hgetall",
-            "scan_hash"
+            "scan_hash",
+            "matrixark_scan_candidates",
+            "matrixark_retrieve_context_pack"
         ]
     })
 }

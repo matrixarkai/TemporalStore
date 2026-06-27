@@ -3922,7 +3922,7 @@ class MatrixArkLocalAdapter:
         if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
             return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
         backend_label = str(getattr(self, "_backend_label", lambda: "local")())
-        return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"} and backend_label != "local"
+        return backend_label != "local"
 
     def native_context_pack(self, request: Json) -> Json | None:
         """Return a backend-assembled ContextPack when the native backend supports it.

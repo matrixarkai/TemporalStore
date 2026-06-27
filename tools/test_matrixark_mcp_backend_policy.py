@@ -1319,7 +1319,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
     def test_native_context_pack_default_policy(self) -> None:
-        mcp.MATRIXARK_MCP_PROFILE = "benchmark"
+        mcp.MATRIXARK_MCP_PROFILE = "dev"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
         self.assertTrue(mcp.native_context_pack_required("temporalstore-rust"))
         self.assertTrue(mcp.native_context_pack_required("temporalstore-rust-direct"))
@@ -1334,7 +1334,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def test_python_hot_cache_default_policy(self) -> None:
         mcp.MATRIXARK_ALLOW_PYTHON_HOT_CACHE = ""
         mcp.MATRIXARK_MCP_PROFILE = "dev"
-        self.assertTrue(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
+        self.assertFalse(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
+        self.assertFalse(mcp.python_hot_cache_allowed(backend_label="temporalstore-rust"))
+        self.assertTrue(mcp.python_hot_cache_allowed(backend_label="local"))
         mcp.MATRIXARK_MCP_PROFILE = "production"
         self.assertFalse(mcp.python_hot_cache_allowed(backend_label="temporalstore-direct"))
         self.assertTrue(mcp.python_hot_cache_allowed(backend_label="local"))
@@ -1343,7 +1345,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
     def test_native_candidate_prefilter_default_policy(self) -> None:
         mcp.MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = ""
-        mcp.MATRIXARK_MCP_PROFILE = "benchmark"
+        mcp.MATRIXARK_MCP_PROFILE = "dev"
         self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust"))
         self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-rust-direct"))
         self.assertTrue(mcp.native_candidate_prefilter_required_for_backend("temporalstore-direct"))
@@ -2212,6 +2214,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
 
     def test_direct_retrieval_records_prefilters_scope_type_and_secondary_indexes(self) -> None:
+        policy_globals = mcp.MatrixArkTemporalStoreDirectAdapter._native_candidate_scan.__globals__["native_candidate_prefilter_required"].__globals__
+        old_core_prefilter = policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"]
+        policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"] = "0"
+        self.addCleanup(lambda: policy_globals.__setitem__("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", old_core_prefilter))
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
         adapter._records_cache = []
         adapter._backend_label = lambda: "temporalstore-direct"
