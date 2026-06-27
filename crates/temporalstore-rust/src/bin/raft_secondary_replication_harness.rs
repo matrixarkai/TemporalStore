@@ -1106,7 +1106,7 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
 fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
     let mut last_status = None;
     let deadline = Instant::now() + Duration::from_secs(60);
-    for _ in 0..8 {
+    for _ in 0..30 {
         let response: AdminLivenessResponse = loop {
             match post_json_with_options(
                 &leader.addr,
@@ -1137,7 +1137,15 @@ fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
                 .message
                 .contains("Resource temporarily unavailable")
             || response.status.message.contains("timed out")
-            || response.status.message.contains("connection refused");
+            || response.status.message.contains("connection refused")
+            || response
+                .status
+                .message
+                .contains("snapshot sender backpressure")
+            || response
+                .status
+                .message
+                .contains("snapshot transfer already in progress");
         last_status = Some(response.status);
         if !(stale_term || transient_transport) {
             break;

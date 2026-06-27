@@ -6546,6 +6546,31 @@ impl RaftCluster {
         }
     }
 
+    pub fn finish_snapshot_send(
+        &self,
+        target_id: RaftNodeId,
+        success: bool,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let node = inner
+            .nodes
+            .get_mut(&target_id)
+            .ok_or(RaftError::NodeNotFound(target_id))?;
+        node.pipeline_state.snapshot_sending = false;
+        node.pipeline_state.snapshot_installing = false;
+        if success {
+            node.pipeline_state.snapshot_send_completed = node
+                .pipeline_state
+                .snapshot_send_completed
+                .saturating_add(1);
+        } else {
+            node.pipeline_state.snapshot_send_failed =
+                node.pipeline_state.snapshot_send_failed.saturating_add(1);
+        }
+        let _ = node;
+        inner.persist_configured_wal()
+    }
+
     pub fn build_install_snapshot_chunks(
         &self,
         target_id: RaftNodeId,
