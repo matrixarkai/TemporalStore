@@ -1233,10 +1233,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.validate_mcp_backend_policy(self._args("temporalstore-rust"))
         mcp.validate_mcp_backend_policy(self._args("temporalstore-rust-direct"))
 
-    def test_debug_override_allows_local_storage(self) -> None:
+    def test_debug_override_does_not_restore_jsonl_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "benchmark"
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = True
-        mcp.validate_mcp_backend_policy(self._args("local"))
+        with self.assertRaises(mcp.MatrixArkError):
+            mcp.validate_mcp_backend_policy(self._args("local"))
 
     def test_backend_readiness_default_policy(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "benchmark"

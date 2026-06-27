@@ -182,8 +182,7 @@ def parse_args() -> argparse.Namespace:
         or os.environ.get("CLAUDE_CODE_HOOK_EVENT")
         or "UserPromptSubmit",
     )
-    parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_AGENT_EVENT_LOG", "/tmp/matrixark-agent-hook.jsonl")))
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct"], default=default_hook_backend() if default_hook_backend() != "temporalstore-rust" else "temporalstore-direct")
+    parser.add_argument("--backend", choices=["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"], default=default_hook_backend())
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_agent"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_agent"))

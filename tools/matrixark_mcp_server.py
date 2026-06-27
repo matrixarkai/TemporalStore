@@ -717,16 +717,14 @@ def default_mcp_backend() -> str:
     configured = os.environ.get("MATRIXARK_MCP_BACKEND")
     if configured:
         return configured
-    return "temporalstore-direct" if production_profile_enabled() else "local"
+    return "temporalstore-direct"
 
 
 def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
-    local_backends = {"local", "temporalstore-local"}
-    if production_profile_enabled() and args.backend in local_backends and not MATRIXARK_ALLOW_LOCAL_BACKEND:
+    if args.backend not in {"temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"}:
         raise MatrixArkError(
-            "MatrixArk MCP production/benchmark profile requires --backend temporalstore-direct, "
-            "--backend temporalstore-rust, or --backend temporalstore-rust-direct. "
-            "Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+            "MatrixArk MCP no longer supports local JSONL serving backends; "
+            "use --backend temporalstore-direct, --backend temporalstore-rust, or --backend temporalstore-rust-direct."
         )
 
 
