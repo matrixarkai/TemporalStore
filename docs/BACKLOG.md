@@ -757,6 +757,24 @@ Completed since the last backlog update:
   - STRING and HASH smoke already passed.
   - FeatureQuery through proxy returned zero points before and needs debugging.
 
+## P1 MatrixArk Structured Retrieval Plan
+
+- Keep query understanding ahead of embedding scoring. Status: implemented in
+  Python MatrixArk retrieval.
+  - Produce `query_type`, structured secondary filters, temporal window, and
+    execution order in `ContextPack.recall_policy.query_plan`.
+  - Enforce scope before candidate eligibility.
+  - Use `ContextIndex` hits as node prefilter/hints before L0/L1 traversal.
+  - Verify leaf candidates against secondary filters before embedding scoring.
+
+- Push the same plan into native C++/Rust retrieval. Status: backlog.
+  - Scope + secondary-index filters should prune prefix/index scans before
+    Python sees records.
+  - Keep fallback when no index matches so recall does not silently drop valid
+    candidates.
+  - Report matched node count, dropped candidates, and fallback reason in
+    ContextPack audit/telemetry.
+
 ## P1 Cloud Deployment
 
 - Keep AWS Terraform small for testing.
