@@ -4330,6 +4330,29 @@ class MatrixArkLocalAdapter:
             limit=512,
         )
         selected_context_counts = selected_context_class_counts(selected)
+        freshness_tolerance_ms = int(ranking.get("freshness_tolerance_ms", DEFAULT_TIME_DECAY_TOLERANCE_MS))
+        half_life_ms = int(ranking.get("half_life_ms", DEFAULT_TIME_DECAY_HALFLIFE_MS))
+        selected_time_scores = [float(item.get("time_score", 0.0)) for item in selected if "time_score" in item]
+        selected_age_ms: list[int] = []
+        for item in selected:
+            try:
+                selected_age_ms.append(max(0, int(reference_time_ms) - int(item.get("updated_at_ms") or reference_time_ms)))
+            except (TypeError, ValueError):
+                continue
+        time_weighted_recall = {
+            "enabled": True,
+            "role": "ranking_prior_not_temporal_compression",
+            "score_field": "time_score",
+            "formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+            "freshness_tolerance_ms": freshness_tolerance_ms,
+            "half_life_ms": half_life_ms,
+            "selected_ref_count": len(selected),
+            "avg_selected_time_score": round(sum(selected_time_scores) / len(selected_time_scores), 6) if selected_time_scores else 0.0,
+            "min_selected_time_score": round(min(selected_time_scores), 6) if selected_time_scores else 0.0,
+            "max_selected_age_ms": max(selected_age_ms) if selected_age_ms else 0,
+            "recent_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms <= freshness_tolerance_ms),
+            "older_selected_ref_count": sum(1 for age_ms in selected_age_ms if age_ms > freshness_tolerance_ms),
+        }
         pack = {
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
@@ -4387,9 +4410,10 @@ class MatrixArkLocalAdapter:
                 "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
                 "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
                 "time_decay": {
-                    "freshness_tolerance_ms": ranking.get("freshness_tolerance_ms", DEFAULT_TIME_DECAY_TOLERANCE_MS),
-                    "half_life_ms": ranking.get("half_life_ms", DEFAULT_TIME_DECAY_HALFLIFE_MS),
+                    "freshness_tolerance_ms": freshness_tolerance_ms,
+                    "half_life_ms": half_life_ms,
                 },
+                "time_weighted_recall": time_weighted_recall,
                 "recall_reinforcement": reinforcement,
                 "weights": {
                     "time": optional_object(ranking, "weights").get("time", DEFAULT_TIME_WEIGHT),

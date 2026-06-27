@@ -28,6 +28,27 @@ Leaf recall then combines:
 
 Those are normalized into `Sorigin`. This is intentionally different from a flat RAG scan: MatrixArk should not score every event first and merely use node score as a bonus. Folder selection comes first.
 
+## Time-Weighted Recall Versus Temporal Compression
+
+VikingMem-style time-weighted recall is a retrieval-time ranking prior. It does
+not rewrite memory. It takes the candidates that survived tree traversal,
+secondary-index filtering, and hybrid recall, then boosts or decays them based
+on age.
+
+Temporal compression is different: it is a lifecycle/storage operation that
+turns older low-level events into summaries/compression events, optionally with
+TTL/eviction policy for raw details. Compression can reduce the number of old
+raw events that retrieval scans; time-weighted recall decides how fresh versus
+old candidates are ranked after they are found.
+
+The two should work together:
+
+- time-weighted recall: query-time scoring, no mutation;
+- temporal compression: background summarization/eviction, mutates stored
+  memory shape;
+- valid-as-of/current-state questions can reduce or disable recency bias when
+  older historical evidence is the answer.
+
 ## Time And Business Priors
 
 Each candidate is then rescored with:
@@ -147,6 +168,11 @@ Each selected ref now includes:
 - `final_score`
 - `recall_path`
 - `ranking_formula`
+
+The response and `ContextPackAudit` also include
+`recall_policy.time_weighted_recall`, with selected-ref time-score averages,
+old-versus-recent counts, max selected age, and a marker that this is a
+`ranking_prior_not_temporal_compression`.
 
 ## Validation
 
