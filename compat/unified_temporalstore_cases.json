@@ -4685,7 +4685,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived admin/status case: status, local-status, and Prometheus expose peer lag, apply health, read-index, leader transfer, and pipeline evidence.",
+            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose peer lag, apply health, read-index, leader transfer, per-peer pipeline state, reorder queues, snapshot lifecycle, WAL segments, and stale follower rejection evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4700,12 +4700,78 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_runtime --lib -- --test-threads=1 && cargo test -p temporalstore-rust byteraft_runtime_admin --bins -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
           },
           "name": "status_local_status_prometheus_peer_pipeline_state"
+        }
+      ]
+    },
+    {
+      "name": "server_raft_byteraft_runtime_admin_route",
+      "shard_id": 52,
+      "steps": [
+        {
+          "name": "raft_node_and_server_byteraft_runtime_admin_route",
+          "command": {
+            "kind": "existing_test",
+            "mode": "runtime",
+            "suite": "cpp_data_raft_parity",
+            "description": "Shared route contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin with per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_consensus.h",
+              "tools/run_data_raft_failover_ubuntu22.sh",
+              "tools/run_data_raft_snapshot_restore_ubuntu22.sh"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 bash tools/run_data_raft_failover_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_runtime_admin --bins -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft --log <raft-route-validation.json>",
+            "report_contract": {
+              "schema": "byteraft_runtime_admin_report_v1",
+              "required_fields": [
+                "leader_id",
+                "commit_index",
+                "leader_lease_valid",
+                "read_index_validated",
+                "lease_read_validated",
+                "stale_follower_read_rejected",
+                "stale_follower_write_rejected",
+                "peer_pipeline_states",
+                "append_backpressure_enforced",
+                "reorder_queue_enabled",
+                "snapshot_sender_lifecycle_present",
+                "snapshot_downloader_lifecycle_present",
+                "snapshot_retry_backpressure_present",
+                "wal_segment_lifecycle_present",
+                "pre_vote_enforced",
+                "election_controls_enforced",
+                "admin_status_surface_complete",
+                "ready",
+                "blockers"
+              ],
+              "required_peer_fields": [
+                "peer_id",
+                "role",
+                "replica_role",
+                "match_index",
+                "next_index",
+                "inflight_entries",
+                "inflight_bytes",
+                "append_queue_depth",
+                "reorder_queue_depth",
+                "snapshot_sending",
+                "snapshot_installing",
+                "snapshot_installed_index",
+                "transfer_leader_target",
+                "pre_vote_rejections",
+                "election_rejections"
+              ]
+            },
+            "timeout_s": 1200
+          }
         }
       ]
     },
@@ -6372,13 +6438,13 @@
         {
           "command": {
             "field": "increment_would_overflow",
-            "increment": 9223372036854775807,
+            "increment": 9223372036854776000,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": 9223372036854775807
+            "value": 9223372036854776000
           },
           "name": "set_max_signed"
         },
@@ -6398,13 +6464,13 @@
         {
           "command": {
             "field": "decrement_would_overflow",
-            "increment": -9223372036854775808,
+            "increment": -9223372036854776000,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": -9223372036854775808
+            "value": -9223372036854776000
           },
           "name": "set_min_signed"
         },
@@ -7407,6 +7473,7 @@
       "context_benchmark_full_dataset_gates",
       "raft_byteraft_read_safety_policy",
       "raft_byteraft_metrics_admin_pipeline_status",
+      "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",
       "raft_byteraft_replication_backpressure",
       "raft_byteraft_election_controls",
@@ -7545,6 +7612,7 @@
       "raft_openraft_process_rollout_evidence",
       "raft_byteraft_read_safety_policy",
       "raft_byteraft_metrics_admin_pipeline_status",
+      "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",
       "raft_byteraft_replication_backpressure",
       "raft_byteraft_election_controls",

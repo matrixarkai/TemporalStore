@@ -17056,6 +17056,7 @@ mod tests {
         assert!(engine.cache().stats().puts >= 1);
     }
 
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
     #[test]
     fn storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run() {
         let dir = tempfile::tempdir().unwrap();
@@ -17106,6 +17107,7 @@ mod tests {
         assert!(report.merged_dump_load_policy.production_slice_ready);
     }
 
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
     #[test]
     fn storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact() {
         let dir = tempfile::tempdir().unwrap();

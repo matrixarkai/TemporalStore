@@ -109,12 +109,15 @@ Current grandfathered Rust test dispositions:
 The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
 storage/cache recovery cases and Context pipeline model cases.
 
-Recent shared-case additions moved six Rust data-node Raft API tests into the common contract:
+Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
 `server_raft_membership_apply_route`, `server_raft_control_scale_up_down`,
-`server_raft_control_accept_leadership`, and `server_raft_admin_wait_applied`. C++ currently
-contributes static server/Raft source and test surfaces for those cases until a native C++ shared
-runner executes the same case IDs.
+`server_raft_control_accept_leadership`, `server_raft_admin_wait_applied`, and
+`server_raft_byteraft_runtime_admin_route`. C++ currently contributes static server/Raft source and
+test surfaces for those cases until a native C++ shared runner executes the same case IDs. The new
+ByteRaft runtime-admin case requires a shared JSON shape for per-peer match/next index, inflight
+bytes, append/reorder queues, snapshot sender/downloader lifecycle, WAL segments, read-index/lease
+evidence, and stale follower rejection.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
@@ -212,7 +215,8 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and OpenRaft process-rollout/log-store evidence. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
-| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |
+| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, leader-transfer, and `/raft/control/byteraft_runtime_admin` evidence. |
+| `server_raft_byteraft_runtime_admin_route` | Shared route contract for the ByteRaft-style runtime admin report on both standalone `raft_node` and raft-enabled `server`. |
 | `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
 | `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
 | `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
@@ -385,10 +389,10 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 536
-shared-corpus marked Rust tests: 41
-shared corpus cases: 146
-shared corpus steps: 308
+Rust attributed tests: 551
+shared-corpus marked Rust tests: 56
+shared corpus cases: 151
+shared corpus steps: 313
 C++ existing-test surfaces: 180
 ```
 

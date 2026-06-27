@@ -2009,6 +2009,7 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
         .any(|item| item.contains("process startup")));
 }
 
+// shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
 #[test]
 fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_safety() {
     let dir = tempfile::tempdir().unwrap();
@@ -2074,6 +2075,7 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
 }
 
+// shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
 #[test]
 fn byteraft_runtime_readiness_is_backed_by_admin_report_evidence() {
     let readiness = raft_byteraft_runtime_readiness();
