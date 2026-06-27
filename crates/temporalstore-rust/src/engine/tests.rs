@@ -2584,7 +2584,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     });
     assert!(write.status.ok);
     assert_eq!(engine.page_store().stats().writes, 0);
-    assert_eq!(engine.oplog_store().stats(1).writes, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 0);
     assert_eq!(engine.index_log_store().stats(1).writes, 0);
 
     let read = engine.execute(ExecuteRequest {
@@ -2635,7 +2635,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     });
     assert!(write.status.ok);
     assert_eq!(engine.page_store().stats().writes, 1);
-    assert_eq!(engine.oplog_store().stats(1).writes, 1);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
     assert_eq!(engine.index_log_store().stats(1).writes, 1);
 
     let read = engine.execute(ExecuteRequest {
@@ -4232,7 +4232,7 @@ fn control_api_reads_page_and_index_streams() {
 }
 
 #[test]
-fn control_api_reads_and_scans_oplog_stream() {
+fn control_api_reads_and_scans_wal_stream() {
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         1024,
@@ -4258,7 +4258,7 @@ fn control_api_reads_and_scans_oplog_stream() {
 
     let stream = engine.read_stream(StreamReadRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Oplog,
+        stream_kind: StreamKind::Wal,
         page_segment_id: 0,
         offset: 0,
         size: 4096,
@@ -4270,14 +4270,22 @@ fn control_api_reads_and_scans_oplog_stream() {
 
     let scan = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
-        stream_kind: StreamKind::Oplog,
+        stream_kind: StreamKind::Wal,
         page_segment_id: 0,
         start_offset: 0,
         end_offset: 4096,
         max_bytes: 4096,
     });
     assert_eq!(scan.records.len(), 2);
-    assert_eq!(engine.get_stats(1).stats.unwrap().oplog.last_sequence, 2);
+    assert_eq!(
+        engine
+            .get_stats(1)
+            .stats
+            .unwrap()
+            .write_ahead_log
+            .last_sequence,
+        2
+    );
 }
 
 #[test]
@@ -5743,7 +5751,7 @@ fn stats_include_cpp_style_partition_and_object_manager_accounting() {
 }
 
 #[test]
-fn prometheus_metrics_include_records_cache_page_and_oplog() {
+fn prometheus_metrics_include_records_cache_page_and_wal() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     engine.execute(ExecuteRequest {
@@ -5782,6 +5790,7 @@ fn prometheus_metrics_include_records_cache_page_and_oplog() {
         .contains("temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"known\"}"));
     assert!(metrics
         .contains("temporalstore_page_store_zone_oldest_age_ms{shard_id=\"1\",scope=\"live\"}"));
+    assert!(metrics.contains("temporalstore_wal_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_oplog_records_total{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_objects{shard_id=\"1\"} 1"));
     assert!(metrics.contains("temporalstore_object_manager_page_refs{shard_id=\"1\"} 1"));

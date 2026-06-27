@@ -21,13 +21,13 @@ impl TemporalEngine {
         index_dir: impl Into<PathBuf>,
     ) -> Self {
         let index_dir = index_dir.into();
-        let oplog_store = LocalOplogStore::new(index_dir.join("oplogs"));
+        let wal_store = LocalWriteAheadLogStore::new(index_dir.join("wals"));
         let index_log_store = LocalIndexLogStore::new(index_dir.join("indexlogs"));
         Self {
             shards: Arc::default(),
             cache,
             page_store,
-            oplog_store,
+            wal_store,
             index_log_store,
             index_dir,
             configs: Arc::default(),
@@ -44,8 +44,16 @@ impl TemporalEngine {
         self.page_store.clone()
     }
 
-    pub fn oplog_store(&self) -> LocalOplogStore {
-        self.oplog_store.clone()
+    pub fn write_ahead_log_store(&self) -> LocalWriteAheadLogStore {
+        self.wal_store.clone()
+    }
+
+    #[deprecated(
+        since = "0.1.0",
+        note = "use write_ahead_log_store; oplog naming remains only for legacy compatibility"
+    )]
+    pub fn oplog_store(&self) -> LocalWriteAheadLogStore {
+        self.write_ahead_log_store()
     }
 
     pub fn index_log_store(&self) -> LocalIndexLogStore {

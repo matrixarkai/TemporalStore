@@ -2869,7 +2869,7 @@ impl DataNodeRuntime {
                     storage_bytes: stats.storage_bytes,
                     cache_memory_bytes: stats.cache.memory_bytes,
                     page_store_bytes_written: stats.page_store.bytes_written,
-                    oplog_sequence: stats.oplog.last_sequence,
+                    oplog_sequence: stats.write_ahead_log.last_sequence,
                     dirty_object_count: dirty_by_shard
                         .get(&stats.shard_id)
                         .copied()
@@ -3433,7 +3433,7 @@ fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse 
         if status.ok {
             match inner
                 .engine
-                .oplog_store()
+                .write_ahead_log_store()
                 .gc_before_sequence(request.shard_id, retain_from_sequence)
             {
                 Ok(report) => oplog_records_removed = report.records_removed,

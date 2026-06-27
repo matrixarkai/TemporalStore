@@ -39,7 +39,6 @@ use crate::control::{
     UnloadShardRequest, UnloadShardResponse,
 };
 use crate::index_log::LocalIndexLogStore;
-use crate::oplog::LocalOplogStore;
 use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
@@ -52,13 +51,14 @@ use crate::types::{
     ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
+use crate::wal::LocalWriteAheadLogStore;
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
     shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
     cache: MultiLayerCache,
     page_store: LocalPageStore,
-    oplog_store: LocalOplogStore,
+    wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
     configs: Arc<RwLock<HashMap<ShardId, Config>>>,
@@ -227,7 +227,7 @@ impl TemporalEngine {
             }
             refresh_slot_runtime_flags(shard);
             if write_command && !config.async_storage {
-                let _ = self.oplog_store.append(request.shard_id, command);
+                let _ = self.wal_store.append(request.shard_id, command);
             }
             if !config.async_storage {
                 let index_bytes = serialize_index(shard);
@@ -580,7 +580,7 @@ impl TemporalEngine {
             .into_iter()
             .collect::<Vec<_>>();
         page_segment_ids.sort_unstable();
-        let oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
         let index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let index_bytes = self
             .export_index_bytes(shard_id)
@@ -1159,7 +1159,7 @@ impl TemporalEngine {
         &self,
         manifest: &SlotDumpManifest,
     ) -> SlotDumpInstallPreflightReport {
-        let current_oplog_sequence = self.oplog_store.stats(manifest.shard_id).last_sequence;
+        let current_oplog_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
         let existing_segments = self
@@ -1774,7 +1774,7 @@ impl TemporalEngine {
             latest_slot_dump_manifest_at(&self.index_dir, request.shard_id)
                 .map(|manifest| manifest.oplog_sequence)
                 .unwrap_or_default();
-        let current_oplog_sequence = self.oplog_store.stats(request.shard_id).last_sequence;
+        let current_oplog_sequence = self.wal_store.stats(request.shard_id).last_sequence;
         let undumped_oplog_records =
             current_oplog_sequence.saturating_sub(latest_dump_oplog_sequence);
         let explicit_slots = !request.selected_dump_slots.is_empty();
@@ -3874,10 +3874,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> StorageLogCompatibilityReport {
-        let oplog_stats = self.oplog_store.stats(shard_id);
+        let oplog_stats = self.wal_store.stats(shard_id);
         let index_log_stats = self.index_log_store.stats(shard_id);
         let oplog_records = self
-            .oplog_store
+            .wal_store
             .scan(shard_id, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
             .unwrap_or_default();
@@ -4072,7 +4072,7 @@ impl TemporalEngine {
             .map(|manifest| manifest.index_log_sequence)
             .max()
             .unwrap_or_default();
-        let latest_safe_oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let latest_safe_oplog_sequence = self.wal_store.stats(shard_id).last_sequence;
         let latest_safe_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let live_page_segment_ids = self
             .live_page_segment_ids(shard_id)
@@ -4165,9 +4165,17 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_page_store_zone_oldest_unix_ms gauge\n");
         out.push_str("# HELP temporalstore_page_store_zone_oldest_age_ms Oldest page-store zone age by shard and lifecycle scope.\n");
         out.push_str("# TYPE temporalstore_page_store_zone_oldest_age_ms gauge\n");
-        out.push_str("# HELP temporalstore_oplog_records_total Oplog append records by shard.\n");
+        out.push_str(
+            "# HELP temporalstore_wal_records_total Write-ahead log append records by shard.\n",
+        );
+        out.push_str("# TYPE temporalstore_wal_records_total counter\n");
+        out.push_str(
+            "# HELP temporalstore_wal_bytes_total Write-ahead log appended bytes by shard.\n",
+        );
+        out.push_str("# TYPE temporalstore_wal_bytes_total counter\n");
+        out.push_str("# HELP temporalstore_oplog_records_total Legacy alias for temporalstore_wal_records_total.\n");
         out.push_str("# TYPE temporalstore_oplog_records_total counter\n");
-        out.push_str("# HELP temporalstore_oplog_bytes_total Oplog appended bytes by shard.\n");
+        out.push_str("# HELP temporalstore_oplog_bytes_total Legacy alias for temporalstore_wal_bytes_total.\n");
         out.push_str("# TYPE temporalstore_oplog_bytes_total counter\n");
         out.push_str(
             "# HELP temporalstore_object_manager_objects Logical hot objects tracked by shard.\n",
@@ -4449,15 +4457,27 @@ impl TemporalEngine {
             }
             push_metric(
                 &mut out,
+                "temporalstore_wal_records_total",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.write_ahead_log.writes,
+            );
+            push_metric(
+                &mut out,
+                "temporalstore_wal_bytes_total",
+                &[("shard_id", stats.shard_id.to_string())],
+                stats.write_ahead_log.bytes_written,
+            );
+            push_metric(
+                &mut out,
                 "temporalstore_oplog_records_total",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.oplog.writes,
+                stats.write_ahead_log.writes,
             );
             push_metric(
                 &mut out,
                 "temporalstore_oplog_bytes_total",
                 &[("shard_id", stats.shard_id.to_string())],
-                stats.oplog.bytes_written,
+                stats.write_ahead_log.bytes_written,
             );
             push_metric(
                 &mut out,
@@ -4595,8 +4615,8 @@ impl TemporalEngine {
                         bytes[start..end].to_vec()
                     }
                 }),
-            StreamKind::Oplog => self
-                .oplog_store
+            StreamKind::Wal => self
+                .wal_store
                 .read_range(request.shard_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
             StreamKind::IndexLog => self
@@ -4628,10 +4648,10 @@ impl TemporalEngine {
             .end_offset
             .saturating_sub(request.start_offset)
             .min(request.max_bytes);
-        if request.stream_kind == StreamKind::Oplog || request.stream_kind == StreamKind::IndexLog {
+        if request.stream_kind == StreamKind::Wal || request.stream_kind == StreamKind::IndexLog {
             let records = match request.stream_kind {
-                StreamKind::Oplog => self
-                    .oplog_store
+                StreamKind::Wal => self
+                    .wal_store
                     .scan(
                         request.shard_id,
                         request.start_offset,
@@ -4778,7 +4798,7 @@ impl TemporalEngine {
             .map(|metadata| metadata.len())
             .unwrap_or_default();
         let oplog_records = self
-            .oplog_store
+            .wal_store
             .scan(shard_id, 0, u64::MAX, u64::MAX)
             .map(|records| records.len())
             .unwrap_or_default();
@@ -5590,7 +5610,7 @@ impl TemporalEngine {
                 cache: self.cache.stats(),
                 page_store,
                 page_store_zones,
-                oplog: self.oplog_store.stats(shard_id),
+                write_ahead_log: self.wal_store.stats(shard_id),
             }
         })
     }

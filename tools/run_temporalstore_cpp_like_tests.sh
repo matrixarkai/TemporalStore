@@ -36,7 +36,7 @@ cargo test -p temporalstore-rust \
   control_api_reads_page_and_index_streams \
   -- --test-threads=1
 cargo test -p temporalstore-rust \
-  control_api_reads_and_scans_oplog_stream \
+  control_api_reads_and_scans_wal_stream \
   -- --test-threads=1
 cargo test -p temporalstore-rust \
   control_api_reads_and_scans_index_log_stream \
