@@ -488,6 +488,9 @@ pub struct ByteRaftPeerPipelineState {
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
     pub reorder_queue_depth: u64,
+    pub reorder_entries_accepted: u64,
+    pub reorder_entries_released: u64,
+    pub reorder_entries_rejected: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -912,6 +915,9 @@ pub struct RaftPeerPipelineRuntimeState {
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
     pub reorder_queue_depth: u64,
+    pub reorder_entries_accepted: u64,
+    pub reorder_entries_released: u64,
+    pub reorder_entries_rejected: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -6063,6 +6069,7 @@ impl RaftCluster {
             .map(|entry| command_size_bytes(&entry.command))
             .sum::<u64>();
         let enable_reorder_queue = inner.config.enable_reorder_queue;
+        let reorder_window_size = inner.config.reorder_window_size;
         let (term, last_index) = {
             let node = inner
                 .nodes
@@ -6087,8 +6094,30 @@ impl RaftCluster {
                     });
                 }
             }
+            if enable_reorder_queue
+                && received_entries > 0
+                && node
+                    .pipeline_state
+                    .reorder_queue_depth
+                    .saturating_add(received_entries)
+                    > reorder_window_size
+            {
+                node.pipeline_state.reorder_entries_rejected = node
+                    .pipeline_state
+                    .reorder_entries_rejected
+                    .saturating_add(received_entries);
+                let response = AppendEntriesResponse {
+                    term: node.current_term,
+                    success: false,
+                    match_index: node_last_log_or_snapshot_index(node),
+                    reject_reason: Some("reorder_window_exceeded".to_string()),
+                };
+                inner.persist_configured_wal()?;
+                return Ok(response);
+            }
             node.current_term = term;
             node.role = RaftRole::Follower;
+            let before_reorder_depth = node.pipeline_state.reorder_queue_depth;
             for entry in entries.iter().cloned() {
                 append_entry(node, entry);
             }
@@ -6107,6 +6136,19 @@ impl RaftCluster {
             } else {
                 0
             };
+            if enable_reorder_queue {
+                node.pipeline_state.reorder_entries_accepted = node
+                    .pipeline_state
+                    .reorder_entries_accepted
+                    .saturating_add(received_entries);
+                let released = before_reorder_depth
+                    .saturating_add(received_entries)
+                    .saturating_sub(node.pipeline_state.reorder_queue_depth);
+                node.pipeline_state.reorder_entries_released = node
+                    .pipeline_state
+                    .reorder_entries_released
+                    .saturating_add(released);
+            }
             node.pipeline_state.snapshot_installing = false;
             node.pipeline_state.pre_vote_rejections = node
                 .pipeline_state
@@ -7980,6 +8022,9 @@ impl RaftClusterInner {
                     inflight_bytes: pipeline.inflight_bytes,
                     append_queue_depth: pipeline.append_queue_depth,
                     reorder_queue_depth: pipeline.reorder_queue_depth,
+                    reorder_entries_accepted: pipeline.reorder_entries_accepted,
+                    reorder_entries_released: pipeline.reorder_entries_released,
+                    reorder_entries_rejected: pipeline.reorder_entries_rejected,
                     snapshot_sending: pipeline.snapshot_sending,
                     snapshot_installing: pipeline.snapshot_installing,
                     snapshot_installed_index: pipeline.snapshot_installed_index,
@@ -9234,6 +9279,12 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_queue_depth gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_queue_depth ByteRaft-style per-peer reorder queue depth.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_accepted ByteRaft-style per-peer reorder entries accepted.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_released ByteRaft-style per-peer reorder entries released to apply.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_released counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_rejected ByteRaft-style per-peer reorder entries rejected by window overflow.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_rejected counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_sending Whether a peer is sending a snapshot.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_sending gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installing Whether a peer is installing a snapshot.\n");
@@ -9317,6 +9368,24 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_reorder_queue_depth",
             labels,
             peer.reorder_queue_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_entries_accepted",
+            labels,
+            peer.reorder_entries_accepted,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_entries_released",
+            labels,
+            peer.reorder_entries_released,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_entries_rejected",
+            labels,
+            peer.reorder_entries_rejected,
         );
         push_raft_metric(
             out,

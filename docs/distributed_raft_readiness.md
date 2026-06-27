@@ -113,7 +113,7 @@ The Rust code currently has:
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
 - ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
   match/next index, append request/accept/reject counters, inflight bytes/entries,
-  append/reorder queue depth, snapshot send/install
+  append/reorder queue depth, reorder accept/release/reject counters, snapshot send/install
   state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
   leader-transfer target state, pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
@@ -121,7 +121,9 @@ The Rust code currently has:
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
   process path. Append request construction now enforces configured in-flight entry/byte limits and
-  rejects saturated peer pipelines with explicit backpressure. Snapshot sender construction now
+  rejects saturated peer pipelines with explicit backpressure. Append receive now rejects batches
+  that exceed the configured reorder window and records accepted/released/rejected entries.
+  Snapshot sender construction now
   rejects concurrent single-shot or chunked transfers for the same peer and increments the peer
   snapshot backpressure counter. Per-peer pipeline, snapshot lifecycle, and read-safety state is
   maintained as runtime state and persisted through the local WAL restore path, instead of being only

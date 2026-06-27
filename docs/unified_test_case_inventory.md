@@ -116,7 +116,8 @@ Recent shared-case additions moved seven Rust data-node Raft API tests into the 
 `server_raft_byteraft_runtime_admin_route`. C++ currently contributes static server/Raft source and
 test surfaces for those cases until a native C++ shared runner executes the same case IDs. The new
 ByteRaft runtime-admin case requires a shared JSON shape for per-peer match/next index, inflight
-bytes, append request/accept/reject counters, append/reorder queues, snapshot sender/downloader
+bytes, append request/accept/reject counters, append/reorder queues, reorder accept/release/reject
+counters, snapshot sender/downloader
 lifecycle, WAL segments with bytes/record counts/sequence bounds, read-index/lease evidence, stale
 follower rejection, and matching Prometheus metrics for scrape-based operator
 parity. Snapshot lifecycle fields include send attempts, received/total chunks, retry count, and
