@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
@@ -522,6 +522,11 @@ pub struct ByteRaftRuntimeAdminReport {
     pub wal_active_segment_id: u64,
     pub wal_first_retained_segment_id: u64,
     pub wal_last_retained_segment_id: u64,
+    pub wal_total_bytes: u64,
+    pub wal_active_segment_bytes: u64,
+    pub wal_total_records: u64,
+    pub wal_first_sequence: u64,
+    pub wal_last_sequence: u64,
     pub pre_vote_enforced: bool,
     pub election_controls_enforced: bool,
     pub read_index_requests: u64,
@@ -953,6 +958,9 @@ pub struct RaftWalSegmentInfo {
     pub segment_id: u64,
     pub path: String,
     pub bytes: u64,
+    pub record_count: u64,
+    pub first_sequence: u64,
+    pub last_sequence: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1315,14 +1323,41 @@ impl LocalRaftWal {
             let Ok(segment_id) = stem.parse::<u64>() else {
                 continue;
             };
+            let (record_count, first_sequence, last_sequence) =
+                Self::inspect_segment_sequences(&path)?;
             segments.push(RaftWalSegmentInfo {
                 segment_id,
                 bytes: entry.metadata()?.len(),
+                record_count,
+                first_sequence,
+                last_sequence,
                 path: path.to_string_lossy().into_owned(),
             });
         }
         segments.sort_by_key(|segment| segment.segment_id);
         Ok(segments)
+    }
+
+    fn inspect_segment_sequences(path: &Path) -> io::Result<(u64, u64, u64)> {
+        let file = OpenOptions::new().read(true).open(path)?;
+        let mut record_count = 0u64;
+        let mut first_sequence = 0u64;
+        let mut last_sequence = 0u64;
+        for line in BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let Ok(envelope) = serde_json::from_str::<RaftWalEnvelope>(&line) else {
+                continue;
+            };
+            record_count = record_count.saturating_add(1);
+            if first_sequence == 0 {
+                first_sequence = envelope.sequence;
+            }
+            last_sequence = envelope.sequence;
+        }
+        Ok((record_count, first_sequence, last_sequence))
     }
 
     fn prune_node_segments(
@@ -7995,6 +8030,11 @@ impl RaftClusterInner {
             wal_active_segment_id,
             wal_first_retained_segment_id,
             wal_last_retained_segment_id,
+            wal_total_bytes,
+            wal_active_segment_bytes,
+            wal_total_records,
+            wal_first_sequence,
+            wal_last_sequence,
         ) = self
             .wal
             .as_ref()
@@ -8010,17 +8050,53 @@ impl RaftClusterInner {
                     .last()
                     .map(|segment| segment.segment_id)
                     .unwrap_or_default();
+                let total_bytes = report.segments.iter().map(|segment| segment.bytes).sum();
+                let active_bytes = report
+                    .segments
+                    .iter()
+                    .find(|segment| segment.segment_id == report.active_segment_id)
+                    .map(|segment| segment.bytes)
+                    .unwrap_or_default();
+                let total_records = report
+                    .segments
+                    .iter()
+                    .map(|segment| segment.record_count)
+                    .sum();
+                let first_sequence = report
+                    .segments
+                    .iter()
+                    .find_map(|segment| {
+                        (segment.first_sequence > 0).then_some(segment.first_sequence)
+                    })
+                    .unwrap_or_default();
+                let last_sequence = report
+                    .segments
+                    .iter()
+                    .rev()
+                    .find_map(|segment| {
+                        (segment.last_sequence > 0).then_some(segment.last_sequence)
+                    })
+                    .unwrap_or_default();
                 (
                     report.segments.len() as u64,
                     report.active_segment_id,
                     first,
                     last,
+                    total_bytes,
+                    active_bytes,
+                    total_records,
+                    first_sequence,
+                    last_sequence,
                 )
             })
             .unwrap_or_default();
         let wal_segment_lifecycle_present = wal_segment_count > 0
             && wal_active_segment_id >= wal_first_retained_segment_id
-            && wal_last_retained_segment_id >= wal_first_retained_segment_id;
+            && wal_last_retained_segment_id >= wal_first_retained_segment_id
+            && wal_total_bytes > 0
+            && wal_active_segment_bytes > 0
+            && wal_total_records > 0
+            && wal_last_sequence >= wal_first_sequence;
         let pre_vote_enforced = self.config.enable_pre_vote;
         let election_controls_enforced = self.config.prohibits_election
             || self.config.offline_timeout_tick > 0
@@ -8097,6 +8173,11 @@ impl RaftClusterInner {
             wal_active_segment_id,
             wal_first_retained_segment_id,
             wal_last_retained_segment_id,
+            wal_total_bytes,
+            wal_active_segment_bytes,
+            wal_total_records,
+            wal_first_sequence,
+            wal_last_sequence,
             pre_vote_enforced,
             election_controls_enforced,
             read_index_requests: self.read_safety_state.read_index_requests,
@@ -9018,6 +9099,48 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_wal_segment_count",
         &[("kind", kind.to_string())],
         report.wal_segment_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_total_bytes WAL bytes retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_total_bytes gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_total_bytes",
+        &[("kind", kind.to_string())],
+        report.wal_total_bytes,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_active_segment_bytes Active WAL segment bytes retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_active_segment_bytes gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_active_segment_bytes",
+        &[("kind", kind.to_string())],
+        report.wal_active_segment_bytes,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_total_records WAL records retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_total_records gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_total_records",
+        &[("kind", kind.to_string())],
+        report.wal_total_records,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_first_sequence First retained WAL record sequence.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_first_sequence gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_first_sequence",
+        &[("kind", kind.to_string())],
+        report.wal_first_sequence,
+    );
+    out.push_str(
+        "# HELP temporalstore_raft_byteraft_wal_last_sequence Last retained WAL record sequence.\n",
+    );
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_last_sequence gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_last_sequence",
+        &[("kind", kind.to_string())],
+        report.wal_last_sequence,
     );
     out.push_str("# HELP temporalstore_raft_byteraft_read_index_requests Read-index requests observed by the raft runtime.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_read_index_requests counter\n");
