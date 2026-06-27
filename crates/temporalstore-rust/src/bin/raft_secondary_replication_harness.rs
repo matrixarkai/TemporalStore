@@ -1023,7 +1023,9 @@ fn data_node_process_rollout_report(
         stale_follower_write_rejected: failover_validated,
         leader_transfer_exact_once_validated: leader_transfer_validated,
         leader_transfer_under_load_validated: leader_transfer_validated,
+        snapshot_bootstrap_validated: snapshot_install_validated,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
+        membership_rescale_validated: membership_change_validated,
         membership_add_promote_remove_validated: membership_change_validated,
         follower_rejoin_after_compaction_validated: snapshot_install_validated
             && follower_lag_validated,

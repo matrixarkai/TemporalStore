@@ -2273,7 +2273,8 @@ GC, and local cache warmup coverage.
     `OpenRaftProcessOperationalSemanticsEvidence`, so API presence or generic
     process startup cannot satisfy distributed Raft readiness. The evidence must
     cover read-index, leader leases, lagging-follower and stale-write rejection,
-    leader transfer exact-once evidence, leader transfer under load, snapshot install/restart, membership
+    leader transfer exact-once evidence, leader transfer under load, snapshot bootstrap,
+    snapshot install/restart, membership rescale, membership
     add/promote/remove, follower rejoin after compaction, secondary-read
     eligibility, apply convergence, and WAL persistence. This hardens the Rust
     OpenRaft process-path claim, but it remains Rust-native behavior evidence,

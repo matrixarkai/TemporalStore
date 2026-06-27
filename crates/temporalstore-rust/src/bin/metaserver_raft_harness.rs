@@ -528,7 +528,9 @@ fn meta_process_rollout_report(
         stale_follower_write_rejected: failover_validated,
         leader_transfer_exact_once_validated: membership_change_validated,
         leader_transfer_under_load_validated: membership_change_validated,
+        snapshot_bootstrap_validated: snapshot_install_validated,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
+        membership_rescale_validated: membership_change_validated,
         membership_add_promote_remove_validated: membership_change_validated,
         follower_rejoin_after_compaction_validated: snapshot_install_validated
             && follower_lag_validated,
@@ -1033,7 +1035,10 @@ fn data_node_rollout_from_meta_owned_membership(
         stale_follower_write_rejected: membership.failover_validated,
         leader_transfer_exact_once_validated: membership.workflow.leader_transferred,
         leader_transfer_under_load_validated: membership.workflow.leader_transferred,
+        snapshot_bootstrap_validated: snapshot_install_validated,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
+        membership_rescale_validated: membership.scale_up_validated
+            && membership.scale_down_validated,
         membership_add_promote_remove_validated: membership.workflow.learner_added
             && membership.workflow.promoted_to_voter
             && membership.workflow.voter_removed,

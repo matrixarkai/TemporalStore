@@ -225,7 +225,11 @@ pub struct OpenRaftProcessOperationalSemanticsEvidence {
     #[serde(default)]
     pub leader_transfer_under_load_validated: bool,
     #[serde(default)]
+    pub snapshot_bootstrap_validated: bool,
+    #[serde(default)]
     pub snapshot_install_restart_validated: bool,
+    #[serde(default)]
+    pub membership_rescale_validated: bool,
     #[serde(default)]
     pub membership_add_promote_remove_validated: bool,
     #[serde(default)]
@@ -254,7 +258,9 @@ impl OpenRaftProcessOperationalSemanticsEvidence {
             && self.stale_follower_write_rejected
             && self.leader_transfer_exact_once_validated
             && self.leader_transfer_under_load_validated
+            && self.snapshot_bootstrap_validated
             && self.snapshot_install_restart_validated
+            && self.membership_rescale_validated
             && self.membership_add_promote_remove_validated
             && self.follower_rejoin_after_compaction_validated
             && self.secondary_read_eligibility_validated
@@ -290,8 +296,16 @@ impl OpenRaftProcessOperationalSemanticsEvidence {
                 "leader_transfer_under_load_validated",
             ),
             (
+                self.snapshot_bootstrap_validated,
+                "snapshot_bootstrap_validated",
+            ),
+            (
                 self.snapshot_install_restart_validated,
                 "snapshot_install_restart_validated",
+            ),
+            (
+                self.membership_rescale_validated,
+                "membership_rescale_validated",
             ),
             (
                 self.membership_add_promote_remove_validated,
