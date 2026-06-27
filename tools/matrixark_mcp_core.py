@@ -75,6 +75,8 @@ MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", 
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
+DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "10000"))
+
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
@@ -3835,12 +3837,12 @@ def local_context_budget(args: Json) -> Json:
     if raw_safety_margin is None:
         raw_safety_margin = os.environ.get("MATRIXARK_LOCAL_CONTEXT_SAFETY_MARGIN_TOKENS")
     if raw_safety_margin is None:
-        raw_max_context = args.get("max_context_tokens", 2048)
+        raw_max_context = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         try:
-            max_context_tokens = max(0, int(raw_max_context or 2048))
+            max_context_tokens = max(0, int(raw_max_context or DEFAULT_MAX_CONTEXT_TOKENS))
         except (TypeError, ValueError):
-            max_context_tokens = 2048
-        safety_margin_tokens = min(128, max_context_tokens // 20)
+            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+        safety_margin_tokens = min(512, max_context_tokens // 20)
         safety_margin_source = "matrixark_default_5_percent_capped"
     else:
         try:

@@ -137,7 +137,7 @@ MATRIXARK_TEAM=codex
 MATRIXARK_PROJECT=local
 MATRIXARK_SESSION_COMMIT_THRESHOLD=20
 MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=600000
-MATRIXARK_HOOK_MAX_CONTEXT_TOKENS=1024
+MATRIXARK_HOOK_MAX_CONTEXT_TOKENS=10000
 ```
 
 For local product mode, MatrixArk can also use these defaults:
@@ -306,7 +306,7 @@ Important rules:
 | Keep `local_context_refs` and `remote_context_refs` separate | The agent can dedupe, display, debug, and audit what came from local workspace versus MatrixArk. |
 | Call `matrixark_ingest` after answering | MatrixArk learns from the actual outcome and can update events, entities, summaries, and audit/replay records. |
 
-If an agent cannot estimate token budget, MatrixArk should use a conservative default. For production integrations, prefer explicit values:
+If an agent cannot estimate token budget, MatrixArk defaults to 10000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
 
 ```json
 {
@@ -316,7 +316,7 @@ If an agent cannot estimate token budget, MatrixArk should use a conservative de
     {&quot;ref&quot;: &quot;tool-output:test&quot;, &quot;text&quot;: &quot;pytest output summary...&quot;}
   ],
   &quot;local_context_tokens&quot;: 700,
-  &quot;max_context_tokens&quot;: 4000,
+  &quot;max_context_tokens&quot;: 10000,
   &quot;scope&quot;: {
     &quot;account_id&quot;: &quot;acct_local&quot;,
     &quot;tenant_id&quot;: &quot;tenant_codex&quot;,
@@ -517,7 +517,7 @@ rolling window          -&gt; commit next 20 pending messages, not the whole ses
     &quot;user_id&quot;: &quot;deeproute&quot;,
     &quot;session_id&quot;: &quot;codex:local:demo&quot;
   },
-  &quot;max_context_tokens&quot;: 2048,
+  &quot;max_context_tokens&quot;: 10000,
   &quot;local_context&quot;: [
     {&quot;ref&quot;: &quot;open-buffer:planner.md&quot;, &quot;text&quot;: &quot;GPU budget planning notes...&quot;}
   ]

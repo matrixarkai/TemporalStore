@@ -56,7 +56,7 @@ Stop / compact / idle -&gt; matrixark_session_commit
 ## Payload Contract For Every Agent
 
 Teach each agent installation to send as much visible context as it already
-knows. MatrixArk will decide the route and fill local/cloud defaults.
+knows. MatrixArk will decide the route and fill local/cloud defaults. MatrixArk defaults to 10000 context tokens when the agent does not provide a smaller remaining prompt budget.
 
 ```json
 {
@@ -76,7 +76,7 @@ knows. MatrixArk will decide the route and fill local/cloud defaults.
     {&quot;ref&quot;: &quot;tool-output:pytest&quot;, &quot;text&quot;: &quot;relevant test output summary&quot;}
   ],
   &quot;local_context_tokens&quot;: 700,
-  &quot;max_context_tokens&quot;: 4000,
+  &quot;max_context_tokens&quot;: 10000,
   &quot;raw_uri&quot;: &quot;optional file:/// or s3:// resource&quot;,
   &quot;resource_type&quot;: &quot;optional pdf/md/skill&quot;,
   &quot;accepted_refs&quot;: [],
@@ -442,7 +442,7 @@ Content-Type: application/json
     {&quot;ref&quot;: &quot;workflow:visible-state&quot;, &quot;text&quot;: &quot;visible workflow state summary&quot;}
   ],
   &quot;local_context_tokens&quot;: 500,
-  &quot;max_context_tokens&quot;: 2048
+  &quot;max_context_tokens&quot;: 10000
 }
 ```
 
