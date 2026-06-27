@@ -149,6 +149,7 @@ The local JSONL backend is for development and deterministic CI. It is not the s
 - Message ingest materializes MatrixArk records in Python, then calls the native TemporalStore append boundary.
 - The direct adapter no longer calls `read_all()` before append, so it avoids full-log scans before the native write.
 - The compact append log stores records in sharded TemporalStore hash fields plus a tiny `record_count` string.
+- `ContextEvent` also writes a timestamp-ordered native event index: `context_event_by_ingestion_time:<scope>` with field `<ingestion_time_ms>:<event_id_hash>`. The hot event JSON does not need the bulky envelope ingestion timestamp; replay/debug keeps the full envelope separately.
 - `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables a process-local background queue for async-route writes. This lets message ingest return after accepting records into the queue while the worker flushes to C++/Rust TemporalStore.
 - `write_mode=sync` is never queued and waits for the native write path.
 

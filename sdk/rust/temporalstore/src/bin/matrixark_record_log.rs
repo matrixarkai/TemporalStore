@@ -485,6 +485,30 @@ fn matrixark_storage_field(record_id: &str) -> String {
     record_id.to_string()
 }
 
+fn matrixark_event_ingestion_time_ms(record: &Value) -> u64 {
+    for field in ["ingestion_time_ms", "updated_at_ms", "created_at_ms"] {
+        if let Some(value) = record.get(field).and_then(Value::as_u64) {
+            if value > 0 {
+                return value;
+            }
+        }
+    }
+    record
+        .get("envelope")
+        .and_then(|value| value.get("ingestion_time_ms"))
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .unwrap_or_else(|| unix_ms() as u64)
+}
+
+fn matrixark_context_event_time_key(tenant_hash: u64) -> String {
+    format!("matrixark:record:context_event_by_ingestion_time:{tenant_hash}")
+}
+
+fn matrixark_context_event_time_field(record: &Value, record_id: &str) -> String {
+    format!("{:020}:{}", matrixark_event_ingestion_time_ms(record), record_id)
+}
+
 fn write_matrixark_record(
     client: &Client,
     record: &Value,
@@ -497,14 +521,20 @@ fn write_matrixark_record(
     let record_id = matrixark_record_id(record, record_id_fallback)?;
     let key = matrixark_storage_key(&record_type, tenant_hash);
     let field = matrixark_storage_field(&record_id);
+    let payload = serde_json::to_string(record).map_err(|err| err.to_string())?;
+    let mut time_index: Option<Value> = None;
+    if record_type == "context_event" {
+        let time_key = matrixark_context_event_time_key(tenant_hash);
+        let time_field = matrixark_context_event_time_field(record, &record_id);
+        client
+            .hset(&time_key, &time_field, &payload)
+            .map_err(|err| err.to_string())?;
+        time_index = Some(json!({"key": time_key, "field": time_field}));
+    }
     client
-        .hset(
-            &key,
-            &field,
-            &serde_json::to_string(record).map_err(|err| err.to_string())?,
-        )
+        .hset(&key, &field, &payload)
         .map_err(|err| err.to_string())?;
-    Ok(json!({"key": key, "field": field, "record_type": record_type, "record_id": record_id}))
+    Ok(json!({"key": key, "field": field, "record_type": record_type, "record_id": record_id, "time_index": time_index}))
 }
 
 fn read_matrixark_record(
@@ -865,6 +895,25 @@ mod tests {
             "matrixark:record:context_pack_audit:77"
         );
         assert_eq!(matrixark_storage_field("query-1"), "query-1");
+    }
+
+    #[test]
+    fn context_event_uses_timestamp_ordered_storage_field() {
+        let record = json!({
+            "record_type": "context_event",
+            "tenant_hash": 77,
+            "event_id_hash": 42,
+            "updated_at_ms": 1782500000123_u64,
+            "text": "timestamp keyed"
+        });
+        assert_eq!(
+            matrixark_context_event_time_key(matrixark_tenant_hash(&record, None).unwrap()),
+            "matrixark:record:context_event_by_ingestion_time:77"
+        );
+        assert_eq!(
+            matrixark_context_event_time_field(&record, &matrixark_record_id(&record, None).unwrap()),
+            "00000001782500000123:42"
+        );
     }
 
     #[test]

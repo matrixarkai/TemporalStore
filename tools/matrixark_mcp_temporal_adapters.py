@@ -465,6 +465,48 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 return route
         return {}
 
+    def _context_event_ingestion_time_ms(self, record: Json) -> int:
+        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+        for value in (
+            envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else None,
+            record.get("updated_at_ms"),
+            record.get("created_at_ms"),
+        ):
+            try:
+                timestamp = int(value)
+            except (TypeError, ValueError):
+                continue
+            if timestamp > 0:
+                return timestamp
+        return now_ms()
+
+    def _context_event_time_index_key(self, record: Json) -> str:
+        scope_key = str(record.get("scope_key") or "")
+        scope_hash = stable_hash(scope_key) if scope_key else int(record.get("node_hash") or 0)
+        return f"{self._storage_prefix}:context_event_by_ingestion_time:{scope_hash}"
+
+    def _context_event_time_index_field(self, record: Json) -> str:
+        event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        return f"{self._context_event_ingestion_time_ms(record):020d}:{event_hash}"
+
+    def _context_event_time_index_entries(self, records: list[Json]) -> list[Json]:
+        entries: list[Json] = []
+        for record in records:
+            if record.get("record_type") != "context_event":
+                continue
+            if record.get("event_id_hash") is None:
+                continue
+            payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
+            entries.append(
+                {
+                    "key": self._context_event_time_index_key(record),
+                    "field": self._context_event_time_index_field(record),
+                    "value": payload,
+                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
+                }
+            )
+        return entries
+
     def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
         self._ensure_direct_write_queue_fields()
         if not bool(getattr(self, "_direct_write_queue_enabled", False)):
@@ -535,6 +577,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if count <= 0 and self._index_cache is None:
                 self._index_cache = self._get_index()
                 self._legacy_index_mode = bool(self._index_cache)
+            event_time_entries = self._context_event_time_index_entries(records)
             if self._legacy_index_mode:
                 if self._index_cache is None:
                     self._index_cache = self._get_index()
@@ -549,7 +592,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
                     entries.append({"key": self._record_hash_key, "field": record_id, "value": payload, "storage_route": route})
                     self._index_cache.append(record_id)
-                self._hset_many_with_backoff(entries)
+                self._hset_many_with_backoff(event_time_entries + entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
                 if self._records_cache is not None:
                     self._records_cache.extend(records)
@@ -566,7 +609,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
                 sequence += 1
-            self._hset_many_with_backoff(entries)
+            self._hset_many_with_backoff(event_time_entries + entries)
             self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             if self._records_cache is not None:
