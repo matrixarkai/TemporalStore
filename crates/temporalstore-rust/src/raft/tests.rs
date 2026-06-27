@@ -2350,6 +2350,60 @@ fn byteraft_runtime_readiness_is_backed_by_admin_report_evidence() {
     assert!(readiness.report.ready);
 }
 
+// shared-corpus: raft_byteraft_election_controls raft_byteraft_metrics_admin_pipeline_status
+#[test]
+fn byteraft_offline_timeout_state_is_reported_per_peer() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        214,
+        [1, 2, 3],
+        RaftConfig {
+            enable_pre_vote: true,
+            offline_timeout_tick: 10,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+
+    cluster.set_alive(3, false).unwrap();
+    cluster.advance_time_ms(9);
+    let before = cluster.byteraft_runtime_admin_report();
+    let peer3 = before
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert_eq!(peer3.offline_elapsed_ms, 9);
+    assert!(!peer3.offline_timeout_reached);
+    assert_eq!(peer3.offline_timeout_rejections, 0);
+
+    cluster.advance_time_ms(1);
+    let after = cluster.byteraft_runtime_admin_report();
+    let peer3 = after
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert_eq!(peer3.offline_elapsed_ms, 10);
+    assert!(peer3.offline_timeout_reached);
+    assert_eq!(peer3.offline_timeout_rejections, 1);
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_elapsed_ms"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_timeout_reached"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_timeout_rejections"));
+
+    cluster.set_alive(3, true).unwrap();
+    let recovered = cluster.byteraft_runtime_admin_report();
+    let peer3 = recovered
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert_eq!(peer3.offline_elapsed_ms, 0);
+    assert!(!peer3.offline_timeout_reached);
+    assert_eq!(peer3.offline_timeout_rejections, 1);
+}
+
 #[test]
 fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
     let readiness = raft_openraft_rollout_readiness();
