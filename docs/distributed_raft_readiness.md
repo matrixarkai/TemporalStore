@@ -116,7 +116,8 @@ The Rust code currently has:
   append/reorder queue depth, snapshot send/install
   state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
   leader-transfer target state, pre-vote/election rejection counters, read-index plus lease-read
-  request/accept/reject counters, stale follower read/write rejection, WAL segment retention, and process-path
+  request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
+  retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and process-path
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
   process path. Append request construction now enforces configured in-flight entry/byte limits and

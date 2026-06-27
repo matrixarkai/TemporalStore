@@ -2123,6 +2123,11 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert_eq!(report.lease_read_rejected, 0);
     assert!(report.admin_status_surface_complete);
     assert!(report.wal_segment_count >= 1);
+    assert!(report.wal_total_bytes > 0);
+    assert!(report.wal_active_segment_bytes > 0);
+    assert!(report.wal_total_records > 0);
+    assert!(report.wal_first_sequence > 0);
+    assert!(report.wal_last_sequence >= report.wal_first_sequence);
     assert!(report
         .peer_pipeline_states
         .iter()
@@ -2166,11 +2171,18 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_bytes"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_active_segment_bytes"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_records"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_first_sequence"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_last_sequence"));
 
     let restored =
         RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3], config).unwrap();
     let restored_report = restored.byteraft_runtime_admin_report();
     assert!(restored_report.ready, "{:?}", restored_report.blockers);
+    assert_eq!(restored_report.wal_total_records, report.wal_total_records);
+    assert_eq!(restored_report.wal_last_sequence, report.wal_last_sequence);
     assert_eq!(restored_report.read_index_requests, 2);
     assert_eq!(restored_report.read_index_rejected, 1);
     assert_eq!(restored_report.lease_read_requests, 1);
@@ -5539,6 +5551,15 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
     assert_eq!(report.segments.len(), 2);
     assert!(report.active_segment_id >= 2);
     assert!(report.segments.iter().all(|segment| segment.bytes > 0));
+    assert!(report
+        .segments
+        .iter()
+        .all(|segment| segment.record_count > 0));
+    assert!(report
+        .segments
+        .iter()
+        .all(|segment| segment.last_sequence >= segment.first_sequence));
+    assert!(report.segments.last().unwrap().last_sequence > 0);
 
     let recovery = wal.recover_node(7, 1).unwrap();
     let record = recovery.record.unwrap();
@@ -5794,6 +5815,11 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let recovery = wal.recover_node(78, 1).unwrap();
     let report = wal.segment_report(78, 1).unwrap();
     assert_eq!(report.segments.len(), 2);
+    assert!(report
+        .segments
+        .iter()
+        .all(|segment| segment.record_count > 0));
+    assert!(report.segments.last().unwrap().last_sequence > 0);
     let record = recovery.record.unwrap();
     assert_eq!(record.hard_state.commit_index, 8);
     assert_eq!(record.entries.len(), 8);
