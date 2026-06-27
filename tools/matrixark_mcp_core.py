@@ -3497,14 +3497,38 @@ def local_context_budget(args: Json) -> Json:
             }
         )
     explicit_tokens = args.get("local_context_tokens")
+    token_source = "estimated_from_local_context"
     if explicit_tokens is not None:
         if not isinstance(explicit_tokens, int) or explicit_tokens < 0:
             raise MatrixArkError("local_context_tokens must be a non-negative integer")
         token_total = max(token_total, explicit_tokens)
+        token_source = "agent_provided_local_context_tokens"
+    raw_safety_margin = args.get("local_context_safety_margin_tokens")
+    if raw_safety_margin is None:
+        raw_safety_margin = os.environ.get("MATRIXARK_LOCAL_CONTEXT_SAFETY_MARGIN_TOKENS")
+    if raw_safety_margin is None:
+        raw_max_context = args.get("max_context_tokens", 2048)
+        try:
+            max_context_tokens = max(0, int(raw_max_context or 2048))
+        except (TypeError, ValueError):
+            max_context_tokens = 2048
+        safety_margin_tokens = min(128, max_context_tokens // 20)
+        safety_margin_source = "matrixark_default_5_percent_capped"
+    else:
+        try:
+            safety_margin_tokens = int(raw_safety_margin or 0)
+        except (TypeError, ValueError):
+            raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
+        safety_margin_source = "agent_provided_safety_margin" if "local_context_safety_margin_tokens" in args else "env_safety_margin"
+    if safety_margin_tokens < 0:
+        raise MatrixArkError("local_context_safety_margin_tokens must be a non-negative integer")
     return {
         "items": items,
         "token_estimate": token_total,
         "text_hashes": text_hashes,
+        "token_source": token_source,
+        "safety_margin_tokens": safety_margin_tokens,
+        "safety_margin_source": safety_margin_source,
     }
 
 

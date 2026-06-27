@@ -450,6 +450,11 @@ TOOLS: list[Json] = [
                     "minimum": 0,
                     "description": "Optional token count for local context when the caller already counted it. MatrixArk reserves at least this many tokens before adding remote refs.",
                 },
+                "local_context_safety_margin_tokens": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Optional extra reserve subtracted from the remote MatrixArk budget so agent-local context and prompt scaffolding do not overflow the shared context budget. Defaults to 5% of max_context_tokens capped at 128.",
+                },
                 "reference_time_ms": {
                     "type": "integer",
                     "description": "Optional retrieval clock for deterministic tests and replay.",

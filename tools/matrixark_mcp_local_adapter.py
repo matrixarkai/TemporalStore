@@ -3393,10 +3393,13 @@ class MatrixArkLocalAdapter:
         elapsed_ms: float,
         records: list[Json],
         reason: str,
+        budget_source: str = "matrixark_default_max_context_tokens",
     ) -> Json:
         selected = []
         used_context_tokens = 0
-        remote_budget = max(0, max_context_tokens - int(local_budget.get("token_estimate", 0)))
+        local_tokens = int(local_budget.get("token_estimate", 0))
+        safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+        remote_budget = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
         for record in reversed(records):
             record_type = record.get("record_type")
             record_scope = candidate_access_scope(record)
@@ -3463,13 +3466,19 @@ class MatrixArkLocalAdapter:
             "auxiliary_candidate_count": 0,
             "used_context_tokens": used_context_tokens,
             "used_remote_context_tokens": used_context_tokens,
-            "used_local_context_tokens": local_budget["token_estimate"],
-            "total_prompt_context_tokens": used_context_tokens + local_budget["token_estimate"],
+            "used_local_context_tokens": local_tokens,
+            "total_prompt_context_tokens": used_context_tokens + local_tokens,
             "remote_context_budget_tokens": remote_budget,
+            "requested_max_context_tokens": max_context_tokens,
+            "local_context_safety_margin_tokens": safety_margin_tokens,
+            "budget_source": budget_source,
             "local_context_policy": {
                 "mode": "shared_budget_dedupe",
                 "local_context_count": len(local_budget["items"]),
-                "local_context_tokens": local_budget["token_estimate"],
+                "local_context_tokens": local_tokens,
+                "local_context_token_source": local_budget.get("token_source", "estimated_from_local_context"),
+                "safety_margin_tokens": safety_margin_tokens,
+                "safety_margin_source": local_budget.get("safety_margin_source", "matrixark_default_5_percent_capped"),
                 "dedupe_remote_against_local": True,
                 "remote_is_additive_only_within_remaining_budget": True,
             },
@@ -3496,6 +3505,9 @@ class MatrixArkLocalAdapter:
                 "used_remote_context_tokens": pack["used_remote_context_tokens"],
                 "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
                 "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+                "requested_max_context_tokens": pack["requested_max_context_tokens"],
+                "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
+                "budget_source": pack["budget_source"],
                 "primary_candidate_count": 0,
                 "auxiliary_candidate_count": 0,
                 "created_at_ms": now_ms(),
@@ -3574,6 +3586,7 @@ class MatrixArkLocalAdapter:
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
+        budget_source = "agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens"
         max_context_tokens = args.get("max_context_tokens", 2048)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
@@ -3620,6 +3633,7 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_record_load",
+                budget_source=budget_source,
             )
         node_scores: dict[int, Json] = {}
         event_embedding_vectors: dict[int, list[float]] = {}
@@ -3700,6 +3714,7 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_embedding_index_scan",
+                budget_source=budget_source,
             )
 
         top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
@@ -3943,6 +3958,7 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_event_scan",
+                budget_source=budget_source,
             )
         for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_entity":
@@ -4017,6 +4033,7 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_entity_scan",
+                budget_source=budget_source,
             )
         for record in reversed(tree_candidate_records):
             if record.get("record_type") != "context_segment":
@@ -4089,6 +4106,7 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_segment_scan",
+                budget_source=budget_source,
             )
         for record in reversed(tree_candidate_records):
             if record.get("record_type") not in {"resource_chunk", "skill_section"}:
@@ -4245,18 +4263,22 @@ class MatrixArkLocalAdapter:
                 elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
                 records=records,
                 reason="deadline_after_compression_scan",
+                budget_source=budget_source,
             )
         finish_retrieval_stage("rerank_score", stage_started_perf)
         stage_started_perf = time.perf_counter()
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
+        local_tokens = int(local_budget.get("token_estimate", 0))
+        safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+        remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
         selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
             primary_matches,
             auxiliary_matches,
-            max_context_tokens=max_context_tokens,
+            max_context_tokens=remote_context_budget_tokens,
             auxiliary_quota=auxiliary_quota,
             question_type=question_type,
-            reserved_tokens=local_budget["token_estimate"],
+            reserved_tokens=0,
             max_selected_refs=max_selected_refs,
             duplicate_text_hashes=local_budget["text_hashes"],
             deadline_exceeded=deadline_exceeded,
@@ -4355,13 +4377,19 @@ class MatrixArkLocalAdapter:
             "auxiliary_candidate_count": len(auxiliary_matches),
             "used_context_tokens": used_context_tokens,
             "used_remote_context_tokens": used_context_tokens,
-            "used_local_context_tokens": local_budget["token_estimate"],
-            "total_prompt_context_tokens": used_context_tokens + local_budget["token_estimate"],
-            "remote_context_budget_tokens": max(0, max_context_tokens - local_budget["token_estimate"]),
+            "used_local_context_tokens": local_tokens,
+            "total_prompt_context_tokens": used_context_tokens + local_tokens,
+            "remote_context_budget_tokens": remote_context_budget_tokens,
+            "requested_max_context_tokens": max_context_tokens,
+            "local_context_safety_margin_tokens": safety_margin_tokens,
+            "budget_source": budget_source,
             "local_context_policy": {
                 "mode": "shared_budget_dedupe",
                 "local_context_count": len(local_budget["items"]),
-                "local_context_tokens": local_budget["token_estimate"],
+                "local_context_tokens": local_tokens,
+                "local_context_token_source": local_budget.get("token_source", "estimated_from_local_context"),
+                "safety_margin_tokens": safety_margin_tokens,
+                "safety_margin_source": local_budget.get("safety_margin_source", "matrixark_default_5_percent_capped"),
                 "dedupe_remote_against_local": True,
                 "remote_is_additive_only_within_remaining_budget": True,
             },
@@ -4404,6 +4432,9 @@ class MatrixArkLocalAdapter:
             "used_remote_context_tokens": pack["used_remote_context_tokens"],
             "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
             "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+            "requested_max_context_tokens": pack["requested_max_context_tokens"],
+            "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
+            "budget_source": pack["budget_source"],
             "primary_candidate_count": len(primary_matches),
             "auxiliary_candidate_count": len(auxiliary_matches),
             "tree_candidate_records": len(tree_candidate_records),
