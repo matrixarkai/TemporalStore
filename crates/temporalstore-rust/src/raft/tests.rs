@@ -2404,6 +2404,61 @@ fn byteraft_offline_timeout_state_is_reported_per_peer() {
     assert_eq!(peer3.offline_timeout_rejections, 1);
 }
 
+// shared-corpus: raft_byteraft_election_controls raft_byteraft_metrics_admin_pipeline_status
+#[test]
+fn byteraft_leader_transfer_timeout_is_reported_per_peer() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        216,
+        [1, 2, 3],
+        RaftConfig {
+            transfer_timeout_tick: 3,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+
+    cluster.begin_leader_transfer(3).unwrap();
+    cluster.advance_time_ms(2);
+    let before = cluster.byteraft_runtime_admin_report();
+    let peer3 = before
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert!(peer3.transfer_leader_target);
+    assert_eq!(peer3.transfer_leader_elapsed_ms, 2);
+    assert_eq!(peer3.transfer_leader_timeouts, 0);
+    assert_eq!(peer3.transfer_leader_rejected, 0);
+
+    cluster.advance_time_ms(1);
+    let after = cluster.byteraft_runtime_admin_report();
+    let peer3 = after
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert!(!peer3.transfer_leader_target);
+    assert_eq!(peer3.transfer_leader_elapsed_ms, 0);
+    assert_eq!(peer3.transfer_leader_timeouts, 1);
+    assert_eq!(peer3.transfer_leader_rejected, 1);
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_timeouts"));
+
+    cluster.transfer_leader(3).unwrap();
+    let completed = cluster.byteraft_runtime_admin_report();
+    let peer3 = completed
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline");
+    assert_eq!(completed.leader_id, 3);
+    assert!(!peer3.transfer_leader_target);
+    assert_eq!(peer3.transfer_leader_completed, 1);
+    assert_eq!(peer3.transfer_leader_elapsed_ms, 0);
+}
+
 // shared-corpus: raft_byteraft_snapshot_lifecycle_depth raft_byteraft_metrics_admin_pipeline_status
 #[test]
 fn byteraft_snapshot_sender_timeout_clears_pipeline_and_reports_retry() {

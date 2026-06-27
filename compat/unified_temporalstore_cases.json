@@ -4685,7 +4685,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose peer lag, apply health, read-index, leader transfer, per-peer pipeline state, reorder queues, snapshot lifecycle including send elapsed/timeout counters, WAL segments, offline timeout state/rejections, and stale follower rejection evidence.",
+            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose peer lag, apply health, read-index, leader transfer elapsed/timeout counters, per-peer pipeline state, reorder queues, snapshot lifecycle including send elapsed/timeout counters, WAL segments, offline timeout state/rejections, and stale follower rejection evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [

@@ -512,6 +512,8 @@ pub struct ByteRaftPeerPipelineState {
     pub transfer_leader_accepted: u64,
     pub transfer_leader_rejected: u64,
     pub transfer_leader_completed: u64,
+    pub transfer_leader_elapsed_ms: u64,
+    pub transfer_leader_timeouts: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
     pub offline_elapsed_ms: u64,
@@ -955,6 +957,9 @@ pub struct RaftPeerPipelineRuntimeState {
     pub transfer_leader_accepted: u64,
     pub transfer_leader_rejected: u64,
     pub transfer_leader_completed: u64,
+    pub transfer_leader_started_ms: Option<u64>,
+    pub transfer_leader_elapsed_ms: u64,
+    pub transfer_leader_timeouts: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
     pub offline_since_ms: Option<u64>,
@@ -3108,7 +3113,24 @@ impl ProductionRaftRuntime {
         let transport = self.transport();
         let append = self.cluster.build_append_entries_request(target_id)?;
         match transport.append_entries(append) {
-            Ok(response) if response.success => {}
+            Ok(response) if response.success => {
+                let _ = self
+                    .cluster
+                    .record_append_entries_response(target_id, &response);
+            }
+            Ok(response) => {
+                let _ = self
+                    .cluster
+                    .record_append_entries_response(target_id, &response);
+                let snapshot = self.cluster.build_install_snapshot_request(target_id)?;
+                let response = transport.install_snapshot(snapshot)?;
+                if !response.success {
+                    return Err(RaftError::Transport(format!(
+                        "snapshot install rejected by node {target_id}: {:?}",
+                        response.reject_reason
+                    )));
+                }
+            }
             _ => {
                 let snapshot = self.cluster.build_install_snapshot_request(target_id)?;
                 let response = transport.install_snapshot(snapshot)?;
@@ -3210,12 +3232,13 @@ impl ProductionRaftRuntime {
                                 continue;
                             };
                             let entry_count = request.entries.len() as u64;
-                            if transport
-                                .append_entries(request)
-                                .map(|response| response.success)
-                                .unwrap_or(false)
-                            {
-                                sent += entry_count.max(1);
+                            if let Ok(response) = transport.append_entries(request) {
+                                let success = response.success;
+                                let _ =
+                                    cluster.record_append_entries_response(*target_id, &response);
+                                if success {
+                                    sent += entry_count.max(1);
+                                }
                             }
                         }
                     }
@@ -5322,6 +5345,7 @@ impl RaftCluster {
             };
             match result {
                 Ok(response) if response.success && response.match_index >= entry.index => {
+                    let _ = self.record_append_entries_response(target_id, &response);
                     let counts_for_quorum = self
                         .inner
                         .read()
@@ -5335,17 +5359,28 @@ impl RaftCluster {
                     }
                     successful_targets.push(target_id);
                 }
-                _ => failed_targets.push(target_id),
+                Ok(response) => {
+                    let _ = self.record_append_entries_response(target_id, &response);
+                    failed_targets.push(target_id);
+                }
+                Err(_) => failed_targets.push(target_id),
             }
         }
         while let Ok((target_id, result)) = rx.try_recv() {
             match result {
                 Ok(response) if response.success && response.match_index >= entry.index => {
+                    let _ = self.record_append_entries_response(target_id, &response);
                     if !successful_targets.contains(&target_id) {
                         successful_targets.push(target_id);
                     }
                 }
-                _ => {
+                Ok(response) => {
+                    let _ = self.record_append_entries_response(target_id, &response);
+                    if !failed_targets.contains(&target_id) {
+                        failed_targets.push(target_id);
+                    }
+                }
+                Err(_) => {
                     if !failed_targets.contains(&target_id) {
                         failed_targets.push(target_id);
                     }
@@ -5382,24 +5417,24 @@ impl RaftCluster {
                             leader_commit: entry.index,
                         }
                     };
-                    if transport
-                        .append_entries(retry_request)
-                        .map(|response| response.success && response.match_index >= entry.index)
-                        .unwrap_or(false)
-                    {
-                        let counts_for_quorum = self
-                            .inner
-                            .read()
-                            .expect("raft cluster lock poisoned")
-                            .nodes
-                            .get(&target_id)
-                            .map(|node| node.replica_role.participates_in_quorum())
-                            .unwrap_or(false);
-                        if counts_for_quorum {
-                            replicated += 1;
+                    if let Ok(response) = transport.append_entries(retry_request) {
+                        let success = response.success && response.match_index >= entry.index;
+                        let _ = self.record_append_entries_response(target_id, &response);
+                        if success {
+                            let counts_for_quorum = self
+                                .inner
+                                .read()
+                                .expect("raft cluster lock poisoned")
+                                .nodes
+                                .get(&target_id)
+                                .map(|node| node.replica_role.participates_in_quorum())
+                                .unwrap_or(false);
+                            if counts_for_quorum {
+                                replicated += 1;
+                            }
+                            let _ = self.catch_up(target_id);
+                            successful_targets.push(target_id);
                         }
-                        let _ = self.catch_up(target_id);
-                        successful_targets.push(target_id);
                     }
                 }
             }
@@ -5441,10 +5476,14 @@ impl RaftCluster {
                 entries: Vec::new(),
                 leader_commit: entry.index,
             };
-            let committed = transport
-                .append_entries(request)
-                .map(|response| response.success)
-                .unwrap_or(false);
+            let committed = match transport.append_entries(request) {
+                Ok(response) => {
+                    let success = response.success;
+                    let _ = self.record_append_entries_response(*target_id, &response);
+                    success
+                }
+                Err(_) => false,
+            };
             if committed {
                 let _ = self.catch_up(*target_id);
             }
@@ -5459,7 +5498,7 @@ impl RaftCluster {
         inner.persist_configured_wal()
     }
 
-    pub fn transfer_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+    pub fn begin_leader_transfer(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         inner.ensure_live_leader()?;
         let leader_commit_index = inner
@@ -5467,6 +5506,7 @@ impl RaftCluster {
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?
             .commit_index;
+        let logical_time_ms = inner.logical_time_ms;
         let candidate = inner
             .nodes
             .get_mut(&node_id)
@@ -5497,6 +5537,56 @@ impl RaftCluster {
             });
         }
         candidate.pipeline_state.transfer_leader_target = true;
+        candidate.pipeline_state.transfer_leader_started_ms = Some(logical_time_ms);
+        candidate.pipeline_state.transfer_leader_elapsed_ms = 0;
+        candidate.pipeline_state.transfer_leader_accepted = candidate
+            .pipeline_state
+            .transfer_leader_accepted
+            .saturating_add(1);
+        inner.persist_configured_wal()
+    }
+
+    pub fn transfer_leader(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        inner.ensure_live_leader()?;
+        let leader_commit_index = inner
+            .nodes
+            .get(&inner.leader_id)
+            .ok_or(RaftError::LeaderUnavailable)?
+            .commit_index;
+        let logical_time_ms = inner.logical_time_ms;
+        let candidate = inner
+            .nodes
+            .get_mut(&node_id)
+            .ok_or(RaftError::NodeNotFound(node_id))?;
+        candidate.pipeline_state.transfer_leader_requests = candidate
+            .pipeline_state
+            .transfer_leader_requests
+            .saturating_add(1);
+        if !candidate.alive {
+            candidate.pipeline_state.transfer_leader_rejected = candidate
+                .pipeline_state
+                .transfer_leader_rejected
+                .saturating_add(1);
+            inner.persist_configured_wal()?;
+            return Err(RaftError::NodeNotFound(node_id));
+        }
+        if candidate.commit_index < leader_commit_index {
+            let replica_commit_index = candidate.commit_index;
+            candidate.pipeline_state.transfer_leader_rejected = candidate
+                .pipeline_state
+                .transfer_leader_rejected
+                .saturating_add(1);
+            inner.persist_configured_wal()?;
+            return Err(RaftError::ReplicaLagging {
+                replica_id: node_id,
+                replica_commit_index,
+                leader_commit_index,
+            });
+        }
+        candidate.pipeline_state.transfer_leader_target = true;
+        candidate.pipeline_state.transfer_leader_started_ms = Some(logical_time_ms);
+        candidate.pipeline_state.transfer_leader_elapsed_ms = 0;
         candidate.pipeline_state.transfer_leader_accepted = candidate
             .pipeline_state
             .transfer_leader_accepted
@@ -5508,6 +5598,8 @@ impl RaftCluster {
                 .transfer_leader_completed
                 .saturating_add(1);
             target.pipeline_state.transfer_leader_target = false;
+            target.pipeline_state.transfer_leader_started_ms = None;
+            target.pipeline_state.transfer_leader_elapsed_ms = 0;
         }
         inner.persist_configured_wal()
     }
@@ -6008,7 +6100,20 @@ impl RaftCluster {
         let byte_limit = inner.config.max_memory_replicate_log_bytes.max(1);
         let mut current_inflight_entries = 0;
         let mut current_inflight_bytes = 0;
+        let leader_commit_for_drain = inner
+            .nodes
+            .get(&inner.leader_id)
+            .map(|leader| leader.commit_index)
+            .unwrap_or_default();
         if let Some(target) = inner.nodes.get_mut(&target_id) {
+            if target.commit_index >= leader_commit_for_drain
+                && (target.pipeline_state.inflight_entries > 0
+                    || target.pipeline_state.inflight_bytes > 0)
+            {
+                target.pipeline_state.inflight_entries = 0;
+                target.pipeline_state.inflight_bytes = 0;
+                target.pipeline_state.append_queue_depth = 0;
+            }
             target.pipeline_state.append_requests =
                 target.pipeline_state.append_requests.saturating_add(1);
             current_inflight_entries = target.pipeline_state.inflight_entries;
@@ -6111,6 +6216,32 @@ impl RaftCluster {
             entries,
             leader_commit,
         })
+    }
+
+    pub fn record_append_entries_response(
+        &self,
+        target_id: RaftNodeId,
+        response: &AppendEntriesResponse,
+    ) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let target = inner
+            .nodes
+            .get_mut(&target_id)
+            .ok_or(RaftError::NodeNotFound(target_id))?;
+        target.pipeline_state.inflight_entries = 0;
+        target.pipeline_state.inflight_bytes = 0;
+        target.pipeline_state.append_queue_depth = 0;
+        if response.success {
+            target.pipeline_state.match_index =
+                target.pipeline_state.match_index.max(response.match_index);
+            target.pipeline_state.next_index = response.match_index.saturating_add(1);
+        } else {
+            target.pipeline_state.append_rejected =
+                target.pipeline_state.append_rejected.saturating_add(1);
+            target.pipeline_state.next_index =
+                target.pipeline_state.next_index.saturating_sub(1).max(1);
+        }
+        inner.persist_configured_wal()
     }
 
     pub fn receive_append_entries(
@@ -7291,6 +7422,7 @@ impl RaftCluster {
         inner.logical_time_ms = inner.logical_time_ms.saturating_add(elapsed_ms);
         inner.refresh_offline_timeout_states();
         inner.refresh_snapshot_send_timeouts();
+        inner.refresh_leader_transfer_timeouts();
         let _ = inner.persist_configured_wal();
     }
 
@@ -7663,6 +7795,37 @@ impl RaftClusterInner {
                 node.pipeline_state.snapshot_backpressure_rejections = node
                     .pipeline_state
                     .snapshot_backpressure_rejections
+                    .saturating_add(1);
+            }
+        }
+    }
+
+    fn refresh_leader_transfer_timeouts(&mut self) {
+        if self.config.transfer_timeout_tick == 0 {
+            return;
+        }
+        for node in self.nodes.values_mut() {
+            if !node.pipeline_state.transfer_leader_target {
+                node.pipeline_state.transfer_leader_started_ms = None;
+                node.pipeline_state.transfer_leader_elapsed_ms = 0;
+                continue;
+            }
+            let started_ms = node
+                .pipeline_state
+                .transfer_leader_started_ms
+                .get_or_insert(self.logical_time_ms);
+            node.pipeline_state.transfer_leader_elapsed_ms =
+                self.logical_time_ms.saturating_sub(*started_ms);
+            if node.pipeline_state.transfer_leader_elapsed_ms >= self.config.transfer_timeout_tick {
+                node.pipeline_state.transfer_leader_target = false;
+                node.pipeline_state.transfer_leader_started_ms = None;
+                node.pipeline_state.transfer_leader_timeouts = node
+                    .pipeline_state
+                    .transfer_leader_timeouts
+                    .saturating_add(1);
+                node.pipeline_state.transfer_leader_rejected = node
+                    .pipeline_state
+                    .transfer_leader_rejected
                     .saturating_add(1);
             }
         }
@@ -8268,6 +8431,14 @@ impl RaftClusterInner {
                         && pipeline.offline_elapsed_ms >= self.config.offline_timeout_tick;
                     pipeline.offline_timeout_reached = reached;
                 }
+                if pipeline.transfer_leader_target {
+                    if let Some(started_ms) = pipeline.transfer_leader_started_ms {
+                        pipeline.transfer_leader_elapsed_ms =
+                            self.logical_time_ms.saturating_sub(started_ms);
+                    }
+                } else {
+                    pipeline.transfer_leader_elapsed_ms = 0;
+                }
                 ByteRaftPeerPipelineState {
                     peer_id: node.id,
                     role: node.role,
@@ -8305,6 +8476,8 @@ impl RaftClusterInner {
                     transfer_leader_accepted: pipeline.transfer_leader_accepted,
                     transfer_leader_rejected: pipeline.transfer_leader_rejected,
                     transfer_leader_completed: pipeline.transfer_leader_completed,
+                    transfer_leader_elapsed_ms: pipeline.transfer_leader_elapsed_ms,
+                    transfer_leader_timeouts: pipeline.transfer_leader_timeouts,
                     pre_vote_rejections: pipeline.pre_vote_rejections,
                     election_rejections: pipeline.election_rejections,
                     offline_elapsed_ms: pipeline.offline_elapsed_ms,
@@ -9603,6 +9776,10 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_rejected counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_completed Leader-transfer completions per peer.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_completed counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms Pending leader-transfer elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_timeouts Leader-transfer timeout count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_timeouts counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_elapsed_ms ByteRaft-style offline elapsed time per peer.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_elapsed_ms gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_timeout_reached Whether a peer has crossed the configured offline timeout.\n");
@@ -9810,6 +9987,18 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_transfer_leader_completed",
             labels,
             peer.transfer_leader_completed,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms",
+            labels,
+            peer.transfer_leader_elapsed_ms,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_transfer_leader_timeouts",
+            labels,
+            peer.transfer_leader_timeouts,
         );
         push_raft_metric(
             out,
