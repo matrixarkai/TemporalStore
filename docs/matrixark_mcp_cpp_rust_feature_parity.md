@@ -102,7 +102,7 @@ Current Rust MCP path:
 MatrixArk MCP -> persistent matrixark_record_log --serve process -> Rust SDK -> TemporalStore
 
 Future production option:
-MatrixArk MCP -> long-lived Rust gateway or Python-callable Rust binding -> Rust SDK -> TemporalStore
+MatrixArk MCP -> Rust proxy or Python-callable Rust binding -> Rust SDK -> TemporalStore
 ```
 
 The persistent process is enough for MCP parity and local debugging. A native gateway or binding can further improve concurrency and operational control.

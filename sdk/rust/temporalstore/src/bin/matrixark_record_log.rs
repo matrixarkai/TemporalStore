@@ -446,14 +446,14 @@ fn escape_label(value: &str) -> String {
 
 fn matrixark_rust_storage_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk") => "rust-direct-sdk-bridge",
+        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => "rust-direct-sdk-bridge",
         _ => "rust-proxy",
     }
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk") => "long_lived_rust_direct_sdk_bridge",
+        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => "long_lived_rust_direct_sdk_bridge",
         _ => "rust_proxy_stdio",
     }
 }

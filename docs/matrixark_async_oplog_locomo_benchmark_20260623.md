@@ -77,7 +77,7 @@ This does not mean all production durability concerns disappear:
 
 ## Remaining Work
 
-1. Repeat the same shape with Rust TemporalStore once the Rust long-lived gateway is configured for equivalent async behavior.
+1. Repeat the same shape with Rust TemporalStore once the Rust proxy is configured for equivalent async behavior.
 2. Run full question count, not only 100 questions.
 3. Add a benchmark matrix: sync vs async storage, buffered vs deferred audit, one data node vs multiple data nodes.
 4. Add native atomic batch append so `record_bundle` and `record_count` advance in one server-side operation.
