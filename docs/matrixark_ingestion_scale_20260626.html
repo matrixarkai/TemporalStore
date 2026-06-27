@@ -16,6 +16,8 @@ The previous 100K local JSONL attempts hit a 15-minute outer guardrail. That has
 - Cached `ContextNode` and `context_child_ref` existence, avoiding repeated full JSONL scans during node materialization.
 - Batched event embedding generation inside `matrixark_batch_extract` using `embeddings_for_texts()` and reused vectors in records.
 - Switched local JSONL hot-path writes to compact unsorted JSON serialization; record fields are unchanged.
+- Changed C++/Rust direct adapters so hot-path append no longer hydrates the full Python record cache before writing. Direct append now uses the native append counter and writes to TemporalStore first.
+- Added optional direct native write queue with `MATRIXARK_DIRECT_WRITE_QUEUE=1`. Async-route records can be accepted into the queue and flushed by a background worker; sync-route records still write inline.
 
 ## Configuration
 
@@ -139,6 +141,22 @@ The same request can still use expanded low-level fields:
 ```
 
 MatrixArk normalizes all forms into `storage_route` and attaches it to hot records, debug/audit context, and C++/Rust batch-write entries. The native backend can use `storage_route.route_key`, `storage_route.storage_family`, `storage_route.write_mode`, `storage_route.background_write`, and `storage_route.write_ack_policy` to dispatch to shared-store async/sync or Raft async/sync paths. Benchmark parity still requires the actual C++/Rust data-node topology to be launched in the same route and proven with `--topology-report-json` when using fail-closed parity mode.
+
+## Native Direct Append And Queue
+
+The local JSONL backend is for development and deterministic CI. It is not the scale proof path. For C++/Rust scale, MatrixArk should use the TemporalStore direct/gateway adapter:
+
+- Message ingest materializes MatrixArk records in Python, then calls the native TemporalStore append boundary.
+- The direct adapter no longer calls `read_all()` before append, so it avoids full-log scans before the native write.
+- The compact append log stores records in sharded TemporalStore hash fields plus a tiny `record_count` string.
+- `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables a process-local background queue for async-route writes. This lets message ingest return after accepting records into the queue while the worker flushes to C++/Rust TemporalStore.
+- `write_mode=sync` is never queued and waits for the native write path.
+
+So the correct scale matrix is:
+
+1. C++/Rust native backend 1K/10K/100K ingestion sweeps with direct append.
+2. Retrieval scale separately with 4/8/16/32 workers, because retrieval stresses scans, packing, and audit.
+3. Full context pipeline scale with retrieval and audit enabled, because that stresses different paths from ingest-only.
 
 ## Storage Mode Nuance
 
