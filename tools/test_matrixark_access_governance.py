@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.request import Request, urlopen
 
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError, make_matrixark_http_handler
+from matrixark_access import MatrixArkSqlMetadataStore
 
 
 class MatrixArkAccessGovernanceTest(unittest.TestCase):
@@ -61,6 +62,31 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "matrixark_admin_list_api_keys",
                 {"api_key": viewer, "account_id": "acct_gov", "tenant_id": "tenant_gov"},
             )
+
+    def test_sql_metadata_store_populates_normalized_portal_tables(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        store = MatrixArkSqlMetadataStore(backend="sqlite", dsn=str(Path(tmp.name) / "metadata.sqlite3"), auto_init=True)
+        store.append({"record_type": "matrixark_account", "account_id": "acct_sql", "account_name": "SQL Account", "status": "active", "created_at_ms": 1})
+        store.append({"record_type": "matrixark_tenant", "account_id": "acct_sql", "tenant_id": "tenant_sql", "tenant_name": "SQL Tenant", "status": "active", "tenant_hash": 7, "created_at_ms": 2})
+        store.append({"record_type": "matrixark_user", "account_id": "acct_sql", "tenant_id": "tenant_sql", "user_id": "alice", "display_name": "Alice", "status": "active", "created_at_ms": 3})
+        store.append({"record_type": "matrixark_api_key", "api_key_id": "key_sql", "account_id": "acct_sql", "tenant_id": "tenant_sql", "role": "owner", "status": "active", "api_key_hash": "abcdef1234567890", "created_at_ms": 4})
+        store.append({"record_type": "matrixark_api_key_usage", "usage_id_hash": 5, "api_key_id": "key_sql", "account_id": "acct_sql", "tenant_id": "tenant_sql", "user_id": "alice", "action": "matrixark_retrieve", "used_at_ms": 5})
+        store.append({"record_type": "matrixark_sso_user_mapping", "provider": "github", "external_user_id": "gh_1", "account_id": "acct_sql", "tenant_id": "tenant_sql", "matrixark_user_id": "alice", "email": "alice@example.com", "created_at_ms": 6})
+        store.append({"record_type": "matrixark_audit_log", "audit_id_hash": 8, "account_id": "acct_sql", "tenant_id": "tenant_sql", "user_id": "alice", "api_key_id": "key_sql", "action": "admin.test", "status": "ok", "created_at_ms": 7})
+
+        counts = store.normalized_counts()
+        self.assertEqual(7, counts[store.TABLE])
+        self.assertEqual(1, counts[store.ACCOUNT_TABLE])
+        self.assertEqual(1, counts[store.TENANT_TABLE])
+        self.assertEqual(1, counts[store.USER_TABLE])
+        self.assertEqual(1, counts[store.API_KEY_TABLE])
+        self.assertEqual(1, counts[store.API_KEY_USAGE_TABLE])
+        self.assertEqual(1, counts[store.SSO_TABLE])
+        self.assertEqual(1, counts[store.AUDIT_TABLE])
+        ready = store.check_ready()
+        self.assertIn(store.USER_TABLE, ready["normalized_tables"])
+        self.assertEqual("ok", ready["status"])
 
     def test_production_deployment_requires_live_sql_metadata(self) -> None:
         saved = {
