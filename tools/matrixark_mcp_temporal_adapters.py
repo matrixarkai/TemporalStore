@@ -24,8 +24,10 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+    from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+    from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
 
 def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
@@ -145,18 +147,34 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return "temporalstore-cpp"
 
     def _ensure_backend_metric_fields(self) -> None:
-        if hasattr(self, "_metrics_lock"):
-            return
-        self._metrics_lock = threading.RLock()
-        self._metrics_started_at_ms = now_ms()
-        self._commands_total = 0
-        self._errors_total = 0
-        self._timeouts_total = 0
-        self._latency_sum_ms = 0.0
-        self._latency_max_ms = 0.0
-        self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
-        self._records_written_total = 0
-        self._records_read_total = 0
+        if not hasattr(self, "_metrics_lock"):
+            self._metrics_lock = threading.RLock()
+        if not hasattr(self, "_metrics_started_at_ms"):
+            self._metrics_started_at_ms = now_ms()
+        if not hasattr(self, "_commands_total"):
+            self._commands_total = 0
+        if not hasattr(self, "_errors_total"):
+            self._errors_total = 0
+        if not hasattr(self, "_timeouts_total"):
+            self._timeouts_total = 0
+        if not hasattr(self, "_latency_sum_ms"):
+            self._latency_sum_ms = 0.0
+        if not hasattr(self, "_latency_max_ms"):
+            self._latency_max_ms = 0.0
+        if not hasattr(self, "_latency_buckets"):
+            self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
+        if not hasattr(self, "_records_written_total"):
+            self._records_written_total = 0
+        if not hasattr(self, "_records_read_total"):
+            self._records_read_total = 0
+        if not hasattr(self, "_backend_ready"):
+            self._backend_ready = False
+        if not hasattr(self, "_records_cache"):
+            self._records_cache = []
+        if not hasattr(self, "_audit_buffer"):
+            self._audit_buffer = []
+        if not hasattr(self, "_audit_flush_failures"):
+            self._audit_flush_failures = 0
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
         self._ensure_backend_metric_fields()
