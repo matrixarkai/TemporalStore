@@ -136,6 +136,19 @@ The caller does not need to know MatrixArk internal data models.  MatrixArk owns
 extraction into `ContextNode`, `ContextEvent`, `ContextEntity`,
 `ContextSummary`, `ContextIndex`, `ResourceChunk`, and `ContextPackAudit`.
 
+Resource/skill retrieval uses a strict serving boundary:
+
+```text
+Resources = cited chunks + summaries + embeddings + indexes
+Resource facts = normal events/entities with source_chunk refs
+Skills = separate SkillManifest/SkillSection retrieval path
+Audit/replay = MatrixArk-specific observability layer
+```
+
+That means resources provide cited evidence, resource facts join the normal
+event/entity memory graph, skills provide operational instructions, and audit
+explains selected/dropped refs without becoming the primary memory lane.
+
 ## MatrixArk Workflow From Agent Payloads
 
 MatrixArk routes each payload by intent and available fields:
