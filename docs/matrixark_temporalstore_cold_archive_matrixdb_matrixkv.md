@@ -22,6 +22,362 @@ Synchronous double-write creates problems exactly where MatrixArk needs predicta
 
 TemporalStore already has append/oplog semantics and replayable context records. Use that as the source for an outbox-style archiver instead of asking the API request to preserve history in two stores at once.
 
+## Large Object Problem
+
+TemporalStore is primarily the serving store. It should answer current user,
+agent, resource, skill, and recent-history queries with bounded latency. If one
+logical context object keeps every raw event forever, the object eventually
+becomes mostly old compressed history plus cold raw payloads. That is the wrong
+shape for serving:
+
+- hot retrieval wastes time walking old windows that should be represented by
+  summaries;
+- summary refresh and time compression may repeatedly touch cold pages;
+- replay/audit records can become larger than serving records;
+- compaction pressure grows with data that is rarely used online;
+- object-level locks, cache residency, and prefix scans become noisy.
+
+The serving object should instead look like this:
+
+```mermaid
+flowchart TD
+  A["ContextNode serving object"]
+  B["Hot tail: recent raw ContextEvents"]
+  C["Current ContextEntities"]
+  D["L0/L1 summaries + embeddings"]
+  E["Secondary indexes"]
+  F["Compressed windows"]
+  G["Cold refs / archive markers"]
+  H["Raw historical payload in MatrixDB/object storage"]
+
+  A --> B
+  A --> C
+  A --> D
+  A --> E
+  A --> F
+  F --> G
+  G --> H
+```
+
+Normal serving scans the hot tail, current entities, indexes, summaries, and
+compressed windows. It follows cold refs only for replay, compliance, deep
+debug, or explicit historical queries.
+
+## Historical Data Management Options
+
+### Option 1: TemporalStore-Only Progressive Compression
+
+Keep all raw events in TemporalStore. Periodically create
+`context_compression_event` records and prefer those summaries during retrieval.
+Raw events remain in the same TemporalStore object or prefix.
+
+**Pros**
+
+- simplest deployment and debugging story;
+- no cross-store archive worker;
+- replay always reads from the serving store;
+- strong local consistency with the hot path.
+
+**Cons**
+
+- serving objects still grow without bound;
+- cold raw events compete with hot data for cache and compaction;
+- background compression may scan old blocks/pages repeatedly;
+- expensive for large users, long-running agents, PDFs, repos, and resource
+  imports;
+- weaker story for offline analytics than MatrixDB.
+
+**Use when**
+
+- local single-user deployments;
+- short retention;
+- early CI and small benchmark runs;
+- compliance does not require long-term cold retention.
+
+### Option 2: TemporalStore Hot Set + MatrixKV/MatrixDB Cold Archive
+
+TemporalStore keeps active serving records, current state, summaries, indexes,
+embeddings, compressed windows, and compact cold refs. MatrixKV stores archive
+watermarks, policy, and cold-ref metadata. MatrixDB stores long-term replay,
+audit, benchmark traces, token/quality metrics, and historical rows.
+
+**Pros**
+
+- keeps TemporalStore small and serving-focused;
+- makes historical analytics cheap and SQL-friendly;
+- supports retention policies, audit dashboards, and replay debugging;
+- avoids synchronous dual-write on hot requests;
+- lets C++/Rust optimize hot retrieval without becoming an analytics database.
+
+**Cons**
+
+- requires archive workers, idempotency, watermarks, and verification;
+- eventual archive consistency must be visible in task/ops status;
+- replay can cross stores and may be slower than hot retrieval;
+- more operational components.
+
+**Use when**
+
+- production cloud;
+- enterprise audit and portal analytics;
+- many agents/users/resources;
+- long retention with bounded serving latency.
+
+**Recommendation:** this is the default production design.
+
+### Option 3: TemporalStore Hot Set + Object Storage Raw Payloads
+
+TemporalStore stores hot records, summaries, embeddings, indexes, and cold refs.
+Raw old events and large resource chunks are compressed into files such as
+`s3://.../context_event_window.json.zst`. MatrixKV stores the pointer and
+checksum. MatrixDB is optional.
+
+**Pros**
+
+- lowest storage cost for raw history;
+- good for large PDFs, repos, tool logs, traces, and full replay payloads;
+- raw bytes stay out of TemporalStore;
+- easy lifecycle and retention integration with S3-compatible storage.
+
+**Cons**
+
+- object storage is not ideal for ad hoc analytics without MatrixDB;
+- replay latency is higher;
+- requires chunk manifests and checksums;
+- harder to query historical details by SQL unless also indexed elsewhere.
+
+**Use when**
+
+- raw history is large but rarely queried;
+- compliance requires retention but not frequent SQL analytics;
+- resource chunks or tool-output payloads dominate storage.
+
+### Option 4: TemporalStore Internal Tiering
+
+TemporalStore itself keeps hot pages and cold pages in different internal tiers.
+Cold pages may be compressed, evicted from memory/cache, or moved to cheaper
+block/object storage while still addressed by TemporalStore metadata.
+
+**Pros**
+
+- one logical database API;
+- C++/Rust can optimize page layout, min/max timestamp indexes, and prefetch;
+- no external MatrixDB required for simple historical replay;
+- strong fit with TemporalStore-native temporal ordering.
+
+**Cons**
+
+- more storage-engine complexity;
+- still not a replacement for MatrixDB-style analytics;
+- needs careful cache, compaction, TTL, and page-index design;
+- can hide cold-history cost inside serving queries if not bounded.
+
+**Use when**
+
+- embedded/local deployments need one binary;
+- C++/Rust engine work is prioritized;
+- historical replay needs to remain within TemporalStore APIs.
+
+### Option 5: Query-Driven Lazy Compression
+
+Do not schedule compression. When a query touches an old time window, compress
+that window on demand, store the summary, and use it next time.
+
+**Pros**
+
+- avoids background work for never-used history;
+- naturally follows real recall demand;
+- useful as a fallback for missed compression windows.
+
+**Cons**
+
+- first query against an old window can be slow;
+- hard to guarantee benchmark latency;
+- compression quality depends on query timing;
+- not enough for retention/TTL because old raw data may remain forever.
+
+**Use when**
+
+- paired with scheduled compression as a fallback;
+- low-volume local mode;
+- exploratory historical replay.
+
+## Recommended Hybrid
+
+Use a three-tier lifecycle:
+
+1. **Hot serving tier in TemporalStore**
+   - recent raw events;
+   - current entities;
+   - resource/skill active chunks;
+   - L0/L1 summaries and embeddings;
+   - secondary indexes;
+   - recent audits or sampled compact telemetry.
+
+2. **Warm compressed tier in TemporalStore**
+   - `context_compression_event` by node and time window;
+   - source ids, source count, checksum, compression policy id;
+   - summary embedding for tree traversal and retrieval;
+   - cold refs for raw payload if archived.
+
+3. **Cold history tier outside the serving path**
+   - MatrixKV for watermarks, cold refs, retention policies, and archive state;
+   - MatrixDB for replay rows, benchmark traces, token/quality analytics, and
+     historical audit;
+   - object storage for large raw payloads and raw resource bytes.
+
+```mermaid
+flowchart LR
+  A["Hot TemporalStore records"]
+  B["Scheduled compression worker"]
+  C["Warm compressed TemporalStore windows"]
+  D["Archive worker"]
+  E["MatrixKV cold refs + watermarks"]
+  F["MatrixDB historical rows"]
+  G["Object storage raw payloads"]
+  H["TTL / prune marker"]
+
+  A --> B --> C
+  C --> D
+  A --> D
+  D --> E
+  D --> F
+  D --> G
+  E --> H
+  C --> H
+```
+
+## Should We Always Scan Cold Blocks Or Pages For Compression?
+
+No. We should not always scan cold blocks/pages just to generate time-compressed
+summaries. That would turn the background compression worker into a hidden full
+history scanner and would make serving storage pay for offline lifecycle work.
+
+The production rule should be:
+
+> Compress from hot or warm indexed windows before data becomes cold. Once data
+> is cold, only scan cold blocks/pages for bounded backfill, repair, compliance,
+> or explicit historical replay.
+
+### Why Not Full Cold Scans
+
+- cold pages are intentionally evicted or archived because serving rarely needs
+  them;
+- repeated scans defeat cache and storage-tier separation;
+- compression jobs can create unpredictable read amplification;
+- large tenants or agents can starve small hot serving queries;
+- if raw data was already archived, object/MatrixDB reads may be cheaper and
+  more controllable than TemporalStore page scans.
+
+### What To Use Instead
+
+Maintain compact metadata that lets workers find compression candidates without
+scanning raw cold pages:
+
+| Metadata | Store | Purpose |
+| --- | --- | --- |
+| `node_time_bucket` | TemporalStore or MatrixKV | event count, min/max timestamp, byte estimate, compression state |
+| `compression_watermark` | MatrixKV | oldest uncompressed timestamp per node/scope |
+| `archive_watermark` | MatrixKV | oldest unarchived timestamp per node/scope |
+| `page_time_range` | TemporalStore page metadata | min/max event timestamp and record count per block/page |
+| `context_compression_event` | TemporalStore | warm summary used by retrieval |
+| `context_archive_marker` | TemporalStore | pointer proving raw data was archived |
+| `cold_ref` | MatrixKV | exact MatrixDB/object location and checksum |
+
+With those records, the worker can select a bounded window such as:
+
+```text
+scope_key = acct|tenant|user
+node_id = n123
+window = [2026-01-01, 2026-01-08)
+state = uncompressed AND hot_or_warm
+limit = 5_000 events or 8 MB
+```
+
+The worker should read only the selected windows, generate one summary, record
+source ids/checksum, and update the watermark. It should not scan every old page
+looking for possible work.
+
+## Compression Worker Policy
+
+Recommended defaults:
+
+| Policy | Default | Why |
+| --- | --- | --- |
+| hot raw retention | 30-90 days | enough recent fidelity for serving |
+| compression cadence | every few minutes to hourly | decoupled from ingest latency |
+| minimum window size | 20 events or 1 day | avoid tiny summaries |
+| maximum window size | 5k events or 8-32 MB | bounded latency and memory |
+| page scan mode | metadata/index first | avoid cold full scans |
+| cold scan mode | disabled by default | backfill/repair only |
+| LLM compression | async optional | cost controlled, not hot path |
+| safety gate | required before TTL | do not hide answer-bearing facts |
+| reinforcement | recall pins or warms old refs | prevent pruning useful history |
+
+Worker flow:
+
+```mermaid
+flowchart TD
+  A["Read dirty/compression candidate buckets"]
+  B["Skip if already compressed or pinned"]
+  C["Read bounded hot/warm event window"]
+  D["Generate TIME_COMPRESS summary"]
+  E["Write context_compression_event + embedding"]
+  F["Run safety gate"]
+  G["Archive raw sources if policy requires"]
+  H["Write cold refs / archive markers"]
+  I["Mark raw events ttl_eligible"]
+
+  A --> B --> C --> D --> E --> F
+  F -- "pass" --> G --> H --> I
+  F -- "fail" --> B
+```
+
+## Serving Query Policy
+
+Serving retrieval should be explicit about when it touches old data:
+
+1. Traverse `ContextNode` L0/L1 summaries.
+2. Apply secondary-index filters.
+3. Score current entities, recent events, active resource chunks, active skill
+   sections, and warm compression summaries.
+4. Pack under token budget.
+5. Follow cold refs only if:
+   - the query asks for historical replay;
+   - the warm compression summary says it has answer-bearing sources;
+   - compliance/debug mode is enabled;
+   - benchmark safety validation explicitly requests raw source replay.
+
+This keeps normal context retrieval fast while preserving the ability to replay
+or inspect raw history.
+
+## C++/Rust Implementation Requirements
+
+Both C++ and Rust should expose the same lifecycle primitives:
+
+- append `ContextEvent` with timestamp-keyed ordering;
+- update per-node time-bucket metadata during ingest;
+- mark compression candidates without scanning raw history;
+- scan candidate windows by scope, node, timestamp, and state;
+- write `context_compression_event` and summary embedding;
+- write/read `context_archive_marker` and `cold_ref`;
+- expose bounded cold replay APIs with deadlines;
+- emit metrics:
+  - compression candidate count;
+  - compression lag;
+  - compressed event count;
+  - cold scan count;
+  - cold scan bytes;
+  - archive lag;
+  - TTL eligible count;
+  - compression safety failures;
+  - replay cold-ref fetch latency.
+
+The key C++/Rust parity rule is that both backends can serve the same hot
+records and compression summaries without requiring MatrixDB on the retrieval
+hot path. MatrixDB/MatrixKV are lifecycle and analytics complements, not
+serving dependencies.
+
 ## Store Responsibilities
 
 | Data class | Default store | Reason |
