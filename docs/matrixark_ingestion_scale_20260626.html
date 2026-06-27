@@ -1,4 +1,4 @@
-# MatrixArk Event Ingestion Scale Test - 2026-06-26
+<!doctype html><html><head><meta charset="utf-8"><title>MatrixArk Ingestion Scale 20260626</title><style>body{font-family:Inter,system-ui,sans-serif;margin:32px;line-height:1.45}pre{white-space:pre-wrap}</style></head><body><pre># MatrixArk Event Ingestion Scale Test - 2026-06-26
 
 ## Summary
 
@@ -101,3 +101,4 @@ timeout 900 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_cont
 2. Keep retrieval scale separate: concurrent retrieve workers 4/8/16/32 with bounded ContextPack timeouts.
 3. Add native batch append/prefix-scan pushdown to C++ and Rust for production serving.
 4. Keep `--skip-prior-context` for pure write-scale tests; run quality tests with prior context enabled.
+</pre></body></html>

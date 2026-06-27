@@ -1,0 +1,45 @@
+{
+  "backend": "local",
+  "batch_size": 1000,
+  "batches": 20,
+  "errors": 0,
+  "events_requested": 20000,
+  "hit_rate": 0.0,
+  "ingest_elapsed_sec": 92.573,
+  "ingest_latency_ms": {
+    "avg": 4627.356,
+    "p50": 3582.39,
+    "p95": 9393.7,
+    "p99": 11528.848
+  },
+  "ingest_mode": "batch",
+  "io_timeout_ms": 0,
+  "message_qps": 216.045,
+  "messages_ingested": 20000,
+  "metaserver": "",
+  "pipeline_mode": "ingest_only",
+  "progress_json": "docs/benchmarks/matrixark_ingestion_scale_20260626_fixed/matrixark_ingestion_20000_ingest_only.progress.json",
+  "queries": 0,
+  "request_timeout_ms": 0,
+  "restart_before_query": false,
+  "retrieve_elapsed_sec": 0.001,
+  "retrieve_latency_ms": {
+    "avg": 0.0,
+    "p50": 0.0,
+    "p95": 0.0,
+    "p99": 0.0
+  },
+  "retrieve_qps": 0.0,
+  "skip_prior_context": true,
+  "status": "passed",
+  "storage_log_mode": "jsonl",
+  "storage_options": {
+    "consistency": "default",
+    "oplog_mode": "async",
+    "raft_mode": false,
+    "replication_mode": "none",
+    "storage_mode": "local"
+  },
+  "storage_prefix": "",
+  "timeouts": 0
+}
