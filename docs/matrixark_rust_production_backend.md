@@ -1,22 +1,20 @@
 # MatrixArk Rust Production Backend
 
 MatrixArk keeps Python as the MCP/model glue layer and moves storage-facing work
-into the Rust TemporalStore gateway.
+into the Rust TemporalStore proxy or Rust direct SDK path.
 
 ## Current Production Path
 
-The Rust crate builds two binary names over the same implementation:
+The Rust crate exposes one production proxy binary:
 
-- `matrixark_gateway`
 - `matrixark_record_log`
 
-MatrixArk should run either binary in `--serve` mode. This creates one
-long-lived Rust process, one cached TemporalStore client per backend config, and
-JSON-line commands over stdin/stdout. This is not the old process-per-operation
-path.
+MatrixArk should run `matrixark_record_log --serve` for the Rust proxy path, or
+use `temporalstore-rust-direct` for the Rust direct SDK bridge. Both avoid the
+old process-per-operation CLI path.
 
 ```bash
-sdk/rust/temporalstore/target/release/matrixark_gateway --serve
+sdk/rust/temporalstore/target/release/matrixark_record_log --serve
 ```
 
 Python MCP owns:
@@ -37,9 +35,9 @@ Rust owns:
 - health/readiness/metrics commands
 - graceful shutdown
 
-## Gateway Commands
+## Proxy Commands
 
-The long-lived gateway supports:
+The Rust proxy supports:
 
 - `health`
 - `readiness`
@@ -64,7 +62,7 @@ Start MatrixArk with the Rust backend:
 python3 tools/matrixark_mcp_server.py \
   --line-json \
   --backend temporalstore-rust \
-  --rust-cli sdk/rust/temporalstore/target/release/matrixark_gateway \
+  --rust-proxy sdk/rust/temporalstore/target/release/matrixark_record_log \
   --metaserver 127.0.0.1:18000 \
   --namespace deploy_ns \
   --table deploy_table \
@@ -79,7 +77,7 @@ Operational probes:
 
 ## Parity Requirement
 
-Full benchmark parity must use a long-lived Rust gateway/binding. The shared
-corpus rejects Rust CLI-per-operation mode for full parity. The current accepted
-mode is `stdio-gateway`; a native HTTP or in-process binding can replace it later
-without changing MatrixArk's logical benchmark contract.
+Full benchmark parity must use the Rust proxy or Rust direct SDK. The shared
+corpus rejects Rust CLI-per-operation mode for full parity. The accepted modes
+are `stdio-proxy` and `direct-sdk`; deprecated gateway names are normalized only
+as compatibility aliases and should not appear in new reports.

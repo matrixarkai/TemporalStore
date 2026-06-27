@@ -123,7 +123,7 @@ The main quality gap is now reader/evidence quality under a fixed prompt budget,
 
 2. Rerun LongMemEval_s with both backends after service health is confirmed.
 
-3. Replace the Rust per-operation CLI path with a long-lived Rust gateway or binding for benchmark parity.
+3. Replace the Rust per-operation CLI path with a Rust proxy or Rust direct SDK for benchmark parity.
 
 4. Add a model-backed reader/judge run:
    - OSS instruct reader for local runs

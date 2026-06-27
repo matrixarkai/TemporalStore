@@ -13,7 +13,7 @@ Performance-critical storage and serving paths must use native backends in
 benchmark and production profiles:
 
 - C++ TemporalStore direct SDK through `--backend temporalstore-direct`.
-- Rust TemporalStore long-lived gateway through `--backend temporalstore-rust`.
+- Rust TemporalStore Rust proxy through `--backend temporalstore-rust`.
 - Native record writes, batch writes, hash/prefix scans, backend readiness,
   ContextPack audit storage, and backend metrics.
 

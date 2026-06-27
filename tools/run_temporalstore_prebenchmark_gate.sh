@@ -184,7 +184,7 @@ fi
 
 if [[ "${RUN_PROXY_CLIENT_GATE}" == "1" ]]; then
   if [[ "${BACKEND}" != "cpp" ]]; then
-    write_stage proxy_client skip "proxy/client gate is C++-specific; use Rust gateway parity for rust" 0 "${RESULT_DIR}/proxy_client"
+    write_stage proxy_client skip "proxy/client gate is C++-specific; use Rust proxy/direct SDK parity for rust" 0 "${RESULT_DIR}/proxy_client"
   else
     run_stage proxy_client \
       "fix launcher, live proxy port, direct SDK oracle, request timeout, or C++ proxy status warnings" \

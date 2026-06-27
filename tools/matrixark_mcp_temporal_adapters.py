@@ -1768,8 +1768,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "execution_mode": "direct_backend_hot_cache_prefilter",
                 "backend_pushdown": True,
                 "direct_backend_prefilter": True,
-                "native_pushdown": False,
-                "native_prefix_scan": False,
+                "native_pushdown": bool(getattr(self, "_last_read_all_native_shard_scan", False)),
+                "native_prefix_scan": bool(getattr(self, "_last_read_all_native_shard_scan", False)),
                 "native_pack_assembly": False,
                 "cache_hit": self._records_cache is not None,
                 "record_types": sorted(allowed_types),
@@ -1783,7 +1783,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "secondary_index_matched_node_count": len(matched_node_hashes),
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
                 "pack_assembly_location": "python_reference_packer",
-                "next_native_gap": "C++/Rust prefix scan and ContextPack assembly APIs",
+                "next_native_gap": "C++/Rust ContextPack assembly and scoring APIs",
             },
         }
 
@@ -2768,6 +2768,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _load_records_by_count(self, count: int) -> list[Json]:
         records = []
+        self._last_read_all_native_shard_scan = False
+        scan_records = self._load_records_by_native_shard_scan(count)
+        if scan_records is not None:
+            self._last_read_all_native_shard_scan = True
+            return scan_records
         batch_hget = getattr(self._client, "batch_hget", None)
         if callable(batch_hget):
             entries = []
@@ -2805,6 +2810,45 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             elif isinstance(decoded, dict):
                 records.append(decoded)
         return records
+
+    def _load_records_by_native_shard_scan(self, count: int) -> list[Json] | None:
+        scanner = getattr(getattr(self, "_client", None), "scan_hash", None)
+        if not callable(scanner) or count <= 0:
+            return None
+        max_shard = (count - 1) // self._shard_size
+        records_by_sequence: list[tuple[int, Json]] = []
+        for shard in range(max_shard + 1):
+            key = f"{self._record_hash_key}:{shard:06d}"
+            try:
+                response = scanner(key)
+            except Exception:
+                return None
+            rows = response.get("records") if isinstance(response, dict) else None
+            if not isinstance(rows, list):
+                return None
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                field = str(row.get("field") or "")
+                value = row.get("value")
+                if not field or not isinstance(value, str):
+                    continue
+                try:
+                    offset = int(field)
+                    decoded = json.loads(value)
+                except Exception:
+                    continue
+                sequence = shard * self._shard_size + offset
+                if sequence >= count:
+                    continue
+                if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
+                    for item in decoded["record_bundle"]:
+                        if isinstance(item, dict):
+                            records_by_sequence.append((sequence, item))
+                elif isinstance(decoded, dict):
+                    records_by_sequence.append((sequence, decoded))
+        records_by_sequence.sort(key=lambda item: item[0])
+        return [record for _, record in records_by_sequence]
 
     def _record_location(self, sequence: int) -> tuple[str, str]:
         shard = sequence // self._shard_size

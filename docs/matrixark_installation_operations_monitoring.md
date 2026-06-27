@@ -137,7 +137,7 @@ MatrixArk should operate against either TemporalStore implementation through the
 
 | Area | C++ TemporalStore | Rust TemporalStore | Required parity |
 | --- | --- | --- | --- |
-| Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust gateway or binding; CLI-per-operation is debug only. | Same `backend=cpp|rust` switch in config and Docker. |
+| Local developer mode | Native process, direct SDK, or proxy/gateway. | Long-lived Rust proxy or binding; CLI-per-operation is debug only. | Same `backend=cpp|rust` switch in config and Docker. |
 | Serving data | ContextNode, ContextSummary, ContextEmbedding, ContextEvent, ContextEntity, ContextIndex, ResourceChunk, SkillManifest, ContextPackAudit. | Same logical records and wire shape. | Same record keys, timestamps, ids, and replay output. |
 | Ingestion | API, MCP, hook, batch/session commit, streaming, resource, skill, feedback. | Same ingestion APIs. | Same idempotency behavior and audit refs. |
 | Retrieval | Tree-first traversal, secondary-index filtering, event/entity/resource/skill selection, token-budget packing. | Same retrieval semantics. | Same selected refs and dropped-ref reasons for parity tests. |
@@ -281,7 +281,7 @@ Common fixes:
 - Resource miss: inspect parser output, chunk hashes, L0 summary, chunk embeddings, and resource access scope.
 - Skill miss: inspect skill triggers, owner scope, status, precedence, and selected-skill audit.
 - Backend mismatch: run the same parity fixture with `backend=cpp` and `backend=rust`; compare ContextPack JSONL, selected refs, dropped refs, and audit rows.
-- Rust slow path: verify the Rust backend is a long-lived gateway/binding, not CLI-per-operation.
+- Rust slow path: verify the Rust backend is a Rust proxy/binding, not CLI-per-operation.
 - C++ slow path: verify async oplog, batch append, audit buffering, and data-node count before raising retrieval worker concurrency.
 
 ## Product Parity Target
