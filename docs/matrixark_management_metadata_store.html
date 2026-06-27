@@ -8,23 +8,24 @@
 <li>TemporalStore stores ContextNode, ContextEvent, ContextEntity, ContextSummary, ContextEmbedding, resources, skills, ContextPacks, and replay audit.</li>
 <li>The metadata store can store accounts, tenants, users, SSO mappings, API-key metadata, usage rows, and admin audit.</li>
 </ul>
-<p>This lets the backend portal use a normal transactional SQL store for user management while keeping context retrieval TemporalStore-native.</p>
+<p>This lets the backend portal use a normal transactional SQL store for user management while keeping context retrieval TemporalStore-native. MatrixKV can be used here the same way as MySQL when its SQL-compatible endpoint is running.</p>
 <h2>Backends</h2>
 <table><tbody>
 <tr><th>Backend</th><th>Use case</th><th>Configuration</th></tr>
 <tr><td>record_log</td><td>Local/dev, no database dependency</td><td>MATRIXARK_METADATA_BACKEND=record_log</td></tr>
 <tr><td>sqlite</td><td>Local tests and single-node demos</td><td>MATRIXARK_METADATA_BACKEND=sqlite` plus `MATRIXARK_METADATA_DSN=/tmp/matrixark_metadata.sqlite3</td></tr>
 <tr><td>mysql</td><td>Cloud/control-plane deployment</td><td>MATRIXARK_METADATA_BACKEND=mysql` plus MySQL DSN</td></tr>
-<tr><td>bytekv_sql</td><td>ByteKV SQL-compatible deployment</td><td>MATRIXARK_METADATA_BACKEND=bytekv_sql` plus ByteKV MySQL-compatible DSN</td></tr>
+<tr><td>matrixkv_sql</td><td>MatrixKV SQL-compatible deployment</td><td>MATRIXARK_METADATA_BACKEND=matrixkv_sql` plus MatrixKV MySQL-compatible DSN</td></tr>
+<tr><td>bytekv_sql</td><td>Legacy ByteKV SQL-compatible alias</td><td>MATRIXARK_METADATA_BACKEND=bytekv_sql` plus ByteKV MySQL-compatible DSN</td></tr>
 </tbody></table>
 <h2>Production Requirement</h2>
 <p>Production/cloud deployment should fail closed unless a live SQL control plane is configured. Set:</p>
 <pre><code>
 export MATRIXARK_REQUIRE_SQL_METADATA=1
-export MATRIXARK_METADATA_BACKEND=mysql      # or bytekv_sql
+export MATRIXARK_METADATA_BACKEND=matrixkv_sql  # or mysql / bytekv_sql
 export MATRIXARK_METADATA_AUTO_INIT=1        # create schema on startup, or pre-create it and keep live checks enabled
 </code></pre>
-<p>When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/ByteKV SQL endpoint fails deployment early.</p>
+<p>When `MATRIXARK_REQUIRE_SQL_METADATA=1` is set, MatrixArk rejects `record_log` and `sqlite` metadata backends. It also performs a live SQL readiness probe during access-manager startup, so a missing database, bad DSN, or unavailable MySQL/MatrixKV/ByteKV SQL endpoint fails deployment early.</p>
 <h2>Local MySQL Docker</h2>
 <p>Run a local MySQL metadata backend and keep it running with Docker:</p>
 <pre><code>
@@ -47,6 +48,16 @@ export MATRIXARK_METADATA_DSN=&#x27;mysql://matrixark:password@mysql:3306/matrix
 export MATRIXARK_METADATA_AUTO_INIT=1
 export MATRIXARK_REQUIRE_SQL_METADATA=1
 </code></pre>
+<h2>MatrixKV SQL</h2>
+<p>MatrixKV should be used as a MySQL-compatible control-plane database when its SQL service is enabled. The product backend name is <code>matrixkv_sql</code>; <code>bytekv_sql</code> remains only as a legacy-compatible alias.</p>
+<pre><code>
+export MATRIXARK_METADATA_BACKEND=matrixkv_sql
+export MATRIXARK_METADATA_DSN=&#x27;matrixkv+mysql://matrixark:password@matrixkv-sql:3306/matrixark&#x27;
+export MATRIXARK_METADATA_AUTO_INIT=1
+export MATRIXARK_REQUIRE_SQL_METADATA=1
+PYTHONPATH=tools python3 tools/check_matrixark_metadata_sql.py
+</code></pre>
+<p>The current MatrixKV source tree is expected at <code>/root/src/github-services/MatrixKV</code>. Its SQL service exposes a MySQL-compatible protocol; MatrixArk stores only portal/control-plane metadata there, not raw context chunks, embeddings, or ContextPacks.</p>
 <h2>ByteKV SQL</h2>
 <pre><code>
 export MATRIXARK_METADATA_BACKEND=bytekv_sql
@@ -78,7 +89,7 @@ matrixark_metadata_records(record_type, account_id, tenant_id, user_id, api_key_
 <ul>
 <li>configured metadata backend;</li>
 <li>active runtime backend from `matrixark_management_portal`;</li>
-<li>env snippets for record-log, MySQL, and ByteKV SQL;</li>
+<li>env snippets for record-log, MySQL, MatrixKV SQL, and ByteKV SQL;</li>
 <li>the metadata schema and storage policy;</li>
 <li>users, API keys, SSO links, usage, and audit without exposing raw key material.</li>
 </ul>
@@ -86,5 +97,5 @@ matrixark_metadata_records(record_type, account_id, tenant_id, user_id, api_key_
 <p>For production portal analytics, query the normalized tables first. Use `matrixark_metadata_records` for compatibility replay, debugging, and migration backfill.</p>
 <h2>Readiness Probe</h2>
 <p>`tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, checking every normalized table, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.</p>
-<p>The probe requires `pymysql` or `mysql-connector-python` for MySQL/ByteKV SQL.</p>
+<p>The probe requires <code>pymysql</code> or <code>mysql-connector-python</code> for MySQL/MatrixKV/ByteKV SQL.</p>
 </body></html>

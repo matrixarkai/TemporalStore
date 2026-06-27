@@ -117,6 +117,18 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_matrixkv_sql_backend_reports_mysql_compatible_metadata(self) -> None:
+        store = MatrixArkSqlMetadataStore(
+            backend="matrixkv_sql",
+            dsn="matrixkv+mysql://matrixark:password@matrixkv-sql:3306/matrixark",
+            auto_init=False,
+        )
+        info = store.backend_info()
+        self.assertEqual("matrixkv_sql", info["backend"])
+        self.assertEqual("mysql", info["sql_compatible_with"])
+        self.assertEqual("matrixkv", info["product_family"])
+        self.assertTrue(info["dsn_configured"])
+
     def test_local_api_key_application_gets_resource_skill_management_scopes(self) -> None:
         server = self.make_server()
         applied = server.call_tool(
