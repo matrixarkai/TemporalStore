@@ -281,6 +281,34 @@ Latest AWS/test state:
     - sparse-first retrieval improves exact/rare-term benchmark buckets without reducing broad semantic recall;
     - benchmark report includes path-level recall and token-efficiency metrics for dense, sparse, hybrid, and keyword paths.
 
+- Add a budget-aware ContextPack optimizer for L0/L1 summaries, messages, and resource chunks.
+  - Problem:
+    - current packing is question-type-aware, but still mostly ranks candidate refs independently;
+    - under tight budgets, MatrixArk needs to decide whether to spend tokens on L0 orientation, L1 richer overview, more conversation turns/events, entity state, or one highly relevant resource chunk;
+    - this decision should be explicit and benchmarked because it is central to "same token budget, higher answer quality".
+  - Target policy by query type:
+    - overview/broad exploration: include L0 first, then L1 for top nodes, then a small number of representative events/resource chunks;
+    - fact/current-state: prefer ContextEntity/operator state and answer-bearing event/resource facts before L1 summaries;
+    - evidence/citation: prefer raw cited resource chunks or raw dialogue turns before summaries;
+    - procedure/how-to: prefer relevant SkillSection or troubleshooting/resource chunks before extra conversation history;
+    - multi-hop: allocate across multiple selected nodes/sessions/entities before adding deeper detail from one node;
+    - date/temporal: include session date/exact turn and valid-as-of state before broad summaries.
+  - Resource chunk versus more messages:
+    - choose a resource chunk first when it is cited, answer-dense, current version, and has high lexical/entity overlap with the query;
+    - choose more messages/events first when the query asks what the user said/did/felt, requires temporal sequence, or needs dialogue evidence;
+    - choose entity state first when asking current preference/status/owner/budget/deadline;
+    - include L1 only when it improves orientation or compresses many low-value turns better than raw evidence.
+  - Implementation shape:
+    - add a pack planning stage before `select_token_budgeted_refs` that assigns per-class token budgets: summaries, entities, events, resources, skills, compression;
+    - expose config knobs: `summary_budget_ratio`, `resource_budget_ratio`, `conversation_budget_ratio`, `min_evidence_refs`, `max_summary_refs`, and `allow_l1_in_prompt`;
+    - record pack plan, selected class mix, dropped class mix, and answer-density estimates in `context_pack_telemetry` and sampled audit;
+    - add ablation: same candidates packed chronologically vs semantic score vs MatrixArk budget optimizer.
+  - Acceptance gates:
+    - same max_context_tokens improves or matches judge score versus current packing;
+    - same judge score uses fewer tokens on LOCOMO/LongMemEval/resource QA slices;
+    - evidence-turn recall and citation recall do not regress;
+    - L0/L1 prompt inclusion is explainable in audit/telemetry.
+
 - Make operational telemetry the default visibility layer; keep replay/audit bounded.
   - Product stance:
     - always-on visibility should look like lightweight service telemetry: QPS, p50/p95/p99 latency, token pressure, candidate counts, time-weighted recall stats, fallback flags, and error/timeout counts;
