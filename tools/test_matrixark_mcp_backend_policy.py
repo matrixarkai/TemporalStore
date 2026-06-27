@@ -2225,6 +2225,30 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
     def test_rust_proxy_client_alias_keeps_cli_compatibility(self) -> None:
         self.assertIs(mcp.MatrixArkRustCliClient, mcp.MatrixArkRustProxyClient)
 
+    def test_rust_proxy_reports_cpp_parity_hot_path_capabilities(self) -> None:
+        client = mcp.MatrixArkRustProxyClient(
+            proxy_path="/bin/true",
+            metaserver="127.0.0.1:18000",
+            namespace="deploy_ns",
+            table="deploy_table",
+            request_timeout_ms=1000,
+            io_timeout_ms=1000,
+        )
+
+        metrics = client.metrics_snapshot()
+
+        self.assertEqual(metrics["gateway_mode"], "long_lived_stdio_gateway")
+        self.assertEqual(metrics["sdk_mode"], "gateway")
+        self.assertFalse(metrics["process_per_operation_enabled"])
+        self.assertEqual(metrics["single_shot_mode"], "debug_only")
+        self.assertTrue(metrics["supports_batch_append"])
+        self.assertTrue(metrics["supports_prefix_scan"])
+        self.assertEqual(metrics["prefix_scan_path"], "rust_proxy_scan_hash")
+        self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_append_records")
+        self.assertTrue(metrics["matrixark_native_batch_append_available"])
+        self.assertFalse(metrics["matrixark_append_uses_per_record_hset"])
+        self.assertFalse(metrics["matrixark_append_uses_generic_batch_hset_fallback"])
+
     def test_rust_server_exposes_rust_proxy_argument(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "tools" / "matrixark_mcp_server.py").read_text()
