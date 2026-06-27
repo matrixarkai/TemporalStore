@@ -897,7 +897,8 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   append request/accept/reject counters, inflight bytes/entries, append and reorder queue depth,
   reorder accept/release/reject counters,
   snapshot sender/downloader lifecycle state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
-  leader-transfer target state, pre-vote/election rejection counters, read-index and lease-read
+  leader-transfer target state and request/accept/reject/complete counters,
+  pre-vote/election rejection counters, read-index and lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
   retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and admin-status
   completeness. The standalone Raft node `/metrics` route and raft-enabled data-node `/metrics`
@@ -948,6 +949,8 @@ The previous pass closed a ByteRaft/ByteKV `RaftEngine` behavior gap:
 - `RaftClusterStatus` and `RaftNodeStatus` for leader, term, commit index, majority, live voters, lease-valid state, per-node lag, and per-node role
 - `ReadIndexResponse` and `read_index(node_id)` for safe local-model reads; lagging replicas are rejected before serving read-index
 - `transfer_leader(node_id)` for both data Raft and metaserver Raft; lagging or dead targets are rejected
+  and per-peer transfer request/accept/reject/complete counters are surfaced through the
+  ByteRaft-style admin report and Prometheus metrics
 - `local_status(node_id)` matching the shape of ByteRaft's local status inspection
 - `prometheus_metrics()` for data Raft and metaserver Raft with commit index, live voters, majority, lease validity, per-node commit, lag, and liveness
 - tests for data-Raft status/read-index/leader-transfer, lagging replica rejection, and metaserver-Raft status/read-index/leader-transfer

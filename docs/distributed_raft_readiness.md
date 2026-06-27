@@ -115,7 +115,8 @@ The Rust code currently has:
   match/next index, append request/accept/reject counters, inflight bytes/entries,
   append/reorder queue depth, reorder accept/release/reject counters, snapshot send/install
   state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
-  leader-transfer target state, pre-vote/election rejection counters, read-index plus lease-read
+  leader-transfer target state and request/accept/reject/complete counters,
+  pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
   retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and process-path
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
