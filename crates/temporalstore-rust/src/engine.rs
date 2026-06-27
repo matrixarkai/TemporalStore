@@ -4301,6 +4301,12 @@ impl TemporalEngine {
                 ("pin_operations", stats.cache.pin_operations),
                 ("unpin_operations", stats.cache.unpin_operations),
                 ("eviction_pinned_skips", stats.cache.eviction_pinned_skips),
+                (
+                    "eviction_sampled_groups",
+                    stats.cache.eviction_sampled_groups,
+                ),
+                ("memory_slot_evictions", stats.cache.memory_slot_evictions),
+                ("ssd_slot_evictions", stats.cache.ssd_slot_evictions),
                 ("compressed_puts", stats.cache.compressed_puts),
                 ("compressed_hits", stats.cache.compressed_hits),
             ] {

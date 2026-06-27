@@ -131,6 +131,14 @@ pub struct BlockStoreGcReport {
 pub struct BlockStoreGcUtilityCandidate {
     pub page_segment_id: u64,
     pub bytes: u64,
+    #[serde(default)]
+    pub total_bytes: u64,
+    #[serde(default)]
+    pub used_bytes: u64,
+    #[serde(default)]
+    pub stale_bytes: u64,
+    #[serde(default)]
+    pub utility_basis_points: u64,
     pub utility_score: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_unix_ms: Option<u64>,
@@ -168,6 +176,14 @@ pub struct BlockStoreGcPolicyPlan {
     pub retain_from_page_segment_id: u64,
     pub selected_page_segment_ids: Vec<u64>,
     pub selected_physical_bytes: u64,
+    #[serde(default)]
+    pub candidate_total_bytes: u64,
+    #[serde(default)]
+    pub candidate_used_bytes: u64,
+    #[serde(default)]
+    pub candidate_stale_bytes: u64,
+    #[serde(default)]
+    pub candidate_utility_basis_points: u64,
     pub candidate_count: usize,
     pub candidate_physical_bytes: u64,
     pub skipped_by_policy_count: usize,
@@ -774,6 +790,23 @@ impl LocalBlockStore {
         let mut selected_page_segment_ids = Vec::new();
         let mut selected_physical_bytes = 0_u64;
         let candidate_physical_bytes = candidates.iter().map(|candidate| candidate.bytes).sum();
+        let candidate_total_bytes = candidates
+            .iter()
+            .map(|candidate| candidate.total_bytes)
+            .sum::<u64>();
+        let candidate_used_bytes = candidates
+            .iter()
+            .map(|candidate| candidate.used_bytes)
+            .sum::<u64>();
+        let candidate_stale_bytes = candidates
+            .iter()
+            .map(|candidate| candidate.stale_bytes)
+            .sum::<u64>();
+        let candidate_utility_basis_points = if candidate_total_bytes == 0 {
+            0
+        } else {
+            candidate_used_bytes.saturating_mul(10_000) / candidate_total_bytes
+        };
         let mut skipped_by_policy_count = 0_usize;
         let mut skipped_by_policy_physical_bytes = 0_u64;
         let mut skipped_by_budget_count = 0_usize;
@@ -821,6 +854,10 @@ impl LocalBlockStore {
             retain_from_page_segment_id,
             selected_page_segment_ids,
             selected_physical_bytes,
+            candidate_total_bytes,
+            candidate_used_bytes,
+            candidate_stale_bytes,
+            candidate_utility_basis_points,
             candidate_count: candidates.len(),
             candidate_physical_bytes,
             skipped_by_policy_count,
@@ -856,9 +893,20 @@ impl LocalBlockStore {
                 let age_ms = updated_unix_ms
                     .or(created_unix_ms)
                     .map(|timestamp| now.saturating_sub(timestamp));
+                let used_bytes = 0_u64;
+                let stale_bytes = bytes.saturating_sub(used_bytes);
+                let utility_basis_points = if bytes == 0 {
+                    0
+                } else {
+                    used_bytes.saturating_mul(10_000) / bytes
+                };
                 candidates.push(BlockStoreGcUtilityCandidate {
                     page_segment_id,
                     bytes,
+                    total_bytes: bytes,
+                    used_bytes,
+                    stale_bytes,
+                    utility_basis_points,
                     utility_score: page_segment_utility_score(
                         below_retention_floor,
                         is_current,
@@ -2495,6 +2543,13 @@ mod tests {
             .all(|candidate| candidate.utility_score == 0));
         assert!(candidates
             .iter()
+            .all(|candidate| candidate.utility_basis_points == 0));
+        assert!(candidates.iter().all(|candidate| candidate.used_bytes == 0));
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.stale_bytes == candidate.total_bytes));
+        assert!(candidates
+            .iter()
             .all(|candidate| candidate.created_unix_ms.is_some()));
         assert!(candidates
             .iter()
@@ -2563,6 +2618,10 @@ mod tests {
             plan.candidate_physical_bytes,
             (b"small".len() + b"largest-stale-segment".len()) as u64
         );
+        assert_eq!(plan.candidate_total_bytes, plan.candidate_physical_bytes);
+        assert_eq!(plan.candidate_used_bytes, 0);
+        assert_eq!(plan.candidate_stale_bytes, plan.candidate_physical_bytes);
+        assert_eq!(plan.candidate_utility_basis_points, 0);
         assert_eq!(plan.selected_page_segment_ids, vec![0]);
         assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
         assert_eq!(plan.skipped_by_policy_count, 0);

@@ -272,6 +272,12 @@ pub struct CacheStats {
     #[serde(default)]
     pub compaction_latency_gt_10ms: u64,
     #[serde(default)]
+    pub eviction_sampled_groups: u64,
+    #[serde(default)]
+    pub memory_slot_evictions: u64,
+    #[serde(default)]
+    pub ssd_slot_evictions: u64,
+    #[serde(default)]
     pub ssd_eviction_cold: u64,
     #[serde(default)]
     pub ssd_eviction_low_hit: u64,
@@ -614,6 +620,9 @@ pub struct CacheEvictionReport {
     pub ssd_low_hit_evictions: u64,
     pub ssd_stale_evictions: u64,
     pub ssd_pinned_skips: u64,
+    pub sampled_eviction_groups: u64,
+    pub memory_slot_evictions: u64,
+    pub ssd_slot_evictions: u64,
     pub replacement_policy: CacheReplacementPolicy,
 }
 
@@ -660,6 +669,36 @@ pub struct CacheWritebackDrainReport {
     pub requested: usize,
     pub drained: usize,
     pub remaining: usize,
+}
+
+#[derive(Debug, Clone)]
+struct SlotEvictionGroup {
+    group_score: EvictionScore,
+    victim: CacheKey,
+    victim_score: EvictionScore,
+}
+
+impl SlotEvictionGroup {
+    fn new(victim: CacheKey, score: EvictionScore) -> Self {
+        Self {
+            group_score: score,
+            victim,
+            victim_score: score,
+        }
+    }
+
+    fn observe(&mut self, key: CacheKey, score: EvictionScore) {
+        self.group_score.hotness = self.group_score.hotness.max(score.hotness);
+        self.group_score.hits = self.group_score.hits.saturating_add(score.hits);
+        self.group_score.last_access_epoch = self
+            .group_score
+            .last_access_epoch
+            .max(score.last_access_epoch);
+        if score < self.victim_score || (score == self.victim_score && key < self.victim) {
+            self.victim = key;
+            self.victim_score = score;
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1049,6 +1088,15 @@ impl CacheInner {
             self.stats.puts += 1;
             return Ok(());
         }
+        if self.ssd_bytes.saturating_add(block_len as u64) > self.ssd_capacity_bytes as u64
+            && self.incoming_ssd_block_is_colder_than_existing_groups(&key, &request, value.len())
+        {
+            self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
+            self.stats.writeback_backpressure_events =
+                self.stats.writeback_backpressure_events.saturating_add(1);
+            self.stats.puts += 1;
+            return Ok(());
+        }
         self.evict_ssd_for(block_len as u64);
         if self.ssd_bytes.saturating_add(block_len as u64) > self.ssd_capacity_bytes as u64 {
             self.stats.ssd_admission_rejected = self.stats.ssd_admission_rejected.saturating_add(1);
@@ -1292,6 +1340,9 @@ impl MultiLayerCache {
             ssd_low_hit_evictions: stats.ssd_eviction_low_hit,
             ssd_stale_evictions: stats.ssd_eviction_stale,
             ssd_pinned_skips: stats.ssd_eviction_pinned_skips,
+            sampled_eviction_groups: stats.eviction_sampled_groups,
+            memory_slot_evictions: stats.memory_slot_evictions,
+            ssd_slot_evictions: stats.ssd_slot_evictions,
             replacement_policy: CacheReplacementPolicy::WeightedHotnessLru,
         }
     }
@@ -1692,6 +1743,7 @@ impl CacheInner {
             self.order.retain(|candidate| candidate != &victim);
             self.stats.memory_evictions = self.stats.memory_evictions.saturating_add(1);
             self.stats.eviction_capacity = self.stats.eviction_capacity.saturating_add(1);
+            self.stats.memory_slot_evictions = self.stats.memory_slot_evictions.saturating_add(1);
             self.record_memory_eviction_reason(reason);
             if !self.disk_index.contains_key(&victim) {
                 self.metadata.remove(&victim);
@@ -1740,6 +1792,7 @@ impl CacheInner {
         self.ssd_bytes = self.ssd_bytes.saturating_sub(removed_bytes);
         self.stats.ssd_evictions = self.stats.ssd_evictions.saturating_add(1);
         self.stats.ssd_eviction_capacity = self.stats.ssd_eviction_capacity.saturating_add(1);
+        self.stats.ssd_slot_evictions = self.stats.ssd_slot_evictions.saturating_add(1);
         self.record_ssd_eviction_reason(reason);
         self.stats.disk_bytes = self.ssd_bytes;
         if !self.memory.contains_key(&victim) {
@@ -1748,33 +1801,53 @@ impl CacheInner {
         true
     }
 
-    fn select_memory_eviction_victim(&self) -> Option<(CacheKey, EvictionReason, u64)> {
-        self.select_eviction_victim(self.memory.keys())
+    fn select_memory_eviction_victim(&mut self) -> Option<(CacheKey, EvictionReason, u64)> {
+        let keys = self.memory.keys().cloned().collect::<Vec<_>>();
+        self.select_eviction_victim(keys)
     }
 
-    fn select_ssd_eviction_victim(&self) -> Option<(CacheKey, EvictionReason, u64)> {
-        self.select_eviction_victim(self.disk_index.keys())
+    fn select_ssd_eviction_victim(&mut self) -> Option<(CacheKey, EvictionReason, u64)> {
+        let keys = self.disk_index.keys().cloned().collect::<Vec<_>>();
+        self.select_eviction_victim(keys)
     }
 
-    fn select_eviction_victim<'a, I>(&self, keys: I) -> Option<(CacheKey, EvictionReason, u64)>
+    fn select_eviction_victim<I>(&mut self, keys: I) -> Option<(CacheKey, EvictionReason, u64)>
     where
-        I: Iterator<Item = &'a CacheKey>,
+        I: IntoIterator<Item = CacheKey>,
     {
         let mut pinned_skips = 0u64;
-        let mut best: Option<(CacheKey, EvictionReason, EvictionScore)> = None;
+        let mut groups: HashMap<String, SlotEvictionGroup> = HashMap::new();
         for key in keys {
-            if self.pinned.contains(key) {
+            if self.pinned.contains(&key) {
                 pinned_skips = pinned_skips.saturating_add(1);
                 continue;
             }
-            let score = self.eviction_score(key);
-            let reason = eviction_reason_for(score);
-            match &best {
-                Some((_, _, best_score)) if *best_score <= score => {}
-                _ => best = Some((key.clone(), reason, score)),
-            }
+            let score = self.eviction_score(&key);
+            let group_key = self.eviction_group_key(&key);
+            groups
+                .entry(group_key)
+                .and_modify(|group| group.observe(key.clone(), score))
+                .or_insert_with(|| SlotEvictionGroup::new(key, score));
         }
-        best.map(|(key, reason, _)| (key, reason, pinned_skips))
+        self.stats.eviction_sampled_groups = self
+            .stats
+            .eviction_sampled_groups
+            .saturating_add(groups.len() as u64);
+        groups
+            .into_values()
+            .min_by(|left, right| {
+                left.group_score
+                    .cmp(&right.group_score)
+                    .then_with(|| left.victim_score.cmp(&right.victim_score))
+                    .then_with(|| left.victim.cmp(&right.victim))
+            })
+            .map(|group| {
+                (
+                    group.victim,
+                    eviction_reason_for(group.victim_score),
+                    pinned_skips,
+                )
+            })
     }
 
     fn eviction_score(&self, key: &CacheKey) -> EvictionScore {
@@ -1791,6 +1864,40 @@ impl CacheInner {
             hits: meta.hits,
             last_access_epoch: meta.last_access_epoch,
         }
+    }
+
+    fn incoming_ssd_block_is_colder_than_existing_groups(
+        &self,
+        key: &CacheKey,
+        request: &CacheAdmissionRequest,
+        block_bytes: usize,
+    ) -> bool {
+        let incoming_score = EvictionScore {
+            hotness: initial_hotness(request.block_kind, block_bytes).max(request.hotness),
+            hits: 0,
+            last_access_epoch: self.access_epoch.saturating_add(1),
+        };
+        let incoming_group = request
+            .routing_slot
+            .or_else(|| extract_routing_slot(key))
+            .map(|slot| format!("slot:{slot}"))
+            .unwrap_or_else(|| format!("object:{}:{}", key.namespace, key.record_key));
+        self.disk_index
+            .keys()
+            .filter(|candidate| self.eviction_group_key(candidate) != incoming_group)
+            .map(|candidate| self.eviction_score(candidate))
+            .min()
+            .map(|coldest_existing| incoming_score < coldest_existing)
+            .unwrap_or(false)
+    }
+
+    fn eviction_group_key(&self, key: &CacheKey) -> String {
+        self.metadata
+            .get(key)
+            .and_then(|meta| meta.routing_slot)
+            .or_else(|| extract_routing_slot(key))
+            .map(|slot| format!("slot:{slot}"))
+            .unwrap_or_else(|| format!("object:{}:{}", key.namespace, key.record_key))
     }
 
     fn record_memory_eviction_reason(&mut self, reason: EvictionReason) {
@@ -2360,7 +2467,7 @@ mod tests {
             memory_hotness_threshold: 4,
             ssd_admit_hotness_threshold: 1,
             max_memory_block_bytes: 64,
-            max_ssd_block_bytes: 128,
+            max_ssd_block_bytes: 512,
             ssd_write_through: true,
         };
         let cache =
@@ -2458,6 +2565,54 @@ mod tests {
 
     // shared-corpus: storage_cache_refill;
     #[test]
+    fn memory_eviction_selects_cold_slot_group_before_cold_entry_in_hot_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 8,
+            ssd_capacity_bytes: 64,
+            memory_hotness_threshold: 4,
+            ssd_admit_hotness_threshold: 99,
+            max_memory_block_bytes: 8,
+            max_ssd_block_bytes: 64,
+            ssd_write_through: false,
+        };
+        let cache =
+            MultiLayerCache::with_tiering_policy(dir.path(), policy, CacheBlockOptions::default());
+        let hot_slot_hot = CacheKey::page_with_slot(1, 50, 0, 4, Some(7));
+        let hot_slot_cold = CacheKey::page_with_slot(1, 51, 0, 4, Some(7));
+        let cold_slot = CacheKey::page_with_slot(1, 52, 0, 4, Some(8));
+
+        for (key, slot, hotness, value) in [
+            (hot_slot_hot.clone(), 7, 10, b"hot!".to_vec()),
+            (hot_slot_cold.clone(), 7, 0, b"warm".to_vec()),
+            (cold_slot.clone(), 8, 0, b"cold".to_vec()),
+        ] {
+            cache
+                .put_with_admission(
+                    key,
+                    value,
+                    CacheAdmissionRequest {
+                        block_kind: CacheBlockKind::Page,
+                        shard_id: 1,
+                        routing_slot: Some(slot),
+                        block_bytes: 4,
+                        hotness,
+                        pinned: false,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(cache.get_memory(&hot_slot_hot), Some(b"hot!".to_vec()));
+        assert_eq!(cache.get_memory(&hot_slot_cold), Some(b"warm".to_vec()));
+        assert_eq!(cache.get_memory(&cold_slot), None);
+        let report = cache.eviction_report();
+        assert!(report.sampled_eviction_groups >= 2);
+        assert!(report.memory_slot_evictions >= 1);
+    }
+
+    // shared-corpus: storage_cache_refill;
+    #[test]
     fn weighted_ssd_eviction_preserves_hot_entries() {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
@@ -2508,6 +2663,62 @@ mod tests {
         let report = cache.eviction_report();
         assert!(report.ssd_capacity_evictions >= 1);
         assert!(report.ssd_low_hit_evictions >= 1 || report.ssd_cold_evictions >= 1);
+    }
+
+    // shared-corpus: storage_cache_refill;
+    #[test]
+    fn ssd_eviction_selects_cold_slot_group_before_cold_entry_in_hot_slot() {
+        let dir = tempfile::tempdir().unwrap();
+        let policy = CacheTieringPolicy {
+            memory_capacity_bytes: 0,
+            ssd_capacity_bytes: 256,
+            memory_hotness_threshold: 99,
+            ssd_admit_hotness_threshold: 0,
+            max_memory_block_bytes: 0,
+            max_ssd_block_bytes: 128,
+            ssd_write_through: true,
+        };
+        let cache = MultiLayerCache::with_tiering_policy(
+            dir.path(),
+            policy,
+            CacheBlockOptions {
+                compression: CacheCompression::None,
+                min_compress_bytes: usize::MAX,
+            },
+        );
+        let hot_slot_hot = CacheKey::page_with_slot(1, 60, 0, 4, Some(9));
+        let hot_slot_cold = CacheKey::page_with_slot(1, 61, 0, 4, Some(9));
+        let cold_slot = CacheKey::page_with_slot(1, 62, 0, 4, Some(10));
+
+        for (key, slot, hotness, value) in [
+            (hot_slot_hot.clone(), 9, 10, b"hot!".to_vec()),
+            (hot_slot_cold.clone(), 9, 0, b"warm".to_vec()),
+            (cold_slot.clone(), 10, 0, vec![b'c'; 240]),
+        ] {
+            cache
+                .put_with_admission(
+                    key,
+                    value,
+                    CacheAdmissionRequest {
+                        block_kind: CacheBlockKind::Page,
+                        shard_id: 1,
+                        routing_slot: Some(slot),
+                        block_bytes: 4,
+                        hotness,
+                        pinned: false,
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(cache.get(&hot_slot_hot).unwrap(), Some(b"hot!".to_vec()));
+        assert_eq!(cache.get(&hot_slot_cold).unwrap(), Some(b"warm".to_vec()));
+        assert_eq!(cache.get(&cold_slot).unwrap(), None);
+        let report = cache.eviction_report();
+        let stats = cache.stats();
+        assert_eq!(report.ssd_slot_evictions, 0);
+        assert!(stats.ssd_admission_rejected >= 1);
+        assert!(stats.writeback_backpressure_events >= 1);
     }
 
     #[test]
