@@ -3908,6 +3908,13 @@ class MatrixArkLocalAdapter:
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
             extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else {}
             event_type = str(record.get("event_type") or extraction.get("event_type") or record.get("classification") or extraction.get("classification") or "")
+            candidate_metadata: Json = {}
+            record_metadata = record.get("metadata")
+            envelope_metadata = envelope.get("metadata")
+            if isinstance(record_metadata, dict):
+                candidate_metadata.update(record_metadata)
+            if isinstance(envelope_metadata, dict):
+                candidate_metadata.update(envelope_metadata)
             candidate = {
                 "ref_type": "event",
                 "ref_hash": record["event_id_hash"],
@@ -3928,7 +3935,7 @@ class MatrixArkLocalAdapter:
                 "context_class": "resource_fact" if record.get("source_chunk_hash") else "event",
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
-                "metadata": envelope.get("metadata", {}),
+                "metadata": candidate_metadata,
                 "scope": record_scope,
                 "updated_at_ms": record.get("updated_at_ms") or envelope.get("ingestion_time_ms", now_ms()),
                 "text": clip_context_text(text),
@@ -4275,6 +4282,26 @@ class MatrixArkLocalAdapter:
         local_tokens = int(local_budget.get("token_estimate", 0))
         safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
         remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
+        selected_ref_cap = max(1, int(max_selected_refs or max(8, min(256, max_context_tokens))))
+        rerank_candidate_limit = max(selected_ref_cap, max(8, min(256, max_context_tokens)))
+        first_stage_candidate_count = len(primary_matches) + len(auxiliary_matches)
+        rerank_policy = {
+            "enabled": True,
+            "stage": "packing_rerank",
+            "mode": "question_type_token_efficiency",
+            "input_candidate_count": first_stage_candidate_count,
+            "max_candidates": rerank_candidate_limit,
+            "reranked_candidate_count": min(first_stage_candidate_count, rerank_candidate_limit),
+            "question_type": question_type,
+            "signals": [
+                "weighted_recall_score",
+                "question_type_ref_boost",
+                "token_efficiency",
+                "multi_hop_node_diversity",
+            ],
+            "fallback": "weighted_recall",
+            "heavy_rerank_enabled": False,
+        }
         selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
             primary_matches,
             auxiliary_matches,
@@ -4356,6 +4383,7 @@ class MatrixArkLocalAdapter:
                     "applied_before_embedding_scoring": True,
                     "fanout_cap_applied_before_embedding_scoring": True,
                 },
+                "rerank": rerank_policy,
                 "primary_path": "tree-first hybrid dense semantic + sparse lexical after secondary-index prefilter",
                 "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
                 "time_decay": {
@@ -4427,6 +4455,7 @@ class MatrixArkLocalAdapter:
             "secondary_index_filter": pack["recall_policy"]["secondary_index_filter"],
             "question_type": question_type,
             "packing_policy": pack["packing_policy"],
+            "rerank_policy": rerank_policy,
             "recall_policy": pack["recall_policy"],
             "stage_latency_budgets": pack["recall_policy"]["stage_latency_budgets"],
             "storage_options": storage_options,

@@ -281,6 +281,45 @@ Latest AWS/test state:
     - sparse-first retrieval improves exact/rare-term benchmark buckets without reducing broad semantic recall;
     - benchmark report includes path-level recall and token-efficiency metrics for dense, sparse, hybrid, and keyword paths.
 
+- Borrow the useful VikingMem retrieval/extraction ideas without copying heavy infra.
+  - Product stance:
+    - MatrixArk should keep TemporalStore as the serving store and keep the hot path simple;
+    - borrow the memory-quality loop: one-pass extraction, event/entity state, operators, multi-path recall, time/business priors, keyword graph, and bounded reranking;
+    - avoid adding a default VectorDB or always-on cross-encoder reranker unless benchmarks prove the simpler TemporalStore path is insufficient.
+  - Already implemented or MVP-present:
+    - one-pass batch/session extraction via `matrixark_batch_extract` / `matrixark_session_commit`;
+    - lightweight online event ingestion before batch extraction;
+    - typed `ContextEvent` and evolving `ContextEntity` state with stale blockers;
+    - resource-specific extraction into normal events/entities with `source_chunk_hash`;
+    - time decay plus business/importance scoring through `Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi`;
+    - primary plus auxiliary recall paths with quota merge;
+    - question-type-aware packing and deterministic lightweight reranking through `packing_sort_key`;
+    - dropped-ref audit for token-budget tuning and replay.
+  - Easy next implementations:
+    - expose the existing lightweight rerank in reports as `rerank_stage=packing_rerank`;
+    - add per-query counters for first-stage candidates, reranked candidates, selected refs, and rerank/pack latency;
+    - add ablation mode `same_candidates_chrono_vs_semantic_vs_matrixark_pack` to prove the token win comes from packing/rerank, not different recall;
+    - add config docs for `ranking.rerank.mode=none|packing|multivector` with `packing` as default.
+  - Medium implementation:
+    - implement BM25 first-stage sparse index before SPLADE because it is deterministic, cheap, explainable, and backend-parity friendly;
+    - implement full `ContextKeyword` / `ContextKeywordEdge` graph for indirect-memory questions;
+    - add operator-state records for `LATEST`, `VALID_AS_OF`, `BLOCK_IF_STALE`, `COUNT`, `SUM`, `AVG`, `MAX`, `DECAY_SCORE`, `LLM_MERGE`, and `TIME_COMPRESS`.
+  - Later / not MVP:
+    - ColBERT-style multi-vector rerank with compressed token vectors;
+    - learned SPLADE sparse vectors;
+    - cross-encoder rerank only as optional offline/high-latency mode, not the default interactive agent path.
+  - Rerank policy:
+    - use the current lightweight packing rerank by default;
+    - add heavy rerank only for top 32/64/128 first-stage candidates;
+    - enforce a rerank deadline and fallback to weighted recall;
+    - never let rerank block partial ContextPack return;
+    - record rerank mode, deadline, candidate count, fallback reason, and score deltas in `ContextPackAudit`.
+  - Benchmark gates:
+    - rerank improves or matches judge score under fixed token budgets;
+    - rerank does not reduce context recall on LOCOMO/LongMemEval buckets;
+    - p95/p99 rerank latency stays inside the interactive-agent target;
+    - fallback path returns a valid ContextPack when rerank times out.
+
 - Implement a full VikingMem-style Keyword Graph for auxiliary recall.
   - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
   - Target behavior: for indirect-memory questions such as "Do you remember my nickname?", dense semantic matching can fail because the query and the original memory may have low direct similarity. Build a keyword graph where each keyword is connected to associated memories and memory segments.
