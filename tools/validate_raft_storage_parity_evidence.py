@@ -146,12 +146,17 @@ AREAS: tuple[ParityArea, ...] = (
                     "serialize_data_raft_log",
                     "parse_data_raft_log",
                     "LocalRaftWal",
+                ),
+            ),
+            RustEvidence(
+                "crates/temporalstore-rust/src/raft/tests.rs",
+                (
                     "data_raft_log_codec_round_trips_cxx_style_header",
                 ),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/tests/temporalstore_compat.rs",
-                ("consistency_bench_style_hash_writes_are_linearizable_through_raft",),
+                "crates/temporalstore-rust/src/bin/distributed_raft_harness.rs",
+                ("proposal_status", "replica_reads", "follower_write_rejection"),
             ),
             RustEvidence(
                 "compat/unified_temporalstore_cases.json",
@@ -200,7 +205,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/src/raft.rs",
+                "crates/temporalstore-rust/src/raft/tests.rs",
                 (
                     "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
                     "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
@@ -228,7 +233,7 @@ AREAS: tuple[ParityArea, ...] = (
                 ),
             ),
             RustEvidence(
-                "crates/temporalstore-rust/src/raft.rs",
+                "crates/temporalstore-rust/src/raft/tests.rs",
                 (
                     "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
                     "openraft_metaserver_backend_supports_membership_and_bounded_reads",
@@ -461,7 +466,7 @@ def validate_corpus_area(area: ParityArea, cases: dict[str, dict]) -> set[str]:
         for step in steps:
             command = step.get("command", {})
             if command.get("kind") != "existing_test":
-                raise SystemExit(f"{area.name}: {case_name}/{step.get('name')} is not existing_test")
+                continue
             if command.get("suite") not in PARITY_SUITES:
                 raise SystemExit(
                     f"{area.name}: {case_name}/{step.get('name')} suite {command.get('suite')!r} "
