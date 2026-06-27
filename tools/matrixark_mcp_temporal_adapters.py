@@ -1680,6 +1680,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        native_candidates = self._native_candidate_scan(
+            scope=scope,
+            record_types=allowed_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_node_hashes,
+        )
+        if native_candidates is not None:
+            return native_candidates
+
         raw_records = self.read_all()
         filtered: list[Json] = []
         scoped_records: list[Json] = []
@@ -1786,6 +1795,48 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "next_native_gap": "C++/Rust ContextPack assembly and scoring APIs",
             },
         }
+
+
+    def _native_candidate_scan(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str],
+        secondary_index_groups: list[set[str]] | None,
+        selected_node_hashes: set[int] | None,
+    ) -> Json | None:
+        scanner = getattr(getattr(self, "_client", None), "matrixark_scan_candidates", None)
+        if not callable(scanner):
+            return None
+        try:
+            response = scanner(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                scope=scope,
+                record_types=sorted(record_types),
+                secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
+                selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
+            )
+        except Exception:
+            return None
+        records = response.get("records") if isinstance(response, dict) else None
+        if not isinstance(records, list):
+            return None
+        scan_stats = dict(response.get("scan_stats") or {})
+        scan_stats.setdefault("backend", self._backend_label())
+        scan_stats.setdefault("execution_mode", "native_temporalstore_candidate_prefilter")
+        scan_stats.setdefault("backend_pushdown", True)
+        scan_stats.setdefault("direct_backend_prefilter", True)
+        scan_stats.setdefault("native_pushdown", True)
+        scan_stats.setdefault("native_prefix_scan", True)
+        scan_stats.setdefault("native_secondary_index_prefilter", bool(secondary_index_groups))
+        scan_stats.setdefault("native_pack_assembly", False)
+        scan_stats.setdefault("cache_hit", False)
+        scan_stats.setdefault("record_types", sorted(record_types))
+        scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
+        scan_stats.setdefault("pack_assembly_location", "python_reference_packer")
+        return {"records": records, "scan_stats": scan_stats}
 
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
@@ -3324,6 +3375,28 @@ class MatrixArkRustProxyClient:
 
     def scan_hash(self, key: str) -> Json:
         return self._call_json("scan_hash", key=key)
+
+    def matrixark_scan_candidates(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        scope: Json,
+        record_types: list[str],
+        secondary_index_groups: list[list[str]],
+        selected_node_hashes: list[int],
+    ) -> Json:
+        return self._call_json(
+            "matrixark_scan_candidates",
+            count_key=count_key,
+            record_hash_key=record_hash_key,
+            shard_size=shard_size,
+            scope=scope,
+            record_types=record_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_node_hashes,
+        )
 
     def metrics_prometheus(self) -> str:
         return str(self._call_json("metrics_prometheus").get("prometheus", ""))
