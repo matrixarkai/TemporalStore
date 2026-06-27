@@ -3085,6 +3085,63 @@ def infer_secondary_index_filter_groups(query: str, question_type: str) -> list[
     return groups
 
 
+def secondary_filter_terms_to_fields(groups: list[set[str]]) -> Json:
+    fields: Json = {}
+    for group in groups:
+        for term in sorted(group):
+            if ":" not in term:
+                continue
+            field, value = term.split(":", 1)
+            if not field or not value:
+                continue
+            fields.setdefault(field, [])
+            if value not in fields[field]:
+                fields[field].append(value)
+    return fields
+
+
+def infer_temporal_window(query: str, question_type: str, *, reference_time_ms: int) -> Json:
+    lower = query.lower()
+    if re.search(r"\b(current|currently|latest|now|still|today|valid)\b", lower) or question_type == "current_state":
+        return {"mode": "latest", "valid_as_of": "now", "reference_time_ms": reference_time_ms}
+    if re.search(r"\b(before|prior to|earlier than)\b", lower):
+        return {"mode": "before", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
+    if re.search(r"\b(after|since|later than)\b", lower):
+        return {"mode": "after", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
+    if re.search(r"\b(as of|valid as of|on)\b", lower):
+        return {"mode": "valid_as_of", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
+    if re.search(r"\b(yesterday|tomorrow|last week|next week|last month|next month|last year|next year)\b", lower):
+        return {"mode": "relative", "valid_as_of": "query_inferred", "reference_time_ms": reference_time_ms}
+    return {"mode": "unbounded", "valid_as_of": "not_applicable", "reference_time_ms": reference_time_ms}
+
+
+def build_structured_query_plan(
+    query: str,
+    *,
+    question_type: str,
+    secondary_index_filter_groups: list[set[str]],
+    secondary_index_filter_mode: str,
+    reference_time_ms: int,
+) -> Json:
+    secondary_filters = secondary_filter_terms_to_fields(secondary_index_filter_groups)
+    return {
+        "query_type": question_type,
+        "secondary_filters": secondary_filters,
+        "secondary_filter_groups": [sorted(group) for group in secondary_index_filter_groups],
+        "secondary_filter_mode": secondary_index_filter_mode,
+        "temporal_window": infer_temporal_window(query, question_type, reference_time_ms=reference_time_ms),
+        "execution_order": [
+            "query_understanding",
+            "scope_filter",
+            "secondary_index_prefilter",
+            "l0_l1_node_traversal",
+            "leaf_candidate_fetch",
+            "embedding_similarity_time_decay_business_score",
+            "budget_pack_contextpack",
+        ],
+    }
+
+
 def oss_encoder_query_type(query: str) -> str:
     ranked = oss_encoder_rank_labels(query, QUERY_TYPE_LABELS, limit=2)
     if not ranked:

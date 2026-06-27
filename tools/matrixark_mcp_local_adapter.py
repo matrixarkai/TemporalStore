@@ -226,6 +226,7 @@ class MatrixArkLocalAdapter:
             "scope": scope,
             "audit_mode": audit_mode,
             "question_type": pack.get("question_type", ""),
+            "query_plan": recall_policy.get("query_plan", {}),
             "selected_ref_count": len(pack.get("selected_refs", []) or []),
             "selected_ref_counts": pack.get("selected_ref_counts", {}),
             "dropped_ref_count": len(dropped_refs.get("refs", []) or []),
@@ -3681,13 +3682,20 @@ class MatrixArkLocalAdapter:
             raise MatrixArkError("max_context_tokens must be a positive integer")
         local_budget = local_context_budget(args)
         query_terms = {term for term in tokens(query) if len(term) > 2}
-        embedding_started_perf = time.perf_counter()
-        query_embedding = embedding_for_text(query)
-        self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
             raise MatrixArkError("reference_time_ms must be an integer")
         reference_time_ms = raw_reference_time_ms
+        query_plan = build_structured_query_plan(
+            query,
+            question_type=question_type,
+            secondary_index_filter_groups=secondary_index_filter_groups,
+            secondary_index_filter_mode=secondary_index_filter_mode,
+            reference_time_ms=reference_time_ms,
+        )
+        embedding_started_perf = time.perf_counter()
+        query_embedding = embedding_for_text(query)
+        self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         finish_retrieval_stage("query_understanding", stage_started_perf)
         stage_started_perf = time.perf_counter()
@@ -3734,6 +3742,7 @@ class MatrixArkLocalAdapter:
         index_terms_by_batch: dict[Any, list[str]] = {}
         index_terms_by_node: dict[Any, list[str]] = {}
         index_terms_by_ref: dict[Any, list[str]] = {}
+        index_terms_by_node_for_prefilter: dict[int, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
         for record in records:
             record_type = record.get("record_type")
@@ -3742,6 +3751,11 @@ class MatrixArkLocalAdapter:
                 if index_name:
                     index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
                     ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                    node_hash_for_index = record.get("node_hash")
+                    try:
+                        index_terms_by_node_for_prefilter.setdefault(int(node_hash_for_index), []).append(index_name)
+                    except (TypeError, ValueError):
+                        pass
                     if ref_hash is not None:
                         index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                     else:
@@ -3757,6 +3771,17 @@ class MatrixArkLocalAdapter:
                     summary_text = str(record.get("summary_text", ""))
                     if len(summary_text) > len(existing):
                         node_summary_text_by_hash[node_hash_for_summary] = summary_text
+        secondary_index_prefilter_node_hashes = {
+            node_hash
+            for node_hash, terms in index_terms_by_node_for_prefilter.items()
+            if passes_secondary_index_filters(set(terms), secondary_index_filter_groups, mode=secondary_index_filter_mode)
+        } if secondary_index_filter_groups else set()
+        query_plan["secondary_index_prefilter"] = {
+            "applied_before_l0_l1_traversal": True,
+            "matched_node_count": len(secondary_index_prefilter_node_hashes),
+            "fallback_when_no_index_matches": True,
+            "strategy": "ContextIndex node hints boost L0/L1 traversal; leaf candidates still verify filters before embedding scoring",
+        }
         for record in records:
             record_type = record.get("record_type")
             if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
@@ -3766,7 +3791,8 @@ class MatrixArkLocalAdapter:
                 node_hash = record["node_hash"]
                 node_text = " ".join(record.get("node_path", [])) + " " + node_summary_text_by_hash.get(node_hash, "")
                 sparse_score = sparse_lexical_score(query_terms, node_text)
-                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score), 6)
+                index_hint_boost = 0.08 if node_hash in secondary_index_prefilter_node_hashes else 0.0
+                score = round(clamp01(0.72 * normalized_dense_score(dense_score) + 0.28 * sparse_score + index_hint_boost), 6)
                 current = node_scores.get(node_hash)
                 if current is None or score > current["score"]:
                     node_scores[node_hash] = {
@@ -3792,6 +3818,24 @@ class MatrixArkLocalAdapter:
                 resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
             elif record_type == "context_embedding" and record.get("embedding_type") == "skill_summary":
                 skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+        for record in records:
+            if record.get("record_type") != "context_node":
+                continue
+            try:
+                node_hash = int(record.get("node_hash"))
+            except (TypeError, ValueError):
+                continue
+            if node_hash not in secondary_index_prefilter_node_hashes or node_hash in node_scores:
+                continue
+            node_scores[node_hash] = {
+                "node_hash": node_hash,
+                "node_path": record.get("node_path", []),
+                "depth": record.get("depth", len(record.get("node_path", []))),
+                "score": 0.58,
+                "dense_score": 0.0,
+                "sparse_score": 0.0,
+                "embedding_type": "secondary_index_hint",
+            }
         if deadline_exceeded():
             return self.deadline_fallback_pack(
                 query=query,
@@ -4459,6 +4503,7 @@ class MatrixArkLocalAdapter:
             "embedding_execution_mode": embedding_execution_mode_name(),
             "embedding_fallback_used": embedding_fallback_used(),
             "recall_policy": {
+                "query_plan": query_plan,
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "tree_traversal": {
                     "enabled": True,

@@ -3,6 +3,59 @@
 MatrixArk recall now follows a VikingMem-style two-path policy while keeping
 TemporalStore as the serving store.
 
+## Structured Query Plan Before Scoring
+
+Retrieval now builds a small structured query plan before candidate embedding
+scoring. The plan is stored in `ContextPack.recall_policy.query_plan` and in
+telemetry/audit records so benchmark and debugger output can show why a pack was
+assembled.
+
+Example:
+
+```json
+{
+  "query_type": "current_state",
+  "secondary_filters": {
+    "entity_type": ["preference", "current_plan"],
+    "event_type": ["status_update"],
+    "resource_type": ["pdf", "md"],
+    "source_type": ["message", "resource"],
+    "keyword": ["gpu", "approval"]
+  },
+  "temporal_window": {
+    "mode": "latest",
+    "valid_as_of": "now"
+  },
+  "execution_order": [
+    "query_understanding",
+    "scope_filter",
+    "secondary_index_prefilter",
+    "l0_l1_node_traversal",
+    "leaf_candidate_fetch",
+    "embedding_similarity_time_decay_business_score",
+    "question_type_pack"
+  ]
+}
+```
+
+The implemented order is:
+
+1. infer `query_type`;
+2. infer secondary-index filters from query text and question type;
+3. infer temporal window, such as `latest`, `valid_as_of`, or historical;
+4. enforce account/tenant/user/session scope before candidate eligibility;
+5. use `ContextIndex` hits as a node prefilter/hint before L0/L1 traversal;
+6. traverse `ContextNode` folders with `node_l0` / `node_l1` summary embeddings;
+7. fetch fewer leaf events, entities, segments, resources, and skill sections;
+8. score with embedding similarity, sparse terms, time decay, and business
+   weights;
+9. pack the final `ContextPack` under token budget.
+
+Today the secondary-index prefilter is applied inside the MatrixArk retrieval
+runtime and recorded in the query plan. The next native-backend optimization is
+to push the same scope + secondary-index filter into C++/Rust prefix/index scans
+so fewer records are loaded before traversal.
+
 ## Primary Path
 
 The primary path is now tree-first, then hybrid at the selected leaves:
