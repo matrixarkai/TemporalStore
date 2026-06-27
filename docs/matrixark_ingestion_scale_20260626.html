@@ -198,7 +198,9 @@ The local JSONL backend is for development and deterministic CI. It is not the s
 - The direct adapter no longer calls `read_all()` before append, so it avoids full-log scans before the native write.
 - The compact append log stores records in sharded TemporalStore hash fields plus a tiny `record_count` string.
 - `ContextEvent` also writes a timestamp-ordered native event index: `context_event_by_ingestion_time:&lt;scope&gt;` with field `&lt;ingestion_time_ms&gt;:&lt;event_id_hash&gt;`. The hot event JSON does not need the bulky envelope ingestion timestamp; replay/debug keeps the full envelope separately.
-- `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables a process-local background queue for async-route writes. This lets message ingest retun after accepting records into the queue while the worker flushes to C++/Rust TemporalStore.
+- `MATRIXARK_DIRECT_WRITE_QUEUE=1` enables background flushing for async-route writes.
+- `MATRIXARK_DIRECT_WRITE_QUEUE_MODE=temporalstore` is the production mode. The adapter first writes a durable queue bundle into TemporalStore itself, then a background worker drains that bundle into the compact context append log. If the process restarts after the queue write but before flush, the next drain scans `direct_write_queue` and resumes pending batches.
+- `MATRIXARK_DIRECT_WRITE_QUEUE_MODE=memory` remains a local/debug mode only.
 - `write_mode=sync` is never queued and waits for the native write path.
 
 So the correct scale matrix is:
