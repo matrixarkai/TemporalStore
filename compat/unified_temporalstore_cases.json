@@ -4740,6 +4740,11 @@
               "temporalstore_raft_byteraft_peer_append_queue_depth",
               "temporalstore_raft_byteraft_peer_reorder_queue_depth",
               "temporalstore_raft_byteraft_peer_snapshot_installed_index",
+              "temporalstore_raft_byteraft_peer_snapshot_send_attempts",
+              "temporalstore_raft_byteraft_peer_snapshot_install_received_chunks",
+              "temporalstore_raft_byteraft_peer_snapshot_install_total_chunks",
+              "temporalstore_raft_byteraft_peer_snapshot_retry_count",
+              "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
               "temporalstore_raft_byteraft_wal_segment_count"
             ],
             "required_fields": [
@@ -4776,6 +4781,11 @@
                 "snapshot_sending",
                 "snapshot_installing",
                 "snapshot_installed_index",
+                "snapshot_send_attempts",
+                "snapshot_install_received_chunks",
+                "snapshot_install_total_chunks",
+                "snapshot_retry_count",
+                "snapshot_backpressure_rejections",
                 "transfer_leader_target",
                 "pre_vote_rejections",
                 "election_rejections"
