@@ -271,7 +271,10 @@ impl MetricsSnapshot {
         line(
             &mut out,
             "matrixark_backend_info",
-            "{backend=\"rust\",storage_mode=\"rust-gateway\"}",
+            &format!(
+                "{{backend=\"rust\",storage_mode=\"{}\"}}",
+                matrixark_rust_storage_mode()
+            ),
             1,
         );
         metric_header(
@@ -439,6 +442,20 @@ fn escape_label(value: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
+}
+
+fn matrixark_rust_storage_mode() -> &'static str {
+    match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
+        Some("direct_sdk") => "rust-direct-sdk-bridge",
+        _ => "rust-gateway",
+    }
+}
+
+fn matrixark_rust_service_mode() -> &'static str {
+    match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
+        Some("direct_sdk") => "long_lived_rust_direct_sdk_bridge",
+        _ => "long_lived_stdio_gateway",
+    }
 }
 
 fn command_stats(command: &Command, result: &Value) -> CommandStats {
@@ -1022,7 +1039,7 @@ fn serve() -> i32 {
         if command.op == "health" {
             println!(
                 "{}",
-                json!({"ok": true, "status": "ok", "mode": "long_lived_stdio_gateway"})
+                json!({"ok": true, "status": "ok", "mode": matrixark_rust_service_mode()})
             );
             let _ = stdout.flush();
             continue;
@@ -1055,7 +1072,7 @@ fn serve() -> i32 {
                 json!({
                     "ok": true,
                     "status": "ready",
-                    "mode": "long_lived_stdio_gateway",
+                    "mode": matrixark_rust_service_mode(),
                     "cached_clients": clients.len()
                 })
             );

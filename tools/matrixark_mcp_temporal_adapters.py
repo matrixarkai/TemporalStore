@@ -2843,6 +2843,7 @@ class MatrixArkRustProxyClient:
         table: str,
         request_timeout_ms: int,
         io_timeout_ms: int,
+        sdk_mode: str = "gateway",
     ) -> None:
         proxy_path = proxy_path or cli_path
         if not proxy_path:
@@ -2957,6 +2958,7 @@ class MatrixArkRustProxyClient:
             stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
+            env=env,
         )
         return lane["proc"]
 
@@ -3307,6 +3309,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         storage_prefix: str = "matrixark:mcp",
         request_timeout_ms: int = 20000,
         io_timeout_ms: int = 20000,
+        sdk_mode: str = "gateway",
     ) -> None:
         MatrixArkLocalAdapter.__init__(self, Path("/tmp/matrixark-mcp-unused-rust.jsonl"))
         MatrixArkLocalAdapter._init_local_runtime_state(self)
@@ -3323,6 +3326,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             table=table,
             request_timeout_ms=request_timeout_ms,
             io_timeout_ms=io_timeout_ms,
+            sdk_mode=sdk_mode,
         )
         self._metaserver = metaserver
         self._namespace = namespace
@@ -3362,8 +3366,12 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
     def _backend_label(self) -> str:
         return "temporalstore-rust"
 
+    def _rust_storage_mode_label(self) -> str:
+        return "rust-direct-sdk-bridge" if getattr(self._client, "sdk_mode", "") == "direct_sdk" else "rust-gateway"
+
     def _backend_neutral_prometheus(self, snapshot: Json) -> str:
         backend = "rust"
+        storage_mode = self._rust_storage_mode_label()
         buckets = snapshot.get("latency_buckets") if isinstance(snapshot.get("latency_buckets"), dict) else {}
         lines = [
             "# HELP matrixark_backend_qps MatrixArk storage backend command QPS.",
@@ -3485,3 +3493,21 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "rust_client": rust_client_metrics,
             },
         }
+
+
+class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter):
+    """MatrixArk adapter backed by a long-lived Rust process using the Rust SDK directly.
+
+    This is the Rust parity counterpart to the C++ direct SDK adapter. The Python
+    MCP process still owns protocol/model glue, while the Rust bridge owns the
+    TemporalStore SDK client and native storage calls. It is intentionally
+    explicit so benchmark reports can distinguish it from the production Rust
+    proxy/gateway path.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs["sdk_mode"] = "direct_sdk"
+        super().__init__(**kwargs)
+
+    def _backend_label(self) -> str:
+        return "temporalstore-rust-direct"

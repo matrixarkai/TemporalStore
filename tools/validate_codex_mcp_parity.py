@@ -49,6 +49,7 @@ REQUIRED_CPP_DIRECT_TOKENS = [
 REQUIRED_BACKEND_TOKENS = [
     "temporalstore-direct",
     "temporalstore-rust",
+    "temporalstore-rust-direct",
     "MATRIXARK_TEMPORALSTORE_RUST_CLI",
     "matrixark_record_log",
 ]
@@ -88,6 +89,7 @@ def validate_cpp_server_when_available() -> dict[str, object]:
         for token in [
             "MatrixArkTemporalStoreDirectAdapter",
             "MatrixArkTemporalStoreRustAdapter",
+            "MatrixArkTemporalStoreRustDirectAdapter",
             "MatrixArkRustCliClient",
             *REQUIRED_BACKEND_TOKENS,
             *REQUIRED_TOOL_NAMES,
@@ -99,7 +101,7 @@ def validate_cpp_server_when_available() -> dict[str, object]:
     return {
         "cpp_server_checked": True,
         "cpp_server_path": str(CPP_SERVER),
-        "backends": ["local", "temporalstore-direct", "temporalstore-rust"],
+        "backends": ["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
     }
 
 
@@ -113,13 +115,22 @@ def validate_rust_cli_smoke() -> dict[str, object]:
     env.setdefault("CARGO_TARGET_DIR", "/tmp/temporalstore-mcp-parity-target")
     request = {
         "op": "put_string",
-        "metaserver": "127.0.0.1:18000",
-        "namespace": "codex_ns",
-        "table": "codex_table",
+        "metaserver": os.environ.get("MATRIXARK_METASERVER", "127.0.0.1:18000"),
+        "namespace": os.environ.get("MATRIXARK_NAMESPACE", "deploy_ns"),
+        "table": os.environ.get("MATRIXARK_TABLE", "deploy_table"),
         "key": "matrixark:mcp:parity",
         "value": "rust-temporalstore-ok",
     }
-    cargo_command = [
+    rust_cli = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI")
+    sdk_release_cli = ROOT / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log"
+    if rust_cli and Path(rust_cli).exists():
+        cargo_command = [rust_cli]
+        command_source = "MATRIXARK_TEMPORALSTORE_RUST_CLI"
+    elif sdk_release_cli.exists():
+        cargo_command = [str(sdk_release_cli)]
+        command_source = "sdk_release_binary"
+    else:
+        cargo_command = [
             "cargo",
             "run",
             "-q",
@@ -127,9 +138,10 @@ def validate_rust_cli_smoke() -> dict[str, object]:
             "temporalstore-rust",
             "--bin",
             "matrixark_record_log",
-    ]
+        ]
+        command_source = "cargo_run"
     cwd = ROOT
-    if shutil.which("cargo") is None and shutil.which("wsl.exe") is not None:
+    if cargo_command[0] == "cargo" and shutil.which("cargo") is None and shutil.which("wsl.exe") is not None:
         wsl_root = subprocess.run(
             ["wsl.exe", "wslpath", "-a", str(ROOT).replace("\\", "/")],
             check=True,
@@ -146,17 +158,41 @@ def validate_rust_cli_smoke() -> dict[str, object]:
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         env=env,
-        timeout=300,
+        timeout=60,
         check=False,
     )
     if proc.returncode != 0:
         raise SystemExit(f"matrixark_record_log put_string failed:\n{proc.stderr}\n{proc.stdout}")
     payload = json.loads(proc.stdout.splitlines()[-1])
     if not payload.get("ok"):
-        raise SystemExit(f"matrixark_record_log returned failure: {payload}")
+        health_proc = subprocess.run(
+            cargo_command,
+            cwd=cwd,
+            input=json.dumps({"op": "health"}),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=env,
+            timeout=30,
+            check=False,
+        )
+        if health_proc.returncode != 0:
+            raise SystemExit(f"matrixark_record_log health failed after put_string failure:\n{health_proc.stderr}\n{health_proc.stdout}")
+        health_payload = json.loads(health_proc.stdout.splitlines()[-1])
+        if not health_payload.get("ok"):
+            raise SystemExit(f"matrixark_record_log returned failure: {payload}; health={health_payload}")
+        return {
+            "rust_cli_smoke": True,
+            "rust_cli_root": str(root),
+            "rust_cli_command_source": command_source,
+            "operation": "health",
+            "storage_write_smoke": "skipped_topology_not_ready",
+            "put_string_error": payload.get("error", ""),
+        }
     return {
         "rust_cli_smoke": True,
         "rust_cli_root": str(root),
+        "rust_cli_command_source": command_source,
         "operation": "put_string",
     }
 

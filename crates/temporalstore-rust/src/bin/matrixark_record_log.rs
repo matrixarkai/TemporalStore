@@ -280,7 +280,7 @@ fn serve() -> i32 {
                 clear_engine_cache();
                 let output = RecordLogOutput {
                     status: "shutting_down".to_string(),
-                    mode: "long_lived_stdio_gateway".to_string(),
+                    mode: matrixark_rust_service_mode().to_string(),
                     cached_clients: Some(cached_clients),
                     ..empty_output(PathBuf::new())
                 };
@@ -309,7 +309,7 @@ fn serve() -> i32 {
                         &latency_buckets,
                         cached_engine_count(),
                     ),
-                    mode: "long_lived_stdio_gateway".to_string(),
+                    mode: matrixark_rust_service_mode().to_string(),
                     cached_clients: Some(cached_engine_count()),
                     ..empty_output(PathBuf::new())
                 };
@@ -367,7 +367,7 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
                 count: Some(0),
                 root: record_log_root(&request),
                 status: "ready".to_string(),
-                mode: "long_lived_stdio_gateway".to_string(),
+                mode: matrixark_rust_service_mode().to_string(),
                 cached_clients: Some(cached_engine_count()),
                 ..empty_output(PathBuf::new())
             },
@@ -379,6 +379,20 @@ fn run_request(request: RecordLogRequest) -> Result<(String, RecordLogOutput), (
         execute_record_log_request(&engine, request, root).map_err(|error| (op.clone(), error))?;
     output.cached_clients = Some(cached_engine_count());
     Ok((op, output))
+}
+
+fn matrixark_rust_storage_mode() -> &'static str {
+    match env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
+        Some("direct_sdk") => "rust-direct-sdk-bridge",
+        _ => "rust-gateway",
+    }
+}
+
+fn matrixark_rust_service_mode() -> &'static str {
+    match env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
+        Some("direct_sdk") => "long_lived_rust_direct_sdk_bridge",
+        _ => "long_lived_stdio_gateway",
+    }
 }
 
 fn render_prometheus_metrics(
@@ -394,6 +408,7 @@ fn render_prometheus_metrics(
 ) -> String {
     let uptime_seconds = ((unix_ms().saturating_sub(started_at_ms)) as f64 / 1000.0).max(0.001);
     let qps = command_count as f64 / uptime_seconds;
+    let storage_mode = matrixark_rust_storage_mode();
     let mut output = format!(
         concat!(
             "# HELP matrixark_rust_record_log_process_start_time_ms Unix millisecond timestamp when this Rust record-log process started.\n",
@@ -428,10 +443,10 @@ fn render_prometheus_metrics(
             "matrixark_backend_timeouts_total{{backend=\"rust\"}} 0\n",
             "# HELP matrixark_backend_info MatrixArk backend identity and storage mode.\n",
             "# TYPE matrixark_backend_info gauge\n",
-            "matrixark_backend_info{{backend=\"rust\",storage_mode=\"rust-gateway\"}} 1\n",
+            "matrixark_backend_info{{backend=\"rust\",storage_mode=\"{}\"}} 1\n",
             "# HELP matrixark_backend_ready MatrixArk backend readiness state, 1 for ready and 0 for not ready.\n",
             "# TYPE matrixark_backend_ready gauge\n",
-            "matrixark_backend_ready{{backend=\"rust\",storage_mode=\"rust-gateway\",status=\"ready\"}} 1\n",
+            "matrixark_backend_ready{{backend=\"rust\",storage_mode=\"{}\",status=\"ready\"}} 1\n",
             "# HELP matrixark_backend_records_written_total Backend-normalized records/hash entries written.\n",
             "# TYPE matrixark_backend_records_written_total counter\n",
             "matrixark_backend_records_written_total{{backend=\"rust\"}} {}\n",
@@ -482,6 +497,8 @@ fn render_prometheus_metrics(
         qps,
         command_count,
         failed_count,
+        storage_mode,
+        storage_mode,
         records_written,
         records_read,
         records_written,

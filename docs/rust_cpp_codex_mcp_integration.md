@@ -9,7 +9,8 @@ selection chooses which TemporalStore record-log adapter owns persistence.
 | Backend | TemporalStore path | Purpose |
 | --- | --- | --- |
 | `temporalstore-direct` | C++ TemporalStore SDK | C++ thread compatibility path. |
-| `temporalstore-rust` | Rust `matrixark_record_log` CLI plus Rust `TemporalEngine` | Rust-native Codex integration path. |
+| `temporalstore-rust` | Long-lived Rust `matrixark_record_log --serve` gateway/proxy | Rust-native Codex integration path. |
+| `temporalstore-rust-direct` | Long-lived Rust direct SDK bridge | Embedded/local Rust parity path matching the C++ direct SDK contract. |
 | `local` | JSONL file | Local diagnostic path only. |
 
 Rust does not add brpc or thrift. The Rust production/migration contract remains
@@ -40,7 +41,10 @@ tools/run_matrixark_mcp_server.sh \
 
 The Rust launcher builds `matrixark_record_log` when needed and passes its path
 through `MATRIXARK_TEMPORALSTORE_RUST_CLI`, which is what the shared MCP server
-expects for the `temporalstore-rust` adapter.
+expects for the `temporalstore-rust` and `temporalstore-rust-direct` adapters.
+Use `temporalstore-rust` for the production gateway/proxy path. Use
+`temporalstore-rust-direct` when validating embedded/local parity with the C++
+direct SDK path.
 
 Optional Rust storage root:
 
@@ -119,12 +123,27 @@ printf '%s\n' \
   MATRIXARK_MCP_BACKEND=temporalstore-rust tools/run_matrixark_mcp_server.sh --line-json
 ```
 
+Rust direct SDK bridge smoke:
+
+```bash
+MATRIXARK_MCP_BACKEND=temporalstore-rust-direct \
+MATRIXARK_CPP_TEMPORALSTORE_REPO=<cpp-temporalstore-checkout> \
+tools/run_matrixark_mcp_server.sh \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --line-json
+```
+
 Expected result:
 
 - `initialize` returns `serverInfo.name = matrixark-context`.
 - `tools/list` includes the MatrixArk context tools listed above.
 - The Rust backend fails closed if `matrixark_record_log` cannot be built or
   launched.
+- In `temporalstore-rust-direct` mode, backend metrics report
+  `sdk_mode=direct_sdk`, `storage_mode=rust-direct-sdk-bridge`, and
+  `matrixark_append_write_path=rust_direct_sdk_matrixark_batch_append_records`.
 
 ## Parity Boundary
 
