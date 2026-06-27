@@ -2186,6 +2186,14 @@ planning:
     queued cycle executes prepare/reclaim/expire/evict/page-reclaim/index-GC/
     compact/metrics stages and that the periodic scheduler does not overflow
     the background queue.
+28. Closed the next C++ `StorageManager` pressure-evidence gap: every Rust
+    cycle stage now reports its pressure signal, score, threshold,
+    triggered/not-triggered decision, candidate/skipped counts, before/after
+    bytes, and live/stale bytes. This makes prepare, dirty-WAL reclaim,
+    expire, cache evict, page reclaim, index-GC, compaction, and metrics reap
+    auditable in the same style as the C++ prepare/reclaim/evict/expire/
+    compact/index-GC loop, while still using Rust-native page and index
+    storage.
 
 Eight storage audit passes completed against C++ storage code:
 
@@ -2198,8 +2206,9 @@ Eight storage audit passes completed against C++ storage code:
 6. `PageGc`/delayed destroy -> Rust live-ref page GC and delayed purge.
 7. `PageCompactor` -> Rust live-page compaction and stale-segment reports.
 8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, bounded
-   data-node background StorageManager scheduling, runtime stats, Prometheus
-   storage metrics, and local scale validation.
+   data-node background StorageManager scheduling, per-stage pressure signal
+   reports, runtime stats, Prometheus storage metrics, and local scale
+   validation.
 
 Remaining explicit non-goals for this pass: legacy C++ wire surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache
@@ -2214,7 +2223,8 @@ GC, and local cache warmup coverage.
     StorageManager cycle report: dirty-slot dump selection, manifest
     checksum/generation validation, sequence boundaries, page-ref install
     preflight, object lifecycle validation, install markers/roll-forward,
-    page reclaim, compaction, index-GC, and cache policy evidence.
+    page reclaim, compaction, index-GC, cache policy evidence, and per-stage
+    pressure/candidate/byte accounting.
 14. Closed storage visibility gap: Rust recovery, recovery-boundary, and
     lifecycle reports now expose object lifecycle counters for live object IDs,
     live page refs, stale physical page estimates, dirty tombstones, reused

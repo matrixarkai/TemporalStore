@@ -1759,6 +1759,31 @@ impl TemporalEngine {
             warm_cache: request.warm_cache,
         };
         let plan = self.storage_lifecycle_plan(plan_request.clone());
+        let slot_logical_bytes = plan
+            .slot_summaries
+            .iter()
+            .map(|summary| summary.logical_bytes)
+            .sum::<u64>();
+        let slot_physical_bytes = plan
+            .slot_summaries
+            .iter()
+            .map(|summary| summary.physical_bytes)
+            .sum::<u64>();
+        let reclaim_live_bytes = plan
+            .reclaim_candidates
+            .iter()
+            .map(|candidate| candidate.live_physical_bytes)
+            .sum::<u64>();
+        let reclaim_stale_bytes = plan
+            .reclaim_candidates
+            .iter()
+            .map(|candidate| candidate.stale_physical_bytes)
+            .sum::<u64>();
+        let reclaim_candidate_count = plan.reclaim_candidates.len();
+        let reclaim_skipped_count = plan
+            .stale_page_segment_ids
+            .len()
+            .saturating_sub(reclaim_candidate_count);
         let mut stages = Vec::new();
         let mut errors = Vec::new();
         stages.push(StorageManagerStageReport {
@@ -1772,6 +1797,20 @@ impl TemporalEngine {
                 "prepare disabled".to_string()
             },
             selected_page_segment_ids: plan.live_page_segment_ids.clone(),
+            pressure_signal: "dirty_slots+undumped_wal_records+stale_page_bytes".to_string(),
+            pressure_score: plan.dirty_slots.len() as u64
+                + plan.undumped_oplog_records
+                + reclaim_stale_bytes,
+            pressure_threshold: 1,
+            pressure_triggered: !plan.dirty_slots.is_empty()
+                || plan.undumped_oplog_records > 0
+                || reclaim_stale_bytes > 0,
+            candidate_count: reclaim_candidate_count,
+            skipped_count: reclaim_skipped_count,
+            before_bytes: slot_physical_bytes,
+            after_bytes: slot_physical_bytes,
+            live_bytes: reclaim_live_bytes,
+            stale_bytes: reclaim_stale_bytes,
             dirty_slot_count: plan.dirty_slots.len(),
             undumped_oplog_records: plan.undumped_oplog_records,
             metrics_slot_count: plan.slot_summaries.len(),
@@ -1838,6 +1877,20 @@ impl TemporalEngine {
                 "dumped selected dirty slots and advanced reclaimable log boundary".to_string()
             },
             selected_slots: plan.selected_dump_slots.clone(),
+            pressure_signal: "undumped_wal_records".to_string(),
+            pressure_score: plan.undumped_oplog_records,
+            pressure_threshold: request.min_undumped_oplog_records,
+            pressure_triggered: request.enable_oplog_reclaim
+                && !plan.dump_delayed
+                && !plan.selected_dump_slots.is_empty(),
+            candidate_count: plan.dirty_slots.len(),
+            skipped_count: plan
+                .dirty_slots
+                .len()
+                .saturating_sub(plan.selected_dump_slots.len()),
+            before_bytes: slot_logical_bytes,
+            after_bytes: slot_logical_bytes,
+            live_bytes: slot_logical_bytes,
             dirty_slot_count: plan.dirty_slots.len(),
             undumped_oplog_records: plan.undumped_oplog_records,
             dumped_slot_count: lifecycle_report
@@ -1858,6 +1911,18 @@ impl TemporalEngine {
             } else {
                 "expire disabled".to_string()
             },
+            pressure_signal: "expired_logical_records".to_string(),
+            pressure_score: expiry_report
+                .as_ref()
+                .map(|report| report.expired_records_removed as u64)
+                .unwrap_or_default(),
+            pressure_threshold: 1,
+            pressure_triggered: expiry_report
+                .as_ref()
+                .map(|report| report.expired_records_removed > 0)
+                .unwrap_or(false),
+            before_bytes: slot_logical_bytes,
+            after_bytes: slot_logical_bytes,
             expired_records_removed: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed)
@@ -1882,6 +1947,23 @@ impl TemporalEngine {
             } else {
                 "evict disabled".to_string()
             },
+            pressure_signal: "cache_entries+disk_cache_bytes".to_string(),
+            pressure_score: lifecycle_report
+                .as_ref()
+                .map(|report| report.cache_entries_removed as u64 + report.cache_disk_bytes_removed)
+                .unwrap_or_default(),
+            pressure_threshold: 1,
+            pressure_triggered: lifecycle_report
+                .as_ref()
+                .map(|report| {
+                    report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
+                })
+                .unwrap_or(false),
+            before_bytes: lifecycle_report
+                .as_ref()
+                .map(|report| report.cache_disk_bytes_removed)
+                .unwrap_or_default(),
+            after_bytes: 0,
             cache_entries_removed: lifecycle_report
                 .as_ref()
                 .map(|report| report.cache_entries_removed)
@@ -1911,6 +1993,16 @@ impl TemporalEngine {
                 "reclaimed delayed-destroy page segments selected by stale-byte pressure"
                     .to_string()
             },
+            pressure_signal: "stale_page_bytes".to_string(),
+            pressure_score: reclaim_stale_bytes,
+            pressure_threshold: 1,
+            pressure_triggered: request.enable_page_reclaim && !plan.reclaim_candidates.is_empty(),
+            candidate_count: reclaim_candidate_count,
+            skipped_count: reclaim_skipped_count,
+            before_bytes: reclaim_live_bytes + reclaim_stale_bytes,
+            after_bytes: reclaim_live_bytes,
+            live_bytes: reclaim_live_bytes,
+            stale_bytes: reclaim_stale_bytes,
             selected_page_segment_ids: plan
                 .reclaim_candidates
                 .iter()
@@ -1946,6 +2038,38 @@ impl TemporalEngine {
             } else {
                 "index GC disabled".to_string()
             },
+            pressure_signal: "obsolete_manifests+install_markers".to_string(),
+            pressure_score: lifecycle_report
+                .as_ref()
+                .map(|report| {
+                    report
+                        .manifest_prune_report
+                        .as_ref()
+                        .map(|prune| prune.removed_manifest_ids.len() + prune.removed_marker_files)
+                        .unwrap_or_default()
+                        + report.install_roll_forward_reports.len()
+                })
+                .unwrap_or_default() as u64,
+            pressure_threshold: 1,
+            pressure_triggered: request.enable_index_gc
+                && lifecycle_report
+                    .as_ref()
+                    .map(|report| {
+                        report.manifest_prune_report.is_some()
+                            || !report.install_roll_forward_reports.is_empty()
+                    })
+                    .unwrap_or(false),
+            candidate_count: lifecycle_report
+                .as_ref()
+                .map(|report| {
+                    report
+                        .manifest_prune_report
+                        .as_ref()
+                        .map(|prune| prune.removed_manifest_ids.len() + prune.removed_marker_files)
+                        .unwrap_or_default()
+                        + report.install_roll_forward_reports.len()
+                })
+                .unwrap_or_default(),
             manifest_pruned_count: lifecycle_report
                 .as_ref()
                 .and_then(|report| report.manifest_prune_report.as_ref())
@@ -1997,6 +2121,29 @@ impl TemporalEngine {
             } else {
                 "rewrote live model page references into a fresh compacted segment".to_string()
             },
+            pressure_signal: "stale_segment_density+live_segment_count".to_string(),
+            pressure_score: reclaim_stale_bytes
+                + if plan.live_page_segment_ids.len() > 1 {
+                    plan.live_page_segment_ids.len() as u64
+                } else {
+                    0
+                },
+            pressure_threshold: 1,
+            pressure_triggered: should_compact,
+            candidate_count: plan.stale_page_segment_ids.len(),
+            skipped_count: plan.stale_page_segment_ids.len().saturating_sub(
+                compaction_report
+                    .as_ref()
+                    .map(|report| report.stale_page_segment_ids.len())
+                    .unwrap_or_default(),
+            ),
+            before_bytes: slot_physical_bytes,
+            after_bytes: compaction_report
+                .as_ref()
+                .map(|_| slot_logical_bytes)
+                .unwrap_or(slot_physical_bytes),
+            live_bytes: slot_logical_bytes,
+            stale_bytes: reclaim_stale_bytes,
             selected_page_segment_ids: compaction_report
                 .as_ref()
                 .map(|report| report.stale_page_segment_ids.clone())
@@ -2035,6 +2182,19 @@ impl TemporalEngine {
             applied: !request.dry_run,
             skipped: false,
             reason: "reported slot/page/cache pressure metrics for the completed cycle".to_string(),
+            pressure_signal: "slot_page_cache_metrics".to_string(),
+            pressure_score: plan.slot_summaries.len() as u64
+                + plan
+                    .slot_summaries
+                    .iter()
+                    .map(|summary| summary.page_ref_count)
+                    .sum::<u64>(),
+            pressure_threshold: 1,
+            pressure_triggered: !plan.slot_summaries.is_empty(),
+            before_bytes: slot_physical_bytes,
+            after_bytes: slot_physical_bytes,
+            live_bytes: slot_logical_bytes,
+            stale_bytes: reclaim_stale_bytes,
             metrics_slot_count: plan.slot_summaries.len(),
             metrics_page_ref_count: plan
                 .slot_summaries
@@ -17100,6 +17260,17 @@ mod tests {
         );
         assert_eq!(report.stages.len(), report.cxx_stage_order.len());
         assert!(report.plan.dirty_slots.len() >= 1);
+        let prepare = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "prepare")
+            .expect("prepare stage");
+        assert_eq!(
+            prepare.pressure_signal,
+            "dirty_slots+undumped_wal_records+stale_page_bytes"
+        );
+        assert!(prepare.pressure_triggered, "{report:#?}");
+        assert!(prepare.pressure_score >= 1, "{report:#?}");
         assert_eq!(engine.list_slot_dump_manifests(1).len(), before_manifests);
         assert!(report.lifecycle_report.is_none());
         assert!(report.compaction_report.is_none());
@@ -17184,24 +17355,50 @@ mod tests {
             .find(|stage| stage.stage == "reclaim_oplog")
             .expect("reclaim_oplog stage");
         assert!(reclaim_oplog.dumped_slot_count >= 1, "{report:#?}");
+        assert_eq!(reclaim_oplog.pressure_signal, "undumped_wal_records");
+        assert!(reclaim_oplog.pressure_triggered, "{report:#?}");
         let expire = report
             .stages
             .iter()
             .find(|stage| stage.stage == "expire")
             .expect("expire stage");
         assert_eq!(expire.expired_records_removed, 1, "{report:#?}");
+        assert_eq!(expire.pressure_signal, "expired_logical_records");
+        assert!(expire.pressure_triggered, "{report:#?}");
         let evict = report
             .stages
             .iter()
             .find(|stage| stage.stage == "evict")
             .expect("evict stage");
         assert!(evict.cache_entries_removed >= 1, "{report:#?}");
+        assert_eq!(evict.pressure_signal, "cache_entries+disk_cache_bytes");
+        assert!(evict.pressure_triggered, "{report:#?}");
         let reclaim_page = report
             .stages
             .iter()
             .find(|stage| stage.stage == "reclaim_page")
             .expect("reclaim_page stage");
         assert!(reclaim_page.page_segments_reclaimed >= 1, "{report:#?}");
+        assert_eq!(reclaim_page.pressure_signal, "stale_page_bytes");
+        assert!(reclaim_page.candidate_count >= reclaim_page.page_segments_reclaimed);
+        let index_gc = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "index_gc")
+            .expect("index_gc stage");
+        assert_eq!(
+            index_gc.pressure_signal,
+            "obsolete_manifests+install_markers"
+        );
+        let compact = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "compact")
+            .expect("compact stage");
+        assert_eq!(
+            compact.pressure_signal,
+            "stale_segment_density+live_segment_count"
+        );
         let metrics = report
             .stages
             .iter()
@@ -17209,6 +17406,8 @@ mod tests {
             .expect("reap_metrics stage");
         assert!(metrics.metrics_slot_count >= 1);
         assert!(metrics.metrics_page_ref_count >= 1);
+        assert_eq!(metrics.pressure_signal, "slot_page_cache_metrics");
+        assert!(metrics.before_bytes >= metrics.live_bytes);
     }
 
     #[test]
