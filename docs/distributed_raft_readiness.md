@@ -117,6 +117,7 @@ The Rust code currently has:
   state, snapshot send attempt/complete/failure counters, snapshot install
   start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
   leader-transfer target state and request/accept/reject/complete counters,
+  offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
   pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
   retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and process-path

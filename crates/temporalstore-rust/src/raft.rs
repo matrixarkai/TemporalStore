@@ -512,6 +512,9 @@ pub struct ByteRaftPeerPipelineState {
     pub transfer_leader_completed: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
+    pub offline_elapsed_ms: u64,
+    pub offline_timeout_reached: bool,
+    pub offline_timeout_rejections: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -949,6 +952,10 @@ pub struct RaftPeerPipelineRuntimeState {
     pub transfer_leader_completed: u64,
     pub pre_vote_rejections: u64,
     pub election_rejections: u64,
+    pub offline_since_ms: Option<u64>,
+    pub offline_elapsed_ms: u64,
+    pub offline_timeout_reached: bool,
+    pub offline_timeout_rejections: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -5817,11 +5824,20 @@ impl RaftCluster {
 
     pub fn set_alive(&self, node_id: RaftNodeId, alive: bool) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let logical_time_ms = inner.logical_time_ms;
         let node = inner
             .nodes
             .get_mut(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
         node.alive = alive;
+        if alive {
+            node.pipeline_state.offline_since_ms = None;
+            node.pipeline_state.offline_elapsed_ms = 0;
+            node.pipeline_state.offline_timeout_reached = false;
+        } else if node.pipeline_state.offline_since_ms.is_none() {
+            node.pipeline_state.offline_since_ms = Some(logical_time_ms);
+        }
+        inner.persist_configured_wal()?;
         Ok(())
     }
 
@@ -7258,6 +7274,8 @@ impl RaftCluster {
     pub fn advance_time_ms(&self, elapsed_ms: u64) {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         inner.logical_time_ms = inner.logical_time_ms.saturating_add(elapsed_ms);
+        inner.refresh_offline_timeout_states();
+        let _ = inner.persist_configured_wal();
     }
 
     pub fn shard_id(&self) -> ShardId {
@@ -7573,6 +7591,32 @@ impl RaftCluster {
 }
 
 impl RaftClusterInner {
+    fn refresh_offline_timeout_states(&mut self) {
+        for node in self.nodes.values_mut() {
+            if node.alive {
+                node.pipeline_state.offline_since_ms = None;
+                node.pipeline_state.offline_elapsed_ms = 0;
+                node.pipeline_state.offline_timeout_reached = false;
+                continue;
+            }
+            let offline_since_ms = node
+                .pipeline_state
+                .offline_since_ms
+                .get_or_insert(self.logical_time_ms);
+            node.pipeline_state.offline_elapsed_ms =
+                self.logical_time_ms.saturating_sub(*offline_since_ms);
+            let reached = self.config.offline_timeout_tick > 0
+                && node.pipeline_state.offline_elapsed_ms >= self.config.offline_timeout_tick;
+            if reached && !node.pipeline_state.offline_timeout_reached {
+                node.pipeline_state.offline_timeout_rejections = node
+                    .pipeline_state
+                    .offline_timeout_rejections
+                    .saturating_add(1);
+            }
+            node.pipeline_state.offline_timeout_reached = reached;
+        }
+    }
+
     fn ensure_live_leader(&mut self) -> Result<(), RaftError> {
         if self
             .nodes
@@ -8162,6 +8206,17 @@ impl RaftClusterInner {
                         .sum();
                     pipeline.append_queue_depth = pipeline.inflight_entries;
                 }
+                if node.alive {
+                    pipeline.offline_since_ms = None;
+                    pipeline.offline_elapsed_ms = 0;
+                    pipeline.offline_timeout_reached = false;
+                } else if let Some(offline_since_ms) = pipeline.offline_since_ms {
+                    pipeline.offline_elapsed_ms =
+                        self.logical_time_ms.saturating_sub(offline_since_ms);
+                    let reached = self.config.offline_timeout_tick > 0
+                        && pipeline.offline_elapsed_ms >= self.config.offline_timeout_tick;
+                    pipeline.offline_timeout_reached = reached;
+                }
                 ByteRaftPeerPipelineState {
                     peer_id: node.id,
                     role: node.role,
@@ -8199,6 +8254,9 @@ impl RaftClusterInner {
                     transfer_leader_completed: pipeline.transfer_leader_completed,
                     pre_vote_rejections: pipeline.pre_vote_rejections,
                     election_rejections: pipeline.election_rejections,
+                    offline_elapsed_ms: pipeline.offline_elapsed_ms,
+                    offline_timeout_reached: pipeline.offline_timeout_reached,
+                    offline_timeout_rejections: pipeline.offline_timeout_rejections,
                 }
             })
             .collect::<Vec<_>>();
@@ -9488,6 +9546,12 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_rejected counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_completed Leader-transfer completions per peer.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_completed counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_elapsed_ms ByteRaft-style offline elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_timeout_reached Whether a peer has crossed the configured offline timeout.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_timeout_reached gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_timeout_rejections Offline timeout transitions per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_timeout_rejections counter\n");
     for peer in report.peer_pipeline_states {
         let labels = &[
             ("kind", kind.to_string()),
@@ -9677,6 +9741,24 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_transfer_leader_completed",
             labels,
             peer.transfer_leader_completed,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_offline_elapsed_ms",
+            labels,
+            peer.offline_elapsed_ms,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_offline_timeout_reached",
+            labels,
+            u64::from(peer.offline_timeout_reached),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_offline_timeout_rejections",
+            labels,
+            peer.offline_timeout_rejections,
         );
     }
 }
