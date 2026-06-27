@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import queue
+
 try:
     from tools.matrixark_mcp_core import *
     from tools.matrixark_mcp_core import (
@@ -125,6 +127,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._write_retries = max(0, DIRECT_WRITE_RETRIES)
         self._write_backoff_s = max(0.0, DIRECT_WRITE_BACKOFF_MS / 1000.0)
         self._write_throttle_s = max(0.0, DIRECT_WRITE_THROTTLE_MS / 1000.0)
+        self._direct_write_queue_enabled = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+        self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
+        self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
+        self._direct_write_queue: queue.Queue[list[Json]] = queue.Queue(maxsize=self._direct_write_queue_max_records)
+        self._direct_write_worker_started = False
+        self._direct_write_worker_lock = threading.RLock()
+        self._direct_write_stop = threading.Event()
+        self._direct_write_failures = 0
+        self._direct_write_enqueued_records = 0
+        self._direct_write_flushed_records = 0
         self._backend_ready = False
         self._backend_ready_result: Json | None = None
         self._backend_readiness_lock = threading.RLock()
@@ -175,6 +187,29 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._audit_buffer = []
         if not hasattr(self, "_audit_flush_failures"):
             self._audit_flush_failures = 0
+        self._ensure_direct_write_queue_fields()
+
+    def _ensure_direct_write_queue_fields(self) -> None:
+        if not hasattr(self, "_direct_write_queue_enabled"):
+            self._direct_write_queue_enabled = os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE", "0").strip().lower() in {"1", "true", "yes"}
+        if not hasattr(self, "_direct_write_queue_max_records"):
+            self._direct_write_queue_max_records = max(1, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_MAX_RECORDS", "10000")))
+        if not hasattr(self, "_direct_write_queue_put_timeout_s"):
+            self._direct_write_queue_put_timeout_s = max(0.01, int(os.environ.get("MATRIXARK_DIRECT_WRITE_QUEUE_PUT_TIMEOUT_MS", "1000")) / 1000.0)
+        if not hasattr(self, "_direct_write_queue"):
+            self._direct_write_queue = queue.Queue(maxsize=int(self._direct_write_queue_max_records))
+        if not hasattr(self, "_direct_write_worker_started"):
+            self._direct_write_worker_started = False
+        if not hasattr(self, "_direct_write_worker_lock"):
+            self._direct_write_worker_lock = threading.RLock()
+        if not hasattr(self, "_direct_write_stop"):
+            self._direct_write_stop = threading.Event()
+        if not hasattr(self, "_direct_write_failures"):
+            self._direct_write_failures = 0
+        if not hasattr(self, "_direct_write_enqueued_records"):
+            self._direct_write_enqueued_records = 0
+        if not hasattr(self, "_direct_write_flushed_records"):
+            self._direct_write_flushed_records = 0
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
         self._ensure_backend_metric_fields()
@@ -255,6 +290,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.",
                     "# TYPE matrixark_backend_audit_flush_failures_total counter",
                     f'matrixark_backend_audit_flush_failures_total{{backend="{backend}"}} {int(getattr(self, "_audit_flush_failures", 0) or 0)}',
+                    "# HELP matrixark_backend_write_queue_depth MatrixArk direct backend queued write batches.",
+                    "# TYPE matrixark_backend_write_queue_depth gauge",
+                    f'matrixark_backend_write_queue_depth{{backend="{backend}"}} {getattr(self, "_direct_write_queue", None).qsize() if hasattr(self, "_direct_write_queue") else 0}',
+                    "# HELP matrixark_backend_write_queue_failures_total MatrixArk direct backend background write failures.",
+                    "# TYPE matrixark_backend_write_queue_failures_total counter",
+                    f'matrixark_backend_write_queue_failures_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_failures", 0) or 0)}',
+                    "# HELP matrixark_backend_write_queue_enqueued_records_total MatrixArk direct backend records accepted into the async write queue.",
+                    "# TYPE matrixark_backend_write_queue_enqueued_records_total counter",
+                    f'matrixark_backend_write_queue_enqueued_records_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_enqueued_records", 0) or 0)}',
+                    "# HELP matrixark_backend_write_queue_flushed_records_total MatrixArk direct backend queued records flushed to TemporalStore.",
+                    "# TYPE matrixark_backend_write_queue_flushed_records_total counter",
+                    f'matrixark_backend_write_queue_flushed_records_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_flushed_records", 0) or 0)}',
                 ]
             )
             return "\n".join(lines) + "\n"
@@ -273,6 +320,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "audit_mode": self._audit_mode,
                 "audit_buffered_records": len(self._audit_buffer),
                 "audit_flush_failures": self._audit_flush_failures,
+                "write_queue_enabled": bool(getattr(self, "_direct_write_queue_enabled", False)),
+                "write_queue_depth": getattr(self, "_direct_write_queue", None).qsize() if hasattr(self, "_direct_write_queue") else 0,
+                "write_queue_failures": int(getattr(self, "_direct_write_failures", 0) or 0),
+                "write_queue_enqueued_records": int(getattr(self, "_direct_write_enqueued_records", 0) or 0),
+                "write_queue_flushed_records": int(getattr(self, "_direct_write_flushed_records", 0) or 0),
                 "entry_count_cache": self._entry_count_cache,
                 "records_cache_ready": self._records_cache is not None,
                 "commands_total": self._commands_total,
@@ -413,16 +465,76 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 return route
         return {}
 
-    def _append_many_materialized(self, records: list[Json]) -> None:
+    def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
+        self._ensure_direct_write_queue_fields()
+        if not bool(getattr(self, "_direct_write_queue_enabled", False)):
+            return False
+        if not records:
+            return False
+        saw_background_route = False
+        for record in records:
+            route = record.get("storage_route")
+            if not isinstance(route, dict) or not route:
+                continue
+            if route.get("sync_write") is True or route.get("background_write") is not True:
+                return False
+            saw_background_route = True
+        return saw_background_route
+
+    def _enqueue_direct_write(self, records: list[Json]) -> None:
+        self._ensure_direct_write_queue_fields()
+        with self._direct_write_worker_lock:
+            if not self._direct_write_worker_started:
+                self._direct_write_worker_started = True
+                thread = threading.Thread(target=self._direct_write_loop, name="matrixark-direct-write-queue", daemon=True)
+                thread.start()
+        try:
+            self._direct_write_queue.put(list(records), timeout=self._direct_write_queue_put_timeout_s)
+        except queue.Full as exc:
+            raise MatrixArkError("direct TemporalStore write queue is full") from exc
+        self._direct_write_enqueued_records += len(records)
+
+    def _direct_write_loop(self) -> None:
+        while not self._direct_write_stop.is_set():
+            try:
+                records = self._direct_write_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            try:
+                self._append_many_materialized(records, allow_queue=False)
+                self._direct_write_flushed_records += len(records)
+            except Exception as exc:
+                self._direct_write_failures += 1
+                _mcp_debug_log(f"matrixark direct write queue flush failed: {exc}")
+            finally:
+                try:
+                    self._direct_write_queue.task_done()
+                except Exception:
+                    pass
+
+    def flush_direct_writes(self, timeout_s: float | None = None) -> None:
+        self._ensure_direct_write_queue_fields()
+        deadline = time.monotonic() + float(timeout_s if timeout_s is not None else 30.0)
+        while self._direct_write_queue.unfinished_tasks:
+            if time.monotonic() >= deadline:
+                raise MatrixArkError("timed out waiting for direct TemporalStore write queue to drain")
+            time.sleep(0.01)
+
+    def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
         if self._queue_batched_records(records):
             return
+        if allow_queue and self._records_can_use_direct_write_queue(records):
+            self._enqueue_direct_write(records)
+            return
         started_perf = time.perf_counter()
         with self._records_lock:
-            if self._records_cache is None:
-                self.read_all()
-            assert self._records_cache is not None
+            entry_count_cache = getattr(self, "_entry_count_cache", None)
+            count = entry_count_cache if entry_count_cache is not None else self._get_count()
+            if count <= 0 and self._index_cache is None:
+                self._index_cache = self._get_index()
+                self._legacy_index_mode = bool(self._index_cache)
             if self._legacy_index_mode:
                 if self._index_cache is None:
                     self._index_cache = self._get_index()
@@ -439,12 +551,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     self._index_cache.append(record_id)
                 self._hset_many_with_backoff(entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
-                self._records_cache.extend(records)
-                self._put_direct_record_cache(len(self._records_cache), self._records_cache)
+                if self._records_cache is not None:
+                    self._records_cache.extend(records)
+                    self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
                 return
 
-            sequence = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+            sequence = count
             entries = []
             for bundle in self._record_bundles(records):
                 record_key, record_id = self._record_location(sequence)
@@ -456,8 +569,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._hset_many_with_backoff(entries)
             self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
-            self._records_cache.extend(records)
-            self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+            if self._records_cache is not None:
+                self._records_cache.extend(records)
+                self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
             self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
 
     def append_audit(self, record: Json) -> None:
@@ -1290,6 +1404,3 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "rust_client": rust_client_metrics,
             },
         }
-
-
-
