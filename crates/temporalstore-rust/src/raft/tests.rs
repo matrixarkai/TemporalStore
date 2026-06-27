@@ -1602,6 +1602,50 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     assert_eq!(peer3.snapshot_install_rolled_back, 0);
 }
 
+// shared-corpus: raft_byteraft_snapshot_lifecycle_depth
+#[test]
+fn raft_process_snapshot_sender_completion_clears_in_progress_state() {
+    let cluster = RaftCluster::new_single_shard(213, [1, 2, 3]);
+    cluster
+        .propose(Command::StringSet {
+            key: "snapshot-sender-finish".to_string(),
+            value: b"value".to_vec(),
+        })
+        .unwrap();
+    let _request = cluster.build_install_snapshot_request(3).unwrap();
+    let sending = cluster.byteraft_runtime_admin_report();
+    let peer3 = sending
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert!(peer3.snapshot_sending);
+    assert!(peer3.snapshot_installing);
+
+    cluster.finish_snapshot_send(3, false).unwrap();
+    let failed = cluster.byteraft_runtime_admin_report();
+    let peer3 = failed
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert!(!peer3.snapshot_sending);
+    assert!(!peer3.snapshot_installing);
+    assert_eq!(peer3.snapshot_send_failed, 1);
+
+    let _request = cluster.build_install_snapshot_request(3).unwrap();
+    cluster.finish_snapshot_send(3, true).unwrap();
+    let completed = cluster.byteraft_runtime_admin_report();
+    let peer3 = completed
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert!(!peer3.snapshot_sending);
+    assert!(!peer3.snapshot_installing);
+    assert_eq!(peer3.snapshot_send_completed, 1);
+}
+
 #[test]
 fn raft_snapshot_transport_rejects_stale_term_before_install() {
     let cluster = RaftCluster::new_single_shard(211, [1, 2, 3]);

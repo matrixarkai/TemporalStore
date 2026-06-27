@@ -370,10 +370,18 @@ fn handle(
                     let status = cluster
                         .build_install_snapshot_request(req.node_id)
                         .and_then(|snapshot| {
-                            let response = runtime.transport().install_snapshot(snapshot)?;
+                            let response = match runtime.transport().install_snapshot(snapshot) {
+                                Ok(response) => response,
+                                Err(err) => {
+                                    let _ = cluster.finish_snapshot_send(req.node_id, false);
+                                    return Err(err);
+                                }
+                            };
                             if response.success {
+                                cluster.finish_snapshot_send(req.node_id, true)?;
                                 cluster.catch_up(req.node_id)
                             } else {
+                                cluster.finish_snapshot_send(req.node_id, false)?;
                                 Err(temporalstore_rust::RaftError::Transport(format!(
                                     "snapshot install rejected by node {}: {:?}",
                                     req.node_id, response.reject_reason
