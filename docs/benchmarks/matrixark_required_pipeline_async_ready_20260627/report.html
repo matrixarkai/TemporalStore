@@ -1,0 +1,62 @@
+<!doctype html><meta charset=utf-8><title>MatrixArk Required Pipeline Async Ready</title><pre># MatrixArk Required Pipeline Parity
+
+Run ID: `async_ready_20260627_fixed2`
+All OK: `True`
+Comparison: `passed`
+
+## Required Pipeline
+
+```text
+ingest -&gt; extraction -&gt; async summary refresh -&gt; tree traversal using node_l0/node_l1
+-&gt; secondary-index prefilter -&gt; retrieve events/entities/resources/skills
+-&gt; ContextPack -&gt; audit/replay
+```
+
+## cpp
+
+- OK: `True`
+- Elapsed ms: `1612.87`
+- Storage prefix: `matrixark:required-pipeline:cpp:async_ready_20260627_fixed2`
+- Record counts: `{&quot;context_child_ref&quot;: 7, &quot;context_debug_record&quot;: 45, &quot;context_embedding&quot;: 83, &quot;context_entity&quot;: 17, &quot;context_entity_update_audit&quot;: 9, &quot;context_event&quot;: 31, &quot;context_extraction_audit&quot;: 1, &quot;context_index&quot;: 149, &quot;context_node&quot;: 10, &quot;context_pack_audit&quot;: 3, &quot;context_pack_telemetry&quot;: 3, &quot;context_recall_reinforcement&quot;: 75, &quot;context_segment&quot;: 4, &quot;context_summary&quot;: 24, &quot;context_summary_dirty&quot;: 16, &quot;context_summary_refresh_audit&quot;: 10, &quot;matrixark_audit_log&quot;: 12, &quot;matrixark_metric&quot;: 2, &quot;resource_chunk&quot;: 4, &quot;resource_import_task&quot;: 6, &quot;resource_manifest&quot;: 1, &quot;resource_registry&quot;: 1, &quot;session_buffer_event&quot;: 3, &quot;skill_manifest&quot;: 1, &quot;skill_registry&quot;: 1, &quot;skill_section&quot;: 2}`
+- Embedding types: `batch_l0, entity_state, event_text, node_l0, node_l1, resource_chunk, resource_l0, segment_text, session_l0, skill_l0, skill_section, skill_summary`
+- Summary types: `batch_l0, node_l0, node_l1, resource_l0, session_l0, skill_l0`
+- Memory selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 3, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 2, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 1, &quot;skill_section&quot;: 0, &quot;summary&quot;: 0}`
+- Resource selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 2, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 2, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 1, &quot;skill_section&quot;: 0, &quot;summary&quot;: 0}`
+- Skill selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 0, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 1, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 0, &quot;skill_section&quot;: 2, &quot;summary&quot;: 0}`
+- Memory tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Resource tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Skill tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Audit actions: `context.batch_extract, context.ingest, context.refresh_summaries, context.replay, context.retrieve`
+
+## rust
+
+- OK: `True`
+- Elapsed ms: `1616.64`
+- Storage prefix: `matrixark:required-pipeline:rust:async_ready_20260627_fixed2`
+- Record counts: `{&quot;context_child_ref&quot;: 7, &quot;context_debug_record&quot;: 45, &quot;context_embedding&quot;: 83, &quot;context_entity&quot;: 17, &quot;context_entity_update_audit&quot;: 9, &quot;context_event&quot;: 31, &quot;context_extraction_audit&quot;: 1, &quot;context_index&quot;: 149, &quot;context_node&quot;: 10, &quot;context_pack_audit&quot;: 3, &quot;context_pack_telemetry&quot;: 3, &quot;context_recall_reinforcement&quot;: 75, &quot;context_segment&quot;: 4, &quot;context_summary&quot;: 24, &quot;context_summary_dirty&quot;: 16, &quot;context_summary_refresh_audit&quot;: 10, &quot;matrixark_audit_log&quot;: 12, &quot;matrixark_metric&quot;: 2, &quot;resource_chunk&quot;: 4, &quot;resource_import_task&quot;: 6, &quot;resource_manifest&quot;: 1, &quot;resource_registry&quot;: 1, &quot;session_buffer_event&quot;: 3, &quot;skill_manifest&quot;: 1, &quot;skill_registry&quot;: 1, &quot;skill_section&quot;: 2}`
+- Embedding types: `batch_l0, entity_state, event_text, node_l0, node_l1, resource_chunk, resource_l0, segment_text, session_l0, skill_l0, skill_section, skill_summary`
+- Summary types: `batch_l0, node_l0, node_l1, resource_l0, session_l0, skill_l0`
+- Memory selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 3, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 2, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 1, &quot;skill_section&quot;: 0, &quot;summary&quot;: 0}`
+- Resource selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 2, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 2, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 1, &quot;skill_section&quot;: 0, &quot;summary&quot;: 0}`
+- Skill selected counts: `{&quot;compression&quot;: 0, &quot;entity&quot;: 0, &quot;event&quot;: 23, &quot;resource_chunk&quot;: 1, &quot;resource_entity_fact&quot;: 0, &quot;resource_fact&quot;: 2, &quot;segment&quot;: 0, &quot;skill_section&quot;: 2, &quot;summary&quot;: 0}`
+- Memory tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Resource tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Skill tree: `{&quot;candidate_records_after_tree&quot;: 315, &quot;children_scoring_policy&quot;: &quot;score_all_children_up_to_hard_cap_then_split_node_layers&quot;, &quot;cold_events_represented_by_compression&quot;: false, &quot;enabled&quot;: true, &quot;fallback_reason&quot;: &quot;&quot;, &quot;fallback_to_flat&quot;: false, &quot;hard_max_children_scored_per_parent&quot;: 100000, &quot;leaf_record_fetch_policy&quot;: &quot;events/entities/resources/skills/compressions scanned only inside selected L0/L1 folders&quot;, &quot;max_candidates_per_node&quot;: 256, &quot;max_children_scored_per_parent&quot;: 100000, &quot;max_raw_events_per_node&quot;: 256, &quot;max_selected_refs&quot;: 256, &quot;raw_events_dropped_by_time_window&quot;: 0, &quot;records_dropped_by_node_fanout&quot;: 0, &quot;records_dropped_by_tree&quot;: 0, &quot;selected_leaf_count&quot;: 4, &quot;selected_node_count&quot;: 10, &quot;selected_path_count&quot;: 10, &quot;summary_embeddings&quot;: [&quot;node_l0&quot;, &quot;node_l1&quot;], &quot;top_k_per_layer&quot;: 8}`
+- Audit actions: `context.batch_extract, context.ingest, context.refresh_summaries, context.replay, context.retrieve`
+
+## C++ Vs Rust Comparison
+
+```json
+{
+  &quot;checks&quot;: {
+    &quot;embedding_types_equal&quot;: true,
+    &quot;memory_ref_counts_equal&quot;: true,
+    &quot;record_types_equal&quot;: true,
+    &quot;resource_ref_counts_equal&quot;: true,
+    &quot;skill_ref_counts_equal&quot;: true,
+    &quot;summary_types_equal&quot;: true
+  },
+  &quot;status&quot;: &quot;passed&quot;
+}
+```
+</pre>
