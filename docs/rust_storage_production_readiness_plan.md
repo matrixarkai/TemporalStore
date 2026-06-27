@@ -290,10 +290,10 @@ layout classes, layout transition counters, missing owner refs, owner mismatches
 reuse conflicts. That makes native Rust ObjectManager runtime mechanics readiness-backed rather
 than only doc-described.
 
-Rust also has stream-backed zone runtime evidence. The page store appends self-describing stream
+Rust also has stream-backed extent runtime evidence. The page store appends self-describing stream
 records, supports logical range reads that skip envelopes and decompress records across page
-boundaries, rolls segments by sealing the previous zone and opening a new active zone, persists the
-zone manifest across reopen, and tracks active/sealed/delayed-destroy/purged zone states.
+boundaries, rolls segments by sealing the previous extent and opening a new active extent, persists the
+extent manifest across reopen, and tracks active/sealed/delayed-destroy/purged extent states.
 
 Page compaction is tied to model layout and tombstones through `ShardCompactionReport`.
 Compaction now reports `model_layout_compaction_ready`, per-model layout rows, packed timestamped
@@ -317,7 +317,7 @@ retention, and index-GC as one fail-closed readiness surface. The shared
 The gate still fails closed on deeper C++ storage runtime mechanics that are not equivalent yet:
 C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream backend layout, the
 C++ byte-for-byte cleaner internals, and CacheLib/mtcache-class cache behavior. The slot-first
-index, ObjectManager runtime report, stream-backed zone report, StorageManager loop report, merged
+index, ObjectManager runtime report, stream-backed extent report, StorageManager loop report, merged
 dump/load policy report, and layout evidence are real readiness evidence, but they are not treated
 as byte-for-byte C++ runtime parity.
 

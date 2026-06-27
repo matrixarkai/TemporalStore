@@ -51,7 +51,7 @@ fn storage_crash_harness_recovers_after_abrupt_process_abort() {
     assert_eq!(summary.recovery.total_page_refs, 2);
     assert_eq!(summary.recovery.readable_page_refs, 2);
     assert!(summary.recovery.all_live_pages_readable);
-    assert_eq!(summary.recovery.zone_descriptors.len(), 2);
+    assert_eq!(summary.recovery.extent_descriptors.len(), 2);
     assert_eq!(summary.recovery.page_segment_reports.len(), 2);
     assert!(summary
         .recovery

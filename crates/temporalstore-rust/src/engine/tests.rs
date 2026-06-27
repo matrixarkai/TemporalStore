@@ -1875,7 +1875,7 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
     assert_eq!(report.segment_integrity.live_page_segment_count, 2);
     assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.zone_descriptors.len(), 2);
+    assert_eq!(report.extent_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
@@ -1888,16 +1888,16 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.zone_summary.active_extents, 1);
     assert_eq!(report.zone_summary.delayed_destroy_extents, 0);
     assert_eq!(
-        report.zone_summary.sealed_physical_bytes,
-        report.zone_descriptors[0].physical_bytes
+        report.extent_summary.sealed_physical_bytes,
+        report.extent_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.zone_summary.active_physical_bytes,
-        report.zone_descriptors[1].physical_bytes
+        report.extent_summary.active_physical_bytes,
+        report.extent_descriptors[1].physical_bytes
     );
     assert_eq!(
-        report.zone_summary.live_physical_bytes,
-        report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
+        report.extent_summary.live_physical_bytes,
+        report.extent_descriptors[0].physical_bytes + report.extent_descriptors[1].physical_bytes
     );
     assert_eq!(report.page_segment_live_reports.len(), 2);
     assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
@@ -2154,7 +2154,7 @@ fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
     assert_eq!(report.live_page_segment_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
-    assert_eq!(report.zone_descriptors.len(), 2);
+    assert_eq!(report.extent_descriptors.len(), 2);
     assert_eq!(
         report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
@@ -9137,8 +9137,8 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(report.object_ids_embedded);
     assert!(report.routing_slots_embedded);
     assert!(report.compression_supported);
-    assert_eq!(report.sealed_zones, 1);
-    assert_eq!(report.active_zones, 1);
+    assert_eq!(report.sealed_extents, 1);
+    assert_eq!(report.active_extents, 1);
     assert!(report.live_physical_bytes > 0);
     assert!(report.page_store_writes > 0);
     assert!(report.page_store_bytes_written > 0);
