@@ -1725,6 +1725,319 @@ impl TemporalEngine {
         }
     }
 
+    pub fn run_storage_manager_cycle(
+        &self,
+        request: StorageManagerCycleRequest,
+    ) -> StorageManagerCycleReport {
+        let cxx_stage_order = [
+            "prepare",
+            "reclaim_oplog",
+            "expire",
+            "evict",
+            "reclaim_page",
+            "index_gc",
+            "compact",
+            "reap_metrics",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        let plan_request = StorageLifecycleRequest {
+            shard_id: request.shard_id,
+            selected_dump_slots: Vec::new(),
+            max_dump_slots_per_round: request.max_dump_slots_per_round,
+            min_undumped_oplog_records: if request.enable_oplog_reclaim {
+                request.min_undumped_oplog_records
+            } else {
+                u64::MAX
+            },
+            purge_delayed_destroy: request.enable_page_reclaim,
+            prune_slot_dump_manifests: request.enable_index_gc,
+            roll_forward_slot_dump_installs: request.enable_index_gc,
+            follower_replay_cursors: Vec::new(),
+            invalidate_cache: request.enable_evict,
+            warm_cache: request.warm_cache,
+        };
+        let plan = self.storage_lifecycle_plan(plan_request.clone());
+        let mut stages = Vec::new();
+        let mut errors = Vec::new();
+        stages.push(StorageManagerStageReport {
+            stage: "prepare".to_string(),
+            enabled: request.enable_prepare,
+            applied: request.enable_prepare && !request.dry_run,
+            skipped: !request.enable_prepare,
+            reason: if request.enable_prepare {
+                "prepared storage lifecycle pressure view and index/page-store metadata".to_string()
+            } else {
+                "prepare disabled".to_string()
+            },
+            selected_page_segment_ids: plan.live_page_segment_ids.clone(),
+            dirty_slot_count: plan.dirty_slots.len(),
+            undumped_oplog_records: plan.undumped_oplog_records,
+            metrics_slot_count: plan.slot_summaries.len(),
+            metrics_page_ref_count: plan
+                .slot_summaries
+                .iter()
+                .map(|summary| summary.page_ref_count)
+                .sum(),
+            ..StorageManagerStageReport::default()
+        });
+
+        let mut expiry_report = None;
+        if request.enable_expire && !request.dry_run {
+            match self.sweep_expired_records(request.shard_id) {
+                Ok(report) => expiry_report = Some(report),
+                Err(err) => errors.push(format!("expire: {}", err.message)),
+            }
+        }
+
+        if request.enable_page_reclaim && !request.dry_run && !plan.reclaim_candidates.is_empty() {
+            let retain_from_page_segment_id = plan
+                .reclaim_candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id)
+                .max()
+                .unwrap_or_default()
+                .saturating_add(1);
+            if let Err(err) = self.page_store.gc_segments_before_with_live_refs_utility(
+                retain_from_page_segment_id,
+                plan.live_page_segment_ids.clone(),
+                plan.reclaim_candidates.len(),
+                true,
+            ) {
+                errors.push(format!("reclaim_page: {err}"));
+            }
+        }
+
+        let lifecycle_report = if request.dry_run {
+            None
+        } else {
+            Some(self.apply_storage_lifecycle(plan_request))
+        };
+
+        stages.push(StorageManagerStageReport {
+            stage: "reclaim_oplog".to_string(),
+            enabled: request.enable_oplog_reclaim,
+            applied: request.enable_oplog_reclaim
+                && !request.dry_run
+                && lifecycle_report
+                    .as_ref()
+                    .and_then(|report| report.dump_manifest.as_ref())
+                    .is_some(),
+            skipped: !request.enable_oplog_reclaim
+                || plan.dump_delayed
+                || plan.selected_dump_slots.is_empty(),
+            reason: if !request.enable_oplog_reclaim {
+                "oplog reclaim disabled".to_string()
+            } else if plan.dump_delayed {
+                "dirty slot dump delayed until the configured undumped log threshold is reached"
+                    .to_string()
+            } else if plan.selected_dump_slots.is_empty() {
+                "no dirty slots selected for dump".to_string()
+            } else {
+                "dumped selected dirty slots and advanced reclaimable log boundary".to_string()
+            },
+            selected_slots: plan.selected_dump_slots.clone(),
+            dirty_slot_count: plan.dirty_slots.len(),
+            undumped_oplog_records: plan.undumped_oplog_records,
+            dumped_slot_count: lifecycle_report
+                .as_ref()
+                .and_then(|report| report.dump_manifest.as_ref())
+                .map(|manifest| manifest.slot_ids.len())
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        stages.push(StorageManagerStageReport {
+            stage: "expire".to_string(),
+            enabled: request.enable_expire,
+            applied: request.enable_expire && !request.dry_run,
+            skipped: !request.enable_expire,
+            reason: if request.enable_expire {
+                "swept expired logical records and persisted index updates".to_string()
+            } else {
+                "expire disabled".to_string()
+            },
+            expired_records_removed: expiry_report
+                .as_ref()
+                .map(|report| report.expired_records_removed)
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        stages.push(StorageManagerStageReport {
+            stage: "evict".to_string(),
+            enabled: request.enable_evict,
+            applied: request.enable_evict
+                && !request.dry_run
+                && lifecycle_report
+                    .as_ref()
+                    .map(|report| {
+                        report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
+                    })
+                    .unwrap_or(false),
+            skipped: !request.enable_evict,
+            reason: if request.enable_evict {
+                "invalidated shard cache entries under lifecycle pressure".to_string()
+            } else {
+                "evict disabled".to_string()
+            },
+            cache_entries_removed: lifecycle_report
+                .as_ref()
+                .map(|report| report.cache_entries_removed)
+                .unwrap_or_default(),
+            cache_disk_bytes_removed: lifecycle_report
+                .as_ref()
+                .map(|report| report.cache_disk_bytes_removed)
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        stages.push(StorageManagerStageReport {
+            stage: "reclaim_page".to_string(),
+            enabled: request.enable_page_reclaim,
+            applied: request.enable_page_reclaim
+                && !request.dry_run
+                && lifecycle_report
+                    .as_ref()
+                    .map(|report| !report.delayed_destroy_purged_segments.is_empty())
+                    .unwrap_or(false),
+            skipped: !request.enable_page_reclaim || plan.reclaim_candidates.is_empty(),
+            reason: if !request.enable_page_reclaim {
+                "page reclaim disabled".to_string()
+            } else if plan.reclaim_candidates.is_empty() {
+                "no stale or delayed-destroy page segments are reclaimable".to_string()
+            } else {
+                "reclaimed delayed-destroy page segments selected by stale-byte pressure"
+                    .to_string()
+            },
+            selected_page_segment_ids: plan
+                .reclaim_candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id)
+                .collect(),
+            page_segments_reclaimed: lifecycle_report
+                .as_ref()
+                .map(|report| report.delayed_destroy_purged_segments.len())
+                .unwrap_or_default(),
+            page_bytes_reclaimed: lifecycle_report
+                .as_ref()
+                .map(|report| report.delayed_destroy_purged_bytes)
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        stages.push(StorageManagerStageReport {
+            stage: "index_gc".to_string(),
+            enabled: request.enable_index_gc,
+            applied: request.enable_index_gc
+                && !request.dry_run
+                && lifecycle_report
+                    .as_ref()
+                    .and_then(|report| report.manifest_prune_report.as_ref())
+                    .map(|report| {
+                        !report.removed_manifest_ids.is_empty() || report.removed_marker_files > 0
+                    })
+                    .unwrap_or(false),
+            skipped: !request.enable_index_gc,
+            reason: if request.enable_index_gc {
+                "pruned obsolete slot-dump manifests and rolled forward safe install markers"
+                    .to_string()
+            } else {
+                "index GC disabled".to_string()
+            },
+            manifest_pruned_count: lifecycle_report
+                .as_ref()
+                .and_then(|report| report.manifest_prune_report.as_ref())
+                .map(|report| report.removed_manifest_ids.len() + report.removed_marker_files)
+                .unwrap_or_default(),
+            install_roll_forward_count: lifecycle_report
+                .as_ref()
+                .map(|report| report.install_roll_forward_reports.len())
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        let should_compact = request.enable_page_compaction
+            && !request.dry_run
+            && (!plan.reclaim_candidates.is_empty() || plan.live_page_segment_ids.len() > 1);
+        let compaction_report = if should_compact {
+            match self.compact_shard_pages(request.shard_id) {
+                Ok(report) => Some(report),
+                Err(err) => {
+                    errors.push(format!("compact: {}", err.message));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        stages.push(StorageManagerStageReport {
+            stage: "compact".to_string(),
+            enabled: request.enable_page_compaction,
+            applied: compaction_report.is_some(),
+            skipped: !request.enable_page_compaction
+                || request.dry_run
+                || (plan.reclaim_candidates.is_empty() && plan.live_page_segment_ids.len() <= 1),
+            reason: if !request.enable_page_compaction {
+                "page compaction disabled".to_string()
+            } else if request.dry_run {
+                "dry run reports compaction pressure without rewriting pages".to_string()
+            } else if plan.reclaim_candidates.is_empty() && plan.live_page_segment_ids.len() <= 1 {
+                "compaction skipped because page density does not show stale-segment pressure"
+                    .to_string()
+            } else {
+                "rewrote live model page references into a fresh compacted segment".to_string()
+            },
+            selected_page_segment_ids: compaction_report
+                .as_ref()
+                .map(|report| report.stale_page_segment_ids.clone())
+                .unwrap_or_default(),
+            compacted_page_segment_id: compaction_report
+                .as_ref()
+                .map(|report| report.compacted_page_segment_id),
+            rewritten_page_refs: compaction_report
+                .as_ref()
+                .map(|report| report.rewritten_page_refs)
+                .unwrap_or_default(),
+            ..StorageManagerStageReport::default()
+        });
+
+        stages.push(StorageManagerStageReport {
+            stage: "reap_metrics".to_string(),
+            enabled: true,
+            applied: !request.dry_run,
+            skipped: false,
+            reason: "reported slot/page/cache pressure metrics for the completed cycle".to_string(),
+            metrics_slot_count: plan.slot_summaries.len(),
+            metrics_page_ref_count: plan
+                .slot_summaries
+                .iter()
+                .map(|summary| summary.page_ref_count)
+                .sum(),
+            ..StorageManagerStageReport::default()
+        });
+
+        let production_parity_slice = errors.is_empty()
+            && cxx_stage_order
+                .iter()
+                .all(|stage| stages.iter().any(|report| &report.stage == stage))
+            && stages.iter().all(|stage| stage.enabled);
+        StorageManagerCycleReport {
+            shard_id: request.shard_id,
+            dry_run: request.dry_run,
+            cxx_stage_order,
+            completed: errors.is_empty(),
+            production_parity_slice,
+            stages,
+            plan,
+            lifecycle_report,
+            expiry_report,
+            compaction_report,
+            errors,
+        }
+    }
+
     pub fn storage_production_readiness_report(
         &self,
         shard_id: ShardId,
@@ -16573,6 +16886,145 @@ mod tests {
         assert!(report.cache_warmup.warmed_bytes >= 128);
         assert_eq!(report.cache_warmup.failed_page_refs, 0);
         assert!(engine.cache().stats().puts >= 1);
+    }
+
+    #[test]
+    fn storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "manager-dry-run".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let before_manifests = engine.list_slot_dump_manifests(1).len();
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            dry_run: true,
+            max_dump_slots_per_round: 8,
+            ..StorageManagerCycleRequest::default()
+        });
+
+        assert!(report.completed, "{report:#?}");
+        assert!(report.production_parity_slice, "{report:#?}");
+        assert_eq!(
+            report.cxx_stage_order,
+            vec![
+                "prepare",
+                "reclaim_oplog",
+                "expire",
+                "evict",
+                "reclaim_page",
+                "index_gc",
+                "compact",
+                "reap_metrics",
+            ]
+        );
+        assert_eq!(report.stages.len(), report.cxx_stage_order.len());
+        assert!(report.plan.dirty_slots.len() >= 1);
+        assert_eq!(engine.list_slot_dump_manifests(1).len(), before_manifests);
+        assert!(report.lifecycle_report.is_none());
+        assert!(report.compaction_report.is_none());
+    }
+
+    #[test]
+    fn storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            128,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for idx in 0..4 {
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("manager-live-{idx}"),
+                    value: format!("value-{idx}").into_bytes(),
+                },
+            });
+        }
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "manager-expire".to_string(),
+                value: b"gone".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::CommonExpire {
+                key: "manager-expire".to_string(),
+                ttl_ms: 0,
+            },
+        });
+        let _ = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "manager-live-0".to_string(),
+            },
+        });
+        let compact_before = engine.compact_shard_pages(1).unwrap();
+        assert!(compact_before.rewritten_page_refs >= 1);
+        assert!(!compact_before.stale_page_segment_ids.is_empty());
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            max_dump_slots_per_round: 16,
+            warm_cache: true,
+            ..StorageManagerCycleRequest::default()
+        });
+
+        assert!(report.completed, "{report:#?}");
+        assert!(report.production_parity_slice, "{report:#?}");
+        assert!(report.lifecycle_report.is_some());
+        assert!(report
+            .lifecycle_report
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.dump_manifest.as_ref())
+            .is_some());
+        let reclaim_oplog = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "reclaim_oplog")
+            .expect("reclaim_oplog stage");
+        assert!(reclaim_oplog.dumped_slot_count >= 1, "{report:#?}");
+        let expire = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "expire")
+            .expect("expire stage");
+        assert_eq!(expire.expired_records_removed, 1, "{report:#?}");
+        let evict = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "evict")
+            .expect("evict stage");
+        assert!(evict.cache_entries_removed >= 1, "{report:#?}");
+        let reclaim_page = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "reclaim_page")
+            .expect("reclaim_page stage");
+        assert!(reclaim_page.page_segments_reclaimed >= 1, "{report:#?}");
+        let metrics = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "reap_metrics")
+            .expect("reap_metrics stage");
+        assert!(metrics.metrics_slot_count >= 1);
+        assert!(metrics.metrics_page_ref_count >= 1);
     }
 
     #[test]

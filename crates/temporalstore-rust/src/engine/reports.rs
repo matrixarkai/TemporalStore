@@ -541,6 +541,116 @@ pub struct StorageLifecycleRequest {
     pub warm_cache: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerCycleRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub dry_run: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_prepare: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_oplog_reclaim: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_evict: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_expire: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_page_reclaim: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_page_compaction: bool,
+    #[serde(default = "default_storage_manager_stage_enabled")]
+    pub enable_index_gc: bool,
+    #[serde(default)]
+    pub max_dump_slots_per_round: usize,
+    #[serde(default)]
+    pub min_undumped_oplog_records: u64,
+    #[serde(default)]
+    pub warm_cache: bool,
+}
+
+impl Default for StorageManagerCycleRequest {
+    fn default() -> Self {
+        Self {
+            shard_id: 0,
+            dry_run: false,
+            enable_prepare: true,
+            enable_oplog_reclaim: true,
+            enable_evict: true,
+            enable_expire: true,
+            enable_page_reclaim: true,
+            enable_page_compaction: true,
+            enable_index_gc: true,
+            max_dump_slots_per_round: 0,
+            min_undumped_oplog_records: 0,
+            warm_cache: false,
+        }
+    }
+}
+
+fn default_storage_manager_stage_enabled() -> bool {
+    true
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerStageReport {
+    pub stage: String,
+    pub enabled: bool,
+    pub applied: bool,
+    pub skipped: bool,
+    pub reason: String,
+    #[serde(default)]
+    pub selected_slots: Vec<u32>,
+    #[serde(default)]
+    pub selected_page_segment_ids: Vec<u64>,
+    #[serde(default)]
+    pub dirty_slot_count: usize,
+    #[serde(default)]
+    pub undumped_oplog_records: u64,
+    #[serde(default)]
+    pub dumped_slot_count: usize,
+    #[serde(default)]
+    pub expired_records_removed: usize,
+    #[serde(default)]
+    pub cache_entries_removed: usize,
+    #[serde(default)]
+    pub cache_disk_bytes_removed: u64,
+    #[serde(default)]
+    pub page_segments_reclaimed: usize,
+    #[serde(default)]
+    pub page_bytes_reclaimed: u64,
+    #[serde(default)]
+    pub manifest_pruned_count: usize,
+    #[serde(default)]
+    pub install_roll_forward_count: usize,
+    #[serde(default)]
+    pub compacted_page_segment_id: Option<u64>,
+    #[serde(default)]
+    pub rewritten_page_refs: usize,
+    #[serde(default)]
+    pub metrics_slot_count: usize,
+    #[serde(default)]
+    pub metrics_page_ref_count: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerCycleReport {
+    pub shard_id: ShardId,
+    pub dry_run: bool,
+    pub cxx_stage_order: Vec<String>,
+    pub completed: bool,
+    pub production_parity_slice: bool,
+    pub stages: Vec<StorageManagerStageReport>,
+    pub plan: StorageLifecyclePlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_report: Option<StorageLifecycleReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expiry_report: Option<ShardExpirySweepReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_report: Option<ShardCompactionReport>,
+    #[serde(default)]
+    pub errors: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageProductionReadinessPolicy {
     #[serde(default)]
