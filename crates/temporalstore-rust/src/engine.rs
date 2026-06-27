@@ -636,6 +636,39 @@ impl TemporalEngine {
         }
     }
 
+    pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return StoragePhysicalIndexReport {
+                shard_id,
+                slot_first: true,
+                ..StoragePhysicalIndexReport::default()
+            };
+        };
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        let start = info
+            .as_ref()
+            .map(|info| info.start_routing_slot)
+            .unwrap_or_default();
+        let end = info
+            .as_ref()
+            .map(|info| info.end_routing_slot)
+            .unwrap_or(u32::MAX);
+        let summaries = slot_storage_summaries(shard, start, end);
+        let summaries =
+            if let Some(manifest) = latest_slot_dump_manifest_at(&self.index_dir, shard_id) {
+                merge_last_dump_sequence(summaries, &manifest)
+            } else {
+                summaries
+            };
+        storage_physical_index_report(shard_id, shard, summaries)
+    }
+
     pub fn routing_slot_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
         let info = self
             .infos
@@ -7574,6 +7607,117 @@ fn slot_storage_summaries(
             .unwrap_or_default();
     }
     slots.into_values().collect()
+}
+
+fn storage_physical_index_report(
+    shard_id: ShardId,
+    shard: &ShardState,
+    summaries: Vec<SlotStorageSummary>,
+) -> StoragePhysicalIndexReport {
+    let summary_by_slot = summaries
+        .into_iter()
+        .map(|summary| (summary.routing_slot, summary))
+        .collect::<BTreeMap<_, _>>();
+    let mut slots = summary_by_slot
+        .iter()
+        .map(|(routing_slot, summary)| {
+            (
+                *routing_slot,
+                StoragePhysicalSlotNode {
+                    routing_slot: *routing_slot,
+                    dirty: summary.dirty_object_count > 0,
+                    meta_loaded: true,
+                    loading: false,
+                    in_memory: summary.page_ref_count > 0,
+                    ttl_ms: None,
+                    object_count: summary.object_count,
+                    page_ref_count: summary.page_ref_count,
+                    logical_bytes: summary.logical_bytes,
+                    physical_bytes: summary.physical_bytes,
+                    dirty_generation: summary.dirty_generation,
+                    last_dump_sequence: summary.last_dump_sequence,
+                    page_indexes: Vec::new(),
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    let mut missing_routing_slot_count = 0usize;
+    for entry in collect_live_page_entries(shard) {
+        if entry.address.routing_slot.is_none() {
+            missing_routing_slot_count = missing_routing_slot_count.saturating_add(1);
+        }
+        let routing_slot = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        let slot = slots
+            .entry(routing_slot)
+            .or_insert(StoragePhysicalSlotNode {
+                routing_slot,
+                meta_loaded: true,
+                in_memory: true,
+                ..StoragePhysicalSlotNode::default()
+            });
+        slot.page_indexes.push(StoragePhysicalPageIndex {
+            object_key: entry.object_key.clone(),
+            model_id: entry.kind.to_string(),
+            component: entry.component.clone(),
+            routing_slot,
+            page_segment_id: entry.address.page_segment_id,
+            offset: entry.address.offset,
+            length: entry.address.length,
+            page_id: entry.address.page_id,
+            object_id: entry.address.object_id,
+            zone_id: entry.address.zone_id,
+            checksum: entry.address.sha256.clone(),
+            dirty: shard.dirty_objects.contains(&entry.object_key),
+            deleted: false,
+            log_backed: true,
+        });
+    }
+    for slot in slots.values_mut() {
+        slot.page_indexes.sort_by(|left, right| {
+            left.object_key
+                .cmp(&right.object_key)
+                .then(left.model_id.cmp(&right.model_id))
+                .then(left.component.cmp(&right.component))
+                .then(left.page_segment_id.cmp(&right.page_segment_id))
+                .then(left.offset.cmp(&right.offset))
+        });
+    }
+    let page_index_count = slots
+        .values()
+        .map(|slot| slot.page_indexes.len())
+        .sum::<usize>();
+    let page_indexes = slots
+        .values()
+        .flat_map(|slot| slot.page_indexes.iter())
+        .collect::<Vec<_>>();
+    let missing_object_id_count = page_indexes
+        .iter()
+        .filter(|page| page.object_id.is_none())
+        .count();
+    let missing_page_id_count = page_indexes
+        .iter()
+        .filter(|page| page.page_id.is_none())
+        .count();
+    let missing_checksum_count = page_indexes
+        .iter()
+        .filter(|page| page.checksum.is_none())
+        .count();
+    StoragePhysicalIndexReport {
+        shard_id,
+        slot_first: true,
+        slot_count: slots.len(),
+        page_index_count,
+        dirty_slot_count: slots.values().filter(|slot| slot.dirty).count(),
+        missing_object_id_count,
+        missing_routing_slot_count,
+        missing_page_id_count,
+        missing_checksum_count,
+        slot_nodes: slots.into_values().collect(),
+    }
 }
 
 fn merge_last_dump_sequence(
@@ -15707,12 +15851,6 @@ mod tests {
                 timestamp_ms: 30,
                 instance: b"i".to_vec(),
             },
-            Command::RiskSet {
-                family: RiskFamily::Cpc,
-                key: "risk-key".to_string(),
-                timestamp_ms: 40,
-                amount: 5,
-            },
         ] {
             assert!(
                 engine
@@ -15868,6 +16006,128 @@ mod tests {
             .iter()
             .filter(|summary| summary.routing_slot == dirty_slot)
             .all(|summary| summary.last_dump_sequence == manifest.index_log_sequence));
+    }
+
+    // shared-corpus: storage_slot_first_physical_index
+    #[test]
+    fn storage_physical_index_report_is_slot_first_and_page_index_complete() {
+        let engine = TemporalEngine::default();
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 9,
+            load_version: 77,
+            local_node_id: Some(3),
+            shard_uri: "local://table/shard-9".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 20,
+            readonly: false,
+            table_name: "physical_index_table".to_string(),
+        });
+        for command in [
+            Command::StringSet {
+                key: "string-key".to_string(),
+                value: b"v".to_vec(),
+            },
+            Command::HashSet {
+                key: "hash-key".to_string(),
+                field: "a".to_string(),
+                value: b"1".to_vec(),
+            },
+            Command::SetAdd {
+                key: "set-key".to_string(),
+                member: b"m1".to_vec(),
+            },
+            Command::FeatureAppend {
+                key: "feature-key".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 1,
+                    value: b"f1".to_vec(),
+                }],
+            },
+            Command::SequenceAdd {
+                key: "sequence-key".to_string(),
+                rows: vec![SequenceFeatureRow {
+                    timestamp_ms: 10,
+                    gid: 1,
+                    action_type: 2,
+                    duration: 3,
+                    author_id: 4,
+                }],
+            },
+            Command::IpsAdd {
+                key: "ips-key".to_string(),
+                timestamp_ms: 30,
+                instance: b"i".to_vec(),
+            },
+            Command::RiskSet {
+                family: RiskFamily::Cpc,
+                key: "risk-key".to_string(),
+                timestamp_ms: 40,
+                amount: 5,
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 9,
+                        command,
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let report = engine.storage_physical_index_report(9);
+        assert!(report.slot_first);
+        assert!(report.slot_count > 0);
+        assert_eq!(report.page_index_count, 6);
+        assert_eq!(report.missing_object_id_count, 0);
+        assert_eq!(report.missing_routing_slot_count, 0);
+        assert_eq!(report.missing_page_id_count, 0);
+        assert_eq!(report.missing_checksum_count, 0);
+        assert!(report.dirty_slot_count > 0);
+        assert_eq!(
+            report
+                .slot_nodes
+                .iter()
+                .map(|slot| slot.page_indexes.len())
+                .sum::<usize>(),
+            report.page_index_count
+        );
+        assert!(report.slot_nodes.iter().all(|slot| {
+            slot.page_ref_count == slot.page_indexes.len() as u64
+                && slot.routing_slot >= 10
+                && slot.routing_slot <= 20
+        }));
+        assert!(report
+            .slot_nodes
+            .iter()
+            .filter(|slot| !slot.page_indexes.is_empty())
+            .all(|slot| slot.meta_loaded && slot.in_memory));
+        let page_indexes = report
+            .slot_nodes
+            .iter()
+            .flat_map(|slot| slot.page_indexes.iter())
+            .collect::<Vec<_>>();
+        assert!(page_indexes
+            .iter()
+            .all(|page| page.object_id.is_some() && page.page_id.is_some()));
+        assert!(page_indexes.iter().all(|page| page
+            .checksum
+            .as_ref()
+            .is_some_and(|checksum| !checksum.is_empty())));
+        assert!(page_indexes
+            .iter()
+            .all(|page| page.log_backed && !page.deleted && page.dirty));
+        assert!(page_indexes.iter().any(|page| page.model_id == "string"));
+        assert!(page_indexes.iter().any(|page| page.model_id == "hash"));
+        assert!(page_indexes.iter().any(|page| page.model_id == "set"));
+        assert!(page_indexes
+            .iter()
+            .any(|page| page.object_key == "feature-key"));
+        assert!(page_indexes
+            .iter()
+            .any(|page| page.object_key == "sequence-key"));
+        assert!(page_indexes.iter().any(|page| page.object_key == "ips-key"));
     }
 
     #[test]

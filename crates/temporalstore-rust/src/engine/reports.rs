@@ -251,6 +251,62 @@ pub struct SlotStorageSummary {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePhysicalPageIndex {
+    pub object_key: String,
+    pub model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<String>,
+    pub routing_slot: u32,
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zone_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
+    pub dirty: bool,
+    pub deleted: bool,
+    pub log_backed: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePhysicalSlotNode {
+    pub routing_slot: u32,
+    pub dirty: bool,
+    pub meta_loaded: bool,
+    pub loading: bool,
+    pub in_memory: bool,
+    pub ttl_ms: Option<u64>,
+    pub object_count: u64,
+    pub page_ref_count: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub dirty_generation: u64,
+    pub last_dump_sequence: u64,
+    #[serde(default)]
+    pub page_indexes: Vec<StoragePhysicalPageIndex>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePhysicalIndexReport {
+    pub shard_id: ShardId,
+    pub slot_first: bool,
+    pub slot_count: usize,
+    pub page_index_count: usize,
+    pub dirty_slot_count: usize,
+    pub missing_object_id_count: usize,
+    pub missing_routing_slot_count: usize,
+    pub missing_page_id_count: usize,
+    pub missing_checksum_count: usize,
+    #[serde(default)]
+    pub slot_nodes: Vec<StoragePhysicalSlotNode>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpManifest {
     pub version: u32,
     pub shard_id: ShardId,

@@ -84,6 +84,22 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 - `risk: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
+For C++ storage parity, Rust also exposes a physical slot-first view over those
+logical maps. `storage_physical_index_report` projects live page refs as:
+
+```text
+Index -> SlotNode -> PageIndex
+```
+
+Each `PageIndex` carries the object key, model id, optional component, routing
+slot, segment/offset/length, page id, object id, zone id, checksum, and
+dirty/deleted/log-backed flags. The focused shared case
+`storage_slot_first_physical_index` verifies that mixed page-backed
+string/hash/set/Feature/Sequence/IPS writes all produce complete slot-owned
+page indexes. This is not byte-for-byte C++ packed struct layout, but it makes
+the same ownership facts explicit and testable. Risk remains a product-model
+parity target for a later page-backed storage migration.
+
 For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
 
 Important current behavior:
