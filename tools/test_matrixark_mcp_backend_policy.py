@@ -2198,6 +2198,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("client\n                .matrixark_batch_append_records", source)
         self.assertIn('"native_append": true', source)
 
+        self.assertIn('"scan_hash" =>', source)
+        self.assertIn("client.hgetall", source)
+
+    def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "sdk/python/temporalstore/client.py").read_text()
+
+        self.assertIn("has_hgetall", source)
+        self.assertIn("def hgetall", source)
+        self.assertIn("def scan_hash", source)
+
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
         result = adapter._run_backend_readiness_gate(reason="unit-metaserver-down", timeout_ms=1)

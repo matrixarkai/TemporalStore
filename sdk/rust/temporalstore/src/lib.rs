@@ -103,6 +103,13 @@ struct CHashEntry {
 
 #[cfg(feature = "direct")]
 #[repr(C)]
+struct CStringArray {
+    count: usize,
+    values: *mut *mut c_char,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
 #[derive(Clone, Copy)]
 struct CSequenceFeatureRow {
     timestamp: u64,

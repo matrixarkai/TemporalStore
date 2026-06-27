@@ -629,6 +629,33 @@ class Client:
         for entry in entries:
             self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
 
+    def hgetall(self, key: str) -> List[dict]:
+        if not getattr(self._native, "has_hgetall", False):
+            raise TemporalStoreError("temporalstore_hgetall is not available in this SDK build")
+        out = _CStringArray()
+        error = ctypes.c_void_p()
+        code = self._native.lib.temporalstore_hgetall(
+            self._handle, _encode(key), ctypes.byref(out), ctypes.byref(error)
+        )
+        self._native.check(code, error)
+        try:
+            records = []
+            for i in range(0, out.count, 2):
+                records.append(
+                    {
+                        "key": key,
+                        "field": out.values[i].decode("utf-8", errors="replace"),
+                        "value": out.values[i + 1].decode("utf-8", errors="replace"),
+                    }
+                )
+            return records
+        finally:
+            self._native.lib.temporalstore_string_array_free(ctypes.byref(out))
+
+    def scan_hash(self, key: str) -> dict:
+        records = self.hgetall(key)
+        return {"ok": True, "count": len(records), "records": records, "native_prefix_scan": True}
+
     def matrixark_batch_append_records(
         self,
         entries: Iterable[dict],

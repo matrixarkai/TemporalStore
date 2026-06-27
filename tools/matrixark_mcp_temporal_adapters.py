@@ -1669,15 +1669,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         secondary_index_groups: list[set[str]] | None = None,
         selected_node_hashes: set[int] | None = None,
     ) -> Json:
-        """Return hot retrieval candidates with direct-backend prefiltering.
+        """Return retrieval candidates with native scan/cache prefiltering.
 
-        C++ direct and Rust proxy/direct SDK both materialize freshly appended records in
-        a process-local hot cache. Use that cache as the backend-side candidate
-        boundary so type/scope/secondary-index filtering happens before the
-        Python scoring and ContextPack assembly loops. The native C/Rust SDK
-        prefix-scan API is still tracked separately; this hook gives the same
-        request-visible behavior while keeping ambiguous candidates for the
-        reference scorer.
+        C++ direct and Rust proxy/direct SDK should expose a native hash/prefix
+        scan so MatrixArk can fetch appended record shards in one storage call
+        per shard. The adapter keeps a small hot cache only as a read-through
+        fallback; correctness should come from TemporalStore records, not from
+        Python-owned cache state. Python still owns reference scoring and
+        ContextPack assembly until the native score/pack API lands.
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
@@ -1761,15 +1760,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     narrowed.append(record)
             filtered = narrowed
 
+        native_prefix_scan = bool(getattr(self, "_last_read_all_native_shard_scan", False))
         return {
             "records": filtered,
             "scan_stats": {
                 "backend": self._backend_label(),
-                "execution_mode": "direct_backend_hot_cache_prefilter",
+                "execution_mode": "native_temporalstore_shard_scan_prefilter" if native_prefix_scan else "direct_backend_hot_cache_prefilter",
                 "backend_pushdown": True,
                 "direct_backend_prefilter": True,
-                "native_pushdown": bool(getattr(self, "_last_read_all_native_shard_scan", False)),
-                "native_prefix_scan": bool(getattr(self, "_last_read_all_native_shard_scan", False)),
+                "native_pushdown": native_prefix_scan,
+                "native_prefix_scan": native_prefix_scan,
                 "native_pack_assembly": False,
                 "cache_hit": self._records_cache is not None,
                 "record_types": sorted(allowed_types),
