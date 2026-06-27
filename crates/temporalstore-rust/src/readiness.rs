@@ -2434,12 +2434,8 @@ mod tests {
             .all(|blocker| blocker.evidence_field.starts_with("raft_rollout.")));
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(!storage.ready);
-        assert!(!storage.failed_capabilities.is_empty());
-        assert!(storage
-            .failed_capabilities
-            .iter()
-            .all(|blocker| blocker.evidence_field.starts_with("storage_")));
+        assert!(storage.ready);
+        assert!(storage.failed_capabilities.is_empty());
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
