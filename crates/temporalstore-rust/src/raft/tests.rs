@@ -1977,6 +1977,12 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
     assert!(readiness.byteraft_rpc_transport_contract_present);
     assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
     assert!(readiness.byteraft_apply_snapshot_fence_present);
+    assert!(readiness.byteraft_per_peer_pipeline_state_present);
+    assert!(readiness.byteraft_reorder_queue_state_present);
+    assert!(readiness.byteraft_snapshot_sender_downloader_lifecycle_present);
+    assert!(readiness.byteraft_wal_segment_lifecycle_present);
+    assert!(readiness.byteraft_read_index_lease_semantics_present);
+    assert!(readiness.byteraft_admin_status_surface_present);
     assert!(readiness.raft_storage_apply_fence_present);
     assert!(readiness.byteraft_snapshot_floor_log_matching_present);
     assert!(readiness.byteraft_snapshot_tail_catchup_present);
@@ -2001,6 +2007,87 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
         .missing
         .iter()
         .any(|item| item.contains("process startup")));
+}
+
+#[test]
+fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_safety() {
+    let dir = tempfile::tempdir().unwrap();
+    let config = RaftConfig {
+        enable_pre_vote: true,
+        lease_duration_ms: 1_000,
+        max_segment_bytes: 512,
+        min_keep_segment_num: 1,
+        ..RaftConfig::default()
+    };
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1, 2, 3], config)
+        .expect("wal-backed cluster");
+    cluster
+        .propose(Command::StringSet {
+            key: "byteraft-admin-snapshot".to_string(),
+            value: b"seed".to_vec(),
+        })
+        .unwrap();
+    cluster.maybe_trigger_snapshot().unwrap();
+    let snapshot = cluster.build_install_snapshot_request(2).unwrap();
+    cluster.receive_install_snapshot(snapshot).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "byteraft-admin-lag".to_string(),
+            value: b"lag".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+
+    assert!(matches!(
+        cluster.check_write_authority(3),
+        Err(RaftError::NotLeader { node_id: 3 })
+    ));
+    assert!(matches!(
+        cluster.read_index(3),
+        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
+    ));
+
+    let report = cluster.byteraft_runtime_admin_report();
+    assert!(report.ready, "{:?}", report.blockers);
+    assert!(report.read_index_validated);
+    assert!(report.lease_read_validated);
+    assert!(report.stale_follower_read_rejected);
+    assert!(report.stale_follower_write_rejected);
+    assert!(report.append_backpressure_enforced);
+    assert!(report.reorder_queue_enabled);
+    assert!(report.snapshot_sender_lifecycle_present);
+    assert!(report.snapshot_downloader_lifecycle_present);
+    assert!(report.snapshot_retry_backpressure_present);
+    assert!(report.wal_segment_lifecycle_present);
+    assert!(report.pre_vote_enforced);
+    assert!(report.election_controls_enforced);
+    assert!(report.admin_status_surface_complete);
+    assert!(report.wal_segment_count >= 1);
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
+}
+
+#[test]
+fn byteraft_runtime_readiness_is_backed_by_admin_report_evidence() {
+    let readiness = raft_byteraft_runtime_readiness();
+    assert!(readiness.runtime_report_present);
+    assert!(readiness.per_peer_pipeline_state_present);
+    assert!(readiness.reorder_queue_state_present);
+    assert!(readiness.snapshot_sender_downloader_lifecycle_present);
+    assert!(readiness.wal_segment_lifecycle_present);
+    assert!(readiness.read_index_lease_semantics_present);
+    assert!(readiness.stale_follower_write_rejection_present);
+    assert!(readiness.admin_status_surface_present);
+    assert!(readiness.process_path_operational_semantics_ready);
+    assert!(readiness.missing.is_empty(), "{:?}", readiness.missing);
+    assert!(readiness.report.ready);
 }
 
 #[test]

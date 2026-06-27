@@ -111,6 +111,12 @@ The Rust code currently has:
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
   triggers, durable apply/snapshot fencing, snapshot-floor log matching, snapshot-tail catch-up, and
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
+- ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
+  match/next index, inflight bytes/entries, append/reorder queue depth, snapshot send/install
+  state, leader-transfer target state, pre-vote/election rejection counters, read-index plus
+  lease-read evidence, stale follower read/write rejection, WAL segment retention, and process-path
+  admin-status completeness. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
+  C++ ByteRaft FFI.
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
