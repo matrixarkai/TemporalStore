@@ -4,6 +4,30 @@ This document explains how MatrixArk ingests resources and skills, parses them i
 
 The important product boundary is simple: callers send a `raw_uri`, optional `resource_type`, `scope`, and `metadata.node_path`. MatrixArk owns parsing, chunking, extraction, indexing, summaries, embeddings, and ContextPack assembly.
 
+## Product Serving Model
+
+MatrixArk keeps four lanes separate:
+
+| Lane | Stored as | Retrieval role |
+|---|---|---|
+| Resources | cited `ResourceChunk` records, `resource_l0` summaries, `ContextEmbedding`, and `ContextIndex` records | Source evidence with citations. Chunks answer "show me the policy/runbook/source" questions. |
+| Resource facts | normal `ContextEvent` and `ContextEntity` records with `source_chunk_hash` and `source_ref` | Compact memory extracted from resources: decisions, owners, deadlines, costs, approvals, procedures, risks, API contracts, and troubleshooting facts. |
+| Skills | separate `SkillManifest`, `SkillRegistry`, and `SkillSection` records, plus skill summaries, embeddings, and skill indexes | Operational instructions. Retrieval returns only relevant skill sections, not the whole skill bundle by default. |
+| Audit/replay | `ContextPackAudit`, debug records, selected/dropped refs, token costs, access decisions, stale/superseded reasons | Observability and governance. Audit explains why retrieval/extraction behaved a certain way; it is not a primary serving memory lane. |
+
+This gives MatrixArk OpenViking-like resource handling, VikingMem-like event/entity memory, and stronger MatrixArk-specific replay/debug governance in one TemporalStore-native model.
+
+```mermaid
+flowchart TD
+  A["Resource file"] --> B["ResourceChunk + resource_l0 + embedding + indexes"]
+  B --> C["Resource facts extracted"]
+  C --> D["ContextEvent / ContextEntity with source_chunk_hash"]
+  E["SKILL.md or skill bundle"] --> F["SkillManifest / SkillSection retrieval lane"]
+  G["Query"] --> H["Retrieve events/entities/resources/skills separately"]
+  H --> I["Question-type-aware ContextPack"]
+  I --> J["ContextPackAudit + replay/debug"]
+```
+
 ## Raw File Storage Modes
 
 MatrixArk MCP supports both local and cloud handling for resource and skill files.
@@ -182,6 +206,8 @@ Data models written during resource ingestion:
 
 Resource-specific extraction runs after chunking. It turns useful document facts into `ContextEvent` and `ContextEntity` records with `source_chunk_hash` and `source_ref`, so retrieval can return compact facts first while still citing the original chunk.
 
+Important: a `ResourceChunk` remains the cited source of truth. A resource-derived `ContextEvent` or `ContextEntity` is the compact memory extracted from that chunk. Retrieval can select either one depending on the question type, and audit/replay links the compact fact back to the chunk.
+
 ## Skill Flow
 
 ```mermaid
@@ -227,7 +253,7 @@ Skill records written:
 - `context_embedding(skill_summary/skill_l0/resource_chunk)`
 - `context_index(skill_name/skill_trigger/skill_tool/source_type/resource_type)`
 
-Retrieval returns only relevant skill sections. It does not stuff an entire skill bundle into the ContextPack by default.
+Retrieval returns only relevant skill sections. It does not stuff an entire skill bundle into the ContextPack by default, and MatrixArk does not turn skill instructions into ordinary resource facts unless a future explicit skill-fact extractor is enabled.
 
 ## ContextNode And Summary Injection
 
@@ -283,6 +309,7 @@ Retrieval behavior:
 - Tree traversal uses node L0/L1 summary embeddings to select promising folders/nodes before leaf-level retrieval.
 - Secondary indexes can prefilter candidates before embedding similarity: `source_type`, `resource_type`, `unit_kind`, `keyword`, `heading_slug`, `relative_path`, `skill_trigger`, `skill_tool`, `entity_type`, and `event_type`.
 - Resource chunks, resource-derived facts, entities, and skill sections are selected separately, then packed together under token budget.
+- Resource facts participate in the normal event/entity lane. Resource chunks remain the cited evidence lane. Skill sections remain the instruction lane.
 - Disabled skills are excluded.
 - Superseded resource chunks are excluded unless historical replay is requested.
 - ContextPack audit records selected/dropped refs, scores, token cost, version, stale/superseded state, access decision, and citation.
