@@ -56,6 +56,22 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
     """
 
     TABLE = "matrixark_metadata_records"
+    ACCOUNT_TABLE = "matrixark_accounts"
+    TENANT_TABLE = "matrixark_tenants"
+    USER_TABLE = "matrixark_users"
+    API_KEY_TABLE = "matrixark_api_keys"
+    API_KEY_USAGE_TABLE = "matrixark_api_key_usage"
+    SSO_TABLE = "matrixark_sso_mappings"
+    AUDIT_TABLE = "matrixark_audit_logs"
+    NORMALIZED_TABLES = [
+        ACCOUNT_TABLE,
+        TENANT_TABLE,
+        USER_TABLE,
+        API_KEY_TABLE,
+        API_KEY_USAGE_TABLE,
+        SSO_TABLE,
+        AUDIT_TABLE,
+    ]
 
     def __init__(self, *, backend: str, dsn: str, auto_init: bool = True) -> None:
         self.backend_name = backend
@@ -107,47 +123,498 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
 
     def ensure_schema(self) -> None:
         if self.backend_name == "sqlite":
-            ddl = f"""
-            CREATE TABLE IF NOT EXISTS {self.TABLE} (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              record_type TEXT NOT NULL,
-              account_id TEXT NOT NULL DEFAULT '',
-              tenant_id TEXT NOT NULL DEFAULT '',
-              user_id TEXT NOT NULL DEFAULT '',
-              api_key_id TEXT NOT NULL DEFAULT '',
-              created_at_ms INTEGER NOT NULL DEFAULT 0,
-              payload_json TEXT NOT NULL
-            )
-            """
-            index_ddls = [
+            statements = [
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.TABLE} (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  record_type TEXT NOT NULL,
+                  account_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  user_id TEXT NOT NULL DEFAULT '',
+                  api_key_id TEXT NOT NULL DEFAULT '',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL
+                )
+                """,
                 f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_scope ON {self.TABLE}(account_id, tenant_id, user_id)",
                 f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_type_time ON {self.TABLE}(record_type, created_at_ms)",
                 f"CREATE INDEX IF NOT EXISTS idx_{self.TABLE}_api_key ON {self.TABLE}(api_key_id)",
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.ACCOUNT_TABLE} (
+                  account_id TEXT PRIMARY KEY,
+                  account_name TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL
+                )
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.TENANT_TABLE} (
+                  account_id TEXT NOT NULL,
+                  tenant_id TEXT NOT NULL,
+                  tenant_name TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  tenant_hash INTEGER NOT NULL DEFAULT 0,
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id)
+                )
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.USER_TABLE} (
+                  account_id TEXT NOT NULL,
+                  tenant_id TEXT NOT NULL,
+                  user_id TEXT NOT NULL,
+                  display_name TEXT NOT NULL DEFAULT '',
+                  external_subject TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id, user_id)
+                )
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.API_KEY_TABLE} (
+                  api_key_id TEXT PRIMARY KEY,
+                  account_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  role TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  key_prefix TEXT NOT NULL DEFAULT '',
+                  api_key_hash_prefix TEXT NOT NULL DEFAULT '',
+                  expires_at_ms INTEGER NOT NULL DEFAULT 0,
+                  last_used_at_ms INTEGER NOT NULL DEFAULT 0,
+                  usage_count INTEGER NOT NULL DEFAULT 0,
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL
+                )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.API_KEY_TABLE}_scope ON {self.API_KEY_TABLE}(account_id, tenant_id, status)",
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.API_KEY_USAGE_TABLE} (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  usage_id_hash INTEGER NOT NULL DEFAULT 0,
+                  api_key_id TEXT NOT NULL DEFAULT '',
+                  account_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  user_id TEXT NOT NULL DEFAULT '',
+                  session_id TEXT NOT NULL DEFAULT '',
+                  action TEXT NOT NULL DEFAULT '',
+                  used_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL
+                )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.API_KEY_USAGE_TABLE}_key_time ON {self.API_KEY_USAGE_TABLE}(api_key_id, used_at_ms)",
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.SSO_TABLE} (
+                  provider TEXT NOT NULL,
+                  external_user_id TEXT NOT NULL,
+                  account_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  user_id TEXT NOT NULL DEFAULT '',
+                  email TEXT NOT NULL DEFAULT '',
+                  display_name TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT 'active',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  updated_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL,
+                  PRIMARY KEY (provider, external_user_id)
+                )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.SSO_TABLE}_user ON {self.SSO_TABLE}(account_id, tenant_id, user_id)",
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.AUDIT_TABLE} (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  audit_id_hash INTEGER NOT NULL DEFAULT 0,
+                  account_id TEXT NOT NULL DEFAULT '',
+                  tenant_id TEXT NOT NULL DEFAULT '',
+                  user_id TEXT NOT NULL DEFAULT '',
+                  session_id TEXT NOT NULL DEFAULT '',
+                  api_key_id TEXT NOT NULL DEFAULT '',
+                  action TEXT NOT NULL DEFAULT '',
+                  status TEXT NOT NULL DEFAULT '',
+                  role TEXT NOT NULL DEFAULT '',
+                  created_at_ms INTEGER NOT NULL DEFAULT 0,
+                  payload_json TEXT NOT NULL
+                )
+                """,
+                f"CREATE INDEX IF NOT EXISTS idx_{self.AUDIT_TABLE}_scope_time ON {self.AUDIT_TABLE}(account_id, tenant_id, user_id, created_at_ms)",
+                f"CREATE INDEX IF NOT EXISTS idx_{self.AUDIT_TABLE}_action_time ON {self.AUDIT_TABLE}(action, created_at_ms)",
             ]
         else:
-            ddl = f"""
-            CREATE TABLE IF NOT EXISTS {self.TABLE} (
-              id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
-              record_type VARCHAR(96) NOT NULL,
-              account_id VARCHAR(128) NOT NULL DEFAULT '',
-              tenant_id VARCHAR(128) NOT NULL DEFAULT '',
-              user_id VARCHAR(256) NOT NULL DEFAULT '',
-              api_key_id VARCHAR(128) NOT NULL DEFAULT '',
-              created_at_ms BIGINT NOT NULL DEFAULT 0,
-              payload_json LONGTEXT NOT NULL,
-              KEY idx_scope (account_id, tenant_id, user_id),
-              KEY idx_type_time (record_type, created_at_ms),
-              KEY idx_api_key (api_key_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-            """
-            index_ddls = []
+            statements = [
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.TABLE} (
+                  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  record_type VARCHAR(96) NOT NULL,
+                  account_id VARCHAR(128) NOT NULL DEFAULT '',
+                  tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+                  user_id VARCHAR(256) NOT NULL DEFAULT '',
+                  api_key_id VARCHAR(128) NOT NULL DEFAULT '',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  KEY idx_scope (account_id, tenant_id, user_id),
+                  KEY idx_type_time (record_type, created_at_ms),
+                  KEY idx_api_key (api_key_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.ACCOUNT_TABLE} (
+                  account_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                  account_name VARCHAR(256) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.TENANT_TABLE} (
+                  account_id VARCHAR(128) NOT NULL,
+                  tenant_id VARCHAR(128) NOT NULL,
+                  tenant_name VARCHAR(256) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  tenant_hash BIGINT NOT NULL DEFAULT 0,
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.USER_TABLE} (
+                  account_id VARCHAR(128) NOT NULL,
+                  tenant_id VARCHAR(128) NOT NULL,
+                  user_id VARCHAR(256) NOT NULL,
+                  display_name VARCHAR(256) NOT NULL DEFAULT '',
+                  external_subject VARCHAR(512) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  PRIMARY KEY (account_id, tenant_id, user_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.API_KEY_TABLE} (
+                  api_key_id VARCHAR(128) NOT NULL PRIMARY KEY,
+                  account_id VARCHAR(128) NOT NULL DEFAULT '',
+                  tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+                  role VARCHAR(64) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  key_prefix VARCHAR(64) NOT NULL DEFAULT '',
+                  api_key_hash_prefix VARCHAR(24) NOT NULL DEFAULT '',
+                  expires_at_ms BIGINT NOT NULL DEFAULT 0,
+                  last_used_at_ms BIGINT NOT NULL DEFAULT 0,
+                  usage_count BIGINT NOT NULL DEFAULT 0,
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  KEY idx_scope (account_id, tenant_id, status)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.API_KEY_USAGE_TABLE} (
+                  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  usage_id_hash BIGINT NOT NULL DEFAULT 0,
+                  api_key_id VARCHAR(128) NOT NULL DEFAULT '',
+                  account_id VARCHAR(128) NOT NULL DEFAULT '',
+                  tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+                  user_id VARCHAR(256) NOT NULL DEFAULT '',
+                  session_id VARCHAR(256) NOT NULL DEFAULT '',
+                  action VARCHAR(128) NOT NULL DEFAULT '',
+                  used_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  KEY idx_key_time (api_key_id, used_at_ms)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.SSO_TABLE} (
+                  provider VARCHAR(64) NOT NULL,
+                  external_user_id VARCHAR(256) NOT NULL,
+                  account_id VARCHAR(128) NOT NULL DEFAULT '',
+                  tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+                  user_id VARCHAR(256) NOT NULL DEFAULT '',
+                  email VARCHAR(320) NOT NULL DEFAULT '',
+                  display_name VARCHAR(256) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT 'active',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  updated_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  PRIMARY KEY (provider, external_user_id),
+                  KEY idx_user (account_id, tenant_id, user_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+                f"""
+                CREATE TABLE IF NOT EXISTS {self.AUDIT_TABLE} (
+                  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                  audit_id_hash BIGINT NOT NULL DEFAULT 0,
+                  account_id VARCHAR(128) NOT NULL DEFAULT '',
+                  tenant_id VARCHAR(128) NOT NULL DEFAULT '',
+                  user_id VARCHAR(256) NOT NULL DEFAULT '',
+                  session_id VARCHAR(256) NOT NULL DEFAULT '',
+                  api_key_id VARCHAR(128) NOT NULL DEFAULT '',
+                  action VARCHAR(128) NOT NULL DEFAULT '',
+                  status VARCHAR(32) NOT NULL DEFAULT '',
+                  role VARCHAR(64) NOT NULL DEFAULT '',
+                  created_at_ms BIGINT NOT NULL DEFAULT 0,
+                  payload_json LONGTEXT NOT NULL,
+                  KEY idx_scope_time (account_id, tenant_id, user_id, created_at_ms),
+                  KEY idx_action_time (action, created_at_ms)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                """,
+            ]
         with self._connect() as conn:
             cur = conn.cursor()
-            cur.execute(ddl)
-            for index_ddl in index_ddls:
-                cur.execute(index_ddl)
+            for statement in statements:
+                cur.execute(statement)
             if self.backend_name == "sqlite":
                 conn.commit()
+
+    def _placeholder(self) -> str:
+        return "?" if self.backend_name == "sqlite" else "%s"
+
+    def _execute_insert(self, cur, table: str, columns: list[str], row: tuple[object, ...], *, conflict_columns: list[str] | None = None) -> None:
+        ph = self._placeholder()
+        column_sql = ", ".join(columns)
+        value_sql = ", ".join([ph] * len(columns))
+        sql = f"INSERT INTO {table} ({column_sql}) VALUES ({value_sql})"
+        if conflict_columns:
+            update_columns = [col for col in columns if col not in conflict_columns]
+            if self.backend_name == "sqlite":
+                update_sql = ", ".join([f"{col}=excluded.{col}" for col in update_columns])
+                sql += f" ON CONFLICT({', '.join(conflict_columns)}) DO UPDATE SET {update_sql}"
+            else:
+                update_sql = ", ".join([f"{col}=VALUES({col})" for col in update_columns])
+                sql += f" ON DUPLICATE KEY UPDATE {update_sql}"
+        cur.execute(sql, row)
+
+    def _append_normalized(self, cur, record: Json, payload: str) -> None:
+        record_type = str(record.get("record_type", ""))
+        created_at_ms = int(record.get("created_at_ms") or record.get("updated_at_ms") or record.get("used_at_ms") or now_ms())
+        if record_type == "matrixark_account":
+            self._execute_insert(
+                cur,
+                self.ACCOUNT_TABLE,
+                ["account_id", "account_name", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (
+                    str(record.get("account_id", "")),
+                    str(record.get("account_name", "")),
+                    str(record.get("status", "active")),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    int(record.get("updated_at_ms") or created_at_ms),
+                    payload,
+                ),
+                conflict_columns=["account_id"],
+            )
+        elif record_type == "matrixark_tenant":
+            self._execute_insert(
+                cur,
+                self.TENANT_TABLE,
+                ["account_id", "tenant_id", "tenant_name", "status", "tenant_hash", "created_at_ms", "updated_at_ms", "payload_json"],
+                (
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("tenant_name", "")),
+                    str(record.get("status", "active")),
+                    int(record.get("tenant_hash") or 0),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    int(record.get("updated_at_ms") or created_at_ms),
+                    payload,
+                ),
+                conflict_columns=["account_id", "tenant_id"],
+            )
+        elif record_type == "matrixark_user":
+            self._execute_insert(
+                cur,
+                self.USER_TABLE,
+                ["account_id", "tenant_id", "user_id", "display_name", "external_subject", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("user_id", "")),
+                    str(record.get("display_name", "")),
+                    str(record.get("external_subject", "")),
+                    str(record.get("status", "active")),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    int(record.get("updated_at_ms") or created_at_ms),
+                    payload,
+                ),
+                conflict_columns=["account_id", "tenant_id", "user_id"],
+            )
+        elif record_type == "matrixark_api_key":
+            hash_prefix = str(record.get("api_key_hash", ""))[:12]
+            self._execute_insert(
+                cur,
+                self.API_KEY_TABLE,
+                [
+                    "api_key_id",
+                    "account_id",
+                    "tenant_id",
+                    "role",
+                    "status",
+                    "key_prefix",
+                    "api_key_hash_prefix",
+                    "expires_at_ms",
+                    "last_used_at_ms",
+                    "usage_count",
+                    "created_at_ms",
+                    "updated_at_ms",
+                    "payload_json",
+                ],
+                (
+                    str(record.get("api_key_id", "")),
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("role", "")),
+                    str(record.get("status", "active")),
+                    str(record.get("key_prefix", "")),
+                    hash_prefix,
+                    int(record.get("expires_at_ms") or 0),
+                    int(record.get("last_used_at_ms") or 0),
+                    int(record.get("usage_count") or 0),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    int(record.get("updated_at_ms") or created_at_ms),
+                    payload,
+                ),
+                conflict_columns=["api_key_id"],
+            )
+        elif record_type == "matrixark_api_key_usage":
+            self._execute_insert(
+                cur,
+                self.API_KEY_USAGE_TABLE,
+                ["usage_id_hash", "api_key_id", "account_id", "tenant_id", "user_id", "session_id", "action", "used_at_ms", "payload_json"],
+                (
+                    int(record.get("usage_id_hash") or 0),
+                    str(record.get("api_key_id", "")),
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("user_id", "")),
+                    str(record.get("session_id", "")),
+                    str(record.get("action", "")),
+                    int(record.get("used_at_ms") or created_at_ms),
+                    payload,
+                ),
+            )
+        elif record_type == "matrixark_sso_user_mapping":
+            self._execute_insert(
+                cur,
+                self.SSO_TABLE,
+                ["provider", "external_user_id", "account_id", "tenant_id", "user_id", "email", "display_name", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (
+                    str(record.get("provider", "")),
+                    str(record.get("external_user_id", "")),
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("matrixark_user_id") or record.get("user_id") or ""),
+                    str(record.get("email", "")),
+                    str(record.get("display_name", "")),
+                    str(record.get("status", "active")),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    int(record.get("updated_at_ms") or created_at_ms),
+                    payload,
+                ),
+                conflict_columns=["provider", "external_user_id"],
+            )
+        elif record_type == "matrixark_audit_log":
+            self._execute_insert(
+                cur,
+                self.AUDIT_TABLE,
+                ["audit_id_hash", "account_id", "tenant_id", "user_id", "session_id", "api_key_id", "action", "status", "role", "created_at_ms", "payload_json"],
+                (
+                    int(record.get("audit_id_hash") or 0),
+                    str(record.get("account_id", "")),
+                    str(record.get("tenant_id", "")),
+                    str(record.get("user_id", "")),
+                    str(record.get("session_id", "")),
+                    str(record.get("api_key_id", "")),
+                    str(record.get("action", "")),
+                    str(record.get("status", "")),
+                    str(record.get("role", "")),
+                    int(record.get("created_at_ms") or created_at_ms),
+                    payload,
+                ),
+            )
+
+    def _placeholder(self) -> str:
+        return "?" if self.backend_name == "sqlite" else "%s"
+
+    def _execute_insert(self, cur, table: str, columns: list[str], row: tuple[object, ...], *, conflict_columns: list[str] | None = None) -> None:
+        ph = self._placeholder()
+        column_sql = ", ".join(columns)
+        value_sql = ", ".join([ph] * len(columns))
+        sql = f"INSERT INTO {table} ({column_sql}) VALUES ({value_sql})"
+        if conflict_columns:
+            update_columns = [col for col in columns if col not in conflict_columns]
+            if self.backend_name == "sqlite":
+                update_sql = ", ".join([f"{col}=excluded.{col}" for col in update_columns])
+                sql += f" ON CONFLICT({', '.join(conflict_columns)}) DO UPDATE SET {update_sql}"
+            else:
+                update_sql = ", ".join([f"{col}=VALUES({col})" for col in update_columns])
+                sql += f" ON DUPLICATE KEY UPDATE {update_sql}"
+        cur.execute(sql, row)
+
+    def _append_normalized(self, cur, record: Json, payload: str) -> None:
+        record_type = str(record.get("record_type", ""))
+        created_at_ms = int(record.get("created_at_ms") or record.get("updated_at_ms") or record.get("used_at_ms") or now_ms())
+        if record_type == "matrixark_account":
+            self._execute_insert(
+                cur,
+                self.ACCOUNT_TABLE,
+                ["account_id", "account_name", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("account_id", "")), str(record.get("account_name", "")), str(record.get("status", "active")), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["account_id"],
+            )
+        elif record_type == "matrixark_tenant":
+            self._execute_insert(
+                cur,
+                self.TENANT_TABLE,
+                ["account_id", "tenant_id", "tenant_name", "status", "tenant_hash", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("tenant_name", "")), str(record.get("status", "active")), int(record.get("tenant_hash") or 0), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["account_id", "tenant_id"],
+            )
+        elif record_type == "matrixark_user":
+            self._execute_insert(
+                cur,
+                self.USER_TABLE,
+                ["account_id", "tenant_id", "user_id", "display_name", "external_subject", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("user_id", "")), str(record.get("display_name", "")), str(record.get("external_subject", "")), str(record.get("status", "active")), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["account_id", "tenant_id", "user_id"],
+            )
+        elif record_type == "matrixark_api_key":
+            self._execute_insert(
+                cur,
+                self.API_KEY_TABLE,
+                ["api_key_id", "account_id", "tenant_id", "role", "status", "key_prefix", "api_key_hash_prefix", "expires_at_ms", "last_used_at_ms", "usage_count", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("api_key_id", "")), str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("role", "")), str(record.get("status", "active")), str(record.get("key_prefix", "")), str(record.get("api_key_hash", ""))[:12], int(record.get("expires_at_ms") or 0), int(record.get("last_used_at_ms") or 0), int(record.get("usage_count") or 0), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["api_key_id"],
+            )
+        elif record_type == "matrixark_api_key_usage":
+            self._execute_insert(
+                cur,
+                self.API_KEY_USAGE_TABLE,
+                ["usage_id_hash", "api_key_id", "account_id", "tenant_id", "user_id", "session_id", "action", "used_at_ms", "payload_json"],
+                (int(record.get("usage_id_hash") or 0), str(record.get("api_key_id", "")), str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("user_id", "")), str(record.get("session_id", "")), str(record.get("action", "")), int(record.get("used_at_ms") or created_at_ms), payload),
+            )
+        elif record_type == "matrixark_sso_user_mapping":
+            self._execute_insert(
+                cur,
+                self.SSO_TABLE,
+                ["provider", "external_user_id", "account_id", "tenant_id", "user_id", "email", "display_name", "status", "created_at_ms", "updated_at_ms", "payload_json"],
+                (str(record.get("provider", "")), str(record.get("external_user_id", "")), str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("matrixark_user_id") or record.get("user_id") or ""), str(record.get("email", "")), str(record.get("display_name", "")), str(record.get("status", "active")), int(record.get("created_at_ms") or created_at_ms), int(record.get("updated_at_ms") or created_at_ms), payload),
+                conflict_columns=["provider", "external_user_id"],
+            )
+        elif record_type == "matrixark_audit_log":
+            self._execute_insert(
+                cur,
+                self.AUDIT_TABLE,
+                ["audit_id_hash", "account_id", "tenant_id", "user_id", "session_id", "api_key_id", "action", "status", "role", "created_at_ms", "payload_json"],
+                (int(record.get("audit_id_hash") or 0), str(record.get("account_id", "")), str(record.get("tenant_id", "")), str(record.get("user_id", "")), str(record.get("session_id", "")), str(record.get("api_key_id", "")), str(record.get("action", "")), str(record.get("status", "")), str(record.get("role", "")), int(record.get("created_at_ms") or created_at_ms), payload),
+            )
 
     def append(self, record: Json) -> None:
         payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
@@ -160,12 +627,12 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             int(record.get("created_at_ms") or record.get("updated_at_ms") or record.get("used_at_ms") or now_ms()),
             payload,
         )
-        sql = f"INSERT INTO {self.TABLE} (record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json) VALUES (%s, %s, %s, %s, %s, %s, %s)"
-        if self.backend_name == "sqlite":
-            sql = sql.replace("%s", "?")
+        ph = self._placeholder()
+        sql = f"INSERT INTO {self.TABLE} (record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json) VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})"
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute(sql, row)
+            self._append_normalized(cur, record, payload)
             if self.backend_name == "sqlite":
                 conn.commit()
 
@@ -183,15 +650,32 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
                 continue
         return records
 
+    def normalized_counts(self) -> Json:
+        counts: Json = {}
+        with self._connect() as conn:
+            cur = conn.cursor()
+            for table in [self.TABLE, *self.NORMALIZED_TABLES]:
+                try:
+                    cur.execute(f"SELECT COUNT(*) FROM {table}")
+                    row = cur.fetchone()
+                    counts[table] = int(row[0] if row else 0)
+                except Exception:
+                    counts[table] = None
+        return counts
+
     def check_ready(self) -> Json:
         with self._connect() as conn:
             cur = conn.cursor()
             cur.execute("SELECT 1")
             row = cur.fetchone()
+            for table in [self.TABLE, *self.NORMALIZED_TABLES]:
+                cur.execute(f"SELECT COUNT(*) FROM {table}")
+                cur.fetchone()
         return {
             "backend": self.backend_name,
             "status": "ok",
             "table": self.TABLE,
+            "normalized_tables": list(self.NORMALIZED_TABLES),
             "probe": row[0] if row else 1,
             "sql_compatible_with": "mysql" if self.backend_name in {"mysql", "bytekv_sql"} else self.backend_name,
         }
@@ -201,6 +685,7 @@ class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
             "backend": self.backend_name,
             "dsn_configured": bool(self.dsn),
             "table": self.TABLE,
+            "normalized_tables": list(self.NORMALIZED_TABLES),
             "auto_init": self.auto_init,
             "sql_compatible_with": "mysql" if self.backend_name in {"mysql", "bytekv_sql"} else self.backend_name,
         }

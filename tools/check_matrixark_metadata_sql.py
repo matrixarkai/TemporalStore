@@ -42,6 +42,7 @@ def main() -> int:
         "backend_info": store.backend_info(),
         "probe_found": found,
         "records_seen": len(records),
+        "normalized_counts": store.normalized_counts(),
     }
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if found else 2

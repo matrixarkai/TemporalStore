@@ -69,19 +69,29 @@ export MATRIXARK_REQUIRE_SQL_METADATA=1
 
 ByteKV SQL is expected to expose a MySQL-compatible protocol for this MVP path.
 
-## Table
+## Tables
 
-`matrixark_metadata_records` stores append-only JSON payloads with compact indexed columns:
+MatrixArk writes a compatibility event log plus production query tables. The append log remains the source for replay-compatible reads while the normalized tables give the portal efficient inventory, filtering, and analytics.
+
+Compatibility table:
 
 ```sql
-record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json
+matrixark_metadata_records(record_type, account_id, tenant_id, user_id, api_key_id, created_at_ms, payload_json)
 ```
 
-Indexes:
+Normalized production tables:
 
-- `(account_id, tenant_id, user_id)` for portal/user inventory.
-- `(record_type, created_at_ms)` for audit and lifecycle queries.
-- `(api_key_id)` for API-key lookup and revocation.
+| Table | Purpose | Primary lookup |
+| --- | --- | --- |
+| `matrixark_accounts` | account status and display metadata | `account_id` |
+| `matrixark_tenants` | tenant/workspace status and tenant hash | `(account_id, tenant_id)` |
+| `matrixark_users` | MatrixArk user profile, external subject, status | `(account_id, tenant_id, user_id)` |
+| `matrixark_api_keys` | redacted API-key inventory, role, status, expiry, usage counters | `api_key_id` |
+| `matrixark_api_key_usage` | per-call API-key usage rows | `(api_key_id, used_at_ms)` |
+| `matrixark_sso_mappings` | Google/GitHub/Okta/Azure AD/OIDC identity mapping | `(provider, external_user_id)` |
+| `matrixark_audit_logs` | admin, portal, key, SSO, replay, and denied-action audit | scope/time and action/time indexes |
+
+Raw API keys are never stored. The query table stores only redacted inventory fields and a short hash prefix; the compatibility payload stores the API-key hash needed for lookup.
 
 ## Portal Behavior
 
@@ -95,8 +105,10 @@ The management portal now shows:
 
 Switching metadata backends does not automatically migrate old records. Copy existing `matrixark_*` admin records before changing from record-log to SQL in a real deployment.
 
+For production portal analytics, query the normalized tables first. Use `matrixark_metadata_records` for compatibility replay, debugging, and migration backfill.
+
 ## Readiness Probe
 
-`tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.
+`tools/check_matrixark_metadata_sql.py` verifies the configured SQL backend by building the MatrixArk metadata store, running `SELECT 1`, checking every normalized table, appending a `matrixark_metadata_probe` record, and reading it back. This is the deployment smoke test for the management portal control plane.
 
 The probe requires `pymysql` or `mysql-connector-python` for MySQL/ByteKV SQL.
