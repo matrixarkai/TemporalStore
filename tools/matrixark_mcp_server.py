@@ -174,7 +174,7 @@ class MatrixArkMcpServer:
     }
     DEFAULT_OPERATION_CONCURRENCY = {
         "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "32")),
-        "retrieve": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_RETRIEVE", "64")),
+        "retrieve": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_RETRIEVE", str(max(4, min(8, (os.cpu_count() or 8) // 2))))),
         "feedback": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_FEEDBACK", "16")),
         "replay": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_REPLAY", "16")),
         "admin": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_ADMIN", "16")),
@@ -475,6 +475,16 @@ class MatrixArkMcpServer:
         max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
+        record_limit = int(os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", "0"))
+        if reason == "service_backpressure":
+            if record_limit <= 0:
+                records = []
+            elif hasattr(self.adapter, "recent_records"):
+                records = self.adapter.recent_records(record_limit)
+            else:
+                records = self.adapter.read_all()[-record_limit:]
+        else:
+            records = self.adapter.read_all()
         return self.adapter.deadline_fallback_pack(
             query=query,
             scope=optional_object(args, "scope"),
@@ -483,7 +493,7 @@ class MatrixArkMcpServer:
             local_budget=local_context_budget(args),
             deadline_ms=deadline_ms,
             elapsed_ms=round(float(elapsed_ms), 3),
-            records=self.adapter.read_all(),
+            records=records,
             reason=reason,
             budget_source="agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens",
         )
@@ -522,9 +532,25 @@ class MatrixArkMcpServer:
         if request_deadline_ms > 0:
             wait_ms = min(wait_ms, request_deadline_ms)
         started = time.perf_counter()
-        acquired = limiter.acquire(timeout=max(0.0, wait_ms / 1000.0)) if wait_ms > 0 else limiter.acquire(blocking=False)
+        if group == "retrieve" and self._retrieve_shed_cooldown_ms > 0:
+            with self._retrieve_shed_lock:
+                now_perf = time.perf_counter()
+                if now_perf < self._retrieve_shed_until_perf:
+                    self.metrics.observe_backpressure(name)
+                    raise MatrixArkBackpressureError("matrixark_retrieve rejected by adaptive retrieve shed cooldown")
+                acquired = limiter.acquire(blocking=False)
+                if acquired:
+                    self._retrieve_shed_until_perf = now_perf + self._retrieve_shed_cooldown_ms / 1000.0
+        else:
+            acquired = limiter.acquire(timeout=max(0.0, wait_ms / 1000.0)) if wait_ms > 0 else limiter.acquire(blocking=False)
         if not acquired:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
+            if group == "retrieve" and self._retrieve_shed_cooldown_ms > 0:
+                with self._retrieve_shed_lock:
+                    self._retrieve_shed_until_perf = max(
+                        self._retrieve_shed_until_perf,
+                        time.perf_counter() + self._retrieve_shed_cooldown_ms / 1000.0,
+                    )
             self.metrics.observe_backpressure(name)
             raise MatrixArkBackpressureError(f"{name} rejected by service backpressure after {round(elapsed_ms, 3)}ms")
         try:
