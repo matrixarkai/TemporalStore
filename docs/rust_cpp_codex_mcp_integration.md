@@ -16,6 +16,32 @@ selection chooses which TemporalStore record-log adapter owns persistence.
 Rust does not add brpc or thrift. The Rust production/migration contract remains
 Rust-native MCP plus HTTP/JSON, RESP, and tonic surfaces.
 
+## Rust Proxy Parity Contract
+
+The `temporalstore-rust` proxy/gateway path is the default Rust production
+contract. It must stay on parity with the C++ direct backend for the MatrixArk
+hot path:
+
+- long-lived process only; no process-per-operation path in production or
+  benchmark runs.
+- health, readiness, graceful shutdown, structured errors, and Prometheus
+  metrics.
+- native MatrixArk batch append through
+  `rust_proxy_matrixark_batch_append_records`, not per-record HSet loops.
+- prefix scan through `scan_hash`, surfaced as `prefix_scan_path =
+  rust_proxy_scan_hash`.
+- batch read/write helpers for ContextEvent, ContextEntity, ContextSummary,
+  ContextEmbedding, ContextIndex, ContextPack, audit, resource, and skill
+  records.
+- backpressure and timeout metrics so C++ and Rust reports can compare QPS,
+  p50/p95/p99 latency, errors, timeouts, records read/written, and context
+  record counts.
+
+The `temporalstore-rust-direct` backend is kept as the embedded/local
+optimization counterpart to `temporalstore-direct`. It reports
+`sdk_mode=direct_sdk` and `storage_mode=rust-direct-sdk-bridge` so benchmark
+artifacts do not confuse it with the production Rust proxy path.
+
 ## Codex Desktop Launch
 
 Use the Rust repo launcher so Codex gets the same MCP server and both backend
