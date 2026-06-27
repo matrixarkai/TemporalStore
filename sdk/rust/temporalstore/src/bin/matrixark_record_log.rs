@@ -319,13 +319,19 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             stats.records_written = 1;
             stats.bytes_written = command.value.as_ref().map(|v| v.len() as u64).unwrap_or(0);
         }
-        "batch_hset" => {
+        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
             if let Some(entries) = &command.entries {
                 stats.records_written = entries.len() as u64;
                 stats.bytes_written = entries
                     .iter()
                     .map(|entry| entry.value.as_ref().map(|value| value.len() as u64).unwrap_or(0))
                     .sum();
+            }
+            if command.key.as_ref().filter(|value| !value.is_empty()).is_some()
+                && command.value.as_ref().filter(|value| !value.is_empty()).is_some()
+            {
+                stats.records_written += 1;
+                stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
             }
         }
         "batch_hget" => {
@@ -576,11 +582,13 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                 .map_err(|err| err.to_string())?;
             Ok(json!({"ok": true}))
         }
-        "batch_hset" => {
-            let entries = command
-                .entries
-                .as_ref()
-                .ok_or_else(|| "missing entries".to_string())?;
+        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+            let entries = command.entries.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+            if entries.is_empty()
+                && command.key.as_ref().filter(|value| !value.is_empty()).is_none()
+            {
+                return Err("missing entries".to_string());
+            }
             for entry in entries {
                 client
                     .hset(
@@ -589,11 +597,19 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
                         entry
                             .value
                             .as_deref()
-                            .ok_or_else(|| "batch_hset entry missing value".to_string())?,
+                            .ok_or_else(|| "matrixark batch append entry missing value".to_string())?,
                     )
                     .map_err(|err| err.to_string())?;
             }
-            Ok(json!({"ok": true, "written": entries.len()}))
+            let mut written = entries.len();
+            if let (Some(key), Some(value)) = (
+                command.key.as_deref().filter(|value| !value.is_empty()),
+                command.value.as_deref().filter(|value| !value.is_empty()),
+            ) {
+                client.put_string(key, value).map_err(|err| err.to_string())?;
+                written += 1;
+            }
+            Ok(json!({"ok": true, "written": written, "append_api": command.op}))
         }
         "batch_hget" => {
             let entries = command

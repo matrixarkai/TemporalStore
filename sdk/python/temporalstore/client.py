@@ -557,6 +557,30 @@ class Client:
         )
         self._native.check(code, error)
 
+    def batch_hset(self, entries: Iterable[dict]) -> None:
+        for entry in entries:
+            self.hset(str(entry["key"]), str(entry["field"]), str(entry.get("value", "")))
+
+    def matrixark_batch_append_records(
+        self,
+        entries: Iterable[dict],
+        *,
+        count_key: Optional[str] = None,
+        count_value: Optional[str] = None,
+    ) -> None:
+        self.batch_hset(entries)
+        if count_key is not None and count_value is not None:
+            self.put_string(count_key, count_value)
+
+    def matrixark_append_records(
+        self,
+        entries: Iterable[dict],
+        *,
+        count_key: Optional[str] = None,
+        count_value: Optional[str] = None,
+    ) -> None:
+        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+
     def hget(self, key: str, field: str) -> str:
         value = ctypes.c_void_p()
         error = ctypes.c_void_p()

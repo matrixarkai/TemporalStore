@@ -312,7 +312,7 @@ fn serve() -> i32 {
         }
         records_written += match response.op.as_str() {
             "put_string" | "hset" => 1,
-            "batch_hset" => response.count.unwrap_or(0) as u64,
+            "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => response.count.unwrap_or(0) as u64,
             _ => 0,
         };
         records_read += match response.op.as_str() {
@@ -604,8 +604,8 @@ fn execute_record_log_request(
             )?;
             empty_output(root)
         }
-        "batch_hset" => {
-            let count = request.entries.len();
+        "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+            let mut count = request.entries.len();
             for entry in request.entries {
                 execute_empty(
                     &engine,
@@ -615,6 +615,16 @@ fn execute_record_log_request(
                         value: entry.value.into_bytes(),
                     },
                 )?;
+            }
+            if !request.key.trim().is_empty() {
+                execute_empty(
+                    &engine,
+                    Command::StringSet {
+                        key: request.key,
+                        value: request.value.into_bytes(),
+                    },
+                )?;
+                count += 1;
             }
             RecordLogOutput {
                 count: Some(count),
@@ -684,6 +694,16 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         }
         "batch_hset" | "batch_hget" => {
             if request.entries.is_empty() {
+                return Err("missing entries".to_string());
+            }
+            for entry in &request.entries {
+                require_non_empty("key", &entry.key)?;
+                require_non_empty("field", &entry.field)?;
+            }
+            Ok(())
+        }
+        "matrixark_append_records" | "matrixark_batch_append_records" => {
+            if request.entries.is_empty() && request.key.trim().is_empty() {
                 return Err("missing entries".to_string());
             }
             for entry in &request.entries {

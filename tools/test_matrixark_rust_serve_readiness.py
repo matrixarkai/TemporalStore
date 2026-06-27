@@ -66,8 +66,20 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                     ]
                 )
                 self.assertEqual([record.get("value") for record in records], ["two", "three"])
+                count_key = "matrixark:test:rust-serve-readiness:count"
+                client.matrixark_batch_append_records(
+                    [
+                        {"key": key, "field": "00000000000000000004", "value": "four"},
+                        {"key": key, "field": "00000000000000000005", "value": "five"},
+                    ],
+                    count_key=count_key,
+                    count_value="5",
+                )
+                self.assertEqual(client.hget(key, "00000000000000000004"), "four")
+                self.assertEqual(client.hget(key, "00000000000000000005"), "five")
+                self.assertEqual(client.get_string(count_key), "5")
                 scan = client.scan_hash(key)
-                self.assertEqual(scan.get("count"), 3)
+                self.assertEqual(scan.get("count"), 5)
                 self.assertGreaterEqual(scan.get("cached_clients", 0), 1)
                 self.assertIn("00000000000000000001", scan.get("entries", {}))
                 bad_response = client._call_json("not_a_real_op", raise_on_error=False)
@@ -102,7 +114,7 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 self.assertTrue(client_metrics.get("supports_prefix_scan"))
                 self.assertTrue(client_metrics.get("supports_graceful_shutdown"))
                 self.assertTrue(client_metrics.get("structured_errors"))
-                self.assertGreaterEqual(client_metrics.get("commands_total", 0), 7)
+                self.assertGreaterEqual(client_metrics.get("commands_total", 0), 11)
                 self.assertGreaterEqual(client_metrics.get("qps", 0), 0)
                 self.assertGreaterEqual(client_metrics.get("p95_latency_ms", 0), 0)
                 self.assertGreaterEqual(client_metrics.get("p99_latency_ms", 0), 0)

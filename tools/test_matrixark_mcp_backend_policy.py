@@ -2,10 +2,23 @@
 from __future__ import annotations
 
 import argparse
+import threading
 import unittest
 
 import matrixark_mcp_server as mcp
 
+
+
+
+class _NativeAppendClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def get_string(self, key: str) -> str:
+        return "0"
+
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
+        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
 
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
@@ -66,6 +79,46 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(mcp.backend_ready_required("local"))
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = "1"
         self.assertTrue(mcp.backend_ready_required("local"))
+
+
+    def test_direct_append_prefers_native_matrixark_batch_append_records(self) -> None:
+        client = _NativeAppendClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-append"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        adapter._append_many_materialized(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 123,
+                    "tenant_hash": 1,
+                    "scope_key": "scope",
+                    "updated_at_ms": 1780000000000,
+                    "text": "native batch append works",
+                }
+            ]
+        )
+
+        self.assertEqual(len(client.calls), 1)
+        call = client.calls[0]
+        self.assertEqual(call["count_key"], "matrixark:test:native-append:record_count")
+        self.assertEqual(call["count_value"], "1")
+        keys = {entry["key"] for entry in call["entries"]}
+        self.assertIn("matrixark:test:native-append:records:000000", keys)
+        self.assertTrue(any("context_event_by_ingestion_time" in key for key in keys))
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
