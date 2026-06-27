@@ -12,6 +12,7 @@ use temporalstore_rust::context_workflow::{
     ContextModelProviderConfig, ContextRetrieveRequest,
 };
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
+use temporalstore_rust::engine::reports::StorageManagerCycleRequest;
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
@@ -354,6 +355,15 @@ fn main() {
                     Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
                 }
             }
+            ("POST", "/server/storage/manager/cycle") => {
+                match parse_json::<StorageManagerCycleRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &runtime.submit_storage_manager_cycle(req, RequestController::default()),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/server/storage/dumps/install") => {
                 match parse_json::<SlotDumpManifest>(&request.body) {
                     Ok(manifest) => match engine.install_slot_dump_manifest(&manifest) {
@@ -549,6 +559,15 @@ fn main() {
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
+            ("POST", "/storage_manager/cycle") => {
+                match parse_json::<StorageManagerCycleRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &runtime.submit_storage_manager_cycle(req, RequestController::default()),
+                    ),
+                    Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
+                }
+            }
             ("POST", "/set_config") => match parse_json::<SetConfigRequest>(&request.body) {
                 Ok(req) => json_response(200, &engine.set_config(req)),
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
