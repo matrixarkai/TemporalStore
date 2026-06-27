@@ -67,6 +67,38 @@ Primary and auxiliary results are ranked independently. MatrixArk then merges
 them with a larger quota for primary recall and a smaller configurable
 `auxiliary_quota`, avoiding the lower-quality behavior of one flat merged list.
 
+## Rerank Policy
+
+MatrixArk does need reranking, but not necessarily a heavy neural reranker on
+the MVP hot path.
+
+Current MVP rerank:
+
+1. Run tree-first primary recall plus the auxiliary keyword path.
+2. Merge primary and auxiliary candidates by quota.
+3. Apply a lightweight second-stage rerank before packing:
+   - question-type boost, for example `skill_section` for procedures,
+     `ContextEntity` for current state, raw cited chunks for evidence, and
+     extracted facts for fact questions;
+   - token-efficiency score so answer-dense refs beat broad/noisy text under
+     the same budget;
+   - multi-hop diversification across nodes.
+4. Pack selected refs under `max_context_tokens`.
+5. Record selected/dropped refs and reasons in `ContextPackAudit`.
+
+This is enough for the first production path because it is deterministic,
+cheap, explainable, and easy to keep identical across Python, C++, and Rust
+backends.
+
+Future heavier rerank:
+
+- use BM25/SPLADE to generate exact sparse candidates at scale;
+- add a bounded ColBERT-style multi-vector reranker only after first-stage
+  recall is stable;
+- rerank only top 32/64/128 candidates;
+- use strict deadlines with fallback to weighted recall;
+- report rerank latency and judge-score delta in benchmark artifacts.
+
 Backlog note: this is the first auxiliary path. The full Keyword Graph backlog
 is tracked in `docs/BACKLOG.md`: build `ContextKeyword` and
 `ContextKeywordEdge`, average keyword embeddings from linked memory segments,
@@ -89,6 +121,11 @@ fallback.
     "weights": {"time": 0.2, "business": 0.35},
     "freshness_tolerance_ms": 86400000,
     "half_life_ms": 604800000,
+    "rerank": {
+      "enabled": true,
+      "mode": "packing",
+      "fallback": "weighted_recall"
+    },
     "business_type_weights": {
       "confirmation": 1.0,
       "dialogue_batch": 0.2
@@ -121,12 +158,20 @@ python3 tools/run_matrixark_weighted_recall_test.py \
   --report-json /tmp/matrixark_weighted_recall_local.json
 ```
 
+If the local wrapper is not present in a checkout, use the shared corpus runner:
+
+```bash
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_weighted_recall_test.py \
+  --backend local \
+  --report-json /tmp/matrixark_weighted_recall_local.json
+```
+
 C++ TemporalStore direct:
 
 ```bash
 PYTHONPATH=$PWD/sdk/python \
 TEMPORALSTORE_LIB=$PWD/output-ubuntu22/release/sdk/lib/libbcache2.so \
-python3 tools/run_matrixark_weighted_recall_test.py \
+python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_weighted_recall_test.py \
   --backend temporalstore-direct \
   --metaserver 127.0.0.1:18000 \
   --namespace deploy_ns \

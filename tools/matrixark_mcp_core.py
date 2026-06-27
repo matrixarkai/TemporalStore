@@ -3431,6 +3431,15 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
     if question_type == "why_emotion":
         return 0.18 if re.search(r"\b(because|reason|felt|feel|happy|sad|angry|worried|excited|concerned)\b", text) else 0.0
     if question_type == "fact":
+        negated_approval = bool(
+            re.search(r"\b(no|not|without|missing|lacks?|lacked)\b.{0,48}\b(approval|approved|decision)\b", text)
+            or re.search(r"\b(approval|approved|decision)\b.{0,48}\b(no|not|without|missing|lacks?|lacked)\b", text)
+        )
+        affirmative_approval = bool(re.search(r"\b(approved|approval granted|approval confirmed|confirmed approval)\b", text))
+        if negated_approval and not affirmative_approval:
+            return -0.12
+        if affirmative_approval:
+            return 0.38 if ref_type in {"event", "entity"} else 0.26
         if context_class in {"resource_fact", "resource_entity_fact"}:
             return 0.30
         if ref_type in {"entity", "event"}:
