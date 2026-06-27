@@ -1528,6 +1528,17 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     cluster.set_alive(3, true).unwrap();
     let chunks = cluster.build_install_snapshot_chunks(3, 2).unwrap();
     assert_eq!(chunks.len(), 3);
+    assert!(matches!(
+        cluster.build_install_snapshot_chunks(3, 2),
+        Err(RaftError::SnapshotBackpressure { node_id: 3 })
+    ));
+    let rejected = cluster.byteraft_runtime_admin_report();
+    let peer3 = rejected
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert_eq!(peer3.snapshot_backpressure_rejections, 1);
 
     let first = cluster
         .receive_install_snapshot_chunk(chunks[0].clone())
