@@ -1021,6 +1021,7 @@ fn data_node_process_rollout_report(
             .all(|node| node.status.leader_lease_valid && node.status.has_majority),
         lagging_follower_read_rejected: follower_lag_validated,
         stale_follower_write_rejected: failover_validated,
+        leader_transfer_exact_once_validated: leader_transfer_validated,
         leader_transfer_under_load_validated: leader_transfer_validated,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
         membership_add_promote_remove_validated: membership_change_validated,

@@ -2940,6 +2940,7 @@ fn ready_openraft_operational_semantics() -> OpenRaftProcessOperationalSemantics
         leader_lease_validated: true,
         lagging_follower_read_rejected: true,
         stale_follower_write_rejected: true,
+        leader_transfer_exact_once_validated: true,
         leader_transfer_under_load_validated: true,
         snapshot_install_restart_validated: true,
         membership_add_promote_remove_validated: true,
@@ -3111,6 +3112,12 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
     missing_read_safety
         .operational_semantics
         .leader_lease_validated = false;
+    missing_read_safety
+        .operational_semantics
+        .stale_follower_write_rejected = false;
+    missing_read_safety
+        .operational_semantics
+        .leader_transfer_exact_once_validated = false;
     let rejected_read_safety = raft_openraft_rollout_readiness_from_reports(
         Some(&missing_read_safety),
         Some(&ready_meta_openraft_rollout_report()),
@@ -3124,6 +3131,14 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("leader_lease_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("stale_follower_write_rejected")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("leader_transfer_exact_once_validated")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence

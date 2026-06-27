@@ -13,15 +13,16 @@ scheduler replay, real log-store validation, failover, membership change, follow
 secondary-read validation. Those reports must also include
 `OpenRaftProcessOperationalSemanticsEvidence`; reports that only prove API presence or generic
 process startup are rejected. The operational evidence covers read-index and lease-read guards,
-lagging-follower read rejection, stale follower write rejection, leader transfer under load,
-snapshot install plus restart recovery, membership add/promote/remove, follower rejoin after
-compaction, secondary-read eligibility, apply convergence, and WAL persistence. `LocalModel`
-remains a deserialization compatibility variant only and is rejected for runtime deployment
-selection.
+lagging-follower read rejection, stale follower write rejection, leader transfer exact-once
+validation, leader transfer under load, snapshot install plus restart recovery, membership
+add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply
+convergence, and WAL persistence. `LocalModel` remains a deserialization compatibility variant only
+and is rejected for runtime deployment selection.
 
 When a process report lacks those semantics, the readiness blocker includes the exact missing field
 names, for example `process_path_validated`, `read_index_validated`, or
-`leader_lease_validated`, rather than a vague "Raft API present" failure.
+`leader_lease_validated`, `stale_follower_write_rejected`, or
+`leader_transfer_exact_once_validated`, rather than a vague "Raft API present" failure.
 
 The Rust code currently has:
 

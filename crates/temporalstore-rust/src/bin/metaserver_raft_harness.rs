@@ -526,6 +526,7 @@ fn meta_process_rollout_report(
         leader_lease_validated: status.leader_lease_valid,
         lagging_follower_read_rejected: follower_lag_validated,
         stale_follower_write_rejected: failover_validated,
+        leader_transfer_exact_once_validated: membership_change_validated,
         leader_transfer_under_load_validated: membership_change_validated,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
         membership_add_promote_remove_validated: membership_change_validated,
@@ -1030,6 +1031,7 @@ fn data_node_rollout_from_meta_owned_membership(
         leader_lease_validated: membership.workflow.final_leader_id != 0,
         lagging_follower_read_rejected: membership.follower_lag_validated,
         stale_follower_write_rejected: membership.failover_validated,
+        leader_transfer_exact_once_validated: membership.workflow.leader_transferred,
         leader_transfer_under_load_validated: membership.workflow.leader_transferred,
         snapshot_install_restart_validated: snapshot_install_validated && recovered_after_restart,
         membership_add_promote_remove_validated: membership.workflow.learner_added
