@@ -75,6 +75,8 @@ MATRIXARK_MCP_PROFILE = os.environ.get("MATRIXARK_MCP_PROFILE", "dev").strip().l
 MATRIXARK_ALLOW_LOCAL_BACKEND = os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "0").strip().lower() in {"1", "true", "yes"}
 MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READY", "").strip().lower()
 MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK", "").strip().lower()
+MATRIXARK_ALLOW_PYTHON_HOT_CACHE = os.environ.get("MATRIXARK_ALLOW_PYTHON_HOT_CACHE", "").strip().lower()
+MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = os.environ.get("MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER", "").strip().lower()
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "10000"))
@@ -143,6 +145,26 @@ _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DI
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE: dict[str, list[tuple[str, int, int, Json]]] = {}
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK = threading.RLock()
 _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES = int(os.environ.get("MATRIXARK_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES", "1024"))
+
+
+def matrixark_production_profile_enabled() -> bool:
+    return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"}
+
+
+def python_hot_cache_allowed(*, backend_label: str = "") -> bool:
+    if MATRIXARK_ALLOW_PYTHON_HOT_CACHE:
+        return MATRIXARK_ALLOW_PYTHON_HOT_CACHE in {"1", "true", "yes"}
+    if matrixark_production_profile_enabled() and backend_label != "local":
+        return False
+    return True
+
+
+def native_candidate_prefilter_required(*, backend_label: str = "") -> bool:
+    if MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER:
+        return MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER in {"1", "true", "yes"}
+    if matrixark_production_profile_enabled() and backend_label != "local":
+        return True
+    return False
 
 DEFAULT_BUSINESS_TYPE_WEIGHTS: Json = {
     "confirmation": 1.0,
