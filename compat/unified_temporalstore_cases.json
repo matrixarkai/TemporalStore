@@ -5222,7 +5222,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, refill failure reporting, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, latency buckets, per-stage StorageManager pressure reports, and periodic StorageManager scheduler queue safety.",
+            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, refill failure reporting, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, latency buckets, per-stage StorageManager pressure reports, live-read safety after eviction plus page GC, and periodic StorageManager scheduler queue safety.",
             "kind": "storage_cache_refill",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },

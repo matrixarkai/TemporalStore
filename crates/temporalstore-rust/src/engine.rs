@@ -17408,6 +17408,32 @@ mod tests {
         assert!(metrics.metrics_page_ref_count >= 1);
         assert_eq!(metrics.pressure_signal, "slot_page_cache_metrics");
         assert!(metrics.before_bytes >= metrics.live_bytes);
+
+        for idx in 0..4 {
+            let key = format!("manager-live-{idx}");
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: Some(format!("value-{idx}").into_bytes())
+                },
+                "live record should remain readable after StorageManager eviction and GC: {response:?}"
+            );
+        }
+        let expired = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "manager-expire".to_string(),
+            },
+        });
+        assert_eq!(
+            expired.response,
+            CommandResponse::Bytes { value: None },
+            "expired record should stay removed after StorageManager eviction and GC"
+        );
     }
 
     #[test]
