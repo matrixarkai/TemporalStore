@@ -369,6 +369,7 @@ class MatrixArkMcpServer:
             elapsed_ms=round(float(elapsed_ms), 3),
             records=self.adapter.read_all(),
             reason=reason,
+            budget_source="agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens",
         )
 
     def _operation_group(self, name: str) -> str:
