@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run a MatrixArk message + PDF resource debug trace and render docs.
+"""Run a MatrixArk message + resource debug trace and render docs.
 
 The goal of this runner is observability, not load testing. It creates a small
-conversation, several PDF resources, runs ingestion/extraction/summary/retrieval,
+conversation, several PDF and Markdown resources, runs ingestion/extraction/summary/retrieval,
 and then renders the exact records written by MatrixArk into Markdown/HTML.
 """
 
@@ -103,11 +103,37 @@ PDF_FIXTURES = [
     },
 ]
 
+MD_FIXTURES = [
+    {
+        "filename": "aurora_gpu_policy.md",
+        "title": "Project Aurora GPU Policy",
+        "lines": [
+            "# Project Aurora GPU Policy",
+            "Decision: Alice from finance approved the GPU purchase.",
+            "Owner: Bob owns procurement and vendor coordination.",
+            "Budget: The current cap is 45000 dollars.",
+            "Deadline: The purchase order must be ready by July 15, 2026.",
+            "Blocker: Vendor selection must stop if finance approval is missing.",
+        ],
+    },
+    {
+        "filename": "aurora_gpu_troubleshooting.md",
+        "title": "Project Aurora GPU Troubleshooting",
+        "lines": [
+            "# Troubleshooting",
+            "If vendor selection fails, first verify the finance approval attachment.",
+            "If the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.",
+            "If procurement owner is missing, assign Bob before creating a purchase order.",
+        ],
+    },
+]
+
 
 QUERY = "What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?"
 
 
 def call_tool(server: MatrixArkMcpServer, name: str, arguments: Json) -> Json:
+    arguments.setdefault("timeout_ms", 120000)
     result = server.call_tool(name, dict(arguments))
     if not isinstance(result, dict):
         raise RuntimeError(f"{name} returned non-object result: {result!r}")
@@ -215,6 +241,49 @@ def records_table(records: list[Json], fields: list[str]) -> str:
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+
+PIPELINE_MERMAID = """flowchart TD
+  A["Codex/agent message or file URI"]
+  B["matrixark_ingest via MCP"]
+  C["Lightweight ContextEvent write"]
+  D["Session buffer + batch commit"]
+  E["ResourceParser: PDF/MD chunks"]
+  F["OSS embedding provider"]
+  G["ContextSummary L0/L1 + embeddings"]
+  H["ContextIndex secondary filters"]
+  I["matrixark_retrieve query"]
+  J["Tree-first node scan using L0/L1"]
+  K["Leaf candidates: segment/event/entity/resource"]
+  L["Question-type packer"]
+  M["ContextPack + audit/replay"]
+
+  A --> B
+  B --> C
+  B --> D
+  B --> E
+  C --> F
+  D --> K
+  E --> F
+  F --> G
+  F --> H
+  I --> J --> K --> L --> M
+  H --> K
+"""
+
+
+DATA_MODEL_ROWS = [
+    {"model": "ContextNode", "purpose": "Filesystem-like topology. Messages/resources attach to a leaf node, parents are used for traversal.", "important_fields": "node_hash, parent_hash, node_name, node_path, depth, scope_key"},
+    {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event_id_hash, node_hash, source_ref, summary_text, event_type, entity_type, timestamp"},
+    {"model": "ContextSegment", "purpose": "Batch/session topic segment when a logical window is committed.", "important_fields": "segment_hash, node_hash, source_event_ids, summary_text, topic, time_range"},
+    {"model": "ContextEntity", "purpose": "Evolving state for current preference/status/owner/budget/deadline.", "important_fields": "entity_hash, entity_type, entity_name, state, source_ref, valid_from, stale_blockers"},
+    {"model": "ResourceManifest", "purpose": "Logical imported file/resource version. Raw bytes stay outside TemporalStore.", "important_fields": "resource_hash, raw_uri, resource_type, resource_version, content_hash, scope_key"},
+    {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc.", "important_fields": "chunk_hash, raw_uri, source_ref, text, token_estimate, unit_kind, page_number, heading_slug"},
+    {"model": "ContextSummary", "purpose": "L0/L1 node/resource summary used for preview and tree traversal.", "important_fields": "summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes"},
+    {"model": "ContextEmbedding", "purpose": "Vector stored separately for summaries, chunks, events, entities, and resources.", "important_fields": "embedding_type, ref_type, ref_hash, model, dim, vector"},
+    {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "index_name, index_value, ref_type, ref_hash, node_hash, chunk_hash"},
+    {"model": "ContextPackAudit", "purpose": "Explains selected/dropped refs, scores, token costs, warnings, and replay path.", "important_fields": "context_pack_id, selected_refs, dropped_refs, used_context_tokens, quality_warnings"},
+]
+
 def markdown_table(records: list[Json], fields: list[str], limit: int = 24) -> str:
     lines = ["|" + "|".join(fields) + "|", "|" + "|".join(["---"] * len(fields)) + "|"]
     for record in records[:limit]:
@@ -238,9 +307,9 @@ def write_outputs(
     replay_result: Json,
 ) -> tuple[Path, Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
-    json_path = output_dir / "matrixark_message_pdf_debug_trace.json"
-    md_path = output_dir / "matrixark_message_pdf_debug_trace.md"
-    html_path = output_dir / "matrixark_message_pdf_debug_trace.html"
+    json_path = output_dir / "matrixark_message_resource_debug_trace.json"
+    md_path = output_dir / "matrixark_message_resource_debug_trace.md"
+    html_path = output_dir / "matrixark_message_resource_debug_trace.html"
 
     counts = Counter(str(record.get("record_type", "unknown")) for record in records)
     by_type: dict[str, list[Json]] = defaultdict(list)
@@ -281,17 +350,40 @@ def write_outputs(
     }
     json_path.write_text(json.dumps(exported, indent=2, sort_keys=True), encoding="utf-8")
 
+    if trace.get("embedding_execution_mode") == "oss_embedding_model":
+        rerun_command = (
+            "MATRIXARK_EMBEDDING_PROVIDER=oss MATRIXARK_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2 "
+            "MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1 python3 tools/run_matrixark_message_pdf_debug_trace.py "
+            "--output-dir docs/debug/matrixark_message_resource_trace"
+        )
+        embedding_note = "OSS embedding provider completed for this run."
+    else:
+        rerun_command = (
+            "MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_pdf_debug_trace.py "
+            "--output-dir docs/debug/matrixark_message_resource_trace"
+        )
+        embedding_note = (
+            "This run completed with the local deterministic embedding backend. "
+            "The local sentence-transformers OSS probe timed out before this trace was generated, so the data-flow artifact is complete but not an OSS-embedding proof."
+        )
+
     md = [
-        "# MatrixArk Message + PDF Debug Trace",
+        "# MatrixArk Message + Resource Debug Trace",
         "",
-        "This debug run ingests conversation messages and several PDF resources, then retrieves one ContextPack. "
+        "This debug run ingests LOCOMO-style multi-turn conversation messages and several PDF/Markdown resources, then retrieves one ContextPack. "
         "It is meant for inspecting exactly what MatrixArk writes and reads during ingestion, extraction, chunking, "
         "summary generation, embedding storage, tree traversal, secondary-index filtering, packing, audit, and replay.",
+        "",
+        "## Pipeline Diagram",
+        "",
+        "```mermaid",
+        PIPELINE_MERMAID,
+        "```",
         "",
         "## Re-run",
         "",
         "```bash",
-        "python3 tools/run_matrixark_message_pdf_debug_trace.py",
+        rerun_command,
         "```",
         "",
         "## Configuration",
@@ -302,6 +394,11 @@ def write_outputs(
         f"- Query: `{QUERY}`",
         f"- Summary refresh: background interval `{trace['summary_refresh_policy']['background_interval_ms']}` ms, limit `{trace['summary_refresh_policy']['background_limit']}` dirty nodes per tick",
         f"- Node L1 policy: {trace['summary_refresh_policy']['node_l1_policy']}",
+        f"- Embedding note: {embedding_note}",
+        "",
+        "## Data Model Field Guide",
+        "",
+        markdown_table(DATA_MODEL_ROWS, ["model", "purpose", "important_fields"], limit=50),
         "",
         "## Record Counts",
         "",
@@ -311,9 +408,9 @@ def write_outputs(
         "",
         markdown_table([{"role": item["role"], "content": item["content"]} for item in MESSAGES], ["role", "content"], limit=50),
         "",
-        "## PDF Resources",
+        "## Resources",
         "",
-        markdown_table(trace["pdf_resources"], ["raw_uri", "title", "line_count"], limit=20),
+        markdown_table(trace["resources"], ["raw_uri", "title", "line_count"], limit=20),
         "",
         "## Resource Import Tasks",
         "",
@@ -349,6 +446,10 @@ def write_outputs(
         "",
         "## Retrieval Scan",
         "",
+        "Retrieval uses the same scope as ingestion. The intended order is: understand the query, apply scope and secondary-index filters, "
+        "scan ContextNode L0/L1 summary embeddings to choose folders, fetch leaf candidates, then score segments/events/entities/resource chunks "
+        "and pack the final ContextPack under the token budget. If a summary is missing, MatrixArk can still fall back to recent events/entities/chunks.",
+        "",
         "```json",
         json.dumps(
             {
@@ -381,12 +482,14 @@ def write_outputs(
 
     roots = node_tree(records)
     graph_html = "\n".join(render_node_html(root) for root in roots) or "<p>No context_node records found.</p>"
+    model_table_html = records_table(DATA_MODEL_ROWS, ["model", "purpose", "important_fields"])
+    html_embedding_note = html.escape(embedding_note)
     html_doc = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MatrixArk Message + PDF Debug Trace</title>
+  <title>MatrixArk Message + Resource Debug Trace</title>
   <style>
     body {{ font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; color: #17202a; background: #f7f8fa; }}
     header {{ padding: 28px 32px; background: #ffffff; border-bottom: 1px solid #d9dee5; }}
@@ -410,10 +513,11 @@ def write_outputs(
 </head>
 <body>
   <header>
-    <h1>MatrixArk Message + PDF Debug Trace</h1>
-    <p class="muted">Conversation + PDF ingestion, extraction, resource chunking, embeddings, summaries, tree traversal, ContextPack, audit, and replay.</p>
+    <h1>MatrixArk Message + Resource Debug Trace</h1>
+    <p class="muted">Conversation + resource ingestion, extraction, resource chunking, embeddings, summaries, tree traversal, ContextPack, audit, and replay.</p>
     <p><span class="pill">{html.escape(trace['embedding_model'])}</span><span class="pill">{html.escape(trace['embedding_execution_mode'])}</span><span class="pill">Summary refresh: background interval {trace['summary_refresh_policy']['background_interval_ms']} ms</span><span class="pill">Limit {trace['summary_refresh_policy']['background_limit']} dirty nodes/tick</span></p>
     <p class="muted">Node L1 policy: {html.escape(trace['summary_refresh_policy']['node_l1_policy'])}</p>
+    <p class="muted">Embedding note: {html_embedding_note}</p>
   </header>
   <main>
     <section class="grid">
@@ -424,9 +528,11 @@ def write_outputs(
       <div class="metric"><span class="muted">Embeddings</span><strong>{counts.get('context_embedding', 0)}</strong></div>
       <div class="metric"><span class="muted">Selected Refs</span><strong>{len(retrieve_result.get('selected_refs', []))}</strong></div>
     </section>
+    <section class="section"><h2>Pipeline</h2><pre>{html.escape(PIPELINE_MERMAID)}</pre></section>
+    <section class="section"><h2>Data Model Field Guide</h2>{model_table_html}</section>
     <section class="section"><h2>ContextNode Graph</h2>{graph_html}</section>
     <section class="section"><h2>Messages</h2>{records_table([{'role': m['role'], 'content': m['content']} for m in MESSAGES], ['role', 'content'])}</section>
-    <section class="section"><h2>PDF Resources</h2>{records_table(trace['pdf_resources'], ['raw_uri', 'title', 'line_count'])}</section>
+    <section class="section"><h2>Resources</h2>{records_table(trace['resources'], ['raw_uri', 'title', 'line_count'])}</section>
     <section class="section"><h2>Resource Import Tasks</h2>{records_table(by_type['resource_import_task'], ['status', 'raw_uri', 'resource_type', 'chunk_count', 'resource_fact_count', 'resource_entity_count', 'metrics'])}</section>
     <section class="section"><h2>Resource Chunks</h2>{records_table(by_type['resource_chunk'], ['chunk_hash', 'raw_uri', 'source_ref', 'token_estimate', 'metadata.unit_kind', 'metadata.content_hash', 'text'])}</section>
     <section class="section"><h2>Extracted Events</h2>{records_table(by_type['context_event'], ['event_id_hash', 'node_path', 'internal_extraction.event_type', 'internal_extraction.entity_type', 'summary_text', 'source_ref'])}</section>
@@ -435,9 +541,9 @@ def write_outputs(
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
     <section class="section"><h2>Embeddings</h2>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'model', 'dim', 'preview'])}</section>
     <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['index_name', 'ref_type', 'ref_hash', 'chunk_hash', 'node_path'])}</section>
-    <section class="section"><h2>Retrieval Scan And ContextPack</h2><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
+    <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Query understanding runs first, then scope and secondary-index filters, then ContextNode L0/L1 summary embeddings choose the folders. MatrixArk fetches leaf segments, events, entities, resource chunks, and skill sections from selected nodes before final packing.</p><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
     <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(replay_result, indent=2, sort_keys=True)[:30000])}</pre></section>
-    <section class="section"><h2>Raw Trace JSON</h2><p><a href="./matrixark_message_pdf_debug_trace.json">Open JSON artifact</a></p></section>
+    <section class="section"><h2>Raw Trace JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open JSON artifact</a></p></section>
   </main>
 </body>
 </html>
@@ -458,7 +564,7 @@ def main() -> int:
 
     output_dir = Path(args.output_dir).resolve()
     fixture_dir = output_dir / "fixtures"
-    event_log = output_dir / "matrixark_message_pdf_debug_trace.jsonl"
+    event_log = output_dir / "matrixark_message_resource_debug_trace.jsonl"
     if event_log.exists():
         event_log.unlink()
     fixture_dir.mkdir(parents=True, exist_ok=True)
@@ -500,7 +606,7 @@ def main() -> int:
             "node_l1_policy": "generate when child summaries, >=3 source events, or >=180 estimated source tokens",
         },
         "calls": [],
-        "pdf_resources": [],
+        "resources": [],
     }
 
     call_tool(server, "matrixark_backend_ready", {"scope": scope, "reason": "message_pdf_debug_trace"})
@@ -539,9 +645,10 @@ def main() -> int:
     for fixture in PDF_FIXTURES:
         pdf_path = fixture_dir / fixture["filename"]
         write_pdf(pdf_path, str(fixture["title"]), list(fixture["lines"]))
-        trace["pdf_resources"].append(
+        trace["resources"].append(
             {
                 "raw_uri": str(pdf_path),
+                "resource_type": "pdf",
                 "title": fixture["title"],
                 "line_count": len(fixture["lines"]),
             }
@@ -563,7 +670,37 @@ def main() -> int:
                 "wait": True,
             },
         )
-        trace["calls"].append({"tool": "matrixark_ingest", "kind": "resource", "raw_uri": str(pdf_path), "result": result})
+        trace["calls"].append({"tool": "matrixark_ingest", "kind": "resource", "resource_type": "pdf", "raw_uri": str(pdf_path), "result": result})
+
+    for fixture in MD_FIXTURES:
+        md_path = fixture_dir / fixture["filename"]
+        md_path.write_text("\n".join(fixture["lines"]) + "\n", encoding="utf-8")
+        trace["resources"].append(
+            {
+                "raw_uri": str(md_path),
+                "resource_type": "md",
+                "title": fixture["title"],
+                "line_count": len(fixture["lines"]),
+            }
+        )
+        result = call_tool(
+            server,
+            "matrixark_ingest",
+            {
+                "kind": "resource",
+                "raw_uri": str(md_path),
+                "resource_type": "md",
+                "messages": [{"role": "tool", "content": "Import Markdown resource for MatrixArk parsing: " + str(fixture["title"])}],
+                "scope": scope,
+                "metadata": {
+                    "node_path": resource_node_path,
+                    "source": "debug_trace",
+                    "resource_title": fixture["title"],
+                },
+                "wait": True,
+            },
+        )
+        trace["calls"].append({"tool": "matrixark_ingest", "kind": "resource", "resource_type": "md", "raw_uri": str(md_path), "result": result})
 
     refresh_result = call_tool(
         server,
