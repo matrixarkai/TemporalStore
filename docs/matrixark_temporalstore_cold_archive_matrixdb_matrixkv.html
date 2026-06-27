@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MatrixArk Cold Archive Design</title>
+  <style>
+    :root { color-scheme: light; --ink:#17202a; --muted:#5d6d7e; --line:#d7dde5; --bg:#f7f9fb; --panel:#ffffff; --accent:#0f766e; }
+    body { margin:0; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
+    main { max-width:1080px; margin:0 auto; padding:40px 22px 72px; }
+    h1 { font-size:34px; line-height:1.15; margin:0 0 16px; }
+    h2 { margin-top:34px; border-top:1px solid var(--line); padding-top:24px; font-size:24px; }
+    p, li { font-size:15px; }
+    .lead { color:var(--muted); font-size:17px; max-width:900px; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    pre { background:#0b1220; color:#e7edf7; padding:16px; border-radius:8px; overflow:auto; }
+    table { width:100%; border-collapse:collapse; background:var(--panel); margin:16px 0; border:1px solid var(--line); }
+    th, td { text-align:left; padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; font-size:14px; }
+    th { background:#eef5f4; }
+    .card { background:var(--panel); border:1px solid var(--line); border-left:4px solid var(--accent); padding:16px 18px; border-radius:8px; margin:18px 0; }
+    .mermaid { background:#fff; color:#111; border:1px solid var(--line); border-radius:8px; }
+  </style>
+  <script type="module">import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs'; mermaid.initialize({startOnLoad:true, securityLevel:'loose'});</script>
+</head>
+<body>
+<main>
+  <h1>MatrixArk Cold Archive Design: TemporalStore, MatrixKV, And MatrixDB</h1>
+  <p class="lead">TemporalStore stays the hot serving store. MatrixKV and MatrixDB preserve cold history, control-plane state, and offline analytics through an async archive pipeline instead of synchronous double-writes.</p>
+  <div class="card"><strong>Core decision:</strong> hot ingestion writes once to TemporalStore. A background archiver writes cold history idempotently to MatrixKV/MatrixDB, verifies it, then records compact cold refs back in TemporalStore.</div>
+
+  <h2>Store Responsibilities</h2>
+  <table><thead><tr><th>Data class</th><th>Default store</th><th>Reason</th></tr></thead><tbody>
+    <tr><td>Active ContextEvent / ContextEntity</td><td>TemporalStore</td><td>Hot retrieval, current state, valid-as-of, replayable evidence</td></tr>
+    <tr><td>ContextSummary L0/L1 and ContextEmbedding</td><td>TemporalStore</td><td>Tree-first traversal and serving-time similarity</td></tr>
+    <tr><td>ContextIndex</td><td>TemporalStore</td><td>Secondary-index prefilter before scoring</td></tr>
+    <tr><td>Compact ContextPack telemetry</td><td>TemporalStore, sampled</td><td>Low-latency observability and replay pointers</td></tr>
+    <tr><td>Full replay/debug payloads and benchmark traces</td><td>MatrixDB</td><td>Large, historical, analytical, rarely needed on hot path</td></tr>
+    <tr><td>Users, accounts, API keys, archive watermarks, cold refs</td><td>MatrixKV or MatrixKV SQL</td><td>Strong consistency and portal/control-plane queries</td></tr>
+    <tr><td>Raw file bytes</td><td>S3/object storage or local file store</td><td>TemporalStore stores raw_uri, parsed chunks, indexes, and citations</td></tr>
+  </tbody></table>
+
+  <h2>Write Path</h2>
+  <pre class="mermaid">flowchart TD
+  A["matrixark_ingest / resource import / skill import"]
+  B["Resolve scope_key, storage_family, write_mode"]
+  C["Write hot records to TemporalStore"]
+  D["Mark dirty summary / compression / archive candidates"]
+  E["Return to agent or importer"]
+  F["Async archiver tails oplog or scans archive candidates"]
+  G["Idempotent write to MatrixKV/MatrixDB"]
+  H["Verify cold write"]
+  I["Write cold_ref/archive_marker to TemporalStore"]
+  J["TTL eligible only after safety gates pass"]
+  A --> B --> C --> D --> E
+  D --> F --> G --> H --> I --> J</pre>
+
+  <h2>Archive Pipeline</h2>
+  <pre class="mermaid">flowchart LR
+  A["TemporalStore oplog / prefix scan"]
+  B["Archive policy filter"]
+  C["Cold record batch"]
+  D["MatrixKV archive metadata"]
+  E["MatrixDB historical rows"]
+  F["TemporalStore cold_ref marker"]
+  G["Retention / TTL decision"]
+  A --> B --> C
+  C --> D
+  C --> E
+  D --> F
+  E --> F
+  F --> G</pre>
+
+  <h2>Cold Eligibility</h2>
+  <p>A record becomes cold only after age, recall frequency, compression safety, entity-state dependency, resource version, and pin/compliance checks pass. Old is not enough by itself.</p>
+  <table><thead><tr><th>State</th><th>Meaning</th><th>Normal retrieval</th></tr></thead><tbody>
+    <tr><td>hot_active</td><td>Fully served from TemporalStore</td><td>Included</td></tr>
+    <tr><td>hot_compressed</td><td>Raw event present, compression summary preferred</td><td>Summary first, raw on replay</td></tr>
+    <tr><td>cold_archived</td><td>Cold copy verified, hot raw payload can compact</td><td>Use cold ref only for historical replay</td></tr>
+    <tr><td>ttl_eligible</td><td>Safe to prune raw payload, keep pointer and summary</td><td>Not scanned normally</td></tr>
+    <tr><td>pinned</td><td>User/compliance/benchmark pinned</td><td>Never prune until unpinned</td></tr>
+  </tbody></table>
+
+  <h2>Data Model Additions</h2>
+  <p>Add compact hot markers and durable cold metadata:</p>
+  <ul>
+    <li><code>context_archive_marker</code> in TemporalStore: source ref, state, cold ref id, checksum, retention policy.</li>
+    <li><code>context_cold_ref</code> in MatrixKV: table/object URI, checksum, record version, created time.</li>
+    <li><code>archive_job_state</code> in MatrixKV: scope prefix, watermark, status, last error.</li>
+    <li><code>retention_policy</code> in MatrixKV: hot window, compression requirement, raw TTL, audit sample rates.</li>
+  </ul>
+
+  <h2>Retrieval</h2>
+  <pre class="mermaid">flowchart TD
+  A["matrixark_retrieve(query)"]
+  B["Scope filter"]
+  C["L0/L1 tree traversal in TemporalStore"]
+  D["Secondary-index prefilter"]
+  E["Score hot events/entities/resources/skills"]
+  F["Pack ContextPack"]
+  G{"Historical replay requested?"}
+  H["Follow cold_ref to MatrixKV/MatrixDB/object store"]
+  I["Return hot pack plus replay links"]
+  A --> B --> C --> D --> E --> F --> G
+  G -- "no" --> I
+  G -- "yes" --> H --> I</pre>
+  <p>Default retrieval should not scan MatrixDB. MatrixDB is for offline analytics, long-term replay, cold search jobs, and dashboards.</p>
+
+  <h2>Production Defaults</h2>
+  <ul>
+    <li>Hot serving data stays in TemporalStore.</li>
+    <li>Raw bytes stay in object/local file storage and are referenced by raw_uri.</li>
+    <li>Portal/account/API-key metadata uses MatrixKV SQL or MySQL.</li>
+    <li>Long replay/debug/benchmark traces go to MatrixDB.</li>
+    <li>Full replay audit is sampled unless compliance mode requires every request.</li>
+    <li>Cold archive is async and idempotent.</li>
+    <li>Synchronous dual-write is disabled by default and allowed only in explicit compliance mode.</li>
+  </ul>
+
+  <h2>Acceptance Gates</h2>
+  <ul>
+    <li>Hot ingestion does not synchronously depend on MatrixDB.</li>
+    <li>Archiver can restart from MatrixKV watermark without losing or duplicating records.</li>
+    <li>Every cold ref has a checksum and replay test.</li>
+    <li>Raw pruning is blocked until cold archive and compression safety pass.</li>
+    <li>C++ and Rust shared tests cover archive markers, cold refs, retention policies, and replay fetches.</li>
+    <li>The portal shows hot vs cold counts, archive lag, and replay status per account/tenant/user.</li>
+  </ul>
+</main>
+</body>
+</html>

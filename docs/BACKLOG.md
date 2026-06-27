@@ -17,6 +17,14 @@ Latest AWS/test state:
 
 ## MatrixArk LLM Context Backlog
 
+- Add cold archive from TemporalStore to MatrixKV/MatrixDB without synchronous double-write.
+  - Design doc: `docs/matrixark_temporalstore_cold_archive_matrixdb_matrixkv.md`.
+  - Product decision: TemporalStore remains the hot serving store for active events, entities, summaries, embeddings, indexes, resources, skills, and compact telemetry. MatrixKV stores control-plane/archive metadata such as cold refs, retention policies, watermarks, and idempotency state. MatrixDB stores historical replay/debug payloads, benchmark traces, token/quality metrics, and offline analytics.
+  - Hot-path rule: write once to TemporalStore; an async archiver tails the TemporalStore oplog or scans cold candidates, writes MatrixKV/MatrixDB idempotently, verifies checksums, then writes compact `context_archive_marker` / `context_cold_ref` pointers.
+  - Avoid default synchronous dual-write. Allow it only as an explicit compliance mode because it increases latency and creates cross-store partial-failure risk.
+  - Retention safety: raw events/chunks become TTL eligible only after cold archive verification plus compression safety gates; recalled old records can be pinned or reinforced back to hot state.
+  - Backend work: add shared C++/Rust tests for archive markers, cold refs, archive watermarks, retention policies, replay fetches, checksum verification, TTL blocking, and recovery after worker restart.
+
 - Add async `ContextNode` L0/L1 summary refresh as a first-class production pipeline.
   - Current status:
     - MatrixArk already writes `ContextSummary` and `ContextEmbedding` records for node/session/batch summaries in the Python/MCP runtime;
