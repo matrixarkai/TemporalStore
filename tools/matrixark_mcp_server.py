@@ -472,9 +472,9 @@ class MatrixArkMcpServer:
 
     def _retrieve_timeout_fallback(self, args: Json, *, deadline_ms: int, elapsed_ms: float, reason: str) -> Json:
         query = require_string(args, "query")
-        max_context_tokens = args.get("max_context_tokens", 2048)
+        max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
-            max_context_tokens = 2048
+            max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
         return self.adapter.deadline_fallback_pack(
             query=query,
             scope=optional_object(args, "scope"),

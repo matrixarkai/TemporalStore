@@ -3941,7 +3941,7 @@ class MatrixArkLocalAdapter:
         secondary_index_dropped_count = 0
         secondary_index_matched_count = 0
         budget_source = "agent_provided_max_context_tokens" if "max_context_tokens" in args else "matrixark_default_max_context_tokens"
-        max_context_tokens = args.get("max_context_tokens", 2048)
+        max_context_tokens = args.get("max_context_tokens", DEFAULT_MAX_CONTEXT_TOKENS)
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
         local_budget = local_context_budget(args)

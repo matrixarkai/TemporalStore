@@ -122,7 +122,7 @@ MATRIXARK_TEAM=codex
 MATRIXARK_PROJECT=local
 MATRIXARK_SESSION_COMMIT_THRESHOLD=20
 MATRIXARK_IDLE_COMMIT_TIMEOUT_MS=600000
-MATRIXARK_HOOK_MAX_CONTEXT_TOKENS=1024
+MATRIXARK_HOOK_MAX_CONTEXT_TOKENS=10000
 ```
 
 For local product mode, MatrixArk can also use these defaults:
@@ -291,7 +291,7 @@ Important rules:
 | Keep `local_context_refs` and `remote_context_refs` separate | The agent can dedupe, display, debug, and audit what came from local workspace versus MatrixArk. |
 | Call `matrixark_ingest` after answering | MatrixArk learns from the actual outcome and can update events, entities, summaries, and audit/replay records. |
 
-If an agent cannot estimate token budget, MatrixArk should use a conservative default. For production integrations, prefer explicit values:
+If an agent cannot estimate token budget, MatrixArk defaults to 10000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
 
 ```json
 {
@@ -301,7 +301,7 @@ If an agent cannot estimate token budget, MatrixArk should use a conservative de
     {"ref": "tool-output:test", "text": "pytest output summary..."}
   ],
   "local_context_tokens": 700,
-  "max_context_tokens": 4000,
+  "max_context_tokens": 10000,
   "scope": {
     "account_id": "acct_local",
     "tenant_id": "tenant_codex",
@@ -502,7 +502,7 @@ rolling window          -> commit next 20 pending messages, not the whole sessio
     "user_id": "deeproute",
     "session_id": "codex:local:demo"
   },
-  "max_context_tokens": 2048,
+  "max_context_tokens": 10000,
   "local_context": [
     {"ref": "open-buffer:planner.md", "text": "GPU budget planning notes..."}
   ]

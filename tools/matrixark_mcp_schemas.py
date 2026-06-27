@@ -417,8 +417,8 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "max_context_tokens": {
                     "type": "integer",
-                    "default": 2048,
-                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to 2048.",
+                    "default": 10000,
+                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, currently 10000.",
                 },
                 "include_superseded_resources": {
                     "type": "boolean",
@@ -453,7 +453,7 @@ TOOLS: list[Json] = [
                 "local_context_safety_margin_tokens": {
                     "type": "integer",
                     "minimum": 0,
-                    "description": "Optional extra reserve subtracted from the remote MatrixArk budget so agent-local context and prompt scaffolding do not overflow the shared context budget. Defaults to 5% of max_context_tokens capped at 128.",
+                    "description": "Optional extra reserve subtracted from the remote MatrixArk budget so agent-local context and prompt scaffolding do not overflow the shared context budget. Defaults to 5% of max_context_tokens capped at 512.",
                 },
                 "reference_time_ms": {
                     "type": "integer",

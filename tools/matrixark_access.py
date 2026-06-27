@@ -1997,7 +1997,7 @@ class MatrixArkAccessManager:
         audit_write_failures = int(backend_inner_metrics.get("audit_flush_failures") or rust_client_metrics.get("commands_failed_total") or 0)
         retrieve_count = len(context_pack_audits)
         used_tokens = sum(int(record.get("used_context_tokens") or 0) for record in context_pack_audits)
-        max_tokens = sum(int(record.get("max_context_tokens") or 0) for record in context_pack_audits) or max(1, retrieve_count * 2048)
+        max_tokens = sum(int(record.get("max_context_tokens") or 0) for record in context_pack_audits) or max(1, retrieve_count * 10000)
         token_pressure_pct = round(min(100.0, used_tokens * 100.0 / max_tokens), 2)
         fallback_count = sum(1 for record in context_pack_audits if (record.get("recall_policy") or {}).get("tree_traversal", {}).get("fallback_to_flat"))
         fallback_rate_pct = round(fallback_count * 100.0 / max(1, retrieve_count), 2)
