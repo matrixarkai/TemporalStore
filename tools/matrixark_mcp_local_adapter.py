@@ -1195,7 +1195,7 @@ class MatrixArkLocalAdapter:
             ],
         }
 
-    def mark_node_summary_dirty(
+    def node_summary_dirty_records(
         self,
         *,
         node_path: list[str],
@@ -1206,18 +1206,19 @@ class MatrixArkLocalAdapter:
         source_hash: int,
         dirty_reason: str = "new_event",
         propagate_depth: int | None = None,
-    ) -> list[int]:
+    ) -> tuple[list[int], list[Json]]:
         prefixes = node_prefixes(node_path)
         if propagate_depth is not None and propagate_depth >= 0:
             prefixes = prefixes[max(0, len(prefixes) - propagate_depth - 1) :]
         dirty_hashes: list[int] = []
-        for depth, prefix in enumerate(prefixes, start=1):
+        records: list[Json] = []
+        for prefix in prefixes:
             node_hash = stable_hash("/".join(prefix))
             dirty_hash = stable_hash(
                 f"summary_dirty:{node_hash}:{dirty_reason}:{source_ref_type}:{source_hash}:{updated_at_ms}"
             )
             dirty_hashes.append(dirty_hash)
-            self.append(
+            records.append(
                 {
                     "record_type": "context_summary_dirty",
                     "dirty_hash": dirty_hash,
@@ -1235,6 +1236,31 @@ class MatrixArkLocalAdapter:
                     "updated_at_ms": updated_at_ms,
                 }
             )
+        return dirty_hashes, records
+
+    def mark_node_summary_dirty(
+        self,
+        *,
+        node_path: list[str],
+        scope: Json,
+        updated_at_ms: int,
+        source_ref_type: str,
+        source_hash_field: str,
+        source_hash: int,
+        dirty_reason: str = "new_event",
+        propagate_depth: int | None = None,
+    ) -> list[int]:
+        dirty_hashes, records = self.node_summary_dirty_records(
+            node_path=node_path,
+            scope=scope,
+            updated_at_ms=updated_at_ms,
+            source_ref_type=source_ref_type,
+            source_hash_field=source_hash_field,
+            source_hash=source_hash,
+            dirty_reason=dirty_reason,
+            propagate_depth=propagate_depth,
+        )
+        self.append_many(records)
         return dirty_hashes
 
     def refresh_dirty_node_summaries(
@@ -3522,15 +3548,24 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
-        self.append_many(records_to_append)
-        summary_refresh = self.append_node_summary_embeddings(
+        dirty_hashes, dirty_records = self.node_summary_dirty_records(
             node_path=node_path,
-            source_text=batch_summary,
             scope=envelope["scope"],
             updated_at_ms=envelope["ingestion_time_ms"],
+            source_ref_type="batch",
             source_hash_field="source_batch_hash",
             source_hash=batch_id_hash,
+            dirty_reason="new_event",
         )
+        records_to_append.extend(dirty_records)
+        self.append_many(records_to_append)
+        summary_refresh = {
+            "status": "dirty_marked",
+            "dirty_hashes": dirty_hashes,
+            "refresh_result": None,
+            "async_required": True,
+            "write_path": "coalesced_with_batch_extract",
+        }
         return {
             "status": "accepted",
             "mode": extraction["mode"],
