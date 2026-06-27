@@ -1671,7 +1671,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     ) -> Json:
         """Return hot retrieval candidates with direct-backend prefiltering.
 
-        C++ direct and Rust gateway both materialize freshly appended records in
+        C++ direct and Rust proxy/direct SDK both materialize freshly appended records in
         a process-local hot cache. Use that cache as the backend-side candidate
         boundary so type/scope/secondary-index filtering happens before the
         Python scoring and ContextPack assembly loops. The native C/Rust SDK
@@ -2827,10 +2827,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 class MatrixArkRustProxyClient:
     """Persistent Rust proxy boundary around the Rust TemporalStore SDK.
 
-    The Rust binary owns SDK linkage and runs in JSON-lines ``--serve`` mode.
-    MatrixArk production and benchmark paths should use this long-lived proxy
-    instead of process-per-operation CLI calls. Rust direct SDK embedding remains
-    a future local/embedded optimization, not the default serving contract.
+    The Rust binary owns SDK linkage and runs in JSON-lines ``--serve`` mode as
+    a Rust proxy. MatrixArk production and benchmark paths should use this
+    proxy or the Rust direct SDK path, never process-per-operation CLI calls.
     """
 
     def __init__(
@@ -2843,7 +2842,7 @@ class MatrixArkRustProxyClient:
         table: str,
         request_timeout_ms: int,
         io_timeout_ms: int,
-        sdk_mode: str = "gateway",
+        sdk_mode: str = "proxy",
     ) -> None:
         proxy_path = proxy_path or cli_path
         if not proxy_path:
@@ -2859,7 +2858,13 @@ class MatrixArkRustProxyClient:
         self._legacy_semaphore = threading.BoundedSemaphore(1)
         self._backpressure_timeout_s = max(
             0.05,
-            int(os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))) / 1000.0,
+            int(
+                os.environ.get(
+                    "MATRIXARK_RUST_PROXY_BACKPRESSURE_TIMEOUT_MS",
+                    os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms)),
+                )
+            )
+            / 1000.0,
         )
         self._write_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_WRITE_LANES", "4")))
         self._read_lane_count = max(1, int(os.environ.get("MATRIXARK_RUST_PROXY_READ_LANES", "4")))
@@ -3031,7 +3036,7 @@ class MatrixArkRustProxyClient:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True)
             raise MatrixArkError(
-                f"Rust TemporalStore {op} rejected by gateway backpressure after "
+                f"Rust TemporalStore {op} rejected by proxy backpressure after "
                 f"{self._backpressure_timeout_s:.3f}s"
             )
         try:
@@ -3296,7 +3301,7 @@ MatrixArkRustCliClient = MatrixArkRustProxyClient
 
 
 class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
-    """MatrixArk adapter backed by the long-lived Rust TemporalStore proxy."""
+    """MatrixArk adapter backed by the Rust TemporalStore proxy or direct SDK."""
 
     def __init__(
         self,
@@ -3309,7 +3314,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         storage_prefix: str = "matrixark:mcp",
         request_timeout_ms: int = 20000,
         io_timeout_ms: int = 20000,
-        sdk_mode: str = "gateway",
+        sdk_mode: str = "proxy",
     ) -> None:
         MatrixArkLocalAdapter.__init__(self, Path("/tmp/matrixark-mcp-unused-rust.jsonl"))
         MatrixArkLocalAdapter._init_local_runtime_state(self)
@@ -3367,7 +3372,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         return "temporalstore-rust"
 
     def _rust_storage_mode_label(self) -> str:
-        return "rust-direct-sdk-bridge" if getattr(self._client, "sdk_mode", "") == "direct_sdk" else "rust-gateway"
+        return "rust-direct-sdk-bridge" if getattr(self._client, "sdk_mode", "") == "direct_sdk" else "rust-proxy"
 
     def _backend_neutral_prometheus(self, snapshot: Json) -> str:
         backend = "rust"
@@ -3450,7 +3455,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         try:
             prometheus = self._backend_neutral_prometheus(rust_client_metrics) + self._client.metrics_prometheus()
         except Exception as exc:
-            prometheus = self._backend_neutral_prometheus(rust_client_metrics) + f"# matrixark_rust_gateway_metrics_error {json.dumps(str(exc))}\n"
+            prometheus = self._backend_neutral_prometheus(rust_client_metrics) + f"# matrixark_rust_proxy_metrics_error {json.dumps(str(exc))}\n"
         return {
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
@@ -3502,7 +3507,7 @@ class MatrixArkTemporalStoreRustDirectAdapter(MatrixArkTemporalStoreRustAdapter)
     MCP process still owns protocol/model glue, while the Rust bridge owns the
     TemporalStore SDK client and native storage calls. It is intentionally
     explicit so benchmark reports can distinguish it from the production Rust
-    proxy/gateway path.
+    proxy path.
     """
 
     def __init__(self, **kwargs: Any) -> None:

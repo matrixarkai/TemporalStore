@@ -218,7 +218,7 @@ impl MetricsSnapshot {
             &mut out,
             "matrixark_rust_record_log_clients_created_total",
             "counter",
-            "TemporalStore clients created by the long-lived Rust record-log bridge.",
+            "TemporalStore clients created by the Rust proxy/direct SDK bridge.",
         );
         line(
             &mut out,
@@ -447,14 +447,14 @@ fn escape_label(value: &str) -> String {
 fn matrixark_rust_storage_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
         Some("direct_sdk") => "rust-direct-sdk-bridge",
-        _ => "rust-gateway",
+        _ => "rust-proxy",
     }
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
     match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
         Some("direct_sdk") => "long_lived_rust_direct_sdk_bridge",
-        _ => "long_lived_stdio_gateway",
+        _ => "rust_proxy_stdio",
     }
 }
 
