@@ -4517,6 +4517,8 @@ pub enum RaftError {
         entry_limit: u64,
         byte_limit: u64,
     },
+    #[error("raft snapshot sender backpressure for node {node_id}: snapshot transfer already in progress")]
+    SnapshotBackpressure { node_id: RaftNodeId },
     #[error("node {node_id} is not leader")]
     NotLeader { node_id: RaftNodeId },
     #[error("election is prohibited by raft config")]
@@ -6248,7 +6250,19 @@ impl RaftCluster {
         let shard_id = inner.shard_id;
         let term = leader.current_term;
         let leader_id = inner.leader_id;
-        if let Some(target) = inner.nodes.get_mut(&target_id) {
+        {
+            let target = inner
+                .nodes
+                .get_mut(&target_id)
+                .ok_or(RaftError::NodeNotFound(target_id))?;
+            if target.pipeline_state.snapshot_sending || target.pipeline_state.snapshot_installing {
+                target.pipeline_state.snapshot_backpressure_rejections = target
+                    .pipeline_state
+                    .snapshot_backpressure_rejections
+                    .saturating_add(1);
+                inner.persist_configured_wal()?;
+                return Err(RaftError::SnapshotBackpressure { node_id: target_id });
+            }
             target.pipeline_state.snapshot_sending = true;
             target.pipeline_state.snapshot_installing = true;
             target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
@@ -6259,6 +6273,7 @@ impl RaftCluster {
             target.pipeline_state.snapshot_install_received_chunks = 0;
             target.pipeline_state.snapshot_install_total_chunks = 1;
         }
+        inner.persist_configured_wal()?;
         Ok(InstallSnapshotRequest {
             rpc: None,
             shard_id,
@@ -6395,7 +6410,19 @@ impl RaftCluster {
             "{}-{}-{}",
             snapshot.shard_id, snapshot.last_included_term, snapshot.last_included_index
         );
-        if let Some(target) = inner.nodes.get_mut(&target_id) {
+        {
+            let target = inner
+                .nodes
+                .get_mut(&target_id)
+                .ok_or(RaftError::NodeNotFound(target_id))?;
+            if target.pipeline_state.snapshot_sending || target.pipeline_state.snapshot_installing {
+                target.pipeline_state.snapshot_backpressure_rejections = target
+                    .pipeline_state
+                    .snapshot_backpressure_rejections
+                    .saturating_add(1);
+                inner.persist_configured_wal()?;
+                return Err(RaftError::SnapshotBackpressure { node_id: target_id });
+            }
             target.pipeline_state.snapshot_sending = true;
             target.pipeline_state.snapshot_installing = true;
             target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
@@ -6412,6 +6439,7 @@ impl RaftCluster {
                     .saturating_add(1);
             }
         }
+        inner.persist_configured_wal()?;
         let mut chunks = Vec::new();
         if snapshot.entries.is_empty() {
             chunks.push(InstallSnapshotChunkRequest {

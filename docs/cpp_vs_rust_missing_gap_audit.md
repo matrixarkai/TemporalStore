@@ -902,7 +902,9 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
   read-safety gauges for scrape-based operator parity. Append request construction now enforces
   configured in-flight entry/byte limits, rejects saturated peer pipelines with explicit
-  backpressure, and records the outcome in per-peer counters. The per-peer pipeline/reorder/snapshot
+  backpressure, and records the outcome in per-peer counters. Snapshot sender construction now
+  rejects concurrent single-shot or chunked transfers for the same peer and records snapshot
+  backpressure. The per-peer pipeline/reorder/snapshot
   fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
   local WAL records, so the process-path evidence survives restart instead of being only a
   report-time derivation.

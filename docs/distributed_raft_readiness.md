@@ -120,8 +120,10 @@ The Rust code currently has:
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
   process path. Append request construction now enforces configured in-flight entry/byte limits and
-  rejects saturated peer pipelines with explicit backpressure. Per-peer pipeline, snapshot
-  lifecycle, and read-safety state is maintained as runtime state and persisted through the local WAL restore path, instead of being only
+  rejects saturated peer pipelines with explicit backpressure. Snapshot sender construction now
+  rejects concurrent single-shot or chunked transfers for the same peer and increments the peer
+  snapshot backpressure counter. Per-peer pipeline, snapshot lifecycle, and read-safety state is
+  maintained as runtime state and persisted through the local WAL restore path, instead of being only
   reconstructed at report time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
   C++ ByteRaft FFI.
 - strict shared-store oplog gap rejection
