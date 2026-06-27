@@ -1,0 +1,162 @@
+{
+  "blocked": [
+    {
+      "attempted_command": "python3 tools/run_temporalstore_raw_sdk_microbench.py --ops 1000 --write-workers 4 --read-workers 4 --payload-bytes 512 ...",
+      "evidence": "No raw SDK report was produced. A lingering run was killed.",
+      "lane": "C++ native backend 1K/10K/100K ingestion sweep",
+      "likely_cause": "Live local C++ deployment is single-node sync storage (storage_async=false) with small storage_zone_size=10485760; not the async/bundled production sweep profile.",
+      "result": "timed_out_after_184s_before_report"
+    },
+    {
+      "attempted_command": "python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_cpp_rust_scale_report.py --events 120 --queries 30 --ingest-mode batch --batch-size 20 --allow-failures ...",
+      "evidence": "No cpp_rust_scale_120 report was produced.",
+      "lane": "C++ vs Rust live scale report",
+      "likely_cause": "Live native backend write/query path still blocks before comparison artifact can complete.",
+      "result": "timed_out_after_244s_before_report"
+    },
+    {
+      "attempted_command": "python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_retrieve_resource_scale.py --retrieve-workers 4,8,16,32 --seed-events 1000 ...",
+      "evidence": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl",
+      "lane": "retrieval worker sweep 4/8/16/32 with resource import and audit",
+      "likely_cause": "Local Python/MCP record-log loading and audit writes degrade into timeout_partial packs; retrieval elapsed in audit records is ~56-72s despite 5s deadline fallback.",
+      "result": "timed_out_after_244s_with_partial_jsonl_trace"
+    }
+  ],
+  "completed": {
+    "local_retrieval_partial_trace": {
+      "context_pack_audit_count": 116,
+      "fallback_reasons": {
+        "deadline_after_embedding_index_scan": 1,
+        "deadline_after_event_scan": 6,
+        "deadline_after_record_load": 97
+      },
+      "jsonl_bytes": 6187663,
+      "jsonl_path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl",
+      "matrixark_audit_log_count": 221,
+      "partial_context_pack_count": 104,
+      "record_counts": {
+        "context_child_ref": 21,
+        "context_debug_record": 1120,
+        "context_embedding": 1534,
+        "context_entity": 120,
+        "context_entity_update_audit": 120,
+        "context_event": 1000,
+        "context_extraction_audit": 10,
+        "context_index": 80,
+        "context_node": 22,
+        "context_pack_audit": 116,
+        "context_pack_telemetry": 12,
+        "context_recall_reinforcement": 376,
+        "context_segment": 40,
+        "context_summary": 374,
+        "context_summary_dirty": 40,
+        "context_summary_refresh_audit": 182,
+        "matrixark_audit_log": 221
+      },
+      "retrieval_elapsed_ms": {
+        "avg": 32055.519,
+        "count": 104,
+        "max": 72468.813,
+        "p50": 29582.856,
+        "p95": 63636.795,
+        "p99": 71053.461
+      },
+      "selected_refs": {
+        "avg": 11.043,
+        "p50": 8,
+        "p95": 50
+      },
+      "used_context_tokens": {
+        "avg": 623.621,
+        "p50": 647,
+        "p95": 656
+      }
+    },
+    "shared_cpp_rust_context_pipeline_scale": {
+      "case": "context_pipeline_scale_e2e",
+      "corpus": "temporalstore_context_pipeline_scale_e2e",
+      "expected": {
+        "agent_always_extract_envelopes": 3,
+        "agent_envelope_kinds": [
+          "message",
+          "resource",
+          "feedback"
+        ],
+        "agent_envelopes": 3,
+        "api_events": 1,
+        "batch_events": 20,
+        "compression_records": 2,
+        "compression_source_event_refs": 43,
+        "confirmation_requires_context": true,
+        "effective_model_provider": "deterministic",
+        "embedding_backend": "deterministic-local-fallback",
+        "embedding_dim": 16,
+        "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "entity_records": 2,
+        "events_per_lane": 20,
+        "feedback_events": 1,
+        "hook_captured_envelopes": 3,
+        "hook_types": [
+          "before_llm",
+          "resource_added",
+          "after_llm"
+        ],
+        "layer_traversal": "global_topk_per_depth",
+        "pipeline": [
+          "raw_query_plus_hints",
+          "model_query_understanding",
+          "scope_time_filter_planning",
+          "context_node_traversal",
+          "context_event_resource_retrieval",
+          "algorithmic_staleness_scoring",
+          "token_budgeting",
+          "context_pack"
+        ],
+        "query_understanding": "model",
+        "requested_model_provider": "deterministic",
+        "resource_chunks": 1,
+        "resource_extracted_events": 1,
+        "staleness_scoring": "algorithmic_freshness_v1",
+        "steps": 64,
+        "stream_events": 20,
+        "summary_embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+        "summary_embedding_paired_refs": 6,
+        "summary_embedding_refs": 6,
+        "summary_records": 7,
+        "summary_refs_in_context_packs": 5,
+        "token_budgeting": "max_prompt_tokens",
+        "total_expected_events": 43,
+        "tree_shape": "root/collection/leaf",
+        "vlm_backend": "metadata-only-vlm-fallback",
+        "vlm_model": "Salesforce/blip-image-captioning-base"
+      },
+      "rust_executed": true,
+      "status": "passed",
+      "timings": {
+        "cpp_unified_contract_s": 6.118957975995727,
+        "rust_unified_mock_s": 1.8898360169987427
+      }
+    }
+  },
+  "next_fixes": [
+    "Run native sweeps only after launching C++/Rust with async oplog/bundled write profile and adequate storage zone size.",
+    "Move ingestion sweep below Python JSONL/MCP path: native matrixark_batch_append_records should enqueue/batch inside TemporalStore.",
+    "For retrieval scale, push prefix scan, secondary-index prefilter, and ContextPack audit buffering into C++/Rust; current local Python audit trace shows timeout_partial fallback under load.",
+    "Rerun 1K, 10K, 100K only after 1K produces a report under the guardrail; then run 4/8/16/32 workers separately from ingest-only."
+  ],
+  "requested": {
+    "full_context_pipeline": "retrieval/audit enabled",
+    "native_ingestion_sweeps": [
+      "1K",
+      "10K",
+      "100K"
+    ],
+    "retrieval_workers": [
+      4,
+      8,
+      16,
+      32
+    ]
+  },
+  "status": "completed_with_blockers"
+}
