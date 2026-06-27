@@ -2942,7 +2942,9 @@ fn ready_openraft_operational_semantics() -> OpenRaftProcessOperationalSemantics
         stale_follower_write_rejected: true,
         leader_transfer_exact_once_validated: true,
         leader_transfer_under_load_validated: true,
+        snapshot_bootstrap_validated: true,
         snapshot_install_restart_validated: true,
+        membership_rescale_validated: true,
         membership_add_promote_remove_validated: true,
         follower_rejoin_after_compaction_validated: true,
         secondary_read_eligibility_validated: true,
@@ -3118,6 +3120,18 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
     missing_read_safety
         .operational_semantics
         .leader_transfer_exact_once_validated = false;
+    missing_read_safety
+        .operational_semantics
+        .snapshot_bootstrap_validated = false;
+    missing_read_safety
+        .operational_semantics
+        .membership_rescale_validated = false;
+    missing_read_safety
+        .operational_semantics
+        .apply_pipeline_converged = false;
+    missing_read_safety
+        .operational_semantics
+        .wal_persistence_observed = false;
     let rejected_read_safety = raft_openraft_rollout_readiness_from_reports(
         Some(&missing_read_safety),
         Some(&ready_meta_openraft_rollout_report()),
@@ -3139,6 +3153,22 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("leader_transfer_exact_once_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("snapshot_bootstrap_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("membership_rescale_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("apply_pipeline_converged")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("wal_persistence_observed")));
 }
 
 // shared-corpus: raft_openraft_process_rollout_evidence
