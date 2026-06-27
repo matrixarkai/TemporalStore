@@ -1661,6 +1661,132 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._records_cache = self._load_records(index)
             return list(self._records_cache)
 
+    def retrieval_records(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str] | None = None,
+        secondary_index_groups: list[set[str]] | None = None,
+        selected_node_hashes: set[int] | None = None,
+    ) -> Json:
+        """Return hot retrieval candidates with direct-backend prefiltering.
+
+        C++ direct and Rust gateway both materialize freshly appended records in
+        a process-local hot cache. Use that cache as the backend-side candidate
+        boundary so type/scope/secondary-index filtering happens before the
+        Python scoring and ContextPack assembly loops. The native C/Rust SDK
+        prefix-scan API is still tracked separately; this hook gives the same
+        request-visible behavior while keeping ambiguous candidates for the
+        reference scorer.
+        """
+
+        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        raw_records = self.read_all()
+        filtered: list[Json] = []
+        scoped_records: list[Json] = []
+        scanned = 0
+        dropped_type = 0
+        dropped_scope = 0
+        for record in raw_records:
+            scanned += 1
+            record_type = str(record.get("record_type") or "")
+            if record_type not in allowed_types:
+                dropped_type += 1
+                continue
+            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
+                in_scope = scope_matches(candidate_access_scope(record), scope)
+            else:
+                in_scope = access_scope_matches_before_scoring(record, scope)
+            if not in_scope:
+                dropped_scope += 1
+                continue
+            scoped_records.append(record)
+
+        secondary_index_dropped = 0
+        secondary_index_matched = 0
+        matched_node_hashes: set[int] = set()
+        if secondary_index_groups:
+            index_terms_by_batch: dict[Any, list[str]] = {}
+            index_terms_by_node: dict[Any, list[str]] = {}
+            index_terms_by_ref: dict[Any, list[str]] = {}
+            index_terms_by_node_for_prefilter: dict[int, list[str]] = {}
+            for record in scoped_records:
+                if record.get("record_type") != "context_index":
+                    continue
+                index_name = str(record.get("index_name") or "")
+                if not index_name:
+                    continue
+                index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
+                ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                if ref_hash is not None:
+                    index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                else:
+                    index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
+                try:
+                    index_terms_by_node_for_prefilter.setdefault(int(record.get("node_hash")), []).append(index_name)
+                except (TypeError, ValueError):
+                    pass
+            matched_node_hashes = {
+                node_hash
+                for node_hash, terms in index_terms_by_node_for_prefilter.items()
+                if passes_secondary_index_filters(set(terms), secondary_index_groups, mode="any_group" if len(secondary_index_groups) > 1 else "all_groups")
+            }
+            filter_mode = "any_group" if len(secondary_index_groups) > 1 else "all_groups"
+            for record in scoped_records:
+                terms = candidate_index_terms(record, index_terms_by_batch, index_terms_by_node, index_terms_by_ref)
+                node_hash = record.get("node_hash")
+                try:
+                    node_matches = int(node_hash) in matched_node_hashes
+                except (TypeError, ValueError):
+                    node_matches = False
+                if terms and not passes_applicable_secondary_index_filters(terms, secondary_index_groups, mode=filter_mode):
+                    secondary_index_dropped += 1
+                    continue
+                if terms or node_matches:
+                    secondary_index_matched += 1
+                filtered.append(record)
+        else:
+            filtered = scoped_records
+
+        if selected_node_hashes:
+            narrowed: list[Json] = []
+            selected = {int(item) for item in selected_node_hashes}
+            for record in filtered:
+                try:
+                    node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    narrowed.append(record)
+                    continue
+                if node_hash in selected or record.get("record_type") in {"context_index", "context_embedding"}:
+                    narrowed.append(record)
+            filtered = narrowed
+
+        return {
+            "records": filtered,
+            "scan_stats": {
+                "backend": self._backend_label(),
+                "execution_mode": "direct_backend_hot_cache_prefilter",
+                "backend_pushdown": True,
+                "direct_backend_prefilter": True,
+                "native_pushdown": False,
+                "native_prefix_scan": False,
+                "native_pack_assembly": False,
+                "cache_hit": self._records_cache is not None,
+                "record_types": sorted(allowed_types),
+                "scanned_records": scanned,
+                "returned_records": len(filtered),
+                "dropped_by_type": dropped_type,
+                "dropped_by_scope": dropped_scope,
+                "secondary_index_groups_supplied": len(secondary_index_groups or []),
+                "secondary_index_matched_candidate_count": secondary_index_matched,
+                "secondary_index_dropped_candidate_count": secondary_index_dropped,
+                "secondary_index_matched_node_count": len(matched_node_hashes),
+                "selected_node_hashes_supplied": len(selected_node_hashes or set()),
+                "pack_assembly_location": "python_reference_packer",
+                "next_native_gap": "C++/Rust prefix scan and ContextPack assembly APIs",
+            },
+        }
+
     def _direct_record_load_lock(self) -> threading.RLock:
         with _DIRECT_RECORD_CACHE_LOCK:
             lock = _DIRECT_RECORD_LOAD_LOCKS.get(self._storage_prefix)
