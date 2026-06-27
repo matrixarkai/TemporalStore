@@ -150,6 +150,14 @@ pub struct CacheStats {
     #[serde(default)]
     pub async_writeback_backpressure_rejections: u64,
     #[serde(default)]
+    pub async_writeback_queue_depth: u64,
+    #[serde(default)]
+    pub async_writeback_queue_bytes: u64,
+    #[serde(default)]
+    pub async_writeback_max_queue_depth: u64,
+    #[serde(default)]
+    pub async_writeback_max_queue_bytes: u64,
+    #[serde(default)]
     pub get_latency_samples: u64,
     #[serde(default)]
     pub put_latency_samples: u64,
@@ -161,6 +169,26 @@ pub struct CacheStats {
     pub get_latency_max_micros: u64,
     #[serde(default)]
     pub put_latency_max_micros: u64,
+    #[serde(default)]
+    pub get_latency_le_10us: u64,
+    #[serde(default)]
+    pub get_latency_le_100us: u64,
+    #[serde(default)]
+    pub get_latency_le_1ms: u64,
+    #[serde(default)]
+    pub get_latency_le_10ms: u64,
+    #[serde(default)]
+    pub get_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub put_latency_le_10us: u64,
+    #[serde(default)]
+    pub put_latency_le_100us: u64,
+    #[serde(default)]
+    pub put_latency_le_1ms: u64,
+    #[serde(default)]
+    pub put_latency_le_10ms: u64,
+    #[serde(default)]
+    pub put_latency_gt_10ms: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -624,6 +652,7 @@ impl MultiLayerCache {
                 .stats
                 .async_writeback_backpressure_rejections
                 .saturating_add(1);
+            inner.refresh_async_writeback_pressure_stats();
             return Err(CacheWritebackJob { key, value });
         }
         inner
@@ -631,6 +660,7 @@ impl MultiLayerCache {
             .push_back(CacheWritebackJob { key, value });
         inner.stats.async_writeback_enqueued =
             inner.stats.async_writeback_enqueued.saturating_add(1);
+        inner.refresh_async_writeback_pressure_stats();
         Ok(())
     }
 
@@ -647,6 +677,7 @@ impl MultiLayerCache {
                 };
                 jobs.push(job);
             }
+            inner.refresh_async_writeback_pressure_stats();
             jobs
         };
         let drained = jobs.len();
@@ -658,6 +689,7 @@ impl MultiLayerCache {
             .stats
             .async_writeback_drained
             .saturating_add(drained as u64);
+        inner.refresh_async_writeback_pressure_stats();
         Ok(CacheWritebackDrainReport {
             requested: max_jobs,
             drained,
@@ -879,6 +911,8 @@ impl MultiLayerCache {
             disk_bytes: dir_size(&inner.disk_dir).unwrap_or(inner.stats.disk_bytes),
             pinned_entries: inner.pinned.len() as u64,
             pinned_bytes: inner.pinned_memory_bytes(),
+            async_writeback_queue_depth: inner.async_writeback_queue.len() as u64,
+            async_writeback_queue_bytes: inner.async_writeback_queue_bytes(),
             ..inner.stats
         }
     }
@@ -1083,6 +1117,14 @@ impl CacheInner {
         self.stats.get_latency_total_micros =
             self.stats.get_latency_total_micros.saturating_add(micros);
         self.stats.get_latency_max_micros = self.stats.get_latency_max_micros.max(micros);
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.get_latency_le_10us,
+            &mut self.stats.get_latency_le_100us,
+            &mut self.stats.get_latency_le_1ms,
+            &mut self.stats.get_latency_le_10ms,
+            &mut self.stats.get_latency_gt_10ms,
+        );
     }
 
     fn record_put_latency(&mut self, started: Instant) {
@@ -1091,6 +1133,55 @@ impl CacheInner {
         self.stats.put_latency_total_micros =
             self.stats.put_latency_total_micros.saturating_add(micros);
         self.stats.put_latency_max_micros = self.stats.put_latency_max_micros.max(micros);
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.put_latency_le_10us,
+            &mut self.stats.put_latency_le_100us,
+            &mut self.stats.put_latency_le_1ms,
+            &mut self.stats.put_latency_le_10ms,
+            &mut self.stats.put_latency_gt_10ms,
+        );
+    }
+}
+
+impl CacheInner {
+    fn async_writeback_queue_bytes(&self) -> u64 {
+        self.async_writeback_queue
+            .iter()
+            .map(|job| job.value.len() as u64)
+            .sum()
+    }
+
+    fn refresh_async_writeback_pressure_stats(&mut self) {
+        let depth = self.async_writeback_queue.len() as u64;
+        let bytes = self.async_writeback_queue_bytes();
+        self.stats.async_writeback_queue_depth = depth;
+        self.stats.async_writeback_queue_bytes = bytes;
+        self.stats.async_writeback_max_queue_depth =
+            self.stats.async_writeback_max_queue_depth.max(depth);
+        self.stats.async_writeback_max_queue_bytes =
+            self.stats.async_writeback_max_queue_bytes.max(bytes);
+    }
+}
+
+fn observe_latency_bucket(
+    micros: u64,
+    le_10us: &mut u64,
+    le_100us: &mut u64,
+    le_1ms: &mut u64,
+    le_10ms: &mut u64,
+    gt_10ms: &mut u64,
+) {
+    if micros <= 10 {
+        *le_10us = le_10us.saturating_add(1);
+    } else if micros <= 100 {
+        *le_100us = le_100us.saturating_add(1);
+    } else if micros <= 1_000 {
+        *le_1ms = le_1ms.saturating_add(1);
+    } else if micros <= 10_000 {
+        *le_10ms = le_10ms.saturating_add(1);
+    } else {
+        *gt_10ms = gt_10ms.saturating_add(1);
     }
 }
 
@@ -1386,6 +1477,10 @@ mod tests {
         cache
             .enqueue_async_writeback(CacheKey::string(1, "async-a"), b"a".to_vec())
             .unwrap();
+        assert_eq!(cache.stats().async_writeback_queue_depth, 1);
+        assert_eq!(cache.stats().async_writeback_queue_bytes, 1);
+        assert_eq!(cache.stats().async_writeback_max_queue_depth, 1);
+        assert_eq!(cache.stats().async_writeback_max_queue_bytes, 1);
         assert!(cache
             .enqueue_async_writeback(CacheKey::string(1, "async-b"), b"b".to_vec())
             .is_err());
@@ -1397,10 +1492,30 @@ mod tests {
         assert_eq!(stats.async_writeback_enqueued, 1);
         assert_eq!(stats.async_writeback_drained, 1);
         assert_eq!(stats.async_writeback_backpressure_rejections, 1);
+        assert_eq!(stats.async_writeback_queue_depth, 0);
+        assert_eq!(stats.async_writeback_queue_bytes, 0);
+        assert_eq!(stats.async_writeback_max_queue_depth, 1);
+        assert_eq!(stats.async_writeback_max_queue_bytes, 1);
         assert!(stats.get_latency_samples > 0);
         assert!(stats.put_latency_samples > 0);
         assert!(stats.get_latency_total_micros >= stats.get_latency_max_micros);
         assert!(stats.put_latency_total_micros >= stats.put_latency_max_micros);
+        assert_eq!(
+            stats.get_latency_samples,
+            stats.get_latency_le_10us
+                + stats.get_latency_le_100us
+                + stats.get_latency_le_1ms
+                + stats.get_latency_le_10ms
+                + stats.get_latency_gt_10ms
+        );
+        assert_eq!(
+            stats.put_latency_samples,
+            stats.put_latency_le_10us
+                + stats.put_latency_le_100us
+                + stats.put_latency_le_1ms
+                + stats.put_latency_le_10ms
+                + stats.put_latency_gt_10ms
+        );
     }
 
     #[test]
