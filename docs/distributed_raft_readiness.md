@@ -116,7 +116,8 @@ The Rust code currently has:
   append/reorder queue depth, reorder accept/release/reject counters, snapshot send/install
   state, snapshot send attempt/complete/failure counters, snapshot send elapsed/timeout counters, snapshot install
   start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
-  leader-transfer target state and request/accept/reject/complete counters,
+  leader-transfer target state, request/accept/reject/complete counters, and
+  elapsed/timeout counters,
   offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
   pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,

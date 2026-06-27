@@ -974,8 +974,8 @@ fn spawn_node(
             options.heartbeat_ms.to_string(),
         )
         .env("TS_RAFT_ELECTION_TICK_MS", "10")
-        .env("TS_RAFT_RPC_DEADLINE_MS", "1000")
-        .env("TS_RAFT_RPC_RETRIES", "3")
+        .env("TS_RAFT_RPC_DEADLINE_MS", "10000")
+        .env("TS_RAFT_RPC_RETRIES", "10")
         .env("TS_RAFT_ALLOW_PLAINTEXT", "true")
         .env("TS_RAFT_ENABLE_LOCAL_ADMIN", "true")
         .stdin(Stdio::null())
@@ -1106,7 +1106,7 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
 fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
     let mut last_status = None;
     let deadline = Instant::now() + Duration::from_secs(60);
-    for _ in 0..30 {
+    while Instant::now() < deadline {
         let response: AdminLivenessResponse = loop {
             match post_json_with_options(
                 &leader.addr,

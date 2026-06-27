@@ -899,7 +899,8 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   snapshot sender/downloader lifecycle state, snapshot send attempt/complete/failure counters,
   snapshot send elapsed/timeout counters,
   snapshot install start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
-  leader-transfer target state and request/accept/reject/complete counters,
+  leader-transfer target state, request/accept/reject/complete counters, and
+  elapsed/timeout counters,
   offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
   pre-vote/election rejection counters, read-index and lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
