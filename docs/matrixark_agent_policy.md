@@ -49,12 +49,22 @@ Request shape:
     "user_id": "user_123",
     "session_id": "cursor_thread_456"
   },
-  "max_context_tokens": 2048,
   "local_context": [
-    {"ref": "open-buffer:src/billing.py", "text": "short local summary"}
-  ]
+    {"ref": "open-buffer:src/billing.py", "text": "short visible local summary"},
+    {"ref": "tool-output:test", "text": "relevant test output summary"}
+  ],
+  "local_context_tokens": 700,
+  "max_context_tokens": 2048,
+  "ranking": {
+    "weights": {"time": 0.2, "business": 0.1}
+  }
 }
 ```
+
+Send only visible local context: open files, selected text, tool outputs,
+terminal summaries, current page refs, and explicit local summaries. Do not send
+hidden/internal prompt context. MatrixArk dedupes local refs and fills only the
+remaining budget with remote context.
 
 ## After Answering
 
@@ -73,6 +83,28 @@ decisions
 tool outcomes
 new facts
 new resource or skill refs
+```
+
+Post-answer ingest shape:
+
+```json
+{
+  "messages": [
+    {"role": "user", "content": "What did we decide about the GPU budget?"},
+    {"role": "assistant", "content": "The GPU request is approved under capex."}
+  ],
+  "metadata": {
+    "source": "agent_post_answer",
+    "reply_to_context_pack_id": "pack_123",
+    "local_context_refs": ["open-buffer:src/billing.py", "tool-output:test"]
+  },
+  "scope": {
+    "account_id": "acct_acme",
+    "tenant_id": "tenant_prod",
+    "user_id": "user_123",
+    "session_id": "cursor_thread_456"
+  }
+}
 ```
 
 Feedback shape:
@@ -131,6 +163,22 @@ resource/runbook question:
   selected ResourceChunk with citation, not full raw file
 ```
 
+MatrixArk should decide what to do from the payload:
+
+```text
+before_llm + query/messages:
+  lightweight ingest user message, retrieve ContextPack
+
+after_llm/tool_result:
+  ingest assistant/tool evidence and link to prior ContextPack
+
+ResourceAdded/SkillAdded + raw_uri:
+  run import task, chunk, embed, extract resource facts or skill sections
+
+Stop/PostCompact/idle:
+  commit pending session buffer and run one-pass extraction
+```
+
 ## Minimum Scope
 
 For production, pass at least one durable user/session identifier:
@@ -142,4 +190,3 @@ user_id and preferably session_id
 
 `session_id` is strongly recommended for confirmation detection, same-session
 batch extraction, replay, and audit.
-

@@ -19,6 +19,38 @@ MatrixArk does not replace the agent's local context engine.  It adds durable,
 time-aware, cross-session, cross-device, team-governed context that local prompt
 assembly usually does not have.
 
+## Universal Agent Contract
+
+Every MatrixArk agent installation should teach the agent this one rule:
+
+```text
+Before answering code/design/context questions:
+  call matrixark_retrieve(query, scope, local_context, local_context_tokens, max_context_tokens)
+
+After answering or after useful tool output:
+  call matrixark_ingest(messages, scope, local_context_refs, reply_to_context_pack_id)
+
+At task boundaries:
+  call matrixark_session_commit(scope)
+```
+
+The agent should send what it can see, not MatrixArk internals:
+
+| Field | Agent should send when available | MatrixArk decides |
+|---|---|---|
+| `query` | Raw user request or workflow task. | Query type, temporal window, secondary-index filters, and retrieval policy. |
+| `messages` | User message, assistant answer, tool result, compacted summary. | Whether to write online `ContextEvent`, append session buffer, run extraction, or commit. |
+| `scope` | `account_id`, `tenant_id`, `user_id`, `session_id` if the agent knows them. | Final identity from API key, SSO/local defaults, role/scope enforcement, and audit. |
+| `local_context` | Visible open files, selected text, tool outputs, terminal summaries, current URL, local refs. | Deduping, remaining remote token budget, and selected `local_context_refs`. |
+| `local_context_tokens` | Estimated visible local-context token count. | `remote_budget = max_context_tokens - local_context_tokens - safety_margin`. |
+| `max_context_tokens` | Remaining budget for local plus remote context when known. | Token-budget packing and partial ContextPack fallback. |
+| `raw_uri` / file refs | Local file URI, S3/object URI, repo path, `SKILL.md`, resource type. | Upload/import decision, parser dispatch, chunking, embeddings, extraction, and versioning. |
+| lifecycle event | `before_llm`, `after_llm`, `tool_result`, `feedback`, `stop`, `compact`, `idle`. | Ingest, retrieve, feedback, resource import, or session commit route. |
+
+Do not send hidden/internal prompt context. Only send visible user/workspace
+context, explicit local summaries, selected refs, and tool outputs that the
+agent is allowed to expose.
+
 ## Integration Modes
 
 ### 1. MCP Tool Integration
@@ -88,6 +120,57 @@ The public API shape remains simple:
 The caller does not need to know MatrixArk internal data models.  MatrixArk owns
 extraction into `ContextNode`, `ContextEvent`, `ContextEntity`,
 `ContextSummary`, `ContextIndex`, `ResourceChunk`, and `ContextPackAudit`.
+
+## MatrixArk Workflow From Agent Payloads
+
+MatrixArk routes each payload by intent and available fields:
+
+```mermaid
+flowchart TD
+  A["Agent payload"] --> B["Normalize envelope"]
+  B --> C["Resolve scope: API key / SSO / local defaults"]
+  C --> D{"Lifecycle or kind"}
+  D -->|"before_llm / query"| E["retrieve ContextPack"]
+  D -->|"message / after_llm / tool_result"| F["lightweight ingest"]
+  D -->|"resource / skill raw_uri"| G["resource or skill import task"]
+  D -->|"feedback / accepted refs"| H["feedback + replay links"]
+  D -->|"stop / compact / idle"| I["session commit"]
+  F --> J["ContextEvent + embedding + session buffer + dirty summary marker"]
+  I --> K["one-pass batch extraction: segments + entities + indexes"]
+  G --> L["chunks + summaries + embeddings + resource facts"]
+  E --> M["query understanding + L0/L1 traversal + index prefilter + pack + audit"]
+```
+
+Retrieval pipeline:
+
+```text
+raw query
+-> infer question type and optional secondary-index filters
+-> enforce account/tenant/user/session access
+-> subtract visible local_context from token budget
+-> traverse ContextNode L0/L1 summary embeddings
+-> fetch leaf ContextEvent, ContextEntity, ContextSegment, ResourceChunk, SkillSection
+-> score with similarity, time decay, business/importance hints, and stale blockers
+-> pack answer-dense refs under token budget
+-> write ContextPackAudit for replay/debug
+```
+
+Extraction pipeline:
+
+```text
+single message
+-> write lightweight ContextEvent
+-> append session buffer
+-> mark node summary dirty
+-> return quickly
+
+same-session threshold / stop / compact / idle / manual commit
+-> one-pass batch extraction
+-> create ContextSegment records for coherent topics
+-> update ContextEntity state and stale blockers
+-> write ContextIndex records
+-> refresh summaries and embeddings asynchronously
+```
 
 ## Client Setup
 
@@ -208,9 +291,11 @@ Suggested Cursor policy text can be placed in project instructions:
 Use MatrixArk MCP for durable context. Before answering questions that may depend
 on prior decisions, resources, team memory, user preferences, or historical
 debugging attempts, call matrixark_retrieve. Keep using Cursor local code context
-for current files. After a final answer, tool result, accepted ref, rejected ref,
-decision, correction, or user confirmation, call matrixark_ingest or
-matrixark_feedback. On task completion, call matrixark_session_commit.
+for current files. Pass visible open files, selected text, tool outputs,
+local_context_tokens, max_context_tokens, and session_id when available. After a
+final answer, tool result, accepted ref, rejected ref, decision, correction, or
+user confirmation, call matrixark_ingest or matrixark_feedback. On task
+completion, call matrixark_session_commit.
 ```
 
 Cursor should pass a stable scope when possible:

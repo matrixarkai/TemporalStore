@@ -30,6 +30,57 @@ Feedback / accepted_refs / rejected_refs -> matrixark_feedback
 Stop / compact / idle -> matrixark_session_commit
 ```
 
+## Payload Contract For Every Agent
+
+Teach each agent installation to send as much visible context as it already
+knows. MatrixArk will decide the route and fill local/cloud defaults.
+
+```json
+{
+  "prompt": "raw user query or task",
+  "messages": [
+    {"role": "user", "content": "same user query if available"}
+  ],
+  "session_id": "agent-thread-or-run-id",
+  "thread_id": "optional alternate thread id",
+  "conversation_id": "optional alternate conversation id",
+  "account_id": "optional account hint",
+  "tenant_id": "optional workspace/tenant hint",
+  "user_id": "optional agent/user hint",
+  "workspace_root": "/repo/or/project",
+  "local_context": [
+    {"ref": "open-file:src/main.py", "text": "visible snippet or summary"},
+    {"ref": "tool-output:pytest", "text": "relevant test output summary"}
+  ],
+  "local_context_tokens": 700,
+  "max_context_tokens": 4000,
+  "raw_uri": "optional file:/// or s3:// resource",
+  "resource_type": "optional pdf/md/skill",
+  "accepted_refs": [],
+  "rejected_refs": [],
+  "context_pack_id": "optional prior pack id"
+}
+```
+
+Agents should not send hidden/internal prompt context. They should send only
+visible local context: open buffers, selected text, file refs, tool outputs,
+terminal summaries, browser/page refs, and user-approved summaries.
+
+MatrixArk routing rules:
+
+| Agent event | Required or useful fields | MatrixArk action |
+|---|---|---|
+| `UserPromptSubmit` / `before_llm` | `prompt` or `messages`, `session_id`, `local_context`, token budget | lightweight ingest, then `matrixark_retrieve` with local-context dedupe. |
+| `PostToolUse` / `tool_result` | tool name/input/output summary, status, session id | ingest replayable tool evidence and update session buffer. |
+| assistant answer / `after_llm` | assistant message, selected refs, context pack id | ingest durable answer summary and link prior refs. |
+| `ResourceAdded` / `SkillAdded` | `raw_uri`, `resource_type`, scope/session hints | resource/skill import task, chunking, embeddings, extraction. |
+| `Feedback` | confirmation/correction text, accepted/rejected refs, pack id | feedback memory plus audit/replay update. |
+| `Stop` / `PostCompact` / `idle_timeout` | session id, compacted summary if present | one-pass batch extraction and async summary refresh. |
+
+If a field is missing, MatrixArk should not fail unnecessarily. It resolves
+local defaults, derives session ids from thread/conversation/path hints, and
+records what was inferred in audit.
+
 ## Universal Hook Command
 
 ```bash
@@ -192,6 +243,9 @@ raw_uri / uri / path / resource_path
 resource_type
 context_pack_id
 accepted_refs[] / rejected_refs[]
+local_context[]
+local_context_tokens
+max_context_tokens
 ```
 
 ## Cursor Hook/Fallback Example
@@ -213,8 +267,13 @@ Payload:
   "prompt": "What did we decide about the GPU approval?",
   "session_id": "cursor-thread-123",
   "workspace_root": "/repo/acme",
+  "local_context_tokens": 640,
+  "max_context_tokens": 3000,
   "open_files": [
     {"path": "infra/budget.md", "summary": "Current capex budget notes"}
+  ],
+  "local_context": [
+    {"ref": "open-file:infra/budget.md", "text": "Current capex budget notes"}
   ]
 }
 ```
@@ -240,10 +299,10 @@ place MatrixArk at workflow boundaries:
 
 ```text
 Before model node:
-  call matrixark_retrieve(query, scope, local_context, max_context_tokens)
+  call matrixark_retrieve(query, scope, local_context, local_context_tokens, max_context_tokens)
 
 After model node:
-  call matrixark_ingest(messages=[assistant answer], metadata.source=<framework>)
+  call matrixark_ingest(messages=[user message, assistant answer], metadata.source=<framework>, reply_to_context_pack_id=<pack>)
 
 After tool node:
   call matrixark_ingest(messages=[tool result], metadata.event=tool_result)
@@ -276,6 +335,10 @@ Content-Type: application/json
     "user_id": "user_123",
     "session_id": "workflow_run_456"
   },
+  "local_context": [
+    {"ref": "workflow:visible-state", "text": "visible workflow state summary"}
+  ],
+  "local_context_tokens": 500,
   "max_context_tokens": 2048
 }
 ```
@@ -314,6 +377,9 @@ Then it calls `matrixark_retrieve` and returns a summary including:
 context_pack_id
 selected_ref_count
 used_context_tokens
+local_context_refs
+remote_context_refs
+dropped_ref_reasons
 ```
 
 
