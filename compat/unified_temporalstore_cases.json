@@ -5176,7 +5176,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: slot-scoped dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution.",
+            "description": "Storage shared case: slot-scoped dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence.",
             "kind": "storage_dump_load_recovery",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
@@ -5221,7 +5221,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, refill failure reporting, and periodic StorageManager scheduler queue safety.",
+            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, refill failure reporting, per-stage StorageManager pressure reports, and periodic StorageManager scheduler queue safety.",
             "kind": "storage_cache_refill",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },

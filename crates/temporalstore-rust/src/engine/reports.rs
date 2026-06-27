@@ -599,6 +599,26 @@ pub struct StorageManagerStageReport {
     pub skipped: bool,
     pub reason: String,
     #[serde(default)]
+    pub pressure_signal: String,
+    #[serde(default)]
+    pub pressure_score: u64,
+    #[serde(default)]
+    pub pressure_threshold: u64,
+    #[serde(default)]
+    pub pressure_triggered: bool,
+    #[serde(default)]
+    pub candidate_count: usize,
+    #[serde(default)]
+    pub skipped_count: usize,
+    #[serde(default)]
+    pub before_bytes: u64,
+    #[serde(default)]
+    pub after_bytes: u64,
+    #[serde(default)]
+    pub live_bytes: u64,
+    #[serde(default)]
+    pub stale_bytes: u64,
+    #[serde(default)]
     pub selected_slots: Vec<u32>,
     #[serde(default)]
     pub selected_page_segment_ids: Vec<u64>,
