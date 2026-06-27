@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/tools/temporalstore_runtime_env.sh"
+temporalstore_export_sdk_loader_path "${ROOT}"
 cd "${ROOT}"
 
 export TS_PROXY_ADDR="${TS_PROXY_ADDR:-127.0.0.1:17000}"

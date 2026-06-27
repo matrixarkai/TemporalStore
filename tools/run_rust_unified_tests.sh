@@ -2,6 +2,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "${ROOT}/tools/temporalstore_runtime_env.sh"
+temporalstore_export_sdk_loader_path "${ROOT}"
 CORPUS="${RUST_UNIFIED_CORPUS:-$(python3 "${ROOT}/tools/resolve_temporalstore_test_corpus.py")}"
 RESULT_DIR="${RUST_UNIFIED_RESULT_DIR:-/tmp/temporalstore-unified-parity}"
 VALIDATE_ONLY="${RUST_UNIFIED_VALIDATE_ONLY:-0}"

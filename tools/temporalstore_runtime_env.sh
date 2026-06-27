@@ -75,3 +75,23 @@ temporalstore_blockcache_flags() {
     "--blockcache_ssd_instance_only=${TEMPORALSTORE_BLOCKCACHE_SSD_INSTANCE_ONLY}" \
     "--blockcache_clear_ssd_folder=${TEMPORALSTORE_BLOCKCACHE_CLEAR_SSD_FOLDER}"
 }
+
+temporalstore_export_sdk_loader_path() {
+  local root="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+  local sdk_lib_dir="${TEMPORALSTORE_SDK_LIB_DIR:-${root}/output-ubuntu22/release/sdk/lib}"
+  local sdk_lib="${sdk_lib_dir}/libbcache2.so"
+
+  if [[ ! -f "${sdk_lib}" ]]; then
+    echo "TemporalStore SDK library is missing: ${sdk_lib}" >&2
+    echo "Build the Ubuntu 22 release SDK first, or set TEMPORALSTORE_SDK_LIB_DIR." >&2
+    return 1
+  fi
+
+  export TEMPORALSTORE_SDK_LIB_DIR="${sdk_lib_dir}"
+  export TEMPORALSTORE_LIB="${TEMPORALSTORE_LIB:-${sdk_lib}}"
+  case ":${LD_LIBRARY_PATH:-}:" in
+    *":${sdk_lib_dir}:"*) ;;
+    *) export LD_LIBRARY_PATH="${sdk_lib_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" ;;
+  esac
+}
+
