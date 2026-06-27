@@ -1095,6 +1095,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
         "compact phase calls model-layout/tombstone page compaction".to_string(),
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
+        "StorageManager pressure decisions expose observed/threshold signals for dirty slots, oplog backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
     ];
     let mature_background_storage_manager_blockers = Vec::new();
     let merged_dump_load_policy_ready = true;
