@@ -174,6 +174,14 @@ int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client
                                                   char** response_json,
                                                   char** error_message);
 
+int temporalstore_matrixark_scan_candidates(temporalstore_client_t* client,
+                                             const char* count_key,
+                                             const char* record_hash_key,
+                                             size_t shard_size,
+                                             const char* request_json,
+                                             char** candidates_json,
+                                             char** error_message);
+
 int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client,
                                                   const char* count_key,
                                                   const char* record_hash_key,
