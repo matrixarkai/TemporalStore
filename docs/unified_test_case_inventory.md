@@ -120,7 +120,8 @@ bytes, append request/accept/reject counters, append/reorder queues, reorder acc
 counters, snapshot sender/downloader
 lifecycle, WAL segments with bytes/record counts/sequence bounds, read-index/lease evidence, stale
 follower rejection, and matching Prometheus metrics for scrape-based operator
-parity. Snapshot lifecycle fields include send attempts, received/total chunks, retry count, and
+parity. Snapshot lifecycle fields include send attempt/complete/failure counters,
+install start/complete/reject/rollback counters, received/total chunks, retry count, and
 backpressure rejection counters, including rejection of concurrent snapshot send attempts for the
 same peer. Read-safety fields include read-index, lease-read, and pre-vote request/accept/reject
 counters. Rust now also validates that configured in-flight append entry/byte limits reject

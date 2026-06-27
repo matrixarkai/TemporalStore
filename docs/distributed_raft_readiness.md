@@ -114,7 +114,8 @@ The Rust code currently has:
 - ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
   match/next index, append request/accept/reject counters, inflight bytes/entries,
   append/reorder queue depth, reorder accept/release/reject counters, snapshot send/install
-  state, snapshot send attempts, install received/total chunks, retry/backpressure counters,
+  state, snapshot send attempt/complete/failure counters, snapshot install
+  start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
   leader-transfer target state and request/accept/reject/complete counters,
   pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
