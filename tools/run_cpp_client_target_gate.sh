@@ -6,11 +6,17 @@ BUILD_TYPE="${BUILD_TYPE:-Release}"
 BUILD_TARGETS="${BUILD_TARGETS:-customer_client_example}"
 JOBS="${JOBS:-2}"
 BUILD_TIMEOUT_S="${BUILD_TIMEOUT_S:-300}"
+# The client examples pull a broad C++ dependency graph. Keep the strict target
+# validation timeout small, but allow a separate cold-build warmup so a fresh
+# checkout does not get misdiagnosed as a client target failure.
+BUILD_WARMUP="${BUILD_WARMUP:-1}"
+BUILD_WARMUP_TIMEOUT_S="${BUILD_WARMUP_TIMEOUT_S:-900}"
 ARTIFACT_DIR="${ARTIFACT_DIR:-/tmp/temporalstore-cpp-client-target-gate-$(date +%Y%m%d-%H%M%S)}"
 DRY_RUN="${DRY_RUN:-0}"
 
 mkdir -p "${ARTIFACT_DIR}"
 BUILD_LOG="${ARTIFACT_DIR}/build.log"
+WARMUP_LOG="${ARTIFACT_DIR}/warmup.log"
 DIAG_JSON="${ARTIFACT_DIR}/diagnostics.json"
 DIAG_MD="${ARTIFACT_DIR}/diagnostics.md"
 PROCESS_SNAPSHOT="${ARTIFACT_DIR}/process_snapshot.txt"
@@ -36,6 +42,8 @@ if [[ "${DRY_RUN}" == "1" ]]; then
 - build_targets: ${BUILD_TARGETS}
 - jobs: ${JOBS}
 - timeout_s: ${BUILD_TIMEOUT_S}
+- warmup_enabled: ${BUILD_WARMUP}
+- warmup_timeout_s: ${BUILD_WARMUP_TIMEOUT_S}
 - command: $(cat "${ARTIFACT_DIR}/command.txt")
 EOF
   python3 - "${DIAG_JSON}" <<PY
@@ -47,6 +55,8 @@ json.dump({
     "build_targets": "${BUILD_TARGETS}",
     "jobs": int("${JOBS}"),
     "timeout_s": int("${BUILD_TIMEOUT_S}"),
+    "warmup_enabled": "${BUILD_WARMUP}" == "1",
+    "warmup_timeout_s": int("${BUILD_WARMUP_TIMEOUT_S}"),
     "artifact_dir": "${ARTIFACT_DIR}",
 }, open(sys.argv[1], "w"), indent=2)
 PY
@@ -54,30 +64,56 @@ PY
   exit 0
 fi
 
-set +e
-setsid "${build_cmd[@]}" >"${BUILD_LOG}" 2>&1 &
-build_pid=$!
-start_epoch=$(date +%s)
-rc=0
-while kill -0 "${build_pid}" >/dev/null 2>&1; do
-  now_epoch=$(date +%s)
-  if (( now_epoch - start_epoch >= BUILD_TIMEOUT_S )); then
-    kill -TERM "-${build_pid}" >/dev/null 2>&1 || true
-    sleep 2
-    if kill -0 "${build_pid}" >/dev/null 2>&1; then
-      kill -KILL "-${build_pid}" >/dev/null 2>&1 || true
+run_build_phase() {
+  local phase_name="$1"
+  local timeout_s="$2"
+  local log_file="$3"
+  set +e
+  setsid "${build_cmd[@]}" >"${log_file}" 2>&1 &
+  local build_pid=$!
+  local start_epoch
+  start_epoch=$(date +%s)
+  local phase_rc=0
+  while kill -0 "${build_pid}" >/dev/null 2>&1; do
+    local now_epoch
+    now_epoch=$(date +%s)
+    if (( now_epoch - start_epoch >= timeout_s )); then
+      kill -TERM "-${build_pid}" >/dev/null 2>&1 || true
+      sleep 2
+      if kill -0 "${build_pid}" >/dev/null 2>&1; then
+        kill -KILL "-${build_pid}" >/dev/null 2>&1 || true
+      fi
+      wait "${build_pid}" >/dev/null 2>&1
+      phase_rc=124
+      break
     fi
-    wait "${build_pid}" >/dev/null 2>&1
-    rc=124
-    break
+    sleep 1
+  done
+  if [[ "${phase_rc}" == "0" ]]; then
+    wait "${build_pid}"
+    phase_rc=$?
   fi
-  sleep 1
-done
-if [[ "${rc}" == "0" ]]; then
-  wait "${build_pid}"
-  rc=$?
+  set -e
+  echo "${phase_name}:${phase_rc}" >> "${ARTIFACT_DIR}/phase_status.txt"
+  return "${phase_rc}"
+}
+
+warmup_rc=0
+if [[ "${BUILD_WARMUP}" == "1" && "${BUILD_WARMUP_TIMEOUT_S}" -gt "${BUILD_TIMEOUT_S}" ]]; then
+  set +e
+  run_build_phase warmup "${BUILD_WARMUP_TIMEOUT_S}" "${WARMUP_LOG}"
+  warmup_rc=$?
+  set -e
 fi
-set -e
+
+if [[ "${warmup_rc}" == "0" ]]; then
+  set +e
+  run_build_phase validation "${BUILD_TIMEOUT_S}" "${BUILD_LOG}"
+  rc=$?
+  set -e
+else
+  rc="${warmup_rc}"
+fi
 
 if [[ "${rc}" == "0" ]]; then
   python3 - "${DIAG_JSON}" <<PY
@@ -89,6 +125,10 @@ json.dump({
     "build_targets": "${BUILD_TARGETS}",
     "jobs": int("${JOBS}"),
     "timeout_s": int("${BUILD_TIMEOUT_S}"),
+    "warmup_enabled": "${BUILD_WARMUP}" == "1",
+    "warmup_timeout_s": int("${BUILD_WARMUP_TIMEOUT_S}"),
+    "warmup_exit_code": int("${warmup_rc:-0}"),
+    "warmup_log": "${WARMUP_LOG}",
     "artifact_dir": "${ARTIFACT_DIR}",
     "build_log": "${BUILD_LOG}",
 }, open(sys.argv[1], "w"), indent=2)
@@ -103,6 +143,10 @@ Status: passed
 - build_targets: ${BUILD_TARGETS}
 - jobs: ${JOBS}
 - timeout_s: ${BUILD_TIMEOUT_S}
+- warmup_enabled: ${BUILD_WARMUP}
+- warmup_timeout_s: ${BUILD_WARMUP_TIMEOUT_S}
+- warmup_exit_code: ${warmup_rc:-0}
+- warmup_log: ${WARMUP_LOG}
 - build_log: ${BUILD_LOG}
 EOF
   echo "passed: ${ARTIFACT_DIR}"
@@ -117,7 +161,12 @@ if [[ -d "${ROOT}/build-ubuntu22/release" ]]; then
   cmake --build "${ROOT}/build-ubuntu22/release" --target help > "${TARGET_HELP}" 2>&1 || true
 fi
 
-if grep -Eiq '(error:|fatal error:|undefined reference|collect2: error|CMake Error)' "${BUILD_LOG}"; then
+failure_log="${BUILD_LOG}"
+if [[ "${warmup_rc:-0}" != "0" ]]; then
+  failure_log="${WARMUP_LOG}"
+fi
+
+if grep -Eiq '(error:|fatal error:|undefined reference|collect2: error|CMake Error)' "${failure_log}"; then
   timeout_without_compiler_error=false
 else
   timeout_without_compiler_error=true
@@ -140,6 +189,10 @@ json.dump({
     "build_targets": "${BUILD_TARGETS}",
     "jobs": int("${JOBS}"),
     "timeout_s": int("${BUILD_TIMEOUT_S}"),
+    "warmup_enabled": "${BUILD_WARMUP}" == "1",
+    "warmup_timeout_s": int("${BUILD_WARMUP_TIMEOUT_S}"),
+    "warmup_exit_code": int("${warmup_rc:-0}"),
+    "warmup_log": "${WARMUP_LOG}",
     "artifact_dir": "${ARTIFACT_DIR}",
     "build_log": "${BUILD_LOG}",
     "process_snapshot": "${PROCESS_SNAPSHOT}",
@@ -159,13 +212,17 @@ PY
   echo "- build_targets: ${BUILD_TARGETS}"
   echo "- jobs: ${JOBS}"
   echo "- timeout_s: ${BUILD_TIMEOUT_S}"
+  echo "- warmup_enabled: ${BUILD_WARMUP}"
+  echo "- warmup_timeout_s: ${BUILD_WARMUP_TIMEOUT_S}"
+  echo "- warmup_exit_code: ${warmup_rc:-0}"
+  echo "- warmup_log: ${WARMUP_LOG}"
   echo "- build_log: ${BUILD_LOG}"
   echo "- process_snapshot: ${PROCESS_SNAPSHOT}"
   echo "- target_help: ${TARGET_HELP}"
   echo
   echo "## Last Build Log Lines"
   echo '```text'
-  tail -80 "${BUILD_LOG}" || true
+  tail -80 "${failure_log}" || true
   echo '```'
   echo
   echo "## Active Build Processes"
