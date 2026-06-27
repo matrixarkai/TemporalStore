@@ -106,6 +106,10 @@ Cycle 3 adds cache policy depth and inspection for storage lifecycle parity:
   order. Victim selection skips pinned entries, prefers lower hotness, then lower hit count, then
   older access epochs, and reports cold/low-hit/stale eviction reasons separately for memory and
   SSD tiers.
+- Cache pressure now scores routing-slot/object groups before individual blocks, matching the
+  C++ Evicter shape where sampled slots are selected first and objects/pages are evicted from that
+  selected slot. Memory pressure evicts the cold slot group; SSD pressure rejects a colder incoming
+  group instead of sacrificing a hotter resident slot.
 
 The next cycle should run the storage-mode harness with tiny memory/disk cache settings through
 dump, load, restart, and replay.
@@ -207,6 +211,9 @@ state. Runtime loop reports also include per-stage pressure decisions with obser
 values for dirty slots, undumped oplog records, cache memory and disk bytes, stale segments,
 reclaimable physical bytes, expired records, index-GC manifest work, and foreground/background
 queue depth, so continuous stages cannot pass readiness with only static phase names.
+Block-store GC candidates expose C++ PageGc-style total bytes, used bytes, stale bytes, and utility
+basis points in addition to the Rust reclaim score, so low-utility stale extents can be audited
+directly from lifecycle plans.
 
 Rust now also has a merged dump/load ownership policy report. `StorageMergedDumpLoadPolicyReport`
 coordinates dirty-slot dump selection, slot dump manifest checksum and generation validation, load

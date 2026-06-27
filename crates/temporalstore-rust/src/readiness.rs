@@ -860,6 +860,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let rust_native_weighted_eviction_evidence = vec![
         "memory and disk cache entries carry hotness and routing-slot metadata".to_string(),
         "pressure eviction chooses victims with weighted hotness/LRU scoring".to_string(),
+        "cache pressure selects victims by routing-slot/object group before individual block, matching C++ Evicter slot-first pressure behavior".to_string(),
         "pin-aware eviction skip counters preserve active page/block handles".to_string(),
         "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
     ];
@@ -1091,6 +1092,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "prepare phase builds dirty-slot, live/stale segment, delayed-destroy, and manifest/index-log plans"
             .to_string(),
         "reclaim phase ranks stale and delayed-destroy candidates by pressure and utility".to_string(),
+        "block-store GC candidates report C++ PageGc-style total/used/stale bytes and utility basis points".to_string(),
         "evict phase performs shard-scoped cache invalidation with entry/byte accounting".to_string(),
         "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
         "compact phase calls model-layout/tombstone page compaction".to_string(),
