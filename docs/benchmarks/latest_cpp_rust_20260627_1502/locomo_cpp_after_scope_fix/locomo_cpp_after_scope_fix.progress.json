@@ -1,0 +1,7 @@
+{
+  "partial": false,
+  "questions_completed": 20,
+  "report_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_after_scope_fix/locomo_cpp_after_scope_fix.report.json",
+  "result_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_cpp_after_scope_fix/locomo_cpp_after_scope_fix.result.json",
+  "updated_at_ms": 1782598392289
+}

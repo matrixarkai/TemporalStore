@@ -1,0 +1,121 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.context_packs.jsonl",
+    "hypotheses_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.hypotheses.jsonl",
+    "judge_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.judge.jsonl",
+    "progress_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.progress.json",
+    "report_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.report.json",
+    "report_markdown": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.report.md",
+    "result_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/locomo_rust/locomo_rust.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 20,
+    "name": "locomo",
+    "questions_run": 20,
+    "sessions": 38,
+    "source_path": "/root/matrixark_benchmarks/data/locomo10.json",
+    "turns_ingested": 788,
+    "version": "locomo10.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 1,
+    "evidence_miss_with_context": 5,
+    "evidence_session_miss": 6,
+    "reader_exact_substring_miss": 18,
+    "reader_miss_with_evidence": 3,
+    "reader_support_miss": 7,
+    "retrieval_miss": 1,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 0
+  },
+  "finished_at_ms": 1782598051819,
+  "latency": {
+    "avg_answer_bearing_tokens": 15.45,
+    "avg_latency_ms": 523.1896556513675,
+    "avg_prompt_tokens": 4749.7,
+    "ingestion_elapsed_ms": 2185,
+    "ingestion_throughput_turns_per_sec": 360.641,
+    "p50_latency_ms": 524.7489649918862,
+    "p95_latency_ms": 611.2369110051077
+  },
+  "models": {
+    "embedding_execution_mode": "runtime_unconfirmed",
+    "embedding_fallback_used": false,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "embedding_model_path": "",
+    "embedding_provider": "hash",
+    "fallback_used": false,
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "runtime_embedding_model": "",
+    "runtime_embedding_model_confirmed": false,
+    "warnings": [
+      "MCP response did not include query_embedding_model; using configured embedding model in report",
+      "runtime_embedding_model_confirmed=false"
+    ]
+  },
+  "retrieval_config": {
+    "batch_size": 20,
+    "direct_audit_mode": "buffered",
+    "direct_record_bundle_max_bytes": 65536,
+    "direct_write_backoff_ms": 100,
+    "direct_write_retries": 8,
+    "ingest_mode": "batch",
+    "ingest_pause_ms": 0,
+    "io_timeout_ms": 60000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 60000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_options": {
+      "oplog_mode": "async",
+      "raft_mode": false,
+      "replication_mode": "shared_store",
+      "storage_mode": "multi_node"
+    },
+    "storage_prefix": "matrixark:dataset:locomo:locomo_rust",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-rust",
+    "token_budget": 10000
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.003253,
+    "answer_hit": 0.1,
+    "answer_quality_under_budget": 0.65,
+    "answer_support_hit": 0.65,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_gate": {
+      "enabled": true,
+      "policy": "compressed windows must retain source_event_ids; raw source events remain replayable; benchmarks fail on hidden-answer evidence when detected",
+      "source": "ContextCompressionEvent.compression_safety + ContextPackAudit selected/dropped refs"
+    },
+    "compression_safety_passed": true,
+    "context_recall": 0.95,
+    "evidence_session_recall": 0.7,
+    "final_judge_score": 0.65,
+    "judge_score_per_1k_tokens": 0.136851
+  },
+  "started_at_ms": 1782598038972,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.003253,
+    "answer_bearing_tokens": 309,
+    "answer_bearing_tokens_per_question": 15.45,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 0,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 94994
+  }
+}
