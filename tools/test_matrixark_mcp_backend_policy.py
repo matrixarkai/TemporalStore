@@ -367,6 +367,23 @@ class _NativeCandidateScanClient:
         }
 
 
+class _NativeContextPackClient:
+    def __init__(self) -> None:
+        self.calls = []
+
+    def matrixark_retrieve_context_pack(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "native_pack_assembly": True,
+            "context_pack": {
+                "context_pack_id": "native-pack-1",
+                "selected_refs": [{"ref_type": "resource_chunk", "text": "native packed evidence"}],
+                "used_context_tokens": 3,
+                "recall_policy": {"native_context_pack": {"enabled": True}},
+            },
+        }
+
+
 def _direct_adapter_for_readiness(*, metaserver: str, client: object | None = None) -> mcp.MatrixArkTemporalStoreDirectAdapter:
     adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
     adapter._metaserver = metaserver
@@ -2226,6 +2243,35 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(stats["native_secondary_index_prefilter"])
         self.assertEqual(stats["pack_assembly_location"], "python_reference_packer")
 
+    def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-rust"
+
+        pack = adapter.native_context_pack({
+            "query": "gpu approval",
+            "query_embedding": [0.1, 0.2],
+            "scope": {"account_id": "acct"},
+            "secondary_index_groups": [["resource_type:pdf"]],
+            "max_context_tokens": 1000,
+        })
+
+        self.assertIsNotNone(pack)
+        assert pack is not None
+        self.assertEqual(pack["context_pack_id"], "native-pack-1")
+        self.assertEqual(pack["context_pack_assembly"], "native_backend")
+        self.assertEqual(pack["backend"], "temporalstore-rust")
+        self.assertEqual(len(client.calls), 1)
+        call = client.calls[0]
+        self.assertEqual(call["count_key"], "matrixark:test:record_count")
+        self.assertEqual(call["record_hash_key"], "matrixark:test:records")
+        self.assertEqual(call["request"]["query"], "gpu approval")
+        self.assertEqual(call["request"]["secondary_index_groups"], [["resource_type:pdf"]])
+
     def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "src/client/temporalstore_c_client.cc").read_text()
@@ -2307,7 +2353,8 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertEqual(metrics["prefix_scan_path"], "rust_proxy_scan_hash")
         self.assertTrue(metrics["supports_native_candidate_prefilter"])
         self.assertEqual(metrics["candidate_prefilter_path"], "rust_proxy_matrixark_scan_candidates")
-        self.assertFalse(metrics["supports_native_pack_assembly"])
+        self.assertTrue(metrics["supports_native_pack_assembly"])
+        self.assertEqual(metrics["native_pack_assembly_path"], "rust_proxy_matrixark_retrieve_context_pack")
         self.assertFalse(metrics["requires_c_sdk_hgetall_for_prefix_scan"])
         self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_append_records")
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
