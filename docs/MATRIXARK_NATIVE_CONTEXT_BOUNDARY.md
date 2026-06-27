@@ -67,11 +67,14 @@ Backend status:
 
 - Rust long-lived gateway: implements `matrixark_append_records` and
   `matrixark_batch_append_records` as first-class ops.
-- C++ Python direct SDK: exposes the same Python client method and currently
-  lowers to `hset` operations through the C API. A true C++ native multi-field
-  append API below the C API remains the next storage-engine optimization.
-- Python adapter: prefers `matrixark_batch_append_records` when the backend
-  client exposes it, otherwise falls back to `batch_hset` / `hset`.
+- C++ direct SDK: exposes `temporalstore_matrixark_batch_append_records` in the
+  C ABI, and the Python SDK prefers that symbol when the loaded library provides
+  it. The current C++ implementation batches at the MatrixArk API boundary and
+  lowers each record to TemporalStore hash writes; a deeper server-side
+  multi-field append path remains the next storage-engine optimization.
+- Python adapter: materializes records, then calls the native
+  `matrixark_batch_append_records` boundary when available. Older libraries still
+  fall back to `batch_hset` / `hset` so deployment upgrades are rolling-safe.
 
 ## Current C++ Shared Gate
 
@@ -89,3 +92,18 @@ cd /root/src/github-services/TemporalStore/sdk/rust/temporalstore
 LD_LIBRARY_PATH=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib:$LD_LIBRARY_PATH \
   cargo test --bin matrixark_record_log --no-default-features --features direct
 ```
+
+## Responsibility Split Check
+
+The intended production split is now explicit in code:
+
+- Python MCP: API envelopes, auth/access checks, model/extraction glue, resource
+  parsing, request shaping, and benchmark orchestration.
+- C++/Rust TemporalStore: append queue entry point, batch append boundary,
+  WAL/oplog persistence, shared-store or Raft routing, prefix reads/scans,
+  secondary-index filtering targets, cache/persistence/eviction behavior, and
+  backend metrics.
+
+C++ and Rust still differ in depth: Rust has a long-lived record gateway with
+MatrixArk batch commands; C++ now has the C ABI batch boundary and should next
+push the loop below `HSet` into a native append queue/batch-write engine path.

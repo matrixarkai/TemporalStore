@@ -406,6 +406,33 @@ int temporalstore_sadd(temporalstore_client_t* client, const char* key, const ch
     return Finish(status, error_message);
 }
 
+int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
+                                                 const temporalstore_hash_entry_t* entries,
+                                                 size_t entry_count, const char* count_key,
+                                                 const char* count_value,
+                                                 char** error_message) {
+    if (entries == nullptr && entry_count != 0) {
+        return Finish(NullError("entries"), error_message);
+    }
+    bcache2::Status status = CheckClient(client);
+    if (status.ok()) {
+        for (size_t i = 0; i < entry_count; ++i) {
+            const temporalstore_hash_entry_t& entry = entries[i];
+            status = client->impl->HSet(entry.key ? entry.key : "",
+                                        entry.field ? entry.field : "",
+                                        entry.value ? entry.value : "");
+            if (!status.ok()) {
+                break;
+            }
+        }
+    }
+    if (status.ok() && count_key != nullptr && count_key[0] != '\0' &&
+        count_value != nullptr) {
+        status = client->impl->PutString(count_key, count_value);
+    }
+    return Finish(status, error_message);
+}
+
 int temporalstore_smembers(temporalstore_client_t* client, const char* key,
                            temporalstore_string_array_t* members, char** error_message) {
     if (members == nullptr) {

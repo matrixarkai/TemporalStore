@@ -128,6 +128,14 @@ class _CStringArray(ctypes.Structure):
     ]
 
 
+class _CHashEntry(ctypes.Structure):
+    _fields_ = [
+        ("key", ctypes.c_char_p),
+        ("field", ctypes.c_char_p),
+        ("value", ctypes.c_char_p),
+    ]
+
+
 class _CFeaturePoint(ctypes.Structure):
     _fields_ = [
         ("timestamp", ctypes.c_uint64),
@@ -340,6 +348,20 @@ class _Native:
             ctypes.POINTER(ctypes.c_void_p),
         ]
         lib.temporalstore_smembers.restype = ctypes.c_int
+
+        self.has_matrixark_batch_append_records = hasattr(
+            lib, "temporalstore_matrixark_batch_append_records"
+        )
+        if self.has_matrixark_batch_append_records:
+            lib.temporalstore_matrixark_batch_append_records.argtypes = [
+                ctypes.c_void_p,
+                ctypes.POINTER(_CHashEntry),
+                ctypes.c_size_t,
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_matrixark_batch_append_records.restype = ctypes.c_int
         lib.temporalstore_add_feature_points.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -568,9 +590,35 @@ class Client:
         count_key: Optional[str] = None,
         count_value: Optional[str] = None,
     ) -> None:
-        self.batch_hset(entries)
-        if count_key is not None and count_value is not None:
-            self.put_string(count_key, count_value)
+        values = list(entries)
+        if not self._native.has_matrixark_batch_append_records:
+            self.batch_hset(values)
+            if count_key is not None and count_value is not None:
+                self.put_string(count_key, count_value)
+            return
+
+        key_bytes = [_encode(str(entry["key"])) for entry in values]
+        field_bytes = [_encode(str(entry["field"])) for entry in values]
+        value_bytes = [_encode(str(entry.get("value", ""))) for entry in values]
+        array_type = _CHashEntry * len(values)
+        c_entries = array_type(
+            *[
+                _CHashEntry(key_bytes[i], field_bytes[i], value_bytes[i])
+                for i in range(len(values))
+            ]
+        )
+        count_key_bytes = _encode(count_key) if count_key is not None else None
+        count_value_bytes = _encode(count_value) if count_value is not None else None
+        error = ctypes.c_void_p()
+        code = self._native.lib.temporalstore_matrixark_batch_append_records(
+            self._handle,
+            _optional_pointer(c_entries, _CHashEntry),
+            len(values),
+            count_key_bytes,
+            count_value_bytes,
+            ctypes.byref(error),
+        )
+        self._native.check(code, error)
 
     def matrixark_append_records(
         self,
