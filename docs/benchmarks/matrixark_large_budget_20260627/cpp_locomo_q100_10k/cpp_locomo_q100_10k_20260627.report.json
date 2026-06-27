@@ -1,0 +1,146 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.context_packs.jsonl",
+    "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.hypotheses.jsonl",
+    "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.judge.jsonl",
+    "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.progress.json",
+    "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.report.json",
+    "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.report.md",
+    "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.result.json"
+  },
+  "async_bundled_profile": {
+    "direct_audit_mode": "buffered",
+    "direct_record_bundle_max_bytes": 524288,
+    "direct_write_backoff_ms": 250,
+    "direct_write_retries": 3,
+    "ingest_pause_ms": 0,
+    "storage_options": {
+      "oplog_mode": "async",
+      "raft_mode": false,
+      "replication_mode": "shared_store",
+      "storage_mode": "multi_node"
+    }
+  },
+  "blocker": {
+    "category": "live_temporalstore_write_path_timeout",
+    "exception_type": "TimeoutError",
+    "message": "MCP call matrixark_batch_extract timed out after 120.0s",
+    "not_matrixark_model_mapping": true,
+    "phase": "ingestion",
+    "remediation": "Rerun with the hardened async/bundled profile. If this persists, fix the live TemporalStore write path: async oplog, batch append, record bundling, write retries, queue replay, or data-node pressure.",
+    "subsystem": "temporalstore_write_path"
+  },
+  "canonical_artifacts_written": true,
+  "dataset": {
+    "answerable_questions_run": 0,
+    "name": "locomo",
+    "questions_run": 0,
+    "sessions": 0,
+    "source_path": "/root/matrixark_benchmarks/data/locomo10.json",
+    "turns_ingested": 0,
+    "version": "locomo10.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 0,
+    "evidence_session_miss": 0,
+    "reader_exact_substring_miss": 0,
+    "reader_miss_with_evidence": 0,
+    "reader_support_miss": 0,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 0
+  },
+  "finished_at_ms": 1782575095447,
+  "latency": {
+    "avg_answer_bearing_tokens": 0.0,
+    "avg_latency_ms": 0.0,
+    "avg_prompt_tokens": 0.0,
+    "ingestion_elapsed_ms": 120101,
+    "ingestion_throughput_turns_per_sec": 0.0,
+    "p50_latency_ms": 0.0,
+    "p95_latency_ms": 0.0
+  },
+  "models": {
+    "embedding_execution_mode": "deterministic-token-hash",
+    "embedding_fallback_used": false,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "embedding_model_path": "",
+    "embedding_provider": "deterministic",
+    "fallback_used": false,
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "runtime_embedding_model": "",
+    "runtime_embedding_model_confirmed": false,
+    "warnings": []
+  },
+  "retrieval_config": {
+    "batch_size": 40,
+    "direct_audit_mode": "buffered",
+    "direct_record_bundle_max_bytes": 524288,
+    "direct_write_backoff_ms": 250,
+    "direct_write_retries": 3,
+    "ingest_mode": "batch",
+    "ingest_pause_ms": 0,
+    "io_timeout_ms": 120000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 120000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_options": {
+      "oplog_mode": "async",
+      "raft_mode": false,
+      "replication_mode": "shared_store",
+      "storage_mode": "multi_node"
+    },
+    "storage_prefix": "matrixark:bench:20260627:cpp:locomo:q100:10k",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-direct",
+    "token_budget": 10000
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.0,
+    "answer_hit": 0.0,
+    "answer_quality_under_budget": 0.0,
+    "answer_support_hit": 0.0,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_gate": {
+      "enabled": true,
+      "policy": "compressed windows must retain source_event_ids; raw source events remain replayable; benchmarks fail on hidden-answer evidence when detected",
+      "source": "ContextCompressionEvent.compression_safety + ContextPackAudit selected/dropped refs"
+    },
+    "compression_safety_passed": true,
+    "context_recall": 0.0,
+    "evidence_session_recall": 0.0,
+    "final_judge_score": 0.0,
+    "judge_score_per_1k_tokens": 0.0
+  },
+  "started_at_ms": 1782574975346,
+  "status": "blocked",
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.0,
+    "answer_bearing_tokens": 0,
+    "answer_bearing_tokens_per_question": 0.0,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 0,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 0
+  },
+  "warnings": [
+    "Full benchmark parity is blocked by live backend/model availability, not silently downgraded.",
+    "This blocker is classified outside MatrixArk logical model mapping."
+  ]
+}

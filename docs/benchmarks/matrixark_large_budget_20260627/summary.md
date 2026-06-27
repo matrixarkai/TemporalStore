@@ -1,0 +1,82 @@
+# MatrixArk 10k Token Budget Rerun - 2026-06-27
+
+## What changed
+
+Benchmark defaults now use `max_context_tokens=10000` in the shared `TemporalStoreTestCorpus` runners:
+
+- `tools/run_matrixark_dataset_benchmark.py`
+- `tools/run_matrixark_full_backend_parity.py`
+
+This removes the old 1200-token ceiling that made earlier completed reports average around 960-1200 context tokens per retrieval call.
+
+## Dataset validation
+
+Full local dataset files validate successfully:
+
+| Dataset | Path | Items | Questions | Sessions | Turns |
+|---|---:|---:|---:|---:|---:|
+| LOCOMO | `/root/matrixark_benchmarks/data/locomo10.json` | 10 | 1,986 | 272 | 5,882 |
+| LongMemEval_s | `/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json` | 500 | 500 | 23,867 | 246,750 |
+
+## Rerun attempts
+
+### LOCOMO C++ direct, 10k budget
+
+Command shape:
+
+```bash
+python3 tools/run_matrixark_dataset_benchmark.py \
+  --consumer-repo /root/src/github-services/TemporalStore \
+  --dataset locomo \
+  --data-path /root/matrixark_benchmarks/data/locomo10.json \
+  --backend temporalstore-direct \
+  --question-limit 100 \
+  --max-context-tokens 10000 \
+  --embedding-provider deterministic \
+  --reader-provider deterministic \
+  --judge-provider deterministic \
+  --direct-audit-mode buffered \
+  --direct-record-bundle-max-bytes 524288
+```
+
+Result: blocked during ingestion before retrieval throughput could be measured.
+
+- Artifact: `docs/benchmarks/matrixark_large_budget_20260627/cpp_locomo_q100_10k/cpp_locomo_q100_10k_20260627.report.json`
+- Status: `blocked`
+- Blocker: `live_temporalstore_write_path_timeout`
+- Error: `MCP call matrixark_batch_extract timed out after 120.0s`
+- Token budget in artifact: `10000`
+- Questions run: `0`
+
+This is not a token-budget or MatrixArk model-mapping result. The run failed before ContextPack construction.
+
+### C++ direct scale probe, 10k budget
+
+The first probe used the submodule default SDK path and failed immediately because `libbcache2.so` was not present there. The real SDK path is:
+
+```text
+/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+```
+
+After rerunning with the real SDK path, both the 100-op scale run and a 1-op / 20-message probe timed out before writing a report. This confirms the current live direct-SDK throughput blocker sits below the 10k packing budget.
+
+## Interpretation
+
+The previous ~1.2k average context-token numbers were partly caused by benchmark runner defaults set to 1200. The default is now 10000, but live C++ throughput cannot be re-measured until the direct SDK / TemporalStore write path completes ingestion reliably.
+
+The honest status is:
+
+- 10k default is implemented in runtime hooks and shared benchmark runners.
+- Full dataset files are present and validate.
+- The live C++ direct benchmark path still blocks during ingestion.
+- No updated average prompt-token or throughput number should be marketed from this failed run.
+
+## Next engineering fixes before rerun
+
+1. Make `matrixark_batch_extract` write through native batch append instead of lowering to repeated hash writes.
+2. Keep the SDK path explicit in scale commands or teach the tools to resolve the consumer repo SDK automatically.
+3. Add a short native hset/batch append preflight before dataset ingestion so failures happen in seconds, not after the benchmark starts.
+4. Once ingestion succeeds, rerun:
+   - LOCOMO full, C++ direct, `max_context_tokens=10000`
+   - LongMemEval_s full, C++ direct, `max_context_tokens=10000`
+   - matching Rust proxy/gateway runs under the same model config
