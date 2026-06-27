@@ -117,8 +117,9 @@ The Rust code currently has:
   lease-read evidence, stale follower read/write rejection, WAL segment retention, and process-path
   admin-status completeness. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
-  process path. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct C++ ByteRaft
-  FFI.
+  process path. Per-peer pipeline state is maintained as runtime node state and persisted through
+  the local WAL restore path, instead of being only reconstructed at report time. This is
+  Rust-native OpenRaft/raft-rs readiness evidence, not direct C++ ByteRaft FFI.
 - strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior

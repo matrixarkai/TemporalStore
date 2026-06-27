@@ -872,7 +872,25 @@ pub struct RaftWalRecord {
     pub apply_snapshot_fence: RaftApplySnapshotFence,
     #[serde(default)]
     pub storage_apply_fence: RaftStorageApplyFence,
+    #[serde(default)]
+    pub pipeline_state: RaftPeerPipelineRuntimeState,
     pub entries: Vec<RaftLogEntry>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftPeerPipelineRuntimeState {
+    pub match_index: u64,
+    pub next_index: u64,
+    pub inflight_entries: u64,
+    pub inflight_bytes: u64,
+    pub append_queue_depth: u64,
+    pub reorder_queue_depth: u64,
+    pub snapshot_sending: bool,
+    pub snapshot_installing: bool,
+    pub snapshot_installed_index: u64,
+    pub transfer_leader_target: bool,
+    pub pre_vote_rejections: u64,
+    pub election_rejections: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -4393,6 +4411,7 @@ struct RaftNode {
     applied_index: u64,
     applied: BTreeSet<u64>,
     engine: TemporalEngine,
+    pipeline_state: RaftPeerPipelineRuntimeState,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -4918,6 +4937,7 @@ impl RaftCluster {
                 node.current_term = record.hard_state.current_term;
                 node.voted_for = record.hard_state.voted_for;
                 node.commit_index = record.hard_state.commit_index;
+                node.pipeline_state = record.pipeline_state;
                 if let Some(snapshot) = record.installed_snapshot.clone() {
                     if node.replica_role.can_serve_data() {
                         install_snapshot_state(&mut node, snapshot);
@@ -4954,6 +4974,7 @@ impl RaftCluster {
         if let Some(leader) = nodes.get_mut(&leader_id) {
             leader.role = RaftRole::Leader;
         }
+        refresh_all_pipeline_states(&mut nodes, leader_id, &config);
         let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
         Ok(Self {
             inner: Arc::new(RwLock::new(RaftClusterInner {
@@ -5049,6 +5070,8 @@ impl RaftCluster {
                 }
             }
         }
+        let config = inner.config.clone();
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
         inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(leader_response)
@@ -5668,6 +5691,8 @@ impl RaftCluster {
         if node.replica_role.can_serve_data() {
             apply_committed(node);
         }
+        let config = inner.config.clone();
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
         inner.persist_configured_wal()?;
         Ok(())
     }
@@ -5783,6 +5808,7 @@ impl RaftCluster {
                         installed_snapshot: node.installed_snapshot.clone(),
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
                         storage_apply_fence: raft_storage_apply_fence(inner.shard_id, node),
+                        pipeline_state: node.pipeline_state.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -5803,15 +5829,20 @@ impl RaftCluster {
         &self,
         target_id: RaftNodeId,
     ) -> Result<AppendEntriesRequest, RaftError> {
-        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let leader = inner
             .nodes
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
+        let leader_id = inner.leader_id;
+        let leader_term = leader.current_term;
+        let shard_id = inner.shard_id;
+        let leader_commit = leader.commit_index;
         let target = inner
             .nodes
             .get(&target_id)
             .ok_or(RaftError::NodeNotFound(target_id))?;
+        let enable_reorder_queue = inner.config.enable_reorder_queue;
         let target_last_index = node_last_log_or_snapshot_index(target);
         let prev_log_index = target_last_index.min(node_last_log_or_snapshot_index(leader));
         let prev_log_term =
@@ -5821,17 +5852,32 @@ impl RaftCluster {
             .iter()
             .filter(|entry| entry.index > prev_log_index)
             .cloned()
-            .collect();
+            .collect::<Vec<_>>();
+        let inflight_bytes = entries
+            .iter()
+            .map(|entry| command_size_bytes(&entry.command))
+            .sum();
+        if let Some(target) = inner.nodes.get_mut(&target_id) {
+            target.pipeline_state.match_index = target.commit_index;
+            target.pipeline_state.next_index = prev_log_index.saturating_add(1);
+            target.pipeline_state.inflight_entries = entries.len() as u64;
+            target.pipeline_state.inflight_bytes = inflight_bytes;
+            target.pipeline_state.append_queue_depth = entries.len() as u64;
+            if enable_reorder_queue {
+                target.pipeline_state.reorder_queue_depth =
+                    target.commit_index.saturating_sub(target.applied_index);
+            }
+        }
         Ok(AppendEntriesRequest {
             rpc: None,
-            shard_id: inner.shard_id,
-            term: leader.current_term,
-            leader_id: inner.leader_id,
+            shard_id,
+            term: leader_term,
+            leader_id,
             target_id,
             prev_log_index,
             prev_log_term,
             entries,
-            leader_commit: leader.commit_index,
+            leader_commit,
         })
     }
 
@@ -5853,6 +5899,12 @@ impl RaftCluster {
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
+        let received_entries = entries.len() as u64;
+        let received_bytes = entries
+            .iter()
+            .map(|entry| command_size_bytes(&entry.command))
+            .sum::<u64>();
+        let enable_reorder_queue = inner.config.enable_reorder_queue;
         let (term, last_index) = {
             let node = inner
                 .nodes
@@ -5887,6 +5939,21 @@ impl RaftCluster {
             if node.replica_role.can_serve_data() {
                 apply_committed(node);
             }
+            node.pipeline_state.match_index = node.commit_index;
+            node.pipeline_state.next_index = node_next_log_index(node);
+            node.pipeline_state.inflight_entries = 0;
+            node.pipeline_state.inflight_bytes = 0;
+            node.pipeline_state.append_queue_depth = 0;
+            node.pipeline_state.reorder_queue_depth = if enable_reorder_queue {
+                node.commit_index.saturating_sub(node.applied_index)
+            } else {
+                0
+            };
+            node.pipeline_state.snapshot_installing = false;
+            node.pipeline_state.pre_vote_rejections = node
+                .pipeline_state
+                .pre_vote_rejections
+                .saturating_add(u64::from(received_entries == 0 && received_bytes == 0));
             (node.current_term, last_index)
         };
         inner.leader_id = leader_id;
@@ -5909,6 +5976,8 @@ impl RaftCluster {
                     .max(leader_commit.min(leader_last_index));
             }
         }
+        let config = inner.config.clone();
+        refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
         inner.renew_leader_lease();
         inner.persist_configured_wal()?;
         Ok(AppendEntriesResponse {
@@ -5976,6 +6045,8 @@ impl RaftCluster {
             .get_mut(&request.target_id)
             .ok_or(RaftError::NodeNotFound(request.target_id))?;
         if !node.replica_role.participates_in_quorum() {
+            node.pipeline_state.election_rejections =
+                node.pipeline_state.election_rejections.saturating_add(1);
             return Ok(VoteResponse {
                 term: node.current_term,
                 vote_granted: false,
@@ -5983,6 +6054,8 @@ impl RaftCluster {
             });
         }
         if request.term < node.current_term {
+            node.pipeline_state.pre_vote_rejections =
+                node.pipeline_state.pre_vote_rejections.saturating_add(1);
             return Ok(VoteResponse {
                 term: node.current_term,
                 vote_granted: false,
@@ -6000,6 +6073,8 @@ impl RaftCluster {
             (request.last_log_term, request.last_log_index) >= (local_last_term, local_last_index);
         if !log_up_to_date {
             let term = node.current_term;
+            node.pipeline_state.pre_vote_rejections =
+                node.pipeline_state.pre_vote_rejections.saturating_add(1);
             inner.persist_configured_wal()?;
             return Ok(VoteResponse {
                 term,
@@ -6009,6 +6084,8 @@ impl RaftCluster {
         }
         if node.voted_for.is_some() && node.voted_for != Some(request.candidate_id) {
             let term = node.current_term;
+            node.pipeline_state.election_rejections =
+                node.pipeline_state.election_rejections.saturating_add(1);
             inner.persist_configured_wal()?;
             return Ok(VoteResponse {
                 term,
@@ -6040,18 +6117,26 @@ impl RaftCluster {
         target_id: RaftNodeId,
         external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     ) -> Result<InstallSnapshotRequest, RaftError> {
-        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let mut snapshot = self.create_snapshot()?;
+        snapshot.external_snapshot_ref = external_snapshot_ref.clone();
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let leader = inner
             .nodes
             .get(&inner.leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
-        let mut snapshot = self.create_snapshot()?;
-        snapshot.external_snapshot_ref = external_snapshot_ref.clone();
+        let shard_id = inner.shard_id;
+        let term = leader.current_term;
+        let leader_id = inner.leader_id;
+        if let Some(target) = inner.nodes.get_mut(&target_id) {
+            target.pipeline_state.snapshot_sending = true;
+            target.pipeline_state.snapshot_installing = true;
+            target.pipeline_state.snapshot_installed_index = snapshot.last_included_index;
+        }
         Ok(InstallSnapshotRequest {
             rpc: None,
-            shard_id: inner.shard_id,
-            term: leader.current_term,
-            leader_id: inner.leader_id,
+            shard_id,
+            term,
+            leader_id,
             target_id,
             external_snapshot_ref,
             snapshot,
@@ -6124,8 +6209,18 @@ impl RaftCluster {
             node.current_term = request.term;
             node.role = RaftRole::Follower;
             node.voted_for = None;
+            node.pipeline_state.snapshot_installing = true;
+            node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
         }
         let result = self.install_snapshot(request.target_id, request.snapshot.clone());
+        {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            if let Some(node) = inner.nodes.get_mut(&request.target_id) {
+                node.pipeline_state.snapshot_installing = false;
+                node.pipeline_state.snapshot_sending = false;
+                node.pipeline_state.snapshot_installed_index = request.snapshot.last_included_index;
+            }
+        }
         let term = self
             .hard_state(request.target_id)
             .map(|state| state.current_term)
@@ -6235,6 +6330,8 @@ impl RaftCluster {
         node.current_term = request.term;
         node.role = RaftRole::Follower;
         node.voted_for = None;
+        node.pipeline_state.snapshot_installing = true;
+        node.pipeline_state.snapshot_installed_index = request.last_included_index;
         let key = (request.target_id, request.snapshot_id.clone());
         let pending = inner
             .pending_snapshots
@@ -6296,6 +6393,14 @@ impl RaftCluster {
                 entries,
             },
         )?;
+        {
+            let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+            if let Some(node) = inner.nodes.get_mut(&request.target_id) {
+                node.pipeline_state.snapshot_installing = false;
+                node.pipeline_state.snapshot_sending = false;
+                node.pipeline_state.snapshot_installed_index = request.last_included_index;
+            }
+        }
         let term = self
             .hard_state(request.target_id)
             .map(|state| state.current_term)
@@ -7429,6 +7534,7 @@ impl RaftClusterInner {
                         installed_snapshot: node.installed_snapshot.clone(),
                         apply_snapshot_fence: raft_apply_snapshot_fence(node),
                         storage_apply_fence: raft_storage_apply_fence(self.shard_id, node),
+                        pipeline_state: node.pipeline_state.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -7532,51 +7638,41 @@ impl RaftClusterInner {
             .nodes
             .values()
             .map(|node| {
-                let inflight_entries = status.commit_index.saturating_sub(node.commit_index);
-                let inflight_bytes = leader_log
-                    .iter()
-                    .filter(|entry| entry.index > node.commit_index)
-                    .map(|entry| command_size_bytes(&entry.command))
-                    .sum();
-                let snapshot_installed_index = node
-                    .installed_snapshot
-                    .as_ref()
-                    .map(|snapshot| snapshot.last_included_index)
-                    .unwrap_or_default();
+                let mut pipeline = node.pipeline_state.clone();
+                pipeline.snapshot_installing = pipeline.snapshot_installing
+                    || self
+                        .pending_snapshots
+                        .keys()
+                        .any(|(target_id, _)| *target_id == node.id);
+                if pipeline.next_index == 0 {
+                    pipeline.next_index = node_next_log_index(node);
+                }
+                if pipeline.inflight_entries == 0 && node.commit_index < status.commit_index {
+                    pipeline.inflight_entries =
+                        status.commit_index.saturating_sub(node.commit_index);
+                    pipeline.inflight_bytes = leader_log
+                        .iter()
+                        .filter(|entry| entry.index > node.commit_index)
+                        .map(|entry| command_size_bytes(&entry.command))
+                        .sum();
+                    pipeline.append_queue_depth = pipeline.inflight_entries;
+                }
                 ByteRaftPeerPipelineState {
                     peer_id: node.id,
                     role: node.role,
                     replica_role: node.replica_role,
-                    match_index: node.commit_index,
-                    next_index: node_next_log_index(node),
-                    inflight_entries,
-                    inflight_bytes,
-                    append_queue_depth: inflight_entries,
-                    reorder_queue_depth: if self.config.enable_reorder_queue {
-                        node.commit_index.saturating_sub(node.applied_index)
-                    } else {
-                        0
-                    },
-                    snapshot_sending: snapshot_installed_index > 0 && node.id != self.leader_id,
-                    snapshot_installing: self
-                        .pending_snapshots
-                        .keys()
-                        .any(|(target_id, _)| *target_id == node.id),
-                    snapshot_installed_index,
-                    transfer_leader_target: node.id == self.leader_id
-                        && node.role == RaftRole::Leader,
-                    pre_vote_rejections: if self.config.enable_pre_vote && !node.alive {
-                        1
-                    } else {
-                        0
-                    },
-                    election_rejections: if self.config.prohibits_election
-                        && node.id != self.leader_id
-                    {
-                        1
-                    } else {
-                        0
-                    },
+                    match_index: pipeline.match_index,
+                    next_index: pipeline.next_index,
+                    inflight_entries: pipeline.inflight_entries,
+                    inflight_bytes: pipeline.inflight_bytes,
+                    append_queue_depth: pipeline.append_queue_depth,
+                    reorder_queue_depth: pipeline.reorder_queue_depth,
+                    snapshot_sending: pipeline.snapshot_sending,
+                    snapshot_installing: pipeline.snapshot_installing,
+                    snapshot_installed_index: pipeline.snapshot_installed_index,
+                    transfer_leader_target: pipeline.transfer_leader_target,
+                    pre_vote_rejections: pipeline.pre_vote_rejections,
+                    election_rejections: pipeline.election_rejections,
                 }
             })
             .collect::<Vec<_>>();
@@ -7973,7 +8069,70 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
         applied_index: 0,
         applied: BTreeSet::new(),
         engine,
+        pipeline_state: RaftPeerPipelineRuntimeState {
+            next_index: 1,
+            ..RaftPeerPipelineRuntimeState::default()
+        },
     }
+}
+
+fn refresh_all_pipeline_states(
+    nodes: &mut BTreeMap<RaftNodeId, RaftNode>,
+    leader_id: RaftNodeId,
+    config: &RaftConfig,
+) {
+    let Some(leader) = nodes.get(&leader_id) else {
+        return;
+    };
+    let leader_log = leader.log.clone();
+    let leader_commit_index = leader.commit_index;
+    for node in nodes.values_mut() {
+        refresh_node_pipeline_state(node, leader_id, leader_commit_index, &leader_log, config);
+    }
+}
+
+fn refresh_node_pipeline_state(
+    node: &mut RaftNode,
+    leader_id: RaftNodeId,
+    leader_commit_index: u64,
+    leader_log: &[RaftLogEntry],
+    config: &RaftConfig,
+) {
+    let inflight_entries = leader_commit_index.saturating_sub(node.commit_index);
+    let inflight_bytes = leader_log
+        .iter()
+        .filter(|entry| entry.index > node.commit_index)
+        .map(|entry| command_size_bytes(&entry.command))
+        .sum();
+    let snapshot_installed_index = node
+        .installed_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.last_included_index)
+        .unwrap_or_default();
+    node.pipeline_state.match_index = node.commit_index;
+    node.pipeline_state.next_index = node_next_log_index(node);
+    node.pipeline_state.inflight_entries = inflight_entries;
+    node.pipeline_state.inflight_bytes = inflight_bytes;
+    node.pipeline_state.append_queue_depth = inflight_entries;
+    node.pipeline_state.reorder_queue_depth = if config.enable_reorder_queue {
+        node.commit_index.saturating_sub(node.applied_index)
+    } else {
+        0
+    };
+    node.pipeline_state.snapshot_sending = snapshot_installed_index > 0 && node.id != leader_id;
+    node.pipeline_state.snapshot_installed_index = snapshot_installed_index;
+    node.pipeline_state.transfer_leader_target =
+        node.id == leader_id && node.role == RaftRole::Leader;
+    node.pipeline_state.pre_vote_rejections = if config.enable_pre_vote && !node.alive {
+        node.pipeline_state.pre_vote_rejections.max(1)
+    } else {
+        node.pipeline_state.pre_vote_rejections
+    };
+    node.pipeline_state.election_rejections = if config.prohibits_election && node.id != leader_id {
+        node.pipeline_state.election_rejections.max(1)
+    } else {
+        node.pipeline_state.election_rejections
+    };
 }
 
 fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {

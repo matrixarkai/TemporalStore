@@ -4719,7 +4719,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "suite": "cpp_data_raft_parity",
-          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
+          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with durable per-peer pipeline, reorder, snapshot, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_consensus.h",
