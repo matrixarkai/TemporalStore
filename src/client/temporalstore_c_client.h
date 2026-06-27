@@ -58,6 +58,12 @@ typedef struct temporalstore_options {
     int pin_primary;
 } temporalstore_options_t;
 
+typedef struct temporalstore_hash_entry {
+    const char* key;
+    const char* field;
+    const char* value;
+} temporalstore_hash_entry_t;
+
 typedef struct temporalstore_string_array {
     size_t count;
     char** values;
@@ -141,6 +147,12 @@ int temporalstore_sadd(temporalstore_client_t* client, const char* key, const ch
                        char** error_message);
 int temporalstore_smembers(temporalstore_client_t* client, const char* key,
                            temporalstore_string_array_t* members, char** error_message);
+
+int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
+                                                 const temporalstore_hash_entry_t* entries,
+                                                 size_t entry_count, const char* count_key,
+                                                 const char* count_value,
+                                                 char** error_message);
 
 int temporalstore_add_feature_points(temporalstore_client_t* client, const char* key,
                                      const temporalstore_feature_point_t* points, size_t count,
