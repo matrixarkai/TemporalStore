@@ -1187,14 +1187,33 @@ fn sparse_query_score(query_terms: &HashSet<String>, text: &str) -> f64 {
     (hits / query_terms.len() as f64).clamp(0.0, 1.0)
 }
 
-fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
+fn context_class_name(record: &Value) -> String {
     let record_type = record
         .get("record_type")
         .and_then(Value::as_str)
         .unwrap_or("");
+    if record_type == "context_event" {
+        let classification = record.get("classification").and_then(Value::as_str).unwrap_or("");
+        let event_type = record.get("event_type").and_then(Value::as_str).unwrap_or("");
+        if classification == "resource_fact" || event_type.starts_with("resource_") {
+            return "resource_fact".to_string();
+        }
+        return "event".to_string();
+    }
+    match record_type {
+        "context_entity" => "entity".to_string(),
+        "context_segment" => "segment".to_string(),
+        "context_summary" => "summary".to_string(),
+        "context_compression_event" => "compression".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
+    let ref_type = context_class_name(record);
     let text = candidate_text(record);
     json!({
-        "ref_type": record_type,
+        "ref_type": ref_type,
         "ref_hash": record_ref_hash(record).unwrap_or_else(|| record.get("record_id").and_then(Value::as_str).unwrap_or("").to_string()),
         "node_hash": record_node_hash(record),
         "node_path": record.get("node_path").cloned().unwrap_or_else(|| json!([])),
@@ -1267,6 +1286,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             "context_summary".to_string(),
             "resource_chunk".to_string(),
             "skill_section".to_string(),
+            "context_index".to_string(),
         ]);
     }
     let scan = scan_matrixark_candidates(client, &scan_command)?;
@@ -1317,6 +1337,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             .unwrap_or(std::cmp::Ordering::Equal)
     });
     let mut selected = Vec::new();
+    let mut selected_counts: HashMap<String, u64> = HashMap::new();
+    let mut selected_nodes: HashSet<u64> = HashSet::new();
     let mut dropped_over_budget = 0_u64;
     let mut used_tokens = 0_u64;
     for (score, record) in scored {
@@ -1330,6 +1352,10 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             continue;
         }
         used_tokens += tokens;
+        *selected_counts.entry(context_class_name(&record)).or_default() += 1;
+        if let Some(node_hash) = record_node_hash(&record) {
+            selected_nodes.insert(node_hash);
+        }
         selected.push(pack_ref_from_record(
             &record,
             score,
@@ -1337,10 +1363,18 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         ));
     }
     let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
+    let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
+    if let Some(stats) = scan_stats.as_object_mut() {
+        stats.insert("native_pack_assembly".to_string(), json!(true));
+        stats.insert("pack_assembly_location".to_string(), json!("rust_proxy_native"));
+        stats.insert("next_native_gap".to_string(), json!(""));
+    }
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
         "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "selected_ref_counts": selected_counts,
+        "remote_context_refs": selected,
         "selected_refs": selected,
         "dropped_refs": {
             "over_budget": dropped_over_budget,
@@ -1365,9 +1399,22 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "python_role": "dispatch_request_receive_context_pack",
                 "backend_role": "scan_filter_score_pack"
             },
-            "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({})),
-            "tree_traversal": {"native_backend": true, "fallback_to_flat": false},
-            "secondary_index_filter": {"native_backend": true}
+            "scan_stats": scan_stats,
+            "tree_traversal": {
+                "enabled": true,
+                "native_backend": true,
+                "fallback_to_flat": false,
+                "selected_node_count": selected_nodes.len() as u64,
+                "selected_leaf_count": selected_nodes.len() as u64,
+                "summary_embeddings": ["node_l0", "node_l1"]
+            },
+            "secondary_index_filter": {
+                "enabled": true,
+                "native_backend": true,
+                "applied_before_embedding_scoring": true,
+                "matched_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_matched_candidate_count")).cloned().unwrap_or_else(|| json!(0)),
+                "dropped_candidate_count": scan.get("scan_stats").and_then(|v| v.get("secondary_index_dropped_candidate_count")).cloned().unwrap_or_else(|| json!(0))
+            }
         },
         "quality_warnings": []
     });
@@ -1377,7 +1424,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         "raw_records_returned": false,
         "python_hot_path_records": 0,
         "context_pack": pack,
-        "scan_stats": scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}))
+        "scan_stats": scan_stats
     }))
 }
 
