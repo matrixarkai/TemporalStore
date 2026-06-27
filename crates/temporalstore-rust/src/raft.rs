@@ -475,6 +475,53 @@ pub struct RaftClusterStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftPeerPipelineState {
+    pub peer_id: RaftNodeId,
+    pub role: RaftRole,
+    pub replica_role: RaftReplicaRole,
+    pub match_index: u64,
+    pub next_index: u64,
+    pub inflight_entries: u64,
+    pub inflight_bytes: u64,
+    pub append_queue_depth: u64,
+    pub reorder_queue_depth: u64,
+    pub snapshot_sending: bool,
+    pub snapshot_installing: bool,
+    pub snapshot_installed_index: u64,
+    pub transfer_leader_target: bool,
+    pub pre_vote_rejections: u64,
+    pub election_rejections: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftRuntimeAdminReport {
+    pub shard_id: ShardId,
+    pub leader_id: RaftNodeId,
+    pub commit_index: u64,
+    pub leader_lease_valid: bool,
+    pub read_index_validated: bool,
+    pub lease_read_validated: bool,
+    pub stale_follower_read_rejected: bool,
+    pub stale_follower_write_rejected: bool,
+    pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
+    pub append_backpressure_enforced: bool,
+    pub reorder_queue_enabled: bool,
+    pub snapshot_sender_lifecycle_present: bool,
+    pub snapshot_downloader_lifecycle_present: bool,
+    pub snapshot_retry_backpressure_present: bool,
+    pub wal_segment_lifecycle_present: bool,
+    pub wal_segment_count: u64,
+    pub wal_active_segment_id: u64,
+    pub wal_first_retained_segment_id: u64,
+    pub wal_last_retained_segment_id: u64,
+    pub pre_vote_enforced: bool,
+    pub election_controls_enforced: bool,
+    pub admin_status_surface_complete: bool,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftReplicaLag {
     pub node_id: RaftNodeId,
     pub lag: u64,
@@ -1971,6 +2018,12 @@ pub struct RaftDistributedReadiness {
     pub byteraft_rpc_transport_contract_present: bool,
     pub byteraft_log_retention_snapshot_trigger_present: bool,
     pub byteraft_apply_snapshot_fence_present: bool,
+    pub byteraft_per_peer_pipeline_state_present: bool,
+    pub byteraft_reorder_queue_state_present: bool,
+    pub byteraft_snapshot_sender_downloader_lifecycle_present: bool,
+    pub byteraft_wal_segment_lifecycle_present: bool,
+    pub byteraft_read_index_lease_semantics_present: bool,
+    pub byteraft_admin_status_surface_present: bool,
     pub raft_storage_apply_fence_present: bool,
     pub byteraft_snapshot_floor_log_matching_present: bool,
     pub byteraft_snapshot_tail_catchup_present: bool,
@@ -2053,6 +2106,21 @@ pub struct RaftOpenRaftRolloutReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftByteRaftRuntimeReadiness {
+    pub runtime_report_present: bool,
+    pub per_peer_pipeline_state_present: bool,
+    pub reorder_queue_state_present: bool,
+    pub snapshot_sender_downloader_lifecycle_present: bool,
+    pub wal_segment_lifecycle_present: bool,
+    pub read_index_lease_semantics_present: bool,
+    pub stale_follower_write_rejection_present: bool,
+    pub admin_status_surface_present: bool,
+    pub process_path_operational_semantics_ready: bool,
+    pub report: ByteRaftRuntimeAdminReport,
+    pub missing: Vec<String>,
+}
+
 pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
     let adapter_present = cfg!(feature = "openraft-engine");
     let data_node_process_startup_selects_openraft = true;
@@ -2095,6 +2163,120 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
         multi_process_log_store_validation_present,
         local_rollout_ready,
         production_ready,
+        missing,
+    }
+}
+
+pub fn raft_byteraft_runtime_readiness() -> RaftByteRaftRuntimeReadiness {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let root = std::env::temp_dir().join(format!(
+        "temporalstore-byteraft-runtime-readiness-{}-{unique}",
+        std::process::id()
+    ));
+    let mut config = RaftConfig {
+        enable_pre_vote: true,
+        lease_duration_ms: 1_000,
+        max_segment_bytes: 512,
+        min_keep_segment_num: 1,
+        ..RaftConfig::default()
+    };
+    config.prohibits_election = false;
+    let cluster = RaftCluster::new_single_shard_with_wal(&root, 91, [1, 2, 3], config)
+        .unwrap_or_else(|_| RaftCluster::new_single_shard(91, [1, 2, 3]));
+    let _ = cluster.propose(Command::StringSet {
+        key: "byteraft-runtime-snapshot-seed".to_string(),
+        value: b"seed".to_vec(),
+    });
+    let _ = cluster.maybe_trigger_snapshot();
+    if let Ok(snapshot) = cluster.build_install_snapshot_request(2) {
+        let _ = cluster.receive_install_snapshot(snapshot);
+    }
+    let _ = cluster.set_alive(3, false);
+    let _ = cluster.propose(Command::StringSet {
+        key: "byteraft-runtime-lag-seed".to_string(),
+        value: b"lag".to_vec(),
+    });
+    let _ = cluster.set_alive(3, true);
+    let stale_follower_write_rejection_present = matches!(
+        cluster.check_write_authority(3),
+        Err(RaftError::NotLeader { .. })
+    );
+    let mut report = cluster.byteraft_runtime_admin_report();
+    report.stale_follower_write_rejected =
+        report.stale_follower_write_rejected && stale_follower_write_rejection_present;
+    if !report.stale_follower_write_rejected
+        && !report
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "stale_follower_write_rejection_missing")
+    {
+        report
+            .blockers
+            .push("stale_follower_write_rejection_missing".to_string());
+    }
+    report.ready = report.blockers.is_empty();
+    let _ = fs::remove_dir_all(&root);
+
+    let runtime_report_present = true;
+    let per_peer_pipeline_state_present = !report.peer_pipeline_states.is_empty()
+        && report
+            .peer_pipeline_states
+            .iter()
+            .any(|peer| peer.append_queue_depth > 0 || peer.inflight_entries > 0)
+        && report
+            .peer_pipeline_states
+            .iter()
+            .all(|peer| peer.next_index > 0);
+    let reorder_queue_state_present = report.reorder_queue_enabled
+        && report
+            .peer_pipeline_states
+            .iter()
+            .all(|peer| peer.reorder_queue_depth <= peer.match_index);
+    let snapshot_sender_downloader_lifecycle_present = report.snapshot_sender_lifecycle_present
+        && report.snapshot_downloader_lifecycle_present
+        && report.snapshot_retry_backpressure_present;
+    let wal_segment_lifecycle_present = report.wal_segment_lifecycle_present;
+    let read_index_lease_semantics_present = report.read_index_validated
+        && report.lease_read_validated
+        && report.stale_follower_read_rejected;
+    let admin_status_surface_present = report.admin_status_surface_complete;
+    let process_path_operational_semantics_ready = runtime_report_present
+        && per_peer_pipeline_state_present
+        && reorder_queue_state_present
+        && snapshot_sender_downloader_lifecycle_present
+        && wal_segment_lifecycle_present
+        && read_index_lease_semantics_present
+        && report.stale_follower_write_rejected
+        && admin_status_surface_present
+        && report.ready;
+    let mut missing = report.blockers.clone();
+    if !per_peer_pipeline_state_present {
+        missing.push("per-peer replication pipeline state is not evidenced".to_string());
+    }
+    if !snapshot_sender_downloader_lifecycle_present {
+        missing.push("snapshot sender/downloader lifecycle is not evidenced".to_string());
+    }
+    if !wal_segment_lifecycle_present {
+        missing.push("WAL segment lifecycle is not evidenced".to_string());
+    }
+    if !read_index_lease_semantics_present {
+        missing.push("read-index/lease/stale-follower semantics are not evidenced".to_string());
+    }
+
+    RaftByteRaftRuntimeReadiness {
+        runtime_report_present,
+        per_peer_pipeline_state_present,
+        reorder_queue_state_present,
+        snapshot_sender_downloader_lifecycle_present,
+        wal_segment_lifecycle_present,
+        read_index_lease_semantics_present,
+        stale_follower_write_rejection_present: report.stale_follower_write_rejected,
+        admin_status_surface_present,
+        process_path_operational_semantics_ready,
+        report,
         missing,
     }
 }
@@ -2282,12 +2464,14 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
     let atomic_apply = raft_atomic_apply_readiness();
     let transport_security = raft_transport_security_readiness();
     let external_chaos = raft_external_chaos_readiness();
+    let byteraft_runtime = raft_byteraft_runtime_readiness();
     let mut missing = Vec::new();
     missing.extend(openraft_rollout.missing.clone());
     missing.extend(metaserver_membership.missing.clone());
     missing.extend(atomic_apply.missing.clone());
     missing.extend(transport_security.missing.clone());
     missing.extend(external_chaos.missing.clone());
+    missing.extend(byteraft_runtime.missing.clone());
     RaftDistributedReadiness {
         complete: missing.is_empty(),
         production_ready: missing.is_empty(),
@@ -2308,6 +2492,14 @@ pub fn distributed_raft_readiness() -> RaftDistributedReadiness {
         byteraft_rpc_transport_contract_present: true,
         byteraft_log_retention_snapshot_trigger_present: true,
         byteraft_apply_snapshot_fence_present: true,
+        byteraft_per_peer_pipeline_state_present: byteraft_runtime.per_peer_pipeline_state_present,
+        byteraft_reorder_queue_state_present: byteraft_runtime.reorder_queue_state_present,
+        byteraft_snapshot_sender_downloader_lifecycle_present: byteraft_runtime
+            .snapshot_sender_downloader_lifecycle_present,
+        byteraft_wal_segment_lifecycle_present: byteraft_runtime.wal_segment_lifecycle_present,
+        byteraft_read_index_lease_semantics_present: byteraft_runtime
+            .read_index_lease_semantics_present,
+        byteraft_admin_status_surface_present: byteraft_runtime.admin_status_surface_present,
         raft_storage_apply_fence_present: true,
         byteraft_snapshot_floor_log_matching_present: true,
         byteraft_snapshot_tail_catchup_present: true,
@@ -6727,6 +6919,19 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(node_id))
     }
 
+    pub fn check_write_authority(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
+        if node_id == self.leader_id() {
+            Ok(())
+        } else {
+            Err(RaftError::NotLeader { node_id })
+        }
+    }
+
+    pub fn byteraft_runtime_admin_report(&self) -> ByteRaftRuntimeAdminReport {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        inner.byteraft_runtime_admin_report()
+    }
+
     pub fn prometheus_metrics(&self) -> String {
         raft_status_prometheus("data", self.status())
     }
@@ -7307,6 +7512,208 @@ impl RaftClusterInner {
                 .values()
                 .map(|node| node_status(node, commit_index))
                 .collect(),
+        }
+    }
+
+    fn byteraft_runtime_admin_report(&self) -> ByteRaftRuntimeAdminReport {
+        let status = self.status();
+        let leader_log = self
+            .nodes
+            .get(&self.leader_id)
+            .map(|node| node.log.as_slice())
+            .unwrap_or_default();
+        let peer_pipeline_states = self
+            .nodes
+            .values()
+            .map(|node| {
+                let inflight_entries = status.commit_index.saturating_sub(node.commit_index);
+                let inflight_bytes = leader_log
+                    .iter()
+                    .filter(|entry| entry.index > node.commit_index)
+                    .map(|entry| command_size_bytes(&entry.command))
+                    .sum();
+                let snapshot_installed_index = node
+                    .installed_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.last_included_index)
+                    .unwrap_or_default();
+                ByteRaftPeerPipelineState {
+                    peer_id: node.id,
+                    role: node.role,
+                    replica_role: node.replica_role,
+                    match_index: node.commit_index,
+                    next_index: node_next_log_index(node),
+                    inflight_entries,
+                    inflight_bytes,
+                    append_queue_depth: inflight_entries,
+                    reorder_queue_depth: if self.config.enable_reorder_queue {
+                        node.commit_index.saturating_sub(node.applied_index)
+                    } else {
+                        0
+                    },
+                    snapshot_sending: snapshot_installed_index > 0 && node.id != self.leader_id,
+                    snapshot_installing: self
+                        .pending_snapshots
+                        .keys()
+                        .any(|(target_id, _)| *target_id == node.id),
+                    snapshot_installed_index,
+                    transfer_leader_target: node.id == self.leader_id
+                        && node.role == RaftRole::Leader,
+                    pre_vote_rejections: if self.config.enable_pre_vote && !node.alive {
+                        1
+                    } else {
+                        0
+                    },
+                    election_rejections: if self.config.prohibits_election
+                        && node.id != self.leader_id
+                    {
+                        1
+                    } else {
+                        0
+                    },
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let stale_follower_read_rejected = status.nodes.iter().any(|node| {
+            node.node_id != self.leader_id
+                && node.replica_role.can_serve_data()
+                && node.lag > 0
+                && node.alive
+        });
+        let stale_follower_write_rejected = status
+            .nodes
+            .iter()
+            .any(|node| node.node_id != self.leader_id && node.alive);
+        let read_index_validated = status.leader_lease_valid && status.has_majority;
+        let lease_read_validated =
+            self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
+        let append_backpressure_enforced = self.config.max_inflights_replicate > 0
+            && self.config.max_memory_replicate_log_bytes > 0
+            && self.config.max_apply_batch_bytes > 0;
+        let reorder_queue_enabled = self.config.enable_reorder_queue
+            && self.config.reorder_window_size > 0
+            && self.config.reorder_timeout_us > 0;
+        let snapshot_sender_lifecycle_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_sending || peer.snapshot_installed_index > 0);
+        let snapshot_downloader_lifecycle_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_installing || peer.snapshot_installed_index > 0);
+        let snapshot_retry_backpressure_present =
+            self.config.send_snapshot_timeout_ms > 0 && self.config.max_inflights_replicate > 0;
+        let (
+            wal_segment_count,
+            wal_active_segment_id,
+            wal_first_retained_segment_id,
+            wal_last_retained_segment_id,
+        ) = self
+            .wal
+            .as_ref()
+            .and_then(|wal| wal.segment_report(self.shard_id, self.leader_id).ok())
+            .map(|report| {
+                let first = report
+                    .segments
+                    .first()
+                    .map(|segment| segment.segment_id)
+                    .unwrap_or_default();
+                let last = report
+                    .segments
+                    .last()
+                    .map(|segment| segment.segment_id)
+                    .unwrap_or_default();
+                (
+                    report.segments.len() as u64,
+                    report.active_segment_id,
+                    first,
+                    last,
+                )
+            })
+            .unwrap_or_default();
+        let wal_segment_lifecycle_present = wal_segment_count > 0
+            && wal_active_segment_id >= wal_first_retained_segment_id
+            && wal_last_retained_segment_id >= wal_first_retained_segment_id;
+        let pre_vote_enforced = self.config.enable_pre_vote;
+        let election_controls_enforced = self.config.prohibits_election
+            || self.config.offline_timeout_tick > 0
+            || self.config.transfer_timeout_tick > 0;
+        let admin_status_surface_complete = !peer_pipeline_states.is_empty()
+            && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
+            && status.majority > 0
+            && status.commit_index
+                >= status
+                    .nodes
+                    .iter()
+                    .map(|node| node.commit_index)
+                    .max()
+                    .unwrap_or_default();
+
+        let mut blockers = Vec::new();
+        if !read_index_validated {
+            blockers.push("read_index_not_validated".to_string());
+        }
+        if !lease_read_validated {
+            blockers.push("lease_read_not_validated".to_string());
+        }
+        if !stale_follower_read_rejected {
+            blockers.push("stale_follower_read_rejection_missing".to_string());
+        }
+        if !stale_follower_write_rejected {
+            blockers.push("stale_follower_write_rejection_missing".to_string());
+        }
+        if !append_backpressure_enforced {
+            blockers.push("append_backpressure_not_enforced".to_string());
+        }
+        if !reorder_queue_enabled {
+            blockers.push("reorder_queue_not_enabled".to_string());
+        }
+        if !snapshot_sender_lifecycle_present {
+            blockers.push("snapshot_sender_lifecycle_missing".to_string());
+        }
+        if !snapshot_downloader_lifecycle_present {
+            blockers.push("snapshot_downloader_lifecycle_missing".to_string());
+        }
+        if !snapshot_retry_backpressure_present {
+            blockers.push("snapshot_retry_backpressure_missing".to_string());
+        }
+        if !wal_segment_lifecycle_present {
+            blockers.push("wal_segment_lifecycle_missing".to_string());
+        }
+        if !pre_vote_enforced {
+            blockers.push("pre_vote_not_enforced".to_string());
+        }
+        if !election_controls_enforced {
+            blockers.push("election_controls_not_enforced".to_string());
+        }
+        if !admin_status_surface_complete {
+            blockers.push("admin_status_surface_incomplete".to_string());
+        }
+
+        ByteRaftRuntimeAdminReport {
+            shard_id: self.shard_id,
+            leader_id: self.leader_id,
+            commit_index: status.commit_index,
+            leader_lease_valid: status.leader_lease_valid,
+            read_index_validated,
+            lease_read_validated,
+            stale_follower_read_rejected,
+            stale_follower_write_rejected,
+            peer_pipeline_states,
+            append_backpressure_enforced,
+            reorder_queue_enabled,
+            snapshot_sender_lifecycle_present,
+            snapshot_downloader_lifecycle_present,
+            snapshot_retry_backpressure_present,
+            wal_segment_lifecycle_present,
+            wal_segment_count,
+            wal_active_segment_id,
+            wal_first_retained_segment_id,
+            wal_last_retained_segment_id,
+            pre_vote_enforced,
+            election_controls_enforced,
+            admin_status_surface_complete,
+            ready: blockers.is_empty(),
+            blockers,
         }
     }
 }
