@@ -100,6 +100,12 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub native_deployment_contract_ready: bool,
     #[serde(default)]
     pub native_deployment_contract_evidence: Vec<String>,
+    pub zero_copy_pinned_handle_ready: bool,
+    #[serde(default)]
+    pub zero_copy_pinned_handle_evidence: Vec<String>,
+    pub dram_pmem_ssd_placement_ready: bool,
+    #[serde(default)]
+    pub dram_pmem_ssd_placement_evidence: Vec<String>,
     pub async_writeback_backpressure_ready: bool,
     #[serde(default)]
     pub async_writeback_backpressure_evidence: Vec<String>,
@@ -745,9 +751,21 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let native_deployment_contract_evidence = vec![
         "Rust-native cache deployment contract covers weighted memory/disk replacement policy"
             .to_string(),
-        "Rust-native cache deployment contract covers pinned handle accounting and eviction guards"
+        "Rust-native cache deployment contract covers local memory read-through and disk-cache admission diagnostics"
             .to_string(),
-        "Rust-native cache deployment contract treats PMEM as an SSD-class persistent tier"
+    ];
+    let zero_copy_pinned_handle_ready = false;
+    let zero_copy_pinned_handle_evidence = vec![
+        "Rust tracks pinned cache entries and eviction-skip accounting for local diagnostics"
+            .to_string(),
+        "remaining gap: mtcache-class zero-copy pinned handle lifetime, reference safety, and eviction integration"
+            .to_string(),
+    ];
+    let dram_pmem_ssd_placement_ready = false;
+    let dram_pmem_ssd_placement_evidence = vec![
+        "Rust models memory and disk cache tiers for the native local/shared-store deployment"
+            .to_string(),
+        "remaining gap: mtcache-class DRAM/PMEM/SSD placement semantics, tier promotion, and persistent-media policy"
             .to_string(),
     ];
     let async_writeback_backpressure_ready = false;
@@ -774,9 +792,17 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && admission_tuning_ready
         && long_running_pressure_validation_ready
         && native_deployment_contract_ready
+        && zero_copy_pinned_handle_ready
+        && dram_pmem_ssd_placement_ready
         && async_writeback_backpressure_ready
         && latency_metrics_ready;
     let mut missing = Vec::new();
+    if !zero_copy_pinned_handle_ready {
+        missing.push("cache zero-copy/pinned handles".to_string());
+    }
+    if !dram_pmem_ssd_placement_ready {
+        missing.push("cache DRAM/PMEM/SSD placement semantics".to_string());
+    }
     if !async_writeback_backpressure_ready {
         missing.push("cache async writeback/backpressure".to_string());
     }
@@ -796,6 +822,10 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         long_running_pressure_validation_ready,
         native_deployment_contract_ready,
         native_deployment_contract_evidence,
+        zero_copy_pinned_handle_ready,
+        zero_copy_pinned_handle_evidence,
+        dram_pmem_ssd_placement_ready,
+        dram_pmem_ssd_placement_evidence,
         async_writeback_backpressure_ready,
         async_writeback_backpressure_evidence,
         latency_metrics_ready,
@@ -1260,7 +1290,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, and the Rust-native cache deployment contract; remaining cache blockers are async writeback/backpressure and mature latency metrics"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, and the Rust-native cache deployment contract; remaining mtcache-class blockers are zero-copy/pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and mature latency metrics"
                     .to_string(),
             ],
             missing: {
@@ -1500,11 +1530,17 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
         }
+        "storage_cache" if capability.contains("zero-copy") || capability.contains("pinned") => {
+            "storage_cache_mtcache.zero_copy_pinned_handle_ready"
+        }
+        "storage_cache" if capability.contains("DRAM/PMEM/SSD") => {
+            "storage_cache_mtcache.dram_pmem_ssd_placement_ready"
+        }
         "storage_cache" if capability.contains("async writeback") => {
-            "storage_cache_native.async_writeback_backpressure_ready"
+            "storage_cache_mtcache.async_writeback_backpressure_ready"
         }
         "storage_cache" if capability.contains("latency metrics") => {
-            "storage_cache_native.latency_metrics_ready"
+            "storage_cache_mtcache.latency_metrics_ready"
         }
         "client" => "client_migration_contract.compatibility_result",
         "proxy" => "proxy_migration_contract.compatibility_result",
@@ -1572,7 +1608,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish cache async writeback/backpressure and mature latency metrics"
+            "finish mtcache-class zero-copy/pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
@@ -1635,14 +1671,14 @@ mod tests {
         assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert_eq!(report.blocker_count, 2);
+        assert_eq!(report.blocker_count, 4);
         assert_eq!(report.failed_areas, vec!["storage_cache".to_string()]);
         let storage_blockers = report
             .failed_capabilities
             .iter()
             .filter(|blocker| blocker.area == "storage_cache")
             .collect::<Vec<_>>();
-        assert_eq!(storage_blockers.len(), 2);
+        assert_eq!(storage_blockers.len(), 4);
         let proxy = report
             .areas
             .iter()
@@ -1698,6 +1734,8 @@ mod tests {
         assert_eq!(
             storage_cache.missing,
             vec![
+                "cache zero-copy/pinned handles".to_string(),
+                "cache DRAM/PMEM/SSD placement semantics".to_string(),
                 "cache async writeback/backpressure".to_string(),
                 "cache mature latency metrics".to_string(),
             ]
@@ -1863,7 +1901,7 @@ mod tests {
     #[test]
     fn remaining_blockers_map_to_concrete_evidence_fields() {
         let readiness = production_readiness_report();
-        assert_eq!(readiness.failed_capabilities.len(), 2);
+        assert_eq!(readiness.failed_capabilities.len(), 4);
         for blocker in &readiness.failed_capabilities {
             assert!(
                 !blocker.evidence_field.is_empty(),
@@ -1881,15 +1919,23 @@ mod tests {
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
         assert!(!storage.ready);
-        assert_eq!(storage.failed_capabilities.len(), 2);
+        assert_eq!(storage.failed_capabilities.len(), 4);
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "cache zero-copy/pinned handles"
+                && blocker.evidence_field == "storage_cache_mtcache.zero_copy_pinned_handle_ready"
+        }));
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "cache DRAM/PMEM/SSD placement semantics"
+                && blocker.evidence_field == "storage_cache_mtcache.dram_pmem_ssd_placement_ready"
+        }));
         assert!(storage.failed_capabilities.iter().any(|blocker| {
             blocker.capability == "cache async writeback/backpressure"
                 && blocker.evidence_field
-                    == "storage_cache_native.async_writeback_backpressure_ready"
+                    == "storage_cache_mtcache.async_writeback_backpressure_ready"
         }));
         assert!(storage.failed_capabilities.iter().any(|blocker| {
             blocker.capability == "cache mature latency metrics"
-                && blocker.evidence_field == "storage_cache_native.latency_metrics_ready"
+                && blocker.evidence_field == "storage_cache_mtcache.latency_metrics_ready"
         }));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
@@ -2011,6 +2057,8 @@ mod tests {
         assert_eq!(
             report.missing,
             vec![
+                "cache zero-copy/pinned handles".to_string(),
+                "cache DRAM/PMEM/SSD placement semantics".to_string(),
                 "cache async writeback/backpressure".to_string(),
                 "cache mature latency metrics".to_string(),
             ]
@@ -2037,6 +2085,8 @@ mod tests {
         assert_eq!(
             storage_cache.missing,
             vec![
+                "cache zero-copy/pinned handles".to_string(),
+                "cache DRAM/PMEM/SSD placement semantics".to_string(),
                 "cache async writeback/backpressure".to_string(),
                 "cache mature latency metrics".to_string(),
             ]
@@ -2348,7 +2398,7 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "ready"),
                 ("metaserver", "ready"),
-                ("storage_cache", "warning"),
+                ("storage_cache", "critical"),
                 ("feature_modules", "ready"),
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
