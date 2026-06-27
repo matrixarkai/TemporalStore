@@ -73,6 +73,11 @@ STORAGE_OPTIONS_SCHEMA: Json = {
     "type": "object",
     "description": "Optional TemporalStore serving-mode request hint. Native deployments still decide the actual topology, but MatrixArk records this policy for routing, audit, replay, and benchmark parity.",
     "properties": {
+        "route": {
+            "type": "string",
+            "enum": ["shared_store_async", "shared_store_sync", "raft_async", "raft_sync"],
+            "description": "Compact write-route preset. Expands into storage_mode, replication_mode, oplog_mode, and raft_mode.",
+        },
         "storage_mode": {
             "type": "string",
             "enum": ["default", "local", "single_node", "multi_node", "shared_store", "raft"],
@@ -175,6 +180,7 @@ TOOLS: list[Json] = [
                 "temporalstore_oplog_mode": {"type": "string", "description": "Convenience alias for storage_options.oplog_mode."},
                 "temporalstore_replication_mode": {"type": "string", "description": "Convenience alias for storage_options.replication_mode."},
                 "temporalstore_raft_mode": {"type": "boolean", "description": "Convenience alias for storage_options.raft_mode."},
+                "temporalstore_route": {"type": "string", "description": "Convenience alias for storage_options.route, e.g. shared_store_async, shared_store_sync, raft_async, raft_sync."},
                 "agent_hook": AGENT_HOOK_SCHEMA,
                 "api_key": API_KEY_SCHEMA,
                 "idempotency_key": IDEMPOTENCY_KEY_SCHEMA,

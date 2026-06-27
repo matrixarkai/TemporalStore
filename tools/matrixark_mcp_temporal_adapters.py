@@ -406,6 +406,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         records = materialize_serving_record_batch(records)
         self._append_many_materialized(records)
 
+    def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
+        for record in bundle:
+            route = record.get("storage_route")
+            if isinstance(route, dict) and route:
+                return route
+        return {}
+
     def _append_many_materialized(self, records: list[Json]) -> None:
         if not records:
             return
@@ -427,7 +434,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                         f"{record.get('record_type', 'record')}:"
                         f"{stable_hash(json.dumps(record, sort_keys=True))}"
                     )
-                    entries.append({"key": self._record_hash_key, "field": record_id, "value": payload})
+                    route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+                    entries.append({"key": self._record_hash_key, "field": record_id, "value": payload, "storage_route": route})
                     self._index_cache.append(record_id)
                 self._hset_many_with_backoff(entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
@@ -443,7 +451,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 payload_value: Json
                 payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
-                entries.append({"key": record_key, "field": record_id, "value": payload})
+                entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
                 sequence += 1
             self._hset_many_with_backoff(entries)
             self._put_string_with_backoff(self._count_key, str(sequence))

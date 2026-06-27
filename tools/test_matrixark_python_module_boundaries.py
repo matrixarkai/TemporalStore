@@ -159,6 +159,25 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertEqual("raft", storage_options["storage_mode"])
         self.assertEqual("raft", storage_options["replication_mode"])
         self.assertTrue(storage_options["raft_mode"])
+        self.assertEqual("raft_async", storage_options["route"])
+        self.assertEqual("raft_async", event["storage_route"]["route"])
+        self.assertEqual("raft", event["storage_route"]["storage_mode"])
+        self.assertEqual("async", event["storage_route"]["oplog_mode"])
+
+        route_cases = [
+            ("shared_store_async", "shared_store", "shared_store", "async", False),
+            ("shared_store_sync", "shared_store", "shared_store", "sync", False),
+            ("raft_async", "raft", "raft", "async", True),
+            ("raft_sync", "raft", "raft", "sync", True),
+        ]
+        for route, storage_mode, replication_mode, oplog_mode, raft_mode in route_cases:
+            normalized = importlib.import_module("tools.matrixark_mcp_core").normalize_storage_options({"storage_options": {"route": route}})
+            self.assertEqual(route, normalized["route"])
+            self.assertEqual(storage_mode, normalized["storage_mode"])
+            self.assertEqual(replication_mode, normalized["replication_mode"])
+            self.assertEqual(oplog_mode, normalized["oplog_mode"])
+            self.assertEqual(raft_mode, normalized["raft_mode"])
+            self.assertEqual(route, normalized["route_key"])
 
         pack = server.call_tool(
             "matrixark_retrieve",

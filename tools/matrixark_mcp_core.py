@@ -539,6 +539,17 @@ def _record_debug_ref(record: Json) -> tuple[str, Any]:
     return record_type, record.get("ref_hash")
 
 
+def attach_storage_route(record: Json) -> Json:
+    route_source = record.get("storage_options") if isinstance(record.get("storage_options"), dict) else {}
+    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+    if not route_source and isinstance(envelope.get("storage_options"), dict):
+        route_source = envelope.get("storage_options", {})
+    if "storage_route" not in record or not isinstance(record.get("storage_route"), dict):
+        if route_source:
+            record = {**record, "storage_route": canonical_storage_route(route_source)}
+    return record
+
+
 def materialize_serving_records(record: Json) -> list[Json]:
     """Split bulky provider/debug fields from hot serving records.
 
@@ -546,6 +557,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
     rows keep provider payloads, raw extraction details, old entity patches, and
     full path context without forcing every hot read to load them.
     """
+    record = attach_storage_route(record)
     record_type = str(record.get("record_type") or "")
     if record_type not in HOT_SERVING_RECORD_TYPES:
         return [record]
@@ -2494,6 +2506,7 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
         "ingestion_time_ms": now_ms(),
         "storage_options": normalize_storage_options(args, metadata),
     }
+    envelope["storage_route"] = canonical_storage_route(envelope.get("storage_options", {}))
     for field in [
         "context_pack_id",
         "query_id_hash",
@@ -2515,6 +2528,44 @@ def normalize_envelope(args: Json, *, default_kind: str) -> Json:
     return envelope
 
 
+STORAGE_ROUTE_PRESETS: dict[str, Json] = {
+    "shared_store_async": {"storage_mode": "shared_store", "replication_mode": "shared_store", "oplog_mode": "async", "raft_mode": False},
+    "shared_store_sync": {"storage_mode": "shared_store", "replication_mode": "shared_store", "oplog_mode": "sync", "raft_mode": False},
+    "raft_async": {"storage_mode": "raft", "replication_mode": "raft", "oplog_mode": "async", "raft_mode": True},
+    "raft_sync": {"storage_mode": "raft", "replication_mode": "raft", "oplog_mode": "sync", "raft_mode": True},
+}
+
+
+def canonical_storage_route(storage_options: Json | None) -> Json:
+    options = storage_options if isinstance(storage_options, dict) else {}
+    storage_mode = str(options.get("storage_mode") or "default")
+    replication_mode = str(options.get("replication_mode") or "default")
+    oplog_mode = str(options.get("oplog_mode") or "default")
+    raft_mode = bool(options.get("raft_mode", False))
+    if storage_mode == "raft" or replication_mode == "raft" or raft_mode:
+        route = f"raft_{oplog_mode if oplog_mode in {'async', 'sync'} else 'async'}"
+        backend_family = "raft"
+    elif storage_mode == "shared_store" or replication_mode == "shared_store":
+        route = f"shared_store_{oplog_mode if oplog_mode in {'async', 'sync'} else 'async'}"
+        backend_family = "shared_store"
+    else:
+        route = f"{storage_mode}_{oplog_mode}" if storage_mode != "default" else "default"
+        backend_family = storage_mode
+    return {
+        "route": route,
+        "route_key": route,
+        "backend_family": backend_family,
+        "storage_mode": storage_mode,
+        "replication_mode": replication_mode,
+        "oplog_mode": oplog_mode,
+        "raft_mode": raft_mode,
+        "consistency": str(options.get("consistency") or "default"),
+        "sync_write": oplog_mode == "sync",
+        "async_write": oplog_mode == "async",
+        "native_backend_decides_route": True,
+    }
+
+
 def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     metadata = metadata if isinstance(metadata, dict) else optional_object(args, "metadata")
     raw_options = args.get("storage_options")
@@ -2528,6 +2579,7 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "temporalstore_replication_mode": "replication_mode",
         "temporalstore_raft_mode": "raft_mode",
         "temporalstore_consistency": "consistency",
+        "temporalstore_route": "route",
     }
     for source, target in aliases.items():
         if source in args:
@@ -2542,7 +2594,17 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
         "oplog_mode": {"default", "async", "sync"},
         "replication_mode": {"default", "none", "shared_store", "raft"},
         "consistency": {"default", "eventual", "read_your_writes", "linearizable"},
+        "route": set(STORAGE_ROUTE_PRESETS),
     }
+    route_value = options.get("route")
+    if route_value is not None:
+        if not isinstance(route_value, str):
+            raise MatrixArkError("storage_options.route must be a string")
+        route_key = route_value.strip().lower().replace("-", "_")
+        if route_key not in STORAGE_ROUTE_PRESETS:
+            raise MatrixArkError(f"storage_options.route must be one of {sorted(STORAGE_ROUTE_PRESETS)}")
+        options = {**STORAGE_ROUTE_PRESETS[route_key], **options, "route": route_key}
+
     normalized: Json = {}
     for key, value in options.items():
         if key == "raft_mode":
@@ -2562,6 +2624,8 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
     if normalized.get("raft_mode") is True:
         normalized.setdefault("replication_mode", "raft")
         normalized.setdefault("storage_mode", "raft")
+    route = canonical_storage_route(normalized)
+    normalized.update({key: value for key, value in route.items() if key in {"route", "route_key", "backend_family", "sync_write", "async_write", "native_backend_decides_route"}})
     normalized["request_level"] = True
     return normalized
 

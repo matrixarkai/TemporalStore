@@ -355,6 +355,8 @@ class MatrixArkLocalAdapter:
                 "buffer_key": list(key),
                 "event_id_hash": event_id_hash,
                 "node_hash": node_hash,
+                "storage_options": envelope.get("storage_options", {}),
+                "storage_route": envelope.get("storage_route", {}),
                 "node_path": node_path,
                 "scope": envelope["scope"],
                 "status": "pending",
@@ -531,6 +533,7 @@ class MatrixArkLocalAdapter:
                 "idle_elapsed_ms": idle_elapsed_ms,
                 "agent_hook": hook,
                 "storage_options": storage_options,
+                "storage_route": canonical_storage_route(storage_options),
                 "created_at_ms": now_ms(),
             }
         )
@@ -538,6 +541,8 @@ class MatrixArkLocalAdapter:
             **batch_result,
             "status": "committed",
             "commit_id_hash": commit_id_hash,
+            "storage_options": storage_options,
+            "storage_route": canonical_storage_route(storage_options),
             "pending_event_count": pending_event_count,
             "committed_event_count": len(source_event_ids),
             "source_event_ids": source_event_ids,
@@ -1335,6 +1340,7 @@ class MatrixArkLocalAdapter:
                     "idle_timeout_ms": idle_commit_timeout_ms,
                     "commit_reason": "idle_timeout",
                     "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                    "storage_options": envelope.get("storage_options", {}),
                 },
                 hook=hook,
             )
@@ -1409,6 +1415,8 @@ class MatrixArkLocalAdapter:
                 "async_pipeline_status": "pending",
                 "event_id_hash": event_id_hash,
                 "node_hash": node_hash,
+                "storage_options": envelope.get("storage_options", {}),
+                "storage_route": envelope.get("storage_route", {}),
                 "hook_captured": hook is not None,
                 "extraction_mode": "async_pending",
                 "summary_refresh": {
@@ -2408,6 +2416,7 @@ class MatrixArkLocalAdapter:
                     "segment_max_new_tokens": args.get("segment_max_new_tokens"),
                     "segment_provider_fallback": args.get("segment_provider_fallback"),
                     "skip_prior_context": bool(args.get("skip_prior_context", False)),
+                    "storage_options": envelope.get("storage_options", {}),
                 },
                 hook=hook,
             )
@@ -2415,6 +2424,8 @@ class MatrixArkLocalAdapter:
             "status": "accepted",
             "event_id_hash": event_id_hash,
             "node_hash": record["node_hash"],
+            "storage_options": envelope.get("storage_options", {}),
+            "storage_route": envelope.get("storage_route", {}),
             "hook_captured": hook is not None,
             "embedding_model": embedding_model_name(),
             "embedding_execution_mode": embedding_execution_mode_name(),
@@ -2775,6 +2786,8 @@ class MatrixArkLocalAdapter:
             "classification": extraction["classification"],
             "batch_id_hash": batch_id_hash,
             "node_hash": node_hash,
+            "storage_options": envelope.get("storage_options", {}),
+            "storage_route": envelope.get("storage_route", {}),
             "embedding_model": embedding_model_name(),
             "embedding_execution_mode": embedding_execution_mode_name(),
             "embedding_fallback_used": embedding_fallback_used(),
