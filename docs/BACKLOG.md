@@ -319,6 +319,12 @@ Latest AWS/test state:
     - rerank does not reduce context recall on LOCOMO/LongMemEval buckets;
     - p95/p99 rerank latency stays inside the interactive-agent target;
     - fallback path returns a valid ContextPack when rerank times out.
+  - Retrieval-quality ideas to borrow next:
+    - report time-weighted recall separately from temporal compression so we can tune recency without confusing it with old-event summarization;
+    - add benchmark ablations for recency off/on and short/long half-life;
+    - add query-type overrides where date/history/valid-as-of questions reduce recency bias while current-state questions increase it;
+    - add explicit evidence-density metrics after rerank: answer-bearing tokens, selected old-vs-recent refs, and selected entity/event/resource/skill mix;
+    - add keyword-graph recall for indirect-memory questions before adding heavy neural rerank.
 
 - Implement a full VikingMem-style Keyword Graph for auxiliary recall.
   - Current status: `docs/matrixark_weighted_multi_path_recall.md` implements an auxiliary keyword path over node path, `ContextIndex`, event type, entity text, and segment topics. This is useful, but it is not yet the full keyword graph described in VikingMem.
