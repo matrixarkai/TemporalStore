@@ -9,7 +9,6 @@ pub mod http;
 pub mod index_log;
 pub mod ingestion;
 pub mod meta;
-pub mod oplog;
 pub mod page_store;
 pub mod partition_id;
 pub mod proxy;
@@ -22,6 +21,11 @@ pub mod sdk;
 pub mod shared_store;
 pub mod types;
 pub mod wal;
+
+#[allow(deprecated)]
+pub mod oplog {
+    pub use crate::wal::{LocalOplogStore, OplogError, OplogGcReport, OplogRecord, OplogStats};
+}
 
 pub use cache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
 pub use client::{
@@ -123,7 +127,8 @@ pub use meta::{
     ServerShardServingState, ShardLoad, ShardLocation, SingleNodeMeta, StaleResourceReport,
     StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
-pub use oplog::{
+#[allow(deprecated)]
+pub use wal::{
     LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
     WalStats,
 };
@@ -208,4 +213,8 @@ pub use types::{
     ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex, IpsSnapshotReport,
     IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
     ReplicatedExecuteRequest, ShardId, Status,
+};
+pub use wal::{
+    LocalWriteAheadLogStore, WriteAheadLogError, WriteAheadLogGcReport, WriteAheadLogRecord,
+    WriteAheadLogStats,
 };

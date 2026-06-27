@@ -1627,9 +1627,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_api_reads_and_scans_oplog_stream",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::control_api_reads_and_scans_wal_stream",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "control_api_reads_and_scans_oplog_stream",
+      "test_name": "control_api_reads_and_scans_wal_stream",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -1807,9 +1807,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::prometheus_metrics_include_records_cache_page_and_oplog",
+      "test_id": "crates/temporalstore-rust/src/engine/tests.rs::prometheus_metrics_include_records_cache_page_and_wal",
       "file": "crates/temporalstore-rust/src/engine/tests.rs",
-      "test_name": "prometheus_metrics_include_records_cache_page_and_oplog",
+      "test_name": "prometheus_metrics_include_records_cache_page_and_wal",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -2374,18 +2374,18 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/oplog.rs::gc_before_sequence_rewrites_oplog_with_retained_tail",
+      "test_id": "crates/temporalstore-rust/src/wal.rs::gc_before_sequence_rewrites_wal_with_retained_tail",
       "file": "crates/temporalstore-rust/src/oplog.rs",
-      "test_name": "gc_before_sequence_rewrites_oplog_with_retained_tail",
+      "test_name": "gc_before_sequence_rewrites_wal_with_retained_tail",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/oplog.rs::corrupt_tail_is_truncated_and_append_resumes_after_last_valid_oplog_sequence",
+      "test_id": "crates/temporalstore-rust/src/wal.rs::corrupt_tail_is_truncated_and_append_resumes_after_last_valid_wal_sequence",
       "file": "crates/temporalstore-rust/src/oplog.rs",
-      "test_name": "corrupt_tail_is_truncated_and_append_resumes_after_last_valid_oplog_sequence",
+      "test_name": "corrupt_tail_is_truncated_and_append_resumes_after_last_valid_wal_sequence",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",
@@ -3958,9 +3958,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages",
+      "test_name": "local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -4291,9 +4291,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_installs_pages_index_logs_and_oplog_with_cursor_resume",
+      "test_id": "crates/temporalstore-rust/src/replica_replay.rs::replica_replay_installs_pages_index_logs_and_wal_with_cursor_resume",
       "file": "crates/temporalstore-rust/src/replica_replay.rs",
-      "test_name": "replica_replay_installs_pages_index_logs_and_oplog_with_cursor_resume",
+      "test_name": "replica_replay_installs_pages_index_logs_and_wal_with_cursor_resume",
       "family": "ops/scale",
       "classification": "move_to_shared",
       "next_migration_target": "ops/scale shared cases for readiness, fault/chaos, rolling restart, and SLO evidence",

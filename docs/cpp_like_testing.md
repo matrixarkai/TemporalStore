@@ -48,7 +48,7 @@ Representative C++ files inspected:
 
 - C++ page/index/oplog stream read and scan:
   `cargo test -p temporalstore-rust control_api_reads_page_and_index_streams`
-  `cargo test -p temporalstore-rust control_api_reads_and_scans_oplog_stream`
+  `cargo test -p temporalstore-rust control_api_reads_and_scans_wal_stream`
   `cargo test -p temporalstore-rust control_api_reads_and_scans_index_log_stream`
 
 - C++ metaserver placement and scheduler behavior:

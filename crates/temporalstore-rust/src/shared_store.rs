@@ -1044,7 +1044,7 @@ mod tests {
                 oplog_index: 2,
                 command: Command::StringSet {
                     key: "after".to_string(),
-                    value: b"oplog-value".to_vec(),
+                    value: b"wal-value".to_vec(),
                 },
             })
             .await
@@ -1090,7 +1090,7 @@ mod tests {
                 })
                 .response,
             CommandResponse::Bytes {
-                value: Some(b"oplog-value".to_vec())
+                value: Some(b"wal-value".to_vec())
             }
         );
     }

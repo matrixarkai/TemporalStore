@@ -651,7 +651,7 @@ fn committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled
         Some(CommandResponse::Empty)
     );
     assert_eq!(engine.page_store().stats().writes, 1);
-    assert_eq!(engine.oplog_store().stats(7).writes, 1);
+    assert_eq!(engine.write_ahead_log_store().stats(7).writes, 1);
     assert_eq!(engine.index_log_store().stats(7).writes, 1);
     assert_eq!(
         engine
@@ -7282,7 +7282,7 @@ fn raft_cluster_recovers_committed_state_from_local_wal() {
 }
 
 #[test]
-fn local_recovery_proof_covers_raft_wal_oplog_indexlog_and_pages() {
+fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages() {
     let storage_dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         256,

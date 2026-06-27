@@ -11,9 +11,9 @@ use crate::control::{
 use crate::engine::TemporalEngine;
 use crate::http::{post_json_with_options, HttpError, HttpRequestOptions};
 use crate::index_log::IndexLogRecord;
-use crate::oplog::OplogRecord;
 use crate::page_store::PageStoreError;
 use crate::types::{ExecuteRequest, ShardId, Status};
+use crate::wal::WriteAheadLogRecord;
 
 #[derive(Debug, Error)]
 pub enum ReplicaReplayError {
@@ -355,7 +355,7 @@ impl ReplicaReplayLoop {
     {
         let response = primary.scan_stream(ScanStreamRequest {
             shard_id: self.options.shard_id,
-            stream_kind: StreamKind::Oplog,
+            stream_kind: StreamKind::Wal,
             page_segment_id: 0,
             start_offset: cursor.oplog_offset,
             end_offset: u64::MAX,
@@ -363,14 +363,14 @@ impl ReplicaReplayLoop {
         })?;
         if !response.status.ok {
             return Err(ReplicaReplayError::StreamFailed {
-                kind: StreamKind::Oplog,
+                kind: StreamKind::Wal,
                 status: response.status,
             });
         }
         let mut applied = 0;
         let mut expected = cursor.oplog_sequence.saturating_add(1);
         for record in response.records {
-            let parsed: OplogRecord = serde_json::from_slice(&record.data)?;
+            let parsed: WriteAheadLogRecord = serde_json::from_slice(&record.data)?;
             if parsed.sequence != expected {
                 return Err(ReplicaReplayError::OplogGap {
                     expected,
@@ -416,7 +416,7 @@ mod tests {
     use crate::types::{Command, CommandResponse};
 
     #[test]
-    fn replica_replay_installs_pages_index_logs_and_oplog_with_cursor_resume() {
+    fn replica_replay_installs_pages_index_logs_and_wal_with_cursor_resume() {
         let primary_dir = tempdir().unwrap();
         let follower_dir = tempdir().unwrap();
         let cursor_dir = tempdir().unwrap();

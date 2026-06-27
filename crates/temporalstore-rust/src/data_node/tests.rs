@@ -1782,7 +1782,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.page_segments_retained_physical_bytes > 0);
     assert_eq!(output.page_segments_retained_live, 1);
     assert!(output.page_segments_retained_live_physical_bytes > 0);
-    assert_eq!(engine.oplog_store().stats(1).last_sequence, 3);
+    assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.page_store().segment_ids().unwrap(), vec![0, 2]);
 }
@@ -1956,11 +1956,11 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
     assert_eq!(response.status.code, "job_canceled");
     assert_eq!(response.shard_id, 1);
     assert_eq!(runtime.dirty_objects().len(), 1);
-    assert_eq!(engine.oplog_store().stats(1).last_sequence, 2);
+    assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 2);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 2);
     assert_eq!(
         engine
-            .oplog_store()
+            .write_ahead_log_store()
             .scan(1, 0, u64::MAX, u64::MAX)
             .unwrap()
             .len(),

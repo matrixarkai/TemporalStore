@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::cache::CacheStats;
-use crate::oplog::OplogStats;
 use crate::page_store::{PageStoreStats, PageStoreZoneSummary};
 use crate::types::{BatchExecuteResponse, Command, ExecuteResponse};
 use crate::types::{ShardId, Status};
+use crate::wal::WriteAheadLogStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Config {
@@ -177,7 +177,8 @@ pub struct ShardStats {
     pub page_store: PageStoreStats,
     #[serde(default)]
     pub page_store_zones: PageStoreZoneSummary,
-    pub oplog: OplogStats,
+    #[serde(alias = "oplog")]
+    pub write_ahead_log: WriteAheadLogStats,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -217,7 +218,8 @@ pub struct CheckedBatchExecuteResponse {
 pub enum StreamKind {
     Index,
     IndexLog,
-    Oplog,
+    #[serde(alias = "oplog")]
+    Wal,
     Page,
 }
 
