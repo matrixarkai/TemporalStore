@@ -37,7 +37,7 @@ Use both modes when possible:
 
 | Mode | What it does | When to use |
 |---|---|---|
-| MCP tools | Exposes `matrixark_ingest`, `matrixark_retrieve`, `matrixark_feedback`, `matrixark_replay`, admin, resource, and skill APIs to Codex. | Reliable default in Codex Desktop and Codex CLI. Good for explicit agent calls and debugging. |
+| MCP tools | Exposes `matrixark_ingest`, `matrixark_retrieve`, `matrixark_feedback`, `matrixark_replay`, admin, resource, and skill APIs to Codex. | Reliable default in Codex Desktop and Codex CLI. Good for explicit agent calls and explicit offline debugging. JSONL files are allowed for MCP line-protocol inputs, miss/hypothesis artifacts, and debug event logs only; they are not real full retrieval proof. |
 | Codex hooks | Automatically captures lifecycle events and calls MatrixArk without the agent remembering to call tools. | Best for always-on ingestion, retrieval before LLM, tool-result capture, and session commits. |
 
 Important: MCP by itself does not automatically ingest every message. Codex must call the MCP tool, or a hook must call the MCP server on each lifecycle event.
@@ -120,7 +120,7 @@ MATRIXARK_TEMPORALSTORE_RUST_CLI=<repo>/sdk/rust/temporalstore/target/release/ma
 MATRIXARK_HOOK_FAIL_OPEN=1
 ```
 
-Production hook mode should not write a local JSONL record log. Set
+Production hook mode must not use local JSONL as the retrieval or serving backend. Set
 `MATRIXARK_MCP_PROFILE=production` and use `MATRIXARK_MCP_BACKEND` with
 `temporalstore-direct` or `temporalstore-rust`; when the backend is omitted in
 production profile, MatrixArk defaults to the native TemporalStore path and
@@ -680,7 +680,7 @@ Retrieval selects only relevant skill sections, never the full skill bundle by d
 
 ## 10. Manual Hook Smoke Tests
 
-### Local backend hook smoke
+### C++ TemporalStore hook smoke
 
 ```bash
 cd <repo>
@@ -688,8 +688,7 @@ printf &#39;%s\n&#39; &#39;{&quot;prompt&quot;:&quot;Alice approved the GPU requ
   | MATRIXARK_MCP_BACKEND=local \
     python3 tools/matrixark_codex_hook.py \
       --event UserPromptSubmit \
-      --backend local \
-      --event-log /tmp/matrixark-hook-local.jsonl
+      --backend temporalstore-direct
 ```
 
 Expected output includes:
@@ -744,7 +743,7 @@ cd <repo>
 cat &gt; /tmp/matrixark-ingest-call.jsonl &lt;&lt;&#39;JSON&#39;
 {&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/call&quot;,&quot;params&quot;:{&quot;name&quot;:&quot;matrixark_ingest&quot;,&quot;arguments&quot;:{&quot;messages&quot;:[{&quot;role&quot;:&quot;user&quot;,&quot;content&quot;:&quot;Alice approved the GPU request.&quot;}],&quot;scope&quot;:{&quot;account_id&quot;:&quot;acct_local&quot;,&quot;tenant_id&quot;:&quot;tenant_codex&quot;,&quot;user_id&quot;:&quot;deeproute&quot;,&quot;session_id&quot;:&quot;manual-mcp-demo&quot;}}}}
 JSON
-MATRIXARK_MCP_BACKEND=local python3 tools/matrixark_mcp_server.py --line-json &lt; /tmp/matrixark-ingest-call.jsonl
+MATRIXARK_MCP_PROFILE=production tools/matrixark_mcp_cpp_server.sh --line-json &lt; /tmp/matrixark-ingest-call.jsonl
 ```
 
 ## 12. What To Verify In MatrixArk
