@@ -122,7 +122,10 @@ The Rust code currently has:
   pre-vote/election rejection counters, read-index plus lease-read
   request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
   retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and process-path
-  admin-status completeness. The same fields are now exposed through the standalone Raft node and
+  admin-status completeness. The report now also emits a `capability_matrix` with explicit
+  rows for `per_peer_replication_pipeline_state`, `reorder_queue_runtime`,
+  `snapshot_sender_downloader_lifecycle`, `lease_read_index_pre_vote_semantics`,
+  `wal_segment_lifecycle`, and `admin_status_surface`. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
   process path. Append request construction now enforces configured in-flight entry/byte limits and
   rejects saturated peer pipelines with explicit backpressure. Append receive now rejects batches
