@@ -174,6 +174,14 @@ int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client
                                                   char** response_json,
                                                   char** error_message);
 
+int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client,
+                                                  const char* count_key,
+                                                  const char* record_hash_key,
+                                                  size_t shard_size,
+                                                  const char* request_json,
+                                                  char** context_pack_json,
+                                                  char** error_message);
+
 int temporalstore_add_feature_points(temporalstore_client_t* client, const char* key,
                                      const temporalstore_feature_point_t* points, size_t count,
                                      char** error_message);

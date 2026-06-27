@@ -2348,6 +2348,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def hgetall", source)
         self.assertIn("def scan_hash", source)
 
+    def test_cpp_sdk_exposes_native_context_pack_boundary(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        header = (repo / "src/client/temporalstore_c_client.h").read_text()
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+        python_sdk = (repo / "sdk/python/temporalstore/client.py").read_text()
+
+        self.assertIn("temporalstore_matrixark_retrieve_context_pack", header)
+        self.assertIn("MatrixArkRetrieveContextPackNative", source)
+        self.assertIn("def matrixark_retrieve_context_pack", python_sdk)
+        self.assertIn("has_matrixark_retrieve_context_pack", python_sdk)
+
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
         result = adapter._run_backend_readiness_gate(reason="unit-metaserver-down", timeout_ms=1)

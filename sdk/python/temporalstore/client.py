@@ -749,6 +749,36 @@ class Client:
         finally:
             self._native.lib.temporalstore_free_string(value)
 
+    def matrixark_retrieve_context_pack(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: dict,
+    ) -> dict:
+        if not getattr(self._native, "has_matrixark_retrieve_context_pack", False):
+            raise TemporalStoreError(1, "temporalstore_matrixark_retrieve_context_pack is not available in this SDK build")
+        import json
+        out = ctypes.c_void_p()
+        error = ctypes.c_void_p()
+        request_json = json.dumps(request, separators=(",", ":"), sort_keys=True)
+        code = self._native.lib.temporalstore_matrixark_retrieve_context_pack(
+            self._handle,
+            _encode(count_key),
+            _encode(record_hash_key),
+            int(shard_size),
+            _encode(request_json),
+            ctypes.byref(out),
+            ctypes.byref(error),
+        )
+        self._native.check(code, error)
+        try:
+            payload = ctypes.cast(out, ctypes.c_char_p).value.decode("utf-8", errors="replace")
+            return json.loads(payload)
+        finally:
+            self._native.lib.temporalstore_free_string(out)
+
     def hget(self, key: str, field: str) -> str:
         value = ctypes.c_void_p()
         error = ctypes.c_void_p()
