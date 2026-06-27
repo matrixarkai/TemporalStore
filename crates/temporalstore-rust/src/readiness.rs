@@ -97,6 +97,15 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub production_ssd_tiering_ready: bool,
     pub admission_tuning_ready: bool,
     pub long_running_pressure_validation_ready: bool,
+    pub native_deployment_contract_ready: bool,
+    #[serde(default)]
+    pub native_deployment_contract_evidence: Vec<String>,
+    pub async_writeback_backpressure_ready: bool,
+    #[serde(default)]
+    pub async_writeback_backpressure_evidence: Vec<String>,
+    pub latency_metrics_ready: bool,
+    #[serde(default)]
+    pub latency_metrics_evidence: Vec<String>,
     pub local_pressure_ready: bool,
     pub production_ready: bool,
     pub missing: Vec<String>,
@@ -732,6 +741,28 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let production_ssd_tiering_ready = true;
     let admission_tuning_ready = true;
     let long_running_pressure_validation_ready = true;
+    let native_deployment_contract_ready = true;
+    let native_deployment_contract_evidence = vec![
+        "Rust-native cache deployment contract covers weighted memory/disk replacement policy"
+            .to_string(),
+        "Rust-native cache deployment contract covers pinned handle accounting and eviction guards"
+            .to_string(),
+        "Rust-native cache deployment contract treats PMEM as an SSD-class persistent tier"
+            .to_string(),
+    ];
+    let async_writeback_backpressure_ready = false;
+    let async_writeback_backpressure_evidence = vec![
+        "foreground cache admission and SSD write-through counters exist for local diagnostics"
+            .to_string(),
+        "remaining gap: production async writeback queue, retry, drain, and backpressure enforcement"
+            .to_string(),
+    ];
+    let latency_metrics_ready = false;
+    let latency_metrics_evidence = vec![
+        "current cache diagnostics expose operation counts and local timing summaries".to_string(),
+        "remaining gap: mature p50/p95/p99 histograms, SLO windows, and per-tier latency alert evidence"
+            .to_string(),
+    ];
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
         && admission_eviction_counters_ready
@@ -741,12 +772,17 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let production_ready = local_pressure_ready
         && production_ssd_tiering_ready
         && admission_tuning_ready
-        && long_running_pressure_validation_ready;
-    let missing = if production_ready {
-        Vec::new()
-    } else {
-        Vec::new()
-    };
+        && long_running_pressure_validation_ready
+        && native_deployment_contract_ready
+        && async_writeback_backpressure_ready
+        && latency_metrics_ready;
+    let mut missing = Vec::new();
+    if !async_writeback_backpressure_ready {
+        missing.push("cache async writeback/backpressure".to_string());
+    }
+    if !latency_metrics_ready {
+        missing.push("cache mature latency metrics".to_string());
+    }
 
     StorageSsdCachePressureReadinessReport {
         memory_read_through_ready,
@@ -758,6 +794,12 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         production_ssd_tiering_ready,
         admission_tuning_ready,
         long_running_pressure_validation_ready,
+        native_deployment_contract_ready,
+        native_deployment_contract_evidence,
+        async_writeback_backpressure_ready,
+        async_writeback_backpressure_evidence,
+        latency_metrics_ready,
+        latency_metrics_evidence,
         local_pressure_ready,
         production_ready,
         missing,
@@ -1218,7 +1260,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, and the Rust-native cache deployment contract; remaining cache blockers are async writeback/backpressure and mature latency metrics"
                     .to_string(),
             ],
             missing: {
@@ -1458,6 +1500,12 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         {
             "storage_object_store_dependency_matrix.live_backend_dependency_matrix_ready"
         }
+        "storage_cache" if capability.contains("async writeback") => {
+            "storage_cache_native.async_writeback_backpressure_ready"
+        }
+        "storage_cache" if capability.contains("latency metrics") => {
+            "storage_cache_native.latency_metrics_ready"
+        }
         "client" => "client_migration_contract.compatibility_result",
         "proxy" => "proxy_migration_contract.compatibility_result",
         "scale_testing" if capability.contains("workload") || capability.contains("corpus") => {
@@ -1524,7 +1572,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish golden C++ log/page conversion replay, SSD cache pressure validation, and live object-store integration"
+            "finish cache async writeback/backpressure and mature latency metrics"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"
@@ -1583,17 +1631,18 @@ mod tests {
     #[test]
     fn production_readiness_report_lists_blockers_for_all_major_services() {
         let report = production_readiness_report();
-        assert!(report.production_ready);
-        assert!(report.cpp_parity_ready);
+        assert!(!report.production_ready);
+        assert!(!report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert_eq!(report.blocker_count, 0);
-        assert!(report.failed_areas.is_empty());
-        assert!(!report.failed_areas.contains(&"storage_cache".to_string()));
-        assert!(!report
+        assert_eq!(report.blocker_count, 2);
+        assert_eq!(report.failed_areas, vec!["storage_cache".to_string()]);
+        let storage_blockers = report
             .failed_capabilities
             .iter()
-            .any(|blocker| blocker.area == "storage_cache"));
+            .filter(|blocker| blocker.area == "storage_cache")
+            .collect::<Vec<_>>();
+        assert_eq!(storage_blockers.len(), 2);
         let proxy = report
             .areas
             .iter()
@@ -1604,13 +1653,7 @@ mod tests {
             .iter()
             .any(|item| item.contains("service discovery replacement")));
         assert!(!proxy.missing.iter().any(|item| item.contains("consul")));
-        for area in [
-            "client",
-            "proxy",
-            "storage_cache",
-            "feature_modules",
-            "context_workflow",
-        ] {
+        for area in ["client", "proxy", "feature_modules", "context_workflow"] {
             let missing = report.missing_by_area(area).expect("area must exist");
             assert!(missing.is_empty(), "{area} should be ready");
         }
@@ -1651,8 +1694,14 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert_eq!(
+            storage_cache.missing,
+            vec![
+                "cache async writeback/backpressure".to_string(),
+                "cache mature latency metrics".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -1814,7 +1863,7 @@ mod tests {
     #[test]
     fn remaining_blockers_map_to_concrete_evidence_fields() {
         let readiness = production_readiness_report();
-        assert!(readiness.failed_capabilities.is_empty());
+        assert_eq!(readiness.failed_capabilities.len(), 2);
         for blocker in &readiness.failed_capabilities {
             assert!(
                 !blocker.evidence_field.is_empty(),
@@ -1831,8 +1880,17 @@ mod tests {
         assert!(raft.failed_capabilities.is_empty());
 
         let storage = readiness.service_gate_report("storage_cache").unwrap();
-        assert!(storage.ready);
-        assert!(storage.failed_capabilities.is_empty());
+        assert!(!storage.ready);
+        assert_eq!(storage.failed_capabilities.len(), 2);
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "cache async writeback/backpressure"
+                && blocker.evidence_field
+                    == "storage_cache_native.async_writeback_backpressure_ready"
+        }));
+        assert!(storage.failed_capabilities.iter().any(|blocker| {
+            blocker.capability == "cache mature latency metrics"
+                && blocker.evidence_field == "storage_cache_native.latency_metrics_ready"
+        }));
 
         let feature = readiness.service_gate_report("feature_modules").unwrap();
         assert!(feature.ready);
@@ -1949,8 +2007,14 @@ mod tests {
         assert!(report.production_ssd_tiering_ready);
         assert!(report.admission_tuning_ready);
         assert!(report.long_running_pressure_validation_ready);
-        assert!(report.production_ready);
-        assert!(report.missing.is_empty());
+        assert!(!report.production_ready);
+        assert_eq!(
+            report.missing,
+            vec![
+                "cache async writeback/backpressure".to_string(),
+                "cache mature latency metrics".to_string(),
+            ]
+        );
 
         let readiness = production_readiness_report();
         let storage_cache = readiness
@@ -1969,8 +2033,14 @@ mod tests {
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));
-        assert!(storage_cache.ready);
-        assert!(storage_cache.missing.is_empty());
+        assert!(!storage_cache.ready);
+        assert_eq!(
+            storage_cache.missing,
+            vec![
+                "cache async writeback/backpressure".to_string(),
+                "cache mature latency metrics".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -2114,7 +2184,7 @@ mod tests {
             let summary = report
                 .service_summary(service)
                 .expect("service summary must exist");
-            let expected_ready = true;
+            let expected_ready = service != "storage_cache";
             assert_eq!(summary.ready, expected_ready, "{service} readiness drifted");
             assert_eq!(summary.blocker_count, summary.failed_capabilities.len());
             if expected_ready {
@@ -2176,7 +2246,7 @@ mod tests {
             .iter()
             .map(|summary| summary.service.as_str())
             .collect::<Vec<_>>();
-        assert!(blocked_services.is_empty());
+        assert_eq!(blocked_services, vec!["storage_cache"]);
         assert_eq!(
             report.known_services(),
             vec![
@@ -2232,7 +2302,6 @@ mod tests {
                 "ingestion",
                 "data_node",
                 "metaserver",
-                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -2253,7 +2322,6 @@ mod tests {
                 "ingestion",
                 "data_node",
                 "metaserver",
-                "storage_cache",
                 "feature_modules",
                 "context_workflow",
                 "fault_tolerance",
@@ -2262,7 +2330,13 @@ mod tests {
                 "raft_replication"
             ]
         );
-        assert!(report.next_blocked_service().is_none());
+        assert_eq!(
+            report
+                .next_blocked_service()
+                .expect("storage cache should be the only blocked service")
+                .service,
+            "storage_cache"
+        );
         assert_eq!(
             service_gates
                 .iter()
@@ -2274,7 +2348,7 @@ mod tests {
                 ("ingestion", "ready"),
                 ("data_node", "ready"),
                 ("metaserver", "ready"),
-                ("storage_cache", "ready"),
+                ("storage_cache", "warning"),
                 ("feature_modules", "ready"),
                 ("context_workflow", "ready"),
                 ("fault_tolerance", "ready"),
@@ -2333,7 +2407,7 @@ mod tests {
             .service_summary("storage_cache")
             .expect("storage cache summary")
             .next_action
-            .contains("ready"));
+            .contains("async writeback"));
         assert!(report
             .service_summary("feature_modules")
             .expect("feature modules summary")
@@ -2390,7 +2464,7 @@ mod tests {
                 .service_summary("storage_cache")
                 .expect("storage cache summary")
                 .blocker_classes,
-            Vec::<String>::new()
+            vec!["storage_cache_durability".to_string()]
         );
         assert_eq!(
             report
