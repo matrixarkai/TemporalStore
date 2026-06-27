@@ -2020,7 +2020,7 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         min_keep_segment_num: 1,
         ..RaftConfig::default()
     };
-    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1, 2, 3], config)
+    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1, 2, 3], config.clone())
         .expect("wal-backed cluster");
     cluster
         .propose(Command::StringSet {
@@ -2083,6 +2083,19 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
+
+    let restored =
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3], config).unwrap();
+    let restored_report = restored.byteraft_runtime_admin_report();
+    assert!(restored_report.ready, "{:?}", restored_report.blockers);
+    assert!(restored_report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+    assert!(restored_report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
 }
 
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route

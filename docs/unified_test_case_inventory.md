@@ -118,7 +118,7 @@ test surfaces for those cases until a native C++ shared runner executes the same
 ByteRaft runtime-admin case requires a shared JSON shape for per-peer match/next index, inflight
 bytes, append/reorder queues, snapshot sender/downloader lifecycle, WAL segments, read-index/lease
 evidence, stale follower rejection, and matching Prometheus metrics for scrape-based operator
-parity.
+parity. Rust now also validates that the per-peer pipeline state is persisted through WAL restore.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
