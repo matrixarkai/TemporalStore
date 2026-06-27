@@ -124,6 +124,9 @@ class MatrixArkLocalAdapter:
         self._read_cache_records: list[Json] | None = None
         self._read_cache_size = -1
         self._read_cache_mtime_ns = -1
+        self._retrieval_records_cache_lock = threading.RLock()
+        self._retrieval_records_cache_generation = 0
+        self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -218,6 +221,10 @@ class MatrixArkLocalAdapter:
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
             elif self._read_cache_records is not None:
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, list(self._read_cache_records))
+        if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
+            with self._retrieval_records_cache_lock:
+                self._retrieval_records_cache_generation += 1
+                self._retrieval_records_cache.clear()
 
     def append(self, record: Json) -> None:
         records = materialize_serving_record_batch([record])
@@ -509,6 +516,22 @@ class MatrixArkLocalAdapter:
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        scope_key = canonical_scope_key(scope)
+        secondary_key = tuple(sorted(tuple(sorted(group)) for group in (secondary_index_groups or [])))
+        selected_key = tuple(sorted(int(item) for item in (selected_node_hashes or set())))
+        cache_key = (
+            self._retrieval_records_cache_generation,
+            scope_key,
+            tuple(sorted(allowed_types)),
+            secondary_key,
+            selected_key,
+        )
+        with self._retrieval_records_cache_lock:
+            cached = self._retrieval_records_cache.get(cache_key)
+            if cached is not None:
+                scan_stats = dict(cached.get("scan_stats", {}))
+                scan_stats["cache_hit"] = True
+                return {"records": cached.get("records", []), "scan_stats": scan_stats}
         raw_records = self.read_all()
         filtered: list[Json] = []
         scanned = 0
@@ -538,11 +561,11 @@ class MatrixArkLocalAdapter:
                 dropped_scope += 1
                 continue
             filtered.append(record)
-        return {
+        result = {
             "records": filtered,
             "scan_stats": {
                 "backend": getattr(self, "_backend_label", lambda: "local")(),
-                "execution_mode": "adapter_prefilter",
+                "execution_mode": "adapter_prefilter_cached",
                 "native_pushdown": False,
                 "broad_scan_fallback_allowed": True if allow_broad_scan_fallback is None else bool(allow_broad_scan_fallback),
                 "broad_scan_used": True,
@@ -557,6 +580,9 @@ class MatrixArkLocalAdapter:
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
             },
         }
+        with self._retrieval_records_cache_lock:
+            self._retrieval_records_cache[cache_key] = result
+        return result
 
     def find_latest_entity(self, *, node_hash: int, entity_type: str, entity_name: str) -> Json | None:
         entity_hash = stable_hash(f"{node_hash}:{entity_type}:{entity_name}")
