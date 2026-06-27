@@ -338,11 +338,38 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
                 stats.records_written += 1;
                 stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
             }
-            if command.key.as_ref().filter(|value| !value.is_empty()).is_some()
-                && command.value.as_ref().filter(|value| !value.is_empty()).is_some()
+        }
+        "matrixark_append_records" | "matrixark_batch_append_records" => {
+            if let Some(entries) = &command.entries {
+                stats.records_written = entries.len() as u64;
+                stats.bytes_written = entries
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .value
+                            .as_ref()
+                            .map(|value| value.len() as u64)
+                            .unwrap_or(0)
+                    })
+                    .sum();
+            }
+            if command
+                .key
+                .as_ref()
+                .filter(|value| !value.is_empty())
+                .is_some()
+                && command
+                    .value
+                    .as_ref()
+                    .filter(|value| !value.is_empty())
+                    .is_some()
             {
                 stats.records_written += 1;
-                stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
+                stats.bytes_written += command
+                    .value
+                    .as_ref()
+                    .map(|value| value.len() as u64)
+                    .unwrap_or(0);
             }
         }
         "batch_hget" | "hgetall" | "scan_hash" => {
@@ -580,7 +607,11 @@ fn matrixark_context_event_time_key(tenant_hash: u64) -> String {
 }
 
 fn matrixark_context_event_time_field(record: &Value, record_id: &str) -> String {
-    format!("{:020}:{}", matrixark_event_ingestion_time_ms(record), record_id)
+    format!(
+        "{:020}:{}",
+        matrixark_event_ingestion_time_ms(record),
+        record_id
+    )
 }
 
 fn write_matrixark_record(
@@ -608,7 +639,9 @@ fn write_matrixark_record(
     client
         .hset(&key, &field, &payload)
         .map_err(|err| err.to_string())?;
-    Ok(json!({"key": key, "field": field, "record_type": record_type, "record_id": record_id, "time_index": time_index}))
+    Ok(
+        json!({"key": key, "field": field, "record_type": record_type, "record_id": record_id, "time_index": time_index}),
+    )
 }
 
 fn read_matrixark_record(
@@ -855,7 +888,10 @@ fn serve() -> i32 {
             continue;
         }
         if command.op == "health" {
-            println!("{}", json!({"ok": true, "status": "ok", "mode": "long_lived_stdio_gateway"}));
+            println!(
+                "{}",
+                json!({"ok": true, "status": "ok", "mode": "long_lived_stdio_gateway"})
+            );
             let _ = stdout.flush();
             continue;
         }
@@ -1013,7 +1049,10 @@ mod tests {
             "matrixark:record:context_event_by_ingestion_time:77"
         );
         assert_eq!(
-            matrixark_context_event_time_field(&record, &matrixark_record_id(&record, None).unwrap()),
+            matrixark_context_event_time_field(
+                &record,
+                &matrixark_record_id(&record, None).unwrap()
+            ),
             "00000001782500000123:42"
         );
     }
