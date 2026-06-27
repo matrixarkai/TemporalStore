@@ -1958,6 +1958,14 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
+        let mut merged_dump_load_policy = self.storage_merged_dump_load_policy_report(
+            request.shard_id,
+            request.dry_run,
+            &plan,
+            lifecycle_report.as_ref(),
+            None,
+        );
+
         let should_compact = request.enable_page_compaction
             && !request.dry_run
             && (!plan.reclaim_candidates.is_empty() || plan.live_page_segment_ids.len() > 1);
@@ -2003,6 +2011,24 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
+        merged_dump_load_policy.compaction_policy_applied =
+            request.dry_run || plan.reclaim_candidates.is_empty() || compaction_report.is_some();
+        if merged_dump_load_policy.compaction_policy_applied {
+            merged_dump_load_policy
+                .blockers
+                .retain(|blocker| blocker != "compaction");
+        } else if !merged_dump_load_policy
+            .blockers
+            .iter()
+            .any(|blocker| blocker == "compaction")
+        {
+            merged_dump_load_policy
+                .blockers
+                .push("compaction".to_string());
+        }
+        merged_dump_load_policy.production_slice_ready =
+            merged_dump_load_policy.blockers.is_empty();
+
         stages.push(StorageManagerStageReport {
             stage: "reap_metrics".to_string(),
             enabled: true,
@@ -2022,7 +2048,8 @@ impl TemporalEngine {
             && cxx_stage_order
                 .iter()
                 .all(|stage| stages.iter().any(|report| &report.stage == stage))
-            && stages.iter().all(|stage| stage.enabled);
+            && stages.iter().all(|stage| stage.enabled)
+            && merged_dump_load_policy.production_slice_ready;
         StorageManagerCycleReport {
             shard_id: request.shard_id,
             dry_run: request.dry_run,
@@ -2031,11 +2058,152 @@ impl TemporalEngine {
             production_parity_slice,
             stages,
             plan,
+            merged_dump_load_policy,
             lifecycle_report,
             expiry_report,
             compaction_report,
             errors,
         }
+    }
+
+    fn storage_merged_dump_load_policy_report(
+        &self,
+        shard_id: ShardId,
+        dry_run: bool,
+        plan: &StorageLifecyclePlan,
+        lifecycle_report: Option<&StorageLifecycleReport>,
+        compaction_report: Option<&ShardCompactionReport>,
+    ) -> StorageMergedDumpLoadPolicyReport {
+        let mut report = StorageMergedDumpLoadPolicyReport {
+            shard_id,
+            dry_run,
+            dirty_slot_count: plan.dirty_slots.len(),
+            selected_dump_slot_count: plan.selected_dump_slots.len(),
+            page_reclaim_policy_applied: dry_run
+                || plan.reclaim_candidates.is_empty()
+                || lifecycle_report
+                    .map(|lifecycle| !lifecycle.delayed_destroy_purged_segments.is_empty())
+                    .unwrap_or(false),
+            compaction_policy_applied: dry_run
+                || plan.reclaim_candidates.is_empty()
+                || compaction_report.is_some(),
+            index_gc_policy_applied: dry_run
+                || lifecycle_report
+                    .map(|lifecycle| lifecycle.manifest_prune_report.is_some())
+                    .unwrap_or(false),
+            cache_policy_applied: dry_run
+                || lifecycle_report
+                    .map(|lifecycle| {
+                        lifecycle.cache_entries_removed > 0
+                            || lifecycle.cache_disk_bytes_removed > 0
+                            || lifecycle.cache_warmup_page_refs > 0
+                    })
+                    .unwrap_or(false),
+            ..StorageMergedDumpLoadPolicyReport::default()
+        };
+        let Some(lifecycle) = lifecycle_report else {
+            if !dry_run {
+                report.blockers.push("lifecycle_report_missing".to_string());
+            }
+            report.production_slice_ready = dry_run;
+            return report;
+        };
+        report.install_marker_policy_checked = true;
+        report.install_roll_forward_checked = !lifecycle.install_roll_forward_reports.is_empty()
+            || self.interrupted_slot_dump_installs(shard_id).is_empty();
+        let Some(manifest) = lifecycle.dump_manifest.as_ref() else {
+            if !plan.selected_dump_slots.is_empty() {
+                report.blockers.push("dump_manifest_missing".to_string());
+            }
+            report.production_slice_ready = plan.selected_dump_slots.is_empty()
+                && report.page_reclaim_policy_applied
+                && report.compaction_policy_applied
+                && report.index_gc_policy_applied;
+            return report;
+        };
+        report.manifest_id = Some(manifest.manifest_id.clone());
+        report.dumped_slot_count = manifest.slot_ids.len();
+        let restored = serde_json::from_slice::<ShardState>(&manifest.index_bytes).ok();
+        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let live_page_entries = restored
+            .as_ref()
+            .map(|restored| {
+                collect_live_page_entries(restored)
+                    .into_iter()
+                    .filter(|entry| {
+                        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+                            self.routing_slot_for_key(manifest.shard_id, &entry.object_key)
+                        });
+                        manifest_slots.is_empty() || manifest_slots.contains(&routing_slot)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let expected_slot_summaries = restored
+            .as_ref()
+            .map(|restored| slot_dump_manifest_comparable_summaries(restored, &manifest_slots))
+            .unwrap_or_default();
+        let actual_slot_summaries = comparable_slot_dump_summaries(manifest.slot_summaries.clone());
+        let expected_object_lifecycle = restored.as_ref().map(|restored| {
+            storage_object_lifecycle_report_for_slots(
+                manifest.shard_id,
+                restored,
+                &manifest_slots,
+                |key| self.routing_slot_for_key(manifest.shard_id, key),
+            )
+        });
+        let checksum_ok = slot_dump_manifest_checksum(manifest)
+            .map(|checksum| checksum == manifest.checksum)
+            .unwrap_or(false);
+        let index_checksum_ok = !manifest.index_bytes.is_empty()
+            && manifest.index_sha256 == sha256_hex_bytes(&manifest.index_bytes);
+        report.manifest_checksum_validated = checksum_ok
+            && index_checksum_ok
+            && restored.is_some()
+            && actual_slot_summaries == expected_slot_summaries;
+        report.manifest_generation_validated = !manifest.dump_generation_id.is_empty()
+            && manifest.dump_generation_id == slot_dump_generation_id(manifest);
+        report.sequence_boundaries_validated = manifest.oplog_sequence
+            >= plan.undumped_oplog_records
+            && manifest.index_log_sequence > 0
+            && manifest.index_sha256 == sha256_hex_bytes(&manifest.index_bytes);
+        let preflight = self.slot_dump_install_preflight_report(manifest);
+        report.page_segments_validated = preflight.missing_page_segment_ids.is_empty()
+            && preflight.corrupt_page_segment_ids.is_empty();
+        report.live_page_refs_validated = live_page_entries.len() as u64 == manifest.live_page_refs
+            && preflight.unreadable_page_ref_count == 0
+            && preflight.unreadable_page_bytes == 0;
+        report.object_lifecycle_validated = expected_object_lifecycle
+            .map(|expected| {
+                expected.live_object_ids == manifest.object_lifecycle.live_object_ids
+                    && expected.live_page_refs == manifest.object_lifecycle.live_page_refs
+                    && manifest.object_lifecycle.missing_owner_page_refs == 0
+                    && manifest.object_lifecycle.owner_mismatch_page_refs == 0
+                    && manifest.object_lifecycle.reused_object_id_conflicts == 0
+            })
+            .unwrap_or(false);
+        report.install_preflight_safe = preflight.install_safe;
+        for (ready, blocker) in [
+            (report.manifest_checksum_validated, "manifest_checksum"),
+            (report.manifest_generation_validated, "manifest_generation"),
+            (report.sequence_boundaries_validated, "sequence_boundaries"),
+            (report.page_segments_validated, "page_segments"),
+            (report.live_page_refs_validated, "live_page_refs"),
+            (report.object_lifecycle_validated, "object_lifecycle"),
+            (report.install_preflight_safe, "install_preflight"),
+            (report.install_marker_policy_checked, "install_markers"),
+            (report.install_roll_forward_checked, "install_roll_forward"),
+            (report.page_reclaim_policy_applied, "page_reclaim"),
+            (report.compaction_policy_applied, "compaction"),
+            (report.index_gc_policy_applied, "index_gc"),
+            (report.cache_policy_applied, "cache_policy"),
+        ] {
+            if !ready {
+                report.blockers.push(blocker.to_string());
+            }
+        }
+        report.production_slice_ready = report.blockers.is_empty();
+        report
     }
 
     pub fn storage_production_readiness_report(
@@ -16934,6 +17102,8 @@ mod tests {
         assert_eq!(engine.list_slot_dump_manifests(1).len(), before_manifests);
         assert!(report.lifecycle_report.is_none());
         assert!(report.compaction_report.is_none());
+        assert!(report.merged_dump_load_policy.dry_run);
+        assert!(report.merged_dump_load_policy.production_slice_ready);
     }
 
     #[test]
@@ -16988,6 +17158,18 @@ mod tests {
 
         assert!(report.completed, "{report:#?}");
         assert!(report.production_parity_slice, "{report:#?}");
+        assert!(
+            report.merged_dump_load_policy.production_slice_ready,
+            "{report:#?}"
+        );
+        assert!(report.merged_dump_load_policy.manifest_checksum_validated);
+        assert!(report.merged_dump_load_policy.manifest_generation_validated);
+        assert!(report.merged_dump_load_policy.sequence_boundaries_validated);
+        assert!(report.merged_dump_load_policy.page_segments_validated);
+        assert!(report.merged_dump_load_policy.live_page_refs_validated);
+        assert!(report.merged_dump_load_policy.object_lifecycle_validated);
+        assert!(report.merged_dump_load_policy.install_preflight_safe);
+        assert!(report.merged_dump_load_policy.blockers.is_empty());
         assert!(report.lifecycle_report.is_some());
         assert!(report
             .lifecycle_report

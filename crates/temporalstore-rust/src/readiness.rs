@@ -1262,6 +1262,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage manager cycle executes the C++-ordered prepare, dirty-slot log reclaim, expire, evict, page reclaim, index-GC, compact, and metrics stages with per-stage evidence"
                     .to_string(),
+                "storage manager cycle includes merged dump/load policy evidence for manifest checksum/generation, sequence boundaries, page-ref preflight, object lifecycle validation, install markers, reclaim, compaction, index-GC, and cache policy"
+                    .to_string(),
                 "slot-dump install preflight reports stale sequence, missing/corrupt segments, unreadable refs, and safe install status before marker writes"
                     .to_string(),
                 "shard index persistence and slot-dump install use temp-file fsync plus rename instead of direct overwrite"
