@@ -1296,6 +1296,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(route.get("colocation_group"), "matrixark_context")
             self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
+    def test_native_context_pack_default_policy(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "benchmark"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        self.assertTrue(mcp.native_context_pack_required("temporalstore-rust"))
+        self.assertTrue(mcp.native_context_pack_required("temporalstore-rust-direct"))
+        self.assertTrue(mcp.native_context_pack_required("temporalstore-direct"))
+        self.assertFalse(mcp.native_context_pack_required("local"))
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = "0"
+        self.assertFalse(mcp.native_context_pack_required("temporalstore-rust"))
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = "1"
+        self.assertTrue(mcp.native_context_pack_required("local"))
+
+
     def test_direct_append_prefers_native_matrixark_batch_append_records(self) -> None:
         client = _NativeAppendClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
@@ -2271,6 +2284,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(call["record_hash_key"], "matrixark:test:records")
         self.assertEqual(call["request"]["query"], "gpu approval")
         self.assertEqual(call["request"]["secondary_index_groups"], [["resource_type:pdf"]])
+
+    def test_direct_supports_native_context_pack_only_when_client_exposes_api(self) -> None:
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = _NativeContextPackClient()
+        self.assertTrue(adapter.supports_native_context_pack())
+        adapter._client = _NativeCandidateScanClient()
+        self.assertFalse(adapter.supports_native_context_pack())
+
+    def test_production_retrieve_fails_closed_without_native_context_pack(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = _NativeCandidateScanClient()
+        adapter._storage_prefix = "matrixark:test:pack-required"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 256
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._retrieval_records_cache_lock = threading.RLock()
+        adapter._retrieval_records_cache = {}
+        adapter.native_context_pack_required = lambda: True
+        with self.assertRaisesRegex(mcp.MatrixArkError, "backend-native ContextPack assembly"):
+            adapter.retrieve({
+                "query": "What did Alice approve?",
+                "scope": {"account_id": "acct"},
+                "max_context_tokens": 1000,
+            })
 
     def test_native_cpp_matrixark_append_does_not_lower_to_hset_loop(self) -> None:
         repo = Path(__file__).resolve().parents[1]

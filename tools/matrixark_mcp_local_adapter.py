@@ -3912,6 +3912,15 @@ class MatrixArkLocalAdapter:
         )
         return compact_context_pack_for_serving(pack)
 
+    def supports_native_context_pack(self) -> bool:
+        return False
+
+    def native_context_pack_required(self) -> bool:
+        if MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK:
+            return MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK in {"1", "true", "yes"}
+        backend_label = str(getattr(self, "_backend_label", lambda: "local")())
+        return MATRIXARK_MCP_PROFILE in {"prod", "production", "benchmark", "bench", "parity"} and backend_label != "local"
+
     def native_context_pack(self, request: Json) -> Json | None:
         """Return a backend-assembled ContextPack when the native backend supports it.
 
@@ -4084,6 +4093,12 @@ class MatrixArkLocalAdapter:
             native_pack.setdefault("context_pack_cache_hit", False)
             native_pack.setdefault("context_pack_assembly", "native_backend")
             return native_pack
+        if self.native_context_pack_required():
+            raise MatrixArkError(
+                "backend-native ContextPack assembly is required for this profile, "
+                "but this backend did not return matrixark_retrieve_context_pack. "
+                "Python reference packing is disabled for production/benchmark serving."
+            )
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
             scope=scope,
