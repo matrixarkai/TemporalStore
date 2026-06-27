@@ -367,6 +367,11 @@ class _NativeCandidateScanClient:
         }
 
 
+class _FailingNativeCandidateScanClient:
+    def matrixark_scan_candidates(self, **kwargs):
+        raise RuntimeError("native scan unavailable")
+
+
 class _NativeContextPackClient:
     def __init__(self) -> None:
         self.calls = []
@@ -2295,6 +2300,61 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(stats["native_prefix_scan"])
         self.assertTrue(stats["native_secondary_index_prefilter"])
         self.assertEqual(stats["pack_assembly_location"], "python_reference_packer")
+
+    def test_production_native_candidate_scan_failure_does_not_fallback_to_read_all(self) -> None:
+        policy_globals = mcp.MatrixArkTemporalStoreDirectAdapter._native_candidate_scan.__globals__["native_candidate_prefilter_required"].__globals__
+        old_core_profile = policy_globals["MATRIXARK_MCP_PROFILE"]
+        old_core_prefilter = policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"]
+        policy_globals["MATRIXARK_MCP_PROFILE"] = "production"
+        policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"] = ""
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = _FailingNativeCandidateScanClient()
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter.read_all = lambda: self.fail("read_all fallback must not run when native prefilter is required")
+
+        try:
+            with self.assertRaisesRegex(mcp.MatrixArkError, "backend-native candidate prefilter failed"):
+                adapter.retrieval_records(
+                    scope={"account_id": "acct"},
+                    record_types={"resource_chunk"},
+                    secondary_index_groups=[{"resource_type:pdf"}],
+                )
+        finally:
+            policy_globals["MATRIXARK_MCP_PROFILE"] = old_core_profile
+            policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"] = old_core_prefilter
+
+    def test_production_retrieve_dispatches_native_pack_before_query_embedding(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        pack = adapter.retrieve({
+            "query": "What did Alice approve?",
+            "scope": {"account_id": "acct"},
+            "max_context_tokens": 1000,
+            "audit_mode": "off",
+        })
+
+        self.assertEqual(pack["context_pack_id"], "native-pack-1")
+        self.assertEqual(len(client.calls), 1)
+        self.assertNotIn("query_embedding", client.calls[0]["request"])
+        self.assertEqual(client.calls[0]["request"]["query"], "What did Alice approve?")
 
     def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
         client = _NativeContextPackClient()

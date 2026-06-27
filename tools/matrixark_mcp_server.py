@@ -260,17 +260,21 @@ class MatrixArkMcpServer:
         dirty_lag_ms = 0
         import_lag_ms = 0
         try:
-            records = self.adapter.read_all()
-            dirty_times = [int(record.get("updated_at_ms") or record.get("created_at_ms") or now) for record in records if record.get("record_type") == "context_summary_dirty"]
-            import_times = [
-                int(record.get("updated_at_ms") or record.get("created_at_ms") or now)
-                for record in records
-                if record.get("record_type") == "resource_import_task" and str(record.get("status") or "") in {"queued", "running"}
-            ]
-            if dirty_times:
-                dirty_lag_ms = max(0, now - min(dirty_times))
-            if import_times:
-                import_lag_ms = max(0, now - min(import_times))
+            backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
+            if python_hot_cache_allowed(backend_label=backend_label):
+                records = self.adapter.read_all()
+                dirty_times = [int(record.get("updated_at_ms") or record.get("created_at_ms") or now) for record in records if record.get("record_type") == "context_summary_dirty"]
+                import_times = [
+                    int(record.get("updated_at_ms") or record.get("created_at_ms") or now)
+                    for record in records
+                    if record.get("record_type") == "resource_import_task" and str(record.get("status") or "") in {"queued", "running"}
+                ]
+                if dirty_times:
+                    dirty_lag_ms = max(0, now - min(dirty_times))
+                if import_times:
+                    import_lag_ms = max(0, now - min(import_times))
+            else:
+                _mcp_debug_log("matrixark metrics gauge refresh skipped Python read_all in thin native profile")
         except Exception as exc:
             _mcp_debug_log(f"matrixark metrics gauge refresh failed: {exc}")
         queue_depth = 0
@@ -492,7 +496,11 @@ class MatrixArkMcpServer:
             else:
                 records = self.adapter.read_all()[-record_limit:]
         else:
-            records = self.adapter.read_all()
+            backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
+            if native_context_pack_required(backend_label):
+                records = []
+            else:
+                records = self.adapter.read_all()
         return self.adapter.deadline_fallback_pack(
             query=query,
             scope=optional_object(args, "scope"),

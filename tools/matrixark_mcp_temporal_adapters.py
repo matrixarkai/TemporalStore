@@ -1845,9 +1845,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 shard_size=self._shard_size,
                 request=request,
             )
-        except Exception:
+        except Exception as exc:
+            if self.native_context_pack_required():
+                raise MatrixArkError(
+                    f"backend-native ContextPack assembly failed for {self._backend_label()}: {exc}. "
+                    "Python reference packing is disabled for production/benchmark serving."
+                ) from exc
             return None
         if not isinstance(response, dict) or not response.get("native_pack_assembly"):
+            if self.native_context_pack_required():
+                raise MatrixArkError(
+                    f"backend-native ContextPack assembly returned an invalid response for {self._backend_label()}. "
+                    "Python reference packing is disabled for production/benchmark serving."
+                )
             return None
         if isinstance(response.get("records"), list):
             raise MatrixArkError(
@@ -1889,10 +1899,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
                 selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
             )
-        except Exception:
+        except Exception as exc:
+            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+                raise MatrixArkError(
+                    f"backend-native candidate prefilter failed for {self._backend_label()}: {exc}. "
+                    "Python read_all scan/prefilter is disabled for production/benchmark serving."
+                ) from exc
             return None
         records = response.get("records") if isinstance(response, dict) else None
         if not isinstance(records, list):
+            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+                raise MatrixArkError(
+                    f"backend-native candidate prefilter returned an invalid response for {self._backend_label()}. "
+                    "Python read_all scan/prefilter is disabled for production/benchmark serving."
+                )
             return None
         scan_stats = dict(response.get("scan_stats") or {})
         scan_stats.setdefault("backend", self._backend_label())
