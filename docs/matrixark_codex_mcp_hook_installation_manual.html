@@ -120,6 +120,13 @@ MATRIXARK_TEMPORALSTORE_RUST_CLI=/root/src/github-services/TemporalStore/sdk/rus
 MATRIXARK_HOOK_FAIL_OPEN=1
 ```
 
+Production hook mode should not write a local JSONL record log. Set
+`MATRIXARK_MCP_PROFILE=production` and use `MATRIXARK_MCP_BACKEND` with
+`temporalstore-direct` or `temporalstore-rust`; when the backend is omitted in
+production profile, MatrixArk defaults to the native TemporalStore path and
+refuses local `record_log` unless `MATRIXARK_ALLOW_LOCAL_BACKEND=1` is set for
+debugging.
+
 Local identity defaults for hooks:
 
 ```bash

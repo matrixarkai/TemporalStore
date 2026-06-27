@@ -73,12 +73,43 @@ def load_matrixark(root: Path):
     return MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkTemporalStoreDirectAdapter, MatrixArkTemporalStoreRustAdapter
 
 
+def production_profile_enabled() -> bool:
+    return os.environ.get("MATRIXARK_MCP_PROFILE", "").strip().lower() in {"prod", "production", "benchmark", "bench", "parity"}
+
+
+def local_backend_allowed() -> bool:
+    return os.environ.get("MATRIXARK_ALLOW_LOCAL_BACKEND", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def default_hook_backend() -> str:
+    configured = os.environ.get("MATRIXARK_MCP_BACKEND")
+    if configured:
+        return configured
+    return "temporalstore-direct" if production_profile_enabled() else "local"
+
+
+def validate_hook_backend_policy(backend: str) -> None:
+    if production_profile_enabled() and backend == "local" and not local_backend_allowed():
+        raise RuntimeError(
+            "MatrixArk hook production/benchmark profile requires --backend temporalstore-direct "
+            "or --backend temporalstore-rust. Set MATRIXARK_ALLOW_LOCAL_BACKEND=1 only for debug."
+        )
+
+
+def hook_idempotency_key(payload: Json, *, event: str, session_id: str | None, fallback: str = "") -> str:
+    value = payload.get("id") or payload.get("turn_id") or payload.get("message_id") or payload.get("request_id") or fallback
+    if value:
+        return str(value)
+    fingerprint = f"{event}:{session_id or ''}:{time.time_ns()}:{uuid.uuid4().hex}"
+    return hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()[:32]
+
+
 def parse_args() -> argparse.Namespace:
     root = Path(__file__).resolve().parents[1]
     parser = argparse.ArgumentParser(description="Ingest Codex hook payloads into MatrixArk.")
     parser.add_argument("--event", default=os.environ.get("CODEX_HOOK_EVENT", "UserPromptSubmit"))
     parser.add_argument("--event-log", type=Path, default=Path(os.environ.get("MATRIXARK_CODEX_EVENT_LOG", "/tmp/matrixark-codex-hook.jsonl")))
-    parser.add_argument("--backend", choices=["local", "temporalstore-direct", "temporalstore-rust"], default=os.environ.get("MATRIXARK_MCP_BACKEND", "local"))
+    parser.add_argument("--backend", choices=["local", "temporalstore-direct", "temporalstore-rust"], default=default_hook_backend())
     parser.add_argument("--api-key", default=os.environ.get("MATRIXARK_API_KEY", ""))
     parser.add_argument("--account-id", default=os.environ.get("MATRIXARK_ACCOUNT_ID", "acct_codex"))
     parser.add_argument("--tenant-id", default=os.environ.get("MATRIXARK_TENANT_ID", "tenant_codex"))
@@ -495,6 +526,7 @@ def scope_from_args(args: argparse.Namespace) -> Json:
 
 def main() -> int:
     args = parse_args()
+    validate_hook_backend_policy(args.backend)
     payload = read_stdin_payload()
     resolved_session_id, session_id_source = resolve_session_id(payload, args)
     args.session_id = resolved_session_id
@@ -538,7 +570,7 @@ def main() -> int:
                 "hook_type": "resource_added",
                 "hook_id": f"{args.event}:{raw_uri}:{int(time.time() * 1000)}",
                 "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": str(payload.get("id") or payload.get("turn_id") or raw_uri),
+                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id, fallback=raw_uri),
                 "trigger": args.event,
                 "auto_captured": True,
                 "session_id_source": session_id_source,
@@ -565,7 +597,7 @@ def main() -> int:
                 "hook_type": hook_type_for_event(args.event),
                 "hook_id": f"{args.event}:{int(time.time() * 1000)}",
                 "observed_at_ms": int(time.time() * 1000),
-                "idempotency_key": str(payload.get("id") or payload.get("turn_id") or ""),
+                "idempotency_key": hook_idempotency_key(payload, event=args.event, session_id=args.session_id),
                 "trigger": args.event,
                 "auto_captured": True,
                 "session_id_source": session_id_source,
@@ -597,7 +629,7 @@ def main() -> int:
                     "hook_type": "session_commit",
                     "hook_id": f"session_commit:{args.event}:{int(time.time() * 1000)}",
                     "observed_at_ms": int(time.time() * 1000),
-                    "idempotency_key": str(payload.get("id") or payload.get("turn_id") or ""),
+                    "idempotency_key": hook_idempotency_key(payload, event=f"session_commit:{args.event}", session_id=args.session_id),
                     "trigger": args.event,
                     "auto_captured": True,
                     "session_id_source": session_id_source,
