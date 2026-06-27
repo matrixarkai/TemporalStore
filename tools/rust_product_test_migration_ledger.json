@@ -4597,9 +4597,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/shared_store.rs::shared_store_strict_replay_rejects_oplog_gaps",
+      "test_id": "crates/temporalstore-rust/src/shared_store.rs::shared_store_strict_replay_rejects_wal_gaps",
       "file": "crates/temporalstore-rust/src/shared_store.rs",
-      "test_name": "shared_store_strict_replay_rejects_oplog_gaps",
+      "test_name": "shared_store_strict_replay_rejects_wal_gaps",
       "family": "storage/cache",
       "classification": "move_to_shared",
       "next_migration_target": "storage/cache shared cases for dump/load, recovery, GC, cache pressure, shared-store replay",

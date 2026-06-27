@@ -5,6 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-storage-raft-production-target}"
 ARTIFACT_DIR="${TS_STORAGE_RAFT_ARTIFACT_DIR:-/tmp/temporalstore-storage-raft-production-$(date +%s)-$$}"
 TIMEOUT="${TS_STORAGE_RAFT_TIMEOUT:-120s}"
+PROFILE_ARGS=()
+if [[ "${TS_STORAGE_RAFT_PROFILE:-debug}" == "release" ]]; then
+  PROFILE_ARGS=(--release)
+fi
 
 cd "${ROOT}"
 export CARGO_TARGET_DIR="${TARGET_DIR}"
@@ -15,7 +19,7 @@ if [[ -n "${TS_CPP_REPO:-}" ]]; then
 fi
 
 echo "== 1/8 storage recovery/fault matrix hardening =="
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_fault_matrix_harness -- \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin storage_fault_matrix_harness -- \
   --root "${ARTIFACT_DIR}/storage-fault-matrix" \
   > "${ARTIFACT_DIR}/storage-fault-matrix.json"
 python3 tools/validate_aws_validation_log.py \
@@ -23,7 +27,7 @@ python3 tools/validate_aws_validation_log.py \
   --log "${ARTIFACT_DIR}/storage-fault-matrix.json"
 
 echo "== 2/8 slot dump/load atomicity and manifest rejection =="
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_production_harness -- \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin storage_production_harness -- \
   --root "${ARTIFACT_DIR}/storage-production" \
   > "${ARTIFACT_DIR}/storage-production.json"
 python3 tools/validate_aws_validation_log.py \
@@ -36,7 +40,7 @@ python3 tools/export_cpp_storage_migration_artifacts.py \
   > "${ARTIFACT_DIR}/storage-migration-artifacts-manifest.json"
 
 echo "== 4/8 follower-safe GC and cache pressure =="
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin storage_modes_harness \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin storage_modes_harness \
   > "${ARTIFACT_DIR}/storage-modes.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-storage-validation \
@@ -75,22 +79,22 @@ if ${TS_REQUIRE_STORAGE_RAFT_READY:-0} and not ready:
 PY
 
 echo "== 6/8 raft snapshot/restart/failover harness =="
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin distributed_raft_harness -- \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin distributed_raft_harness -- \
   --root "${ARTIFACT_DIR}/distributed-raft" \
   > "${ARTIFACT_DIR}/distributed-raft.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-raft-validation \
   --log "${ARTIFACT_DIR}/distributed-raft.json"
 
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin metaserver_raft_harness -- \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin metaserver_raft_harness -- \
   --root "${ARTIFACT_DIR}/metaserver-raft" \
   > "${ARTIFACT_DIR}/metaserver-raft.json"
 python3 tools/validate_aws_validation_log.py \
   --job temporalstore-metaserver-raft-validation \
   --log "${ARTIFACT_DIR}/metaserver-raft.json"
 
-cargo build -p temporalstore-rust --bins
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin raft_secondary_replication_harness -- \
+cargo build "${PROFILE_ARGS[@]}" -p temporalstore-rust --bins
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin raft_secondary_replication_harness -- \
   --root "${ARTIFACT_DIR}/raft-secondary" \
   --heartbeat-ms "${TS_STORAGE_RAFT_HEARTBEAT_MS:-25}" \
   > "${ARTIFACT_DIR}/raft-secondary.json"
@@ -112,7 +116,7 @@ python3 tools/run_cpp_raft_cases_on_rust.py \
 test -s "${ARTIFACT_DIR}/cpp-raft-cases-on-rust.json"
 
 echo "== 7/8 combined storage plus raft production harness =="
-timeout "${TIMEOUT}" cargo run -p temporalstore-rust --bin external_chaos_gate -- \
+timeout "${TIMEOUT}" cargo run "${PROFILE_ARGS[@]}" -p temporalstore-rust --bin external_chaos_gate -- \
   --root "${ARTIFACT_DIR}/external-chaos" \
   --profile quick \
   > "${ARTIFACT_DIR}/external-chaos.json"
