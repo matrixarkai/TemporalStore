@@ -95,6 +95,13 @@ timeout 900 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_cont
 - `docs/benchmarks/matrixark_ingestion_scale_20260626_fixed/matrixark_ingestion_100000_ingest_only.progress.json`
 - `docs/benchmarks/matrixark_ingestion_scale_20260626_fixed/matrixark_ingestion_100000_ingest_only.stdout`
 
+
+## Storage Mode Nuance
+
+`storage_options` are now dynamic at the MatrixArk API, audit, and report layer. Native C++/Rust benchmark runs also call `matrixark_backend_ready` before ingestion and record `backend_readiness`, `requested_storage_options`, `native_topology_storage_mode`, and `native_topology_storage_mode_confirmed`.
+
+That does not magically relaunch a data-node. For C++/Rust runs, the native TemporalStore topology still must be launched externally in the matching async/sync/Raft mode. To prove that in benchmark artifacts, pass `--topology-report-json` with the deployment/topology report, and use `--require-native-storage-mode-confirmed` for fail-closed parity runs.
+
 ## Remaining Work
 
 1. Run the same 1K/10K/100K sweep on C++ and Rust backends using native append paths.
