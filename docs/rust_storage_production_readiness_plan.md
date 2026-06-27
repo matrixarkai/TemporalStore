@@ -203,7 +203,10 @@ Rust now has a StorageManager-style background loop report that covers prepare, 
 expire, compact, and index-GC phases in one readiness surface. The loop builds dirty-slot and
 live/stale segment plans, ranks reclaim candidates, invalidates cache entries with byte accounting,
 sweeps TTL metadata, runs model-layout compaction, and prunes or rolls forward slot dump manifest
-state.
+state. Runtime loop reports also include per-stage pressure decisions with observed and threshold
+values for dirty slots, undumped oplog records, cache memory and disk bytes, stale segments,
+reclaimable physical bytes, expired records, index-GC manifest work, and foreground/background
+queue depth, so continuous stages cannot pass readiness with only static phase names.
 
 Rust now also has a merged dump/load ownership policy report. `StorageMergedDumpLoadPolicyReport`
 coordinates dirty-slot dump selection, slot dump manifest checksum and generation validation, load

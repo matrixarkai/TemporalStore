@@ -1422,6 +1422,80 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
     }
     assert!(report.pressure.dirty_slot_count >= 1);
     assert!(report.pressure.undumped_oplog_records >= 1);
+    assert_eq!(report.pressure_decisions.len(), 8, "{report:?}");
+    for stage in [
+        "prepare",
+        "reclaim_oplog",
+        "reclaim_memory",
+        "expire",
+        "reclaim_page",
+        "compact_pages",
+        "reclaim_index",
+        "reap_metrics",
+    ] {
+        let decision = report
+            .pressure_decisions
+            .iter()
+            .find(|decision| decision.stage == stage)
+            .unwrap_or_else(|| panic!("missing pressure decision {stage}: {report:?}"));
+        assert!(decision.enabled, "{decision:?}");
+        assert!(decision.executed, "{decision:?}");
+        assert!(!decision.signals.is_empty(), "{decision:?}");
+        assert!(decision.skip_reason.is_none(), "{decision:?}");
+    }
+    let reclaim_oplog = report
+        .pressure_decisions
+        .iter()
+        .find(|decision| decision.stage == "reclaim_oplog")
+        .unwrap();
+    assert!(reclaim_oplog.pressure_active, "{reclaim_oplog:?}");
+    assert!(reclaim_oplog
+        .signals
+        .iter()
+        .any(|signal| signal.name == "dirty_slot_count" && signal.over_threshold));
+    assert!(reclaim_oplog
+        .signals
+        .iter()
+        .any(|signal| signal.name == "undumped_oplog_records" && signal.over_threshold));
+    assert!(reclaim_oplog
+        .trigger_reasons
+        .iter()
+        .any(|reason| reason == "dirty_slot_pressure" || reason == "undumped_oplog_pressure"));
+    let reclaim_memory = report
+        .pressure_decisions
+        .iter()
+        .find(|decision| decision.stage == "reclaim_memory")
+        .unwrap();
+    assert!(reclaim_memory
+        .signals
+        .iter()
+        .any(|signal| signal.name == "cache_memory_bytes"));
+    assert!(reclaim_memory
+        .signals
+        .iter()
+        .any(|signal| signal.name == "cache_disk_bytes"));
+    let compact_pages = report
+        .pressure_decisions
+        .iter()
+        .find(|decision| decision.stage == "compact_pages")
+        .unwrap();
+    assert!(compact_pages
+        .signals
+        .iter()
+        .any(|signal| signal.name == "reclaimable_physical_bytes"));
+    let reclaim_index = report
+        .pressure_decisions
+        .iter()
+        .find(|decision| decision.stage == "reclaim_index")
+        .unwrap();
+    assert!(reclaim_index
+        .signals
+        .iter()
+        .any(|signal| signal.name == "manifest_prune_reasons"));
+    assert!(reclaim_index
+        .signals
+        .iter()
+        .any(|signal| signal.name == "install_roll_forward_reasons"));
     assert!(!report.lifecycle_plan.reclaim_candidates.is_empty());
     assert!(report.lifecycle_report.is_some());
     assert!(report.compaction_report.as_ref().unwrap().status.ok);

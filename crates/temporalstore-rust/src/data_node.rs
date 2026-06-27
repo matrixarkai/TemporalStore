@@ -491,6 +491,60 @@ fn default_storage_manager_stage_enabled() -> bool {
     true
 }
 
+fn storage_manager_pressure_signal(
+    name: &str,
+    observed: u64,
+    threshold: u64,
+) -> StorageManagerPressureSignal {
+    StorageManagerPressureSignal {
+        name: name.to_string(),
+        observed,
+        threshold,
+        over_threshold: observed >= threshold.max(1),
+    }
+}
+
+fn storage_manager_trigger_reasons(signals: &[(bool, &str)]) -> Vec<String> {
+    signals
+        .iter()
+        .filter_map(|(active, reason)| active.then(|| (*reason).to_string()))
+        .collect()
+}
+
+fn storage_manager_skip_reason(
+    enabled: bool,
+    pressure_active: bool,
+    stage: &str,
+) -> Option<String> {
+    if !enabled {
+        Some(format!("{stage}_disabled"))
+    } else if !pressure_active {
+        Some(format!("{stage}_no_pressure"))
+    } else {
+        None
+    }
+}
+
+fn storage_manager_pressure_decision(
+    stage: &str,
+    enabled: bool,
+    pressure_active: bool,
+    executed: bool,
+    signals: Vec<StorageManagerPressureSignal>,
+    trigger_reasons: Vec<String>,
+    skip_reason: Option<String>,
+) -> StorageManagerPressureDecision {
+    StorageManagerPressureDecision {
+        stage: stage.to_string(),
+        enabled,
+        pressure_active,
+        executed,
+        signals,
+        trigger_reasons,
+        skip_reason,
+    }
+}
+
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StorageManagerPressureSnapshot {
     pub shard_id: ShardId,
@@ -506,12 +560,33 @@ pub struct StorageManagerPressureSnapshot {
     pub foreground_queue_depth: usize,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerPressureSignal {
+    pub name: String,
+    pub observed: u64,
+    pub threshold: u64,
+    pub over_threshold: bool,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerPressureDecision {
+    pub stage: String,
+    pub enabled: bool,
+    pub pressure_active: bool,
+    pub executed: bool,
+    pub signals: Vec<StorageManagerPressureSignal>,
+    pub trigger_reasons: Vec<String>,
+    pub skip_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct StorageManagerLoopReport {
     pub shard_id: ShardId,
     pub pressure: StorageManagerPressureSnapshot,
     pub executed_stages: Vec<String>,
     pub skipped_stages: Vec<String>,
+    #[serde(default)]
+    pub pressure_decisions: Vec<StorageManagerPressureDecision>,
     pub lifecycle_plan: StorageLifecyclePlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_report: Option<StorageLifecycleReport>,
@@ -1602,6 +1677,7 @@ impl DataNodeRuntime {
         let (pressure, lifecycle_plan) = self.storage_manager_pressure_snapshot(shard_id, &options);
         let mut executed_stages = Vec::new();
         let mut skipped_stages = Vec::new();
+        let mut pressure_decisions = Vec::new();
         let mut lifecycle_report = None;
         let mut compaction_report = None;
         let mut gc_report = None;
@@ -1618,6 +1694,31 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("prepare_disabled".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "prepare",
+            options.enable_prepare,
+            true,
+            options.enable_prepare,
+            vec![
+                storage_manager_pressure_signal(
+                    "dirty_slot_count",
+                    pressure.dirty_slot_count as u64,
+                    options.dirty_slot_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "stale_page_segment_count",
+                    pressure.stale_page_segment_count as u64,
+                    options.stale_page_segment_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "background_queue_depth",
+                    pressure.background_queue_depth as u64,
+                    1,
+                ),
+            ],
+            vec!["continuous_prepare_plan_refresh".to_string()],
+            (!options.enable_prepare).then(|| "prepare_disabled".to_string()),
+        ));
 
         let dump_pressure = pressure.dirty_slot_count >= options.dirty_slot_pressure.max(1)
             || pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1);
@@ -1665,6 +1766,39 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_oplog_no_pressure".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reclaim_oplog",
+            options.enable_oplog_reclaim,
+            dump_pressure,
+            options.enable_oplog_reclaim && dump_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "dirty_slot_count",
+                    pressure.dirty_slot_count as u64,
+                    options.dirty_slot_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "undumped_oplog_records",
+                    pressure.undumped_oplog_records,
+                    options.min_undumped_oplog_records.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.dirty_slot_count >= options.dirty_slot_pressure.max(1),
+                    "dirty_slot_pressure",
+                ),
+                (
+                    pressure.undumped_oplog_records >= options.min_undumped_oplog_records.max(1),
+                    "undumped_oplog_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_oplog_reclaim,
+                dump_pressure,
+                "reclaim_oplog",
+            ),
+        ));
 
         if options.enable_memory_reclaim && cache_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
@@ -1692,6 +1826,39 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_memory_no_pressure".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reclaim_memory",
+            options.enable_memory_reclaim,
+            cache_pressure,
+            options.enable_memory_reclaim && cache_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "cache_memory_bytes",
+                    pressure.cache_memory_bytes,
+                    options.cache_memory_bytes_pressure.max(1),
+                ),
+                storage_manager_pressure_signal(
+                    "cache_disk_bytes",
+                    pressure.cache_disk_bytes,
+                    options.cache_disk_bytes_pressure.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.cache_memory_bytes >= options.cache_memory_bytes_pressure.max(1),
+                    "cache_memory_pressure",
+                ),
+                (
+                    pressure.cache_disk_bytes >= options.cache_disk_bytes_pressure.max(1),
+                    "cache_disk_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_memory_reclaim,
+                cache_pressure,
+                "reclaim_memory",
+            ),
+        ));
 
         if options.enable_expire {
             expired_records_removed = self.sweep_expired_records();
@@ -1704,6 +1871,23 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("expire_disabled".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "expire",
+            options.enable_expire,
+            expired_records_removed > 0,
+            options.enable_expire,
+            vec![storage_manager_pressure_signal(
+                "expired_records_removed",
+                expired_records_removed as u64,
+                1,
+            )],
+            if expired_records_removed > 0 {
+                vec!["expired_records_present".to_string()]
+            } else {
+                vec!["continuous_expiry_sweep".to_string()]
+            },
+            (!options.enable_expire).then(|| "expire_disabled".to_string()),
+        ));
 
         if options.enable_page_gc && stale_page_pressure {
             let retain_page_segments_from_id = lifecycle_plan
@@ -1741,6 +1925,49 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_page_no_pressure".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reclaim_page",
+            options.enable_page_gc,
+            stale_page_pressure,
+            options.enable_page_gc && stale_page_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "stale_page_segment_count",
+                    pressure.stale_page_segment_count as u64,
+                    options.stale_page_segment_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaim_candidate_count",
+                    pressure.reclaim_candidate_count as u64,
+                    options.stale_page_segment_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaimable_physical_bytes",
+                    pressure.reclaimable_physical_bytes,
+                    options.reclaimable_physical_bytes_pressure.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.stale_page_segment_count >= options.stale_page_segment_pressure.max(1),
+                    "stale_page_segment_pressure",
+                ),
+                (
+                    pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1),
+                    "reclaim_candidate_pressure",
+                ),
+                (
+                    pressure.reclaimable_physical_bytes
+                        >= options.reclaimable_physical_bytes_pressure.max(1),
+                    "reclaimable_physical_bytes_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_page_gc,
+                stale_page_pressure,
+                "reclaim_page",
+            ),
+        ));
 
         if options.enable_page_compaction && stale_page_pressure {
             let response = run_compaction_inner(&self.inner, CompactionRequest { shard_id });
@@ -1759,7 +1986,53 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("compact_pages_no_pressure".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "compact_pages",
+            options.enable_page_compaction,
+            stale_page_pressure,
+            options.enable_page_compaction && stale_page_pressure,
+            vec![
+                storage_manager_pressure_signal(
+                    "stale_page_segment_count",
+                    pressure.stale_page_segment_count as u64,
+                    options.stale_page_segment_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaim_candidate_count",
+                    pressure.reclaim_candidate_count as u64,
+                    options.stale_page_segment_pressure.max(1) as u64,
+                ),
+                storage_manager_pressure_signal(
+                    "reclaimable_physical_bytes",
+                    pressure.reclaimable_physical_bytes,
+                    options.reclaimable_physical_bytes_pressure.max(1),
+                ),
+            ],
+            storage_manager_trigger_reasons(&[
+                (
+                    pressure.stale_page_segment_count >= options.stale_page_segment_pressure.max(1),
+                    "stale_page_segment_pressure",
+                ),
+                (
+                    pressure.reclaim_candidate_count >= options.stale_page_segment_pressure.max(1),
+                    "reclaim_candidate_pressure",
+                ),
+                (
+                    pressure.reclaimable_physical_bytes
+                        >= options.reclaimable_physical_bytes_pressure.max(1),
+                    "reclaimable_physical_bytes_pressure",
+                ),
+            ]),
+            storage_manager_skip_reason(
+                options.enable_page_compaction,
+                stale_page_pressure,
+                "compact_pages",
+            ),
+        ));
 
+        let index_gc_pressure = lifecycle_plan.reasons.iter().any(|reason| {
+            reason == "slot_dump_manifest_prune" || reason == "slot_dump_install_roll_forward_check"
+        });
         if options.enable_index_gc {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
@@ -1783,12 +2056,72 @@ impl DataNodeRuntime {
         } else {
             skipped_stages.push("reclaim_index_disabled".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reclaim_index",
+            options.enable_index_gc,
+            index_gc_pressure,
+            options.enable_index_gc,
+            vec![
+                storage_manager_pressure_signal(
+                    "manifest_prune_reasons",
+                    lifecycle_plan
+                        .reasons
+                        .iter()
+                        .filter(|reason| reason.as_str() == "slot_dump_manifest_prune")
+                        .count() as u64,
+                    1,
+                ),
+                storage_manager_pressure_signal(
+                    "install_roll_forward_reasons",
+                    lifecycle_plan
+                        .reasons
+                        .iter()
+                        .filter(|reason| reason.as_str() == "slot_dump_install_roll_forward_check")
+                        .count() as u64,
+                    1,
+                ),
+            ],
+            if index_gc_pressure {
+                lifecycle_plan
+                    .reasons
+                    .iter()
+                    .filter(|reason| {
+                        reason.as_str() == "slot_dump_manifest_prune"
+                            || reason.as_str() == "slot_dump_install_roll_forward_check"
+                    })
+                    .cloned()
+                    .collect()
+            } else {
+                vec!["continuous_index_gc_safety_check".to_string()]
+            },
+            (!options.enable_index_gc).then(|| "reclaim_index_disabled".to_string()),
+        ));
 
         if options.enable_metrics_reap {
             executed_stages.push("reap_metrics".to_string());
         } else {
             skipped_stages.push("reap_metrics_disabled".to_string());
         }
+        pressure_decisions.push(storage_manager_pressure_decision(
+            "reap_metrics",
+            options.enable_metrics_reap,
+            true,
+            options.enable_metrics_reap,
+            vec![
+                storage_manager_pressure_signal(
+                    "foreground_queue_depth",
+                    pressure.foreground_queue_depth as u64,
+                    1,
+                ),
+                storage_manager_pressure_signal(
+                    "background_queue_depth",
+                    pressure.background_queue_depth as u64,
+                    1,
+                ),
+            ],
+            vec!["continuous_metrics_reap".to_string()],
+            (!options.enable_metrics_reap).then(|| "reap_metrics_disabled".to_string()),
+        ));
 
         self.inner
             .stats
@@ -1801,6 +2134,7 @@ impl DataNodeRuntime {
             pressure,
             executed_stages,
             skipped_stages,
+            pressure_decisions,
             lifecycle_plan,
             lifecycle_report,
             expired_records_removed,
