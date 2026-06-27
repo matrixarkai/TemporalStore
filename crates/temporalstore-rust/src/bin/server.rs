@@ -223,6 +223,9 @@ fn main() {
                 append_ingestion_metrics(&mut metrics, &engine);
                 append_runtime_metrics(&mut metrics, &runtime);
                 append_replica_replay_metrics(&mut metrics, &replica_replay_loop.status());
+                if let Some(raft_state) = &raft_state {
+                    metrics.push_str(&raft_state.runtime.cluster().prometheus_metrics());
+                }
                 (200, metrics.into_bytes())
             }
             ("GET", "/server/info") => json_response(200, &engine.loaded_shard_stats()),
@@ -4289,6 +4292,13 @@ mod tests {
             .peer_pipeline_states
             .iter()
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+
+        let metrics = state.runtime.cluster().prometheus_metrics();
+        assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     }
 
     // shared-corpus: server_raft_membership_apply_route

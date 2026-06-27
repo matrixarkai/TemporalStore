@@ -6933,7 +6933,13 @@ impl RaftCluster {
     }
 
     pub fn prometheus_metrics(&self) -> String {
-        raft_status_prometheus("data", self.status())
+        let mut out = raft_status_prometheus("data", self.status());
+        append_byteraft_runtime_admin_prometheus(
+            &mut out,
+            "data",
+            self.byteraft_runtime_admin_report(),
+        );
+        out
     }
 
     pub fn live_replica_ids(&self) -> Vec<RaftNodeId> {
@@ -8454,6 +8460,196 @@ fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
         );
     }
     out
+}
+
+fn append_byteraft_runtime_admin_prometheus(
+    out: &mut String,
+    kind: &str,
+    report: ByteRaftRuntimeAdminReport,
+) {
+    out.push_str("# HELP temporalstore_raft_byteraft_ready Whether ByteRaft-style production runtime evidence is complete.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_ready gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_ready",
+        &[("kind", kind.to_string())],
+        u64::from(report.ready),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_read_index_validated Whether read-index evidence was validated.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_validated gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_read_index_validated",
+        &[("kind", kind.to_string())],
+        u64::from(report.read_index_validated),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_validated Whether lease-read evidence was validated.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_validated gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_lease_read_validated",
+        &[("kind", kind.to_string())],
+        u64::from(report.lease_read_validated),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_stale_follower_read_rejected Whether stale follower reads are rejected.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_stale_follower_read_rejected gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_stale_follower_read_rejected",
+        &[("kind", kind.to_string())],
+        u64::from(report.stale_follower_read_rejected),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_stale_follower_write_rejected Whether stale follower writes are rejected.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_stale_follower_write_rejected gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_stale_follower_write_rejected",
+        &[("kind", kind.to_string())],
+        u64::from(report.stale_follower_write_rejected),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_append_backpressure_enforced Whether append pipeline backpressure evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_append_backpressure_enforced gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_append_backpressure_enforced",
+        &[("kind", kind.to_string())],
+        u64::from(report.append_backpressure_enforced),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_reorder_queue_enabled Whether per-peer reorder queue evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_reorder_queue_enabled gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_reorder_queue_enabled",
+        &[("kind", kind.to_string())],
+        u64::from(report.reorder_queue_enabled),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_sender_lifecycle_present Whether snapshot sender lifecycle evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_sender_lifecycle_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_sender_lifecycle_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_sender_lifecycle_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present Whether snapshot downloader lifecycle evidence is present.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present gauge\n",
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_downloader_lifecycle_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_retry_backpressure_present Whether snapshot retry/backpressure evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_retry_backpressure_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_retry_backpressure_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_retry_backpressure_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_segment_lifecycle_present Whether WAL segment lifecycle evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_segment_lifecycle_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_segment_lifecycle_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.wal_segment_lifecycle_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_segment_count WAL segments retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_segment_count gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_segment_count",
+        &[("kind", kind.to_string())],
+        report.wal_segment_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_match_index ByteRaft-style per-peer match index.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_match_index gauge\n");
+    out.push_str(
+        "# HELP temporalstore_raft_byteraft_peer_next_index ByteRaft-style per-peer next index.\n",
+    );
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_next_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_entries ByteRaft-style per-peer inflight entries.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_entries gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_bytes ByteRaft-style per-peer inflight bytes.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_bytes gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_queue_depth ByteRaft-style per-peer append queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_queue_depth ByteRaft-style per-peer reorder queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_sending Whether a peer is sending a snapshot.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_sending gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installing Whether a peer is installing a snapshot.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installing gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installed_index Last installed snapshot index per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installed_index gauge\n");
+    for peer in report.peer_pipeline_states {
+        let labels = &[
+            ("kind", kind.to_string()),
+            ("node_id", peer.peer_id.to_string()),
+            ("role", format!("{:?}", peer.role).to_ascii_lowercase()),
+            (
+                "replica_role",
+                format!("{:?}", peer.replica_role).to_ascii_lowercase(),
+            ),
+        ];
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_match_index",
+            labels,
+            peer.match_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_next_index",
+            labels,
+            peer.next_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_inflight_entries",
+            labels,
+            peer.inflight_entries,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_inflight_bytes",
+            labels,
+            peer.inflight_bytes,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_append_queue_depth",
+            labels,
+            peer.append_queue_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_queue_depth",
+            labels,
+            peer.reorder_queue_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_sending",
+            labels,
+            u64::from(peer.snapshot_sending),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_installing",
+            labels,
+            u64::from(peer.snapshot_installing),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_installed_index",
+            labels,
+            peer.snapshot_installed_index,
+        );
+    }
 }
 
 fn push_raft_metric(out: &mut String, name: &str, labels: &[(&str, String)], value: u64) {

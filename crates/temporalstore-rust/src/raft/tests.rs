@@ -2073,6 +2073,16 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .peer_pipeline_states
         .iter()
         .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_validated"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_validated"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_stale_follower_write_rejected"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
 }
 
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
