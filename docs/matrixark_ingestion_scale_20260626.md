@@ -96,6 +96,34 @@ timeout 900 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_cont
 - `docs/benchmarks/matrixark_ingestion_scale_20260626_fixed/matrixark_ingestion_100000_ingest_only.stdout`
 
 
+
+## Message Ingestion Storage Route Options
+
+Message ingestion can now request one of four compact native write routes:
+
+```json
+{"storage_options": {"route": "shared_store_async"}}
+{"storage_options": {"route": "shared_store_sync"}}
+{"storage_options": {"route": "raft_async"}}
+{"storage_options": {"route": "raft_sync"}}
+```
+
+The same request can also use expanded fields:
+
+```json
+{
+  "storage_options": {
+    "storage_mode": "raft",
+    "replication_mode": "raft",
+    "oplog_mode": "sync",
+    "raft_mode": true,
+    "consistency": "linearizable"
+  }
+}
+```
+
+MatrixArk normalizes either form into `storage_route` and attaches it to hot records, debug/audit context, and C++/Rust batch-write entries. The native backend can use `storage_route.route_key` to dispatch to shared-store async/sync or Raft async/sync paths. Benchmark parity still requires the actual C++/Rust data-node topology to be launched in the same route and proven with `--topology-report-json` when using fail-closed parity mode.
+
 ## Storage Mode Nuance
 
 `storage_options` are now dynamic at the MatrixArk API, audit, and report layer. Native C++/Rust benchmark runs also call `matrixark_backend_ready` before ingestion and record `backend_readiness`, `requested_storage_options`, `native_topology_storage_mode`, and `native_topology_storage_mode_confirmed`.
