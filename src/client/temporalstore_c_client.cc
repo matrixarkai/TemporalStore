@@ -165,22 +165,51 @@ double SparseScore(const std::unordered_set<std::string>& query_terms, const std
     return static_cast<double>(matched) / static_cast<double>(std::max<size_t>(1, query_terms.size()));
 }
 
+bool ScopeKeyExplicit(const rapidjson::Value& scope, const char* field) {
+    if (!scope.IsObject() || !scope.HasMember("_explicit_scope_keys") || !scope["_explicit_scope_keys"].IsArray()) {
+        return false;
+    }
+    for (const auto& item : scope["_explicit_scope_keys"].GetArray()) {
+        if (item.IsString() && std::string(item.GetString()) == field) {
+            return true;
+        }
+    }
+    return false;
+}
+
 bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope) {
     if (scope == nullptr || !scope->IsObject()) {
         return true;
     }
     const rapidjson::Value* record_scope = JsonObjectMember(record, "scope");
-    for (const char* field : {"scope_key", "account_id", "tenant_id", "user_id", "session_id"}) {
+    const rapidjson::Value* access_scope = JsonObjectMember(record, "access_scope");
+    const rapidjson::Value* metadata = JsonObjectMember(record, "metadata");
+    const rapidjson::Value* metadata_access = metadata == nullptr ? nullptr : JsonObjectMember(*metadata, "access_scope");
+    const rapidjson::Value* scopes[] = {&record, access_scope, metadata_access, record_scope};
+    for (const char* field : {"scope_key", "account_id", "tenant_id", "user_id", "session_id", "team", "project", "agent_name"}) {
         if (!scope->HasMember(field) || !(*scope)[field].IsString()) {
+            continue;
+        }
+        std::string field_name(field);
+        if ((field_name == "account_id" || field_name == "tenant_id" || field_name == "user_id" || field_name == "session_id") && !ScopeKeyExplicit(*scope, field)) {
+            continue;
+        }
+        if ((field_name == "team" || field_name == "project" || field_name == "agent_name") && !ScopeKeyExplicit(*scope, field)) {
             continue;
         }
         std::string expected = (*scope)[field].GetString();
         if (expected.empty()) {
             continue;
         }
-        std::string actual = JsonStringMember(record, field);
-        if (actual.empty() && record_scope != nullptr) {
-            actual = JsonStringMember(*record_scope, field);
+        std::string actual;
+        for (const rapidjson::Value* candidate_scope : scopes) {
+            if (candidate_scope == nullptr || !candidate_scope->IsObject()) {
+                continue;
+            }
+            actual = JsonStringMember(*candidate_scope, field);
+            if (!actual.empty()) {
+                break;
+            }
         }
         if (!actual.empty() && actual != expected) {
             return false;

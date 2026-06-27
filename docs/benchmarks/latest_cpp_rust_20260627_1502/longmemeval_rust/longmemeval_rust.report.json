@@ -1,0 +1,121 @@
+{
+  "artifacts": {
+    "context_pack_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.context_packs.jsonl",
+    "hypotheses_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.hypotheses.jsonl",
+    "judge_jsonl": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.judge.jsonl",
+    "progress_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.progress.json",
+    "report_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.report.json",
+    "report_markdown": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.report.md",
+    "result_json": "docs/benchmarks/latest_cpp_rust_20260627_1502/longmemeval_rust/longmemeval_rust.result.json"
+  },
+  "dataset": {
+    "answerable_questions_run": 10,
+    "name": "longmemeval_s",
+    "questions_run": 10,
+    "sessions": 200,
+    "source_path": "/root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json",
+    "turns_ingested": 2042,
+    "version": "longmemeval_s_cleaned_official_hf.json"
+  },
+  "failure_categories": {
+    "answer_density_miss": 0,
+    "compression_hidden_answer": 0,
+    "context_recall_miss": 0,
+    "evidence_miss_with_context": 9,
+    "evidence_session_miss": 9,
+    "reader_exact_substring_miss": 8,
+    "reader_miss_with_evidence": 0,
+    "reader_support_miss": 5,
+    "retrieval_miss": 0,
+    "temporal_or_entity_miss": 0,
+    "token_budget_pressure": 10
+  },
+  "finished_at_ms": 1782598125334,
+  "latency": {
+    "avg_answer_bearing_tokens": 25.4,
+    "avg_latency_ms": 1613.4816598016187,
+    "avg_prompt_tokens": 10000,
+    "ingestion_elapsed_ms": 11932,
+    "ingestion_throughput_turns_per_sec": 171.136,
+    "p50_latency_ms": 1519.0778670075815,
+    "p95_latency_ms": 1916.7159759963397
+  },
+  "models": {
+    "embedding_execution_mode": "runtime_unconfirmed",
+    "embedding_fallback_used": false,
+    "embedding_model": "matrixark-local-token-hash-v1",
+    "embedding_model_path": "",
+    "embedding_provider": "hash",
+    "fallback_used": false,
+    "judge_model": "matrixark-local-support-v1",
+    "judge_provider": "deterministic",
+    "reader_model": "matrixark-context-substring-v1",
+    "reader_provider": "deterministic",
+    "runtime_embedding_model": "",
+    "runtime_embedding_model_confirmed": false,
+    "warnings": [
+      "MCP response did not include query_embedding_model; using configured embedding model in report",
+      "runtime_embedding_model_confirmed=false"
+    ]
+  },
+  "retrieval_config": {
+    "batch_size": 20,
+    "direct_audit_mode": "buffered",
+    "direct_record_bundle_max_bytes": 65536,
+    "direct_write_backoff_ms": 100,
+    "direct_write_retries": 8,
+    "ingest_mode": "batch",
+    "ingest_pause_ms": 0,
+    "io_timeout_ms": 60000,
+    "judge_execution_mode": "deterministic",
+    "max_message_chars": 1600,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "packing_policy": "question_type_aware",
+    "reader_execution_mode": "deterministic",
+    "request_timeout_ms": 60000,
+    "storage_log_mode": "sharded_compact_count_log",
+    "storage_options": {
+      "oplog_mode": "async",
+      "raft_mode": false,
+      "replication_mode": "shared_store",
+      "storage_mode": "multi_node"
+    },
+    "storage_prefix": "matrixark:dataset:longmemeval_s:longmemeval_rust",
+    "table": "deploy_table",
+    "temporalstore_backend": "temporalstore-rust",
+    "token_budget": 10000
+  },
+  "scores": {
+    "answer_bearing_token_density": 0.00254,
+    "answer_hit": 0.2,
+    "answer_quality_under_budget": 0.5,
+    "answer_support_hit": 0.5,
+    "compression_answer_hidden_count": 0,
+    "compression_safety_gate": {
+      "enabled": true,
+      "policy": "compressed windows must retain source_event_ids; raw source events remain replayable; benchmarks fail on hidden-answer evidence when detected",
+      "source": "ContextCompressionEvent.compression_safety + ContextPackAudit selected/dropped refs"
+    },
+    "compression_safety_passed": true,
+    "context_recall": 1.0,
+    "evidence_session_recall": 0.1,
+    "final_judge_score": 0.5,
+    "judge_score_per_1k_tokens": 0.05
+  },
+  "started_at_ms": 1782598097116,
+  "token_efficiency": {
+    "answer_bearing_token_density": 0.00254,
+    "answer_bearing_tokens": 254,
+    "answer_bearing_tokens_per_question": 25.4,
+    "dropped_token_categories": {
+      "dropped_duplicate_tokens": 0,
+      "dropped_low_score_tokens": 0,
+      "dropped_over_budget_tokens": 0,
+      "dropped_raw_l2_tokens": 0,
+      "dropped_stale_tokens": 0,
+      "dropped_summary_tokens": 0
+    },
+    "selected_tokens": 100000
+  }
+}
