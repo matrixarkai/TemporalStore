@@ -141,15 +141,13 @@ def _latency_quantile_from_bucket_map(buckets: dict[str, Any], total: int, quant
     return previous
 
 class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
-    """MatrixArk storage adapter backed by the native C++ TemporalStore SDK.
+    """MatrixArk adapter backed by C++ TemporalStore proxy or direct SDK.
 
-    The MCP extraction, node/summary/event mapping, traversal scoring, feedback,
-    and replay logic still live in this process. Only the record log boundary is
-    replaced: every MatrixArk record is persisted as a TemporalStore hash field.
-    New prefixes use a compact sharded append log: hash field = zero-padded
-    sequence within a shard, hash key = records:<shard>, and a tiny string key
-    stores the global record count. Older prefixes that still have a JSON
-    record_index are read through the legacy path.
+    Python stays as API/auth/model orchestration. Production retrieval should
+    call native C++ proxy/direct APIs for append, prefix scan, secondary-index
+    prefiltering, scoring, and ContextPack assembly. Direct SDK remains the
+    embedded/local path; MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT selects the
+    proxy boundary.
     """
 
     def __init__(
@@ -169,27 +167,41 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._context_node_cache_loaded = True
         sdk_root = Path(__file__).resolve().parents[1] / "sdk" / "python"
         sys.path.insert(0, str(sdk_root))
-        from temporalstore import Client, Options  # type: ignore
+        from temporalstore import Client, Options, ProxyClient, ProxyOptions  # type: ignore
 
-        options = Options(
-            metaserver_addr=metaserver,
-            namespace_name=namespace,
-            table_name=table,
-            request_timeout_ms=request_timeout_ms,
-            io_timeout_ms=io_timeout_ms,
-            max_read_retries=2,
-            max_write_retries=1,
-        )
-        self._client = Client(options, library_path=library_path or None)
-        self._matrixark_native_batch_append_available = bool(
-            getattr(getattr(self._client, "_native", None), "has_matrixark_batch_append_records", False)
-        )
-        self._matrixark_append_write_path = (
-            "native_c_api_hash_mset_grouped"
-            if self._matrixark_native_batch_append_available
-            else "fallback_python_batch_hset_loop"
-        )
+        proxy_endpoint = os.environ.get("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", "").strip()
+        self._cpp_proxy_endpoint = proxy_endpoint
+        if proxy_endpoint:
+            proxy_options = ProxyOptions(
+                endpoint=proxy_endpoint,
+                namespace_name=namespace,
+                table_name=table,
+                timeout_seconds=max(1.0, request_timeout_ms / 1000.0),
+            )
+            self._client = ProxyClient(proxy_options)
+            self._matrixark_native_batch_append_available = True
+            self._matrixark_append_write_path = "cpp_proxy_matrixark_batch_append_records"
+        else:
+            options = Options(
+                metaserver_addr=metaserver,
+                namespace_name=namespace,
+                table_name=table,
+                request_timeout_ms=request_timeout_ms,
+                io_timeout_ms=io_timeout_ms,
+                max_read_retries=2,
+                max_write_retries=1,
+            )
+            self._client = Client(options, library_path=library_path or None)
+            self._matrixark_native_batch_append_available = bool(
+                getattr(getattr(self._client, "_native", None), "has_matrixark_batch_append_records", False)
+            )
+            self._matrixark_append_write_path = (
+                "native_c_api_hash_mset_grouped"
+                if self._matrixark_native_batch_append_available
+                else "fallback_python_batch_hset_loop"
+            )
         self._matrixark_append_uses_per_record_hset = not self._matrixark_native_batch_append_available
+        self._matrixark_proxy_mode = bool(proxy_endpoint)
         # C++ has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
         # but the generic JSON record-log adapter still persists through the
         # MatrixArk batch hash API. Keep this explicit in metrics/reports so the
@@ -298,7 +310,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             )
 
     def _backend_label(self) -> str:
-        return "temporalstore-cpp"
+        return "temporalstore-cpp-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "temporalstore-cpp"
 
     def python_hot_cache_enabled(self) -> bool:
         return python_hot_cache_allowed(backend_label=self._backend_label())
@@ -536,7 +548,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "context_pack_telemetry": True,
             },
             "metrics": {
-                "mode": "direct-sdk",
+                "mode": "cpp-proxy" if getattr(self, "_matrixark_proxy_mode", False) else "direct-sdk",
+                "cpp_proxy_endpoint": getattr(self, "_cpp_proxy_endpoint", ""),
                 "metaserver": self._metaserver,
                 "namespace": self._namespace,
                 "table": self._table,

@@ -2420,6 +2420,34 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def matrixark_retrieve_context_pack", python_sdk)
         self.assertIn("has_matrixark_retrieve_context_pack", python_sdk)
 
+    def test_cpp_sdk_exposes_native_candidate_prefilter_boundary(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        header = (repo / "src/client/temporalstore_c_client.h").read_text()
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+        python_sdk = (repo / "sdk/python/temporalstore/client.py").read_text()
+
+        self.assertIn("temporalstore_matrixark_scan_candidates", header)
+        self.assertIn("MatrixArkScanCandidatesNative", source)
+        self.assertIn("native_candidate_prefilter", source)
+        self.assertIn("def matrixark_scan_candidates", python_sdk)
+        self.assertIn("has_matrixark_scan_candidates", python_sdk)
+
+    def test_proxy_contract_exposes_matrixark_native_hot_path(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        openapi = (repo / "sdk/proxy/openapi.yaml").read_text()
+        proxy_client = (repo / "sdk/python/temporalstore/proxy_client.py").read_text()
+        adapter = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
+
+        self.assertIn("/v1/matrixark/append_records", openapi)
+        self.assertIn("/v1/matrixark/scan_candidates", openapi)
+        self.assertIn("/v1/matrixark/retrieve_context_pack", openapi)
+        self.assertIn("MatrixArkScanCandidatesRequest", openapi)
+        self.assertIn("MatrixArkRetrieveContextPackRequest", openapi)
+        self.assertIn("def matrixark_scan_candidates", proxy_client)
+        self.assertIn("def matrixark_retrieve_context_pack", proxy_client)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", adapter)
+        self.assertIn("cpp_proxy_matrixark_batch_append_records", adapter)
+
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
         result = adapter._run_backend_readiness_gate(reason="unit-metaserver-down", timeout_ms=1)

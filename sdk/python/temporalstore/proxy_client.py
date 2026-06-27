@@ -71,9 +71,16 @@ class ProxyClient:
         count_value: Optional[str] = None,
         append_options: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.batch_hset(entries)
-        if count_key is not None and count_value is not None:
-            self.put_string(count_key, count_value)
+        body: Dict[str, Any] = {
+            "namespace": self.options.namespace_name,
+            "table": self.options.table_name,
+            "entries": list(entries),
+        }
+        if count_key is not None:
+            body["count_key"] = count_key
+        if count_value is not None:
+            body["count_value"] = count_value
+        self._post("/v1/matrixark/append_records", body)
 
     def matrixark_append_records(
         self,
@@ -89,6 +96,48 @@ class ProxyClient:
             count_value=count_value,
             append_options=append_options,
         )
+
+    def matrixark_scan_candidates(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        scope: Dict[str, Any],
+        record_types: List[str],
+        secondary_index_groups: List[List[str]],
+        selected_node_hashes: List[int],
+    ) -> Dict[str, Any]:
+        body = {
+            "namespace": self.options.namespace_name,
+            "table": self.options.table_name,
+            "count_key": count_key,
+            "record_hash_key": record_hash_key,
+            "shard_size": int(shard_size),
+            "scope": scope,
+            "record_types": record_types,
+            "secondary_index_groups": secondary_index_groups,
+            "selected_node_hashes": selected_node_hashes,
+        }
+        return self._post("/v1/matrixark/scan_candidates", body)
+
+    def matrixark_retrieve_context_pack(
+        self,
+        *,
+        count_key: str,
+        record_hash_key: str,
+        shard_size: int,
+        request: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        body = {
+            "namespace": self.options.namespace_name,
+            "table": self.options.table_name,
+            "count_key": count_key,
+            "record_hash_key": record_hash_key,
+            "shard_size": int(shard_size),
+            "request": request,
+        }
+        return self._post("/v1/matrixark/retrieve_context_pack", body)
 
     def hget(self, key: str, field: str) -> str:
         body = self._key_body(key)
