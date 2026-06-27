@@ -1,0 +1,162 @@
+{
+  "after_report": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/matrixark_retrieve_resource_scale.json",
+  "after_resource_imports": [
+    {
+      "elapsed_ms": 15449.456,
+      "file_count": null,
+      "name": "large_pdf",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "pdf",
+      "resource_version": null,
+      "size_bytes": 5788,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 20957.663,
+      "file_count": null,
+      "name": "large_csv",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "csv",
+      "resource_version": null,
+      "size_bytes": 14727,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 2472.951,
+      "file_count": 10,
+      "name": "repo_directory",
+      "raw_storage_policy": null,
+      "repeat_index": 0,
+      "resource_chunk_count": null,
+      "resource_deduped_chunk_count": null,
+      "resource_fact_entity_count": 0,
+      "resource_fact_event_count": 0,
+      "resource_original_chunk_count": null,
+      "resource_parse_warning_count": null,
+      "resource_type": "directory",
+      "resource_version": null,
+      "size_bytes": null,
+      "status": "queued"
+    },
+    {
+      "elapsed_ms": 0.0,
+      "name": "post_resource_summary_refresh",
+      "reason": "resource_import_wait_false_tasks_queued",
+      "status": "skipped"
+    }
+  ],
+  "after_retrieve_sweep": [
+    {
+      "avg_selected_refs": 41.75,
+      "avg_used_context_tokens": 494.75,
+      "elapsed_sec": 0.963,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 408.545,
+        "count": 8,
+        "max": 577.66,
+        "p50": 429.596,
+        "p95": 577.66,
+        "p99": 577.66
+      },
+      "max_context_tokens": 700,
+      "qps": 8.305,
+      "status": "passed",
+      "total_ops": 8,
+      "workers": 4
+    },
+    {
+      "avg_selected_refs": 35.375,
+      "avg_used_context_tokens": 412.375,
+      "elapsed_sec": 7.583,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 3254.86,
+        "count": 16,
+        "max": 5168.227,
+        "p50": 3034.126,
+        "p95": 4876.252,
+        "p99": 5168.227
+      },
+      "max_context_tokens": 700,
+      "qps": 2.11,
+      "status": "passed",
+      "total_ops": 16,
+      "workers": 8
+    },
+    {
+      "avg_selected_refs": 13.062,
+      "avg_used_context_tokens": 512.719,
+      "elapsed_sec": 23.347,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 9410.093,
+        "count": 32,
+        "max": 13720.94,
+        "p50": 9438.426,
+        "p95": 12206.698,
+        "p99": 13720.94
+      },
+      "max_context_tokens": 700,
+      "qps": 1.371,
+      "status": "passed",
+      "total_ops": 32,
+      "workers": 16
+    },
+    {
+      "avg_selected_refs": 8,
+      "avg_used_context_tokens": 521.312,
+      "elapsed_sec": 39.287,
+      "error_count": 0,
+      "errors": [],
+      "latency_ms": {
+        "avg": 18066.065,
+        "count": 64,
+        "max": 22304.811,
+        "p50": 17168.799,
+        "p95": 21842.026,
+        "p99": 22302.055
+      },
+      "max_context_tokens": 700,
+      "qps": 1.629,
+      "status": "passed",
+      "total_ops": 64,
+      "workers": 32
+    }
+  ],
+  "after_status": "passed",
+  "before_context_pack_audit_records": 116,
+  "before_timeout_partial_or_deadline_count": 0,
+  "before_trace": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl",
+  "fixes": [
+    "process-wide local JSONL read cache shared by short-lived adapters",
+    "optional zero-copy local cache for synthetic scale runners",
+    "retrieval scale runner uses telemetry-only visibility and disables recall reinforcement writes",
+    "resource scale runner uses wait=false queued imports by default",
+    "resource enqueue skips prior-context scan",
+    "storage route validation enforces exactly one storage_family/write_mode path",
+    "live C++/Rust adapters fail fast if requested storage_family is not configured"
+  ],
+  "remaining_notes": [
+    "32-worker local JSONL retrieval is still high latency; production proof should use native C++/Rust prefix scan and batch append paths.",
+    "Synchronous resource parsing/extraction remains available with --resource-wait but is intentionally not the default for large-resource scale tests."
+  ],
+  "status": "fixed_for_local_scale_runner"
+}

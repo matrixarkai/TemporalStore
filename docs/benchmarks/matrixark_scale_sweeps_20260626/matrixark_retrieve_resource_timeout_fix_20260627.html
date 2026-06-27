@@ -1,0 +1,52 @@
+<!doctype html><meta charset='utf-8'><title>MatrixArk Retrieve Resource Timeout Fix</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;line-height:1.45;color:#172033}table{border-collapse:collapse;width:100%;margin:16px 0}td,th{border:1px solid #d7deea;padding:7px 9px}th{background:#eef3fa}code{background:#edf2f7;padding:2px 4px;border-radius:4px}pre{white-space:pre-wrap}</style><pre># MatrixArk Retrieve/Resource Timeout Fix - 2026-06-27
+
+## Result
+
+Status: `fixed_for_local_scale_runner`
+
+The previous local retrieval/resource sweep produced many partial/deadline ContextPack traces and could time out under 4/8/16/32 workers. The fixed local run now completes with status `passed` and zero retrieve errors.
+
+## Before Signal
+
+- Trace: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl`
+- ContextPack audit records: `116`
+- Partial/deadline ContextPacks detected in old trace: `0`
+
+## Fixed Run
+
+- Report JSON: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/matrixark_retrieve_resource_scale.json`
+- Event log: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale_fixed_async_pass/matrixark_retrieve_resource_scale.jsonl`
+- Seed events: `1000`
+- Resource mode: `wait=false` queued imports by default
+
+| Workers | Status | Ops | QPS | p50 ms | p95 ms | p99 ms | Errors |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | passed | 8 | 8.305 | 429.596 | 577.66 | 577.66 | 0 |
+| 8 | passed | 16 | 2.11 | 3034.126 | 4876.252 | 5168.227 | 0 |
+| 16 | passed | 32 | 1.371 | 9438.426 | 12206.698 | 13720.94 | 0 |
+| 32 | passed | 64 | 1.629 | 17168.799 | 21842.026 | 22302.055 | 0 |
+
+## Resource Import Queue
+
+| Resource | Status | Type | Enqueue ms |
+| --- | --- | --- | ---: |
+| large_pdf | queued | pdf | 15449.456 |
+| large_csv | queued | csv | 20957.663 |
+| repo_directory | queued | directory | 2472.951 |
+| post_resource_summary_refresh | skipped |  | 0.0 |
+
+## Code Fixes
+
+- process-wide local JSONL read cache shared by short-lived adapters
+- optional zero-copy local cache for synthetic scale runners
+- retrieval scale runner uses telemetry-only visibility and disables recall reinforcement writes
+- resource scale runner uses wait=false queued imports by default
+- resource enqueue skips prior-context scan
+- storage route validation enforces exactly one storage_family/write_mode path
+- live C++/Rust adapters fail fast if requested storage_family is not configured
+
+## Remaining Production Note
+
+- 32-worker local JSONL retrieval is still high latency; production proof should use native C++/Rust prefix scan and batch append paths.
+- Synchronous resource parsing/extraction remains available with --resource-wait but is intentionally not the default for large-resource scale tests.
+</pre>

@@ -2863,6 +2863,9 @@ def canonical_storage_route(storage_options: Json | None) -> Json:
         "background_write": background_write,
         "write_ack_policy": "ack_after_durable_commit" if write_mode == "sync" else "ack_after_memory_append",
         "native_backend_decides_route": True,
+        "selected_storage_family": backend_family,
+        "selected_write_mode": write_mode,
+        "durability_result": "durable_before_ack" if write_mode == "sync" else "accepted_for_async_durability",
     }
 
 
@@ -2928,6 +2931,13 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
             raise MatrixArkError(f"storage_options.{key} must be one of {sorted(allowed[key])}")
         normalized[key] = compact
     storage_family = normalized.get("storage_family") or normalized.get("family")
+    explicit_modes = {
+        str(value)
+        for value in (normalized.get("storage_mode"), normalized.get("replication_mode"), storage_family)
+        if value in {"shared_store", "raft"}
+    }
+    if len(explicit_modes) > 1:
+        raise MatrixArkError("storage_options must route to exactly one storage_family; do not mix raft and shared_store in one request")
     if storage_family == "raft":
         normalized.setdefault("replication_mode", "raft")
         normalized.setdefault("storage_mode", "raft")
@@ -2960,6 +2970,9 @@ def normalize_storage_options(args: Json, metadata: Json | None = None) -> Json:
                 "background_write",
                 "write_ack_policy",
                 "native_backend_decides_route",
+                "selected_storage_family",
+                "selected_write_mode",
+                "durability_result",
             }
         }
     )

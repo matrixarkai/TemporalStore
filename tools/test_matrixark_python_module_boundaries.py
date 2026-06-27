@@ -439,6 +439,21 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
                 },
             )
 
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        with self.assertRaisesRegex(Exception, "exactly one storage_family"):
+            core_mod.normalize_storage_options(
+                {"storage_options": {"storage_family": "raft", "storage_mode": "shared_store"}}
+            )
+
+    def test_live_backend_rejects_unconfigured_storage_family(self) -> None:
+        temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
+        adapter = object.__new__(temporal_mod.MatrixArkTemporalStoreDirectAdapter)
+        adapter._supported_storage_families = {"default", "shared_store"}
+        with self.assertRaisesRegex(Exception, "not configured"):
+            adapter._validate_storage_routes_available(
+                [{"record_type": "context_event", "storage_route": {"storage_family": "raft"}}]
+            )
+
 
 
 if __name__ == "__main__":
