@@ -338,6 +338,12 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
                 stats.records_written += 1;
                 stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
             }
+            if command.key.as_ref().filter(|value| !value.is_empty()).is_some()
+                && command.value.as_ref().filter(|value| !value.is_empty()).is_some()
+            {
+                stats.records_written += 1;
+                stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
+            }
         }
         "batch_hget" | "hgetall" | "scan_hash" => {
             stats.records_read = result
