@@ -127,6 +127,10 @@ class MatrixArkLocalAdapter:
         self._retrieval_records_cache_lock = threading.RLock()
         self._retrieval_records_cache_generation = 0
         self._retrieval_records_cache: dict[tuple[Any, ...], Json] = {}
+        self._context_pack_cache_lock = threading.RLock()
+        self._context_pack_cache: dict[tuple[Any, ...], tuple[float, Json]] = {}
+        self._context_pack_cache_max_entries = max(0, int(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_MAX_ENTRIES", "256")))
+        self._context_pack_cache_ttl_s = max(0.0, float(os.environ.get("MATRIXARK_CONTEXT_PACK_CACHE_TTL_S", "30")))
 
     def _write_batch_stack(self) -> list[list[Json]]:
         local = getattr(self, "_write_batch_local", None)
@@ -225,6 +229,8 @@ class MatrixArkLocalAdapter:
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
                 self._retrieval_records_cache.clear()
+                with self._context_pack_cache_lock:
+                    self._context_pack_cache.clear()
 
     def append(self, record: Json) -> None:
         records = materialize_serving_record_batch([record])
@@ -477,6 +483,13 @@ class MatrixArkLocalAdapter:
 
     def ensure_backend_ready(self, *, reason: str = "matrixark") -> Json:
         return {"status": "ready", "backend": "local", "reason": reason}
+
+    def recent_records(self, limit: int = 128) -> list[Json]:
+        limit = max(1, int(limit or 1))
+        records = self.read_all()
+        if len(records) <= limit:
+            return records
+        return records[-limit:] if LOCAL_READ_CACHE_COPY else list(records[-limit:])
 
     def read_all(self) -> list[Json]:
         cache_key = str(self.event_log.resolve())
@@ -3828,30 +3841,38 @@ class MatrixArkLocalAdapter:
             "insufficient_context": not selected,
             "partial_context_pack": True,
         }
-        self.append_audit(
-            {
-                "record_type": "context_pack_audit",
-                "context_pack_id": context_pack_id,
-                "query": query,
-                "scope": scope,
-                "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
-                "selected_refs": compact_refs_for_audit(selected),
-                "local_context_refs": compact_local_context_refs(local_budget),
-                "context_sources_order": pack["context_sources_order"],
-                "question_type": question_type,
-                "packing_policy": pack["packing_policy"],
-                "recall_policy": pack["recall_policy"],
-                "local_context_policy": pack["local_context_policy"],
-                "used_local_context_tokens": pack["used_local_context_tokens"],
-                "used_remote_context_tokens": pack["used_remote_context_tokens"],
-                "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
-                "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
-                "requested_max_context_tokens": pack["requested_max_context_tokens"],
-                "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
-                "budget_source": pack["budget_source"],
-                "primary_candidate_count": 0,
-                "auxiliary_candidate_count": 0,
-                "created_at_ms": now_ms(),
+        if reason != "service_backpressure":
+            self.append_audit(
+                {
+                    "record_type": "context_pack_audit",
+                    "context_pack_id": context_pack_id,
+                    "query": query,
+                    "scope": scope,
+                    "summary_text": summarize_text(" ".join(str(item.get("text", "")) for item in selected), limit=512),
+                    "selected_refs": compact_refs_for_audit(selected),
+                    "local_context_refs": compact_local_context_refs(local_budget),
+                    "context_sources_order": pack["context_sources_order"],
+                    "question_type": question_type,
+                    "packing_policy": pack["packing_policy"],
+                    "recall_policy": pack["recall_policy"],
+                    "local_context_policy": pack["local_context_policy"],
+                    "used_local_context_tokens": pack["used_local_context_tokens"],
+                    "used_remote_context_tokens": pack["used_remote_context_tokens"],
+                    "total_prompt_context_tokens": pack["total_prompt_context_tokens"],
+                    "remote_context_budget_tokens": pack["remote_context_budget_tokens"],
+                    "requested_max_context_tokens": pack["requested_max_context_tokens"],
+                    "local_context_safety_margin_tokens": pack["local_context_safety_margin_tokens"],
+                    "budget_source": pack["budget_source"],
+                    "primary_candidate_count": 0,
+                    "auxiliary_candidate_count": 0,
+                    "created_at_ms": now_ms(),
+                }
+            )
+        else:
+            pack["operational_visibility_policy"] = {
+                "audit_mode": "telemetry_only",
+                "rich_replay_audit": False,
+                "reason": "service_backpressure_uses_access_audit_only",
             }
         )
         return compact_context_pack_for_serving(pack)
@@ -3957,6 +3978,31 @@ class MatrixArkLocalAdapter:
             secondary_index_filter_mode=secondary_index_filter_mode,
             reference_time_ms=reference_time_ms,
         )
+        pack_cache_enabled = self._context_pack_cache_max_entries > 0 and self._context_pack_cache_ttl_s > 0
+        pack_cache_key = (
+            self._retrieval_records_cache_generation,
+            canonical_scope_key(scope),
+            query,
+            question_type,
+            max_context_tokens,
+            int(local_budget.get("token_estimate", 0)),
+            tuple(sorted(local_budget.get("text_hashes", set()))),
+            json.dumps(ranking, sort_keys=True, separators=(",", ":")),
+            bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
+        )
+        if pack_cache_enabled:
+            with self._context_pack_cache_lock:
+                cached = self._context_pack_cache.get(pack_cache_key)
+                if cached is not None:
+                    cached_at, cached_pack = cached
+                    if time.monotonic() - cached_at <= self._context_pack_cache_ttl_s:
+                        pack = json.loads(json.dumps(cached_pack))
+                        pack["context_pack_cache_hit"] = True
+                        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+                        recall_policy["context_pack_cache"] = {"hit": True, "ttl_s": self._context_pack_cache_ttl_s}
+                        pack["recall_policy"] = recall_policy
+                        return pack
+                    self._context_pack_cache.pop(pack_cache_key, None)
         embedding_started_perf = time.perf_counter()
         query_embedding = embedding_for_text(query)
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
@@ -3969,6 +4015,20 @@ class MatrixArkLocalAdapter:
         )
         records = retrieval_record_result["records"]
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
+
+        def deadline_fallback(reason: str, fallback_records: list[Json] | None = None) -> Json:
+            return self.deadline_fallback_pack(
+                query=query,
+                scope=scope,
+                question_type=question_type,
+                max_context_tokens=max_context_tokens,
+                local_budget=local_budget,
+                deadline_ms=deadline_ms,
+                elapsed_ms=round((time.perf_counter() - started_perf) * 1000.0, 3),
+                records=records if fallback_records is None else fallback_records,
+                reason=reason,
+                budget_source=budget_source,
+            )
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
         latest_resource_version_by_hash: dict[int, str] = {}
@@ -4016,7 +4076,9 @@ class MatrixArkLocalAdapter:
         index_terms_by_ref: dict[Any, list[str]] = {}
         index_terms_by_node_for_prefilter: dict[int, list[str]] = {}
         node_summary_text_by_hash: dict[int, str] = {}
-        for record in records:
+        for scan_index, record in enumerate(records, 1):
+            if scan_index % 128 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_embedding_index_scan")
             record_type = record.get("record_type")
             if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
                 index_name = str(record.get("index_name", ""))
@@ -4060,7 +4122,9 @@ class MatrixArkLocalAdapter:
             "fallback_when_no_index_matches": True,
             "strategy": "ContextIndex node hints boost L0/L1 traversal; leaf candidates still verify filters before embedding scoring",
         }
-        for record in records:
+        for scan_index, record in enumerate(records, 1):
+            if scan_index % 128 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_embedding_vector_scan")
             record_type = record.get("record_type")
             if record_type == "context_embedding" and not scope_matches(candidate_access_scope(record), scope):
                 continue
@@ -4270,7 +4334,9 @@ class MatrixArkLocalAdapter:
         raw_event_time_window_dropped_count = 0
         events_by_node: dict[Any, list[Json]] = {}
         nodes_with_compression: set[Any] = set()
-        for record in tree_candidate_records:
+        for scan_index, record in enumerate(tree_candidate_records, 1):
+            if scan_index % 128 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_tree_candidate_prefilter", records)
             if record.get("record_type") == "context_compression_event":
                 node_key_for_compression: Any = record.get("node_hash")
                 if node_key_for_compression is None:
@@ -4324,7 +4390,9 @@ class MatrixArkLocalAdapter:
         primary_matches = []
         auxiliary_matches = []
         if question_type == "broad_exploration":
-            for record in reversed(tree_candidate_records):
+            for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+                if scan_index % 64 == 0 and deadline_exceeded():
+                    return deadline_fallback("deadline_during_summary_scan", records)
                 if record.get("record_type") != "context_summary":
                     continue
                 if not access_scope_matches_before_scoring(record, scope):
@@ -4379,7 +4447,9 @@ class MatrixArkLocalAdapter:
                         reference_time_ms=reference_time_ms,
                     )
                 )
-        for record in reversed(tree_candidate_records):
+        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+            if scan_index % 64 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_event_scan", records)
             if record.get("record_type") != "context_event":
                 continue
             event_node_key: Any = record.get("node_hash")
@@ -4474,7 +4544,9 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_event_scan",
                 budget_source=budget_source,
             )
-        for record in reversed(tree_candidate_records):
+        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+            if scan_index % 64 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_entity_scan", records)
             if record.get("record_type") != "context_entity":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -4549,7 +4621,9 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_entity_scan",
                 budget_source=budget_source,
             )
-        for record in reversed(tree_candidate_records):
+        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+            if scan_index % 64 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_segment_scan", records)
             if record.get("record_type") != "context_segment":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -4622,7 +4696,9 @@ class MatrixArkLocalAdapter:
                 reason="deadline_after_segment_scan",
                 budget_source=budget_source,
             )
-        for record in reversed(tree_candidate_records):
+        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+            if scan_index % 64 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_resource_skill_scan", records)
             if record.get("record_type") not in {"resource_chunk", "skill_section"}:
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -4726,7 +4802,9 @@ class MatrixArkLocalAdapter:
                 )
             )
 
-        for record in reversed(tree_candidate_records):
+        for scan_index, record in enumerate(reversed(tree_candidate_records), 1):
+            if scan_index % 64 == 0 and deadline_exceeded():
+                return deadline_fallback("deadline_during_compression_scan", records)
             if record.get("record_type") != "context_compression_event":
                 continue
             if not access_scope_matches_before_scoring(record, scope):
@@ -5043,6 +5121,16 @@ class MatrixArkLocalAdapter:
             audit_sample_rate=audit_sample_rate,
         )
         pack["operational_visibility_policy"] = visibility_decision
+        if pack_cache_enabled and not pack.get("partial_context_pack"):
+            cached_pack = json.loads(json.dumps(pack))
+            cached_recall = cached_pack.get("recall_policy") if isinstance(cached_pack.get("recall_policy"), dict) else {}
+            cached_recall["context_pack_cache"] = {"hit": False, "ttl_s": self._context_pack_cache_ttl_s}
+            cached_pack["recall_policy"] = cached_recall
+            with self._context_pack_cache_lock:
+                if len(self._context_pack_cache) >= self._context_pack_cache_max_entries:
+                    oldest_key = next(iter(self._context_pack_cache))
+                    self._context_pack_cache.pop(oldest_key, None)
+                self._context_pack_cache[pack_cache_key] = (time.monotonic(), cached_pack)
         finish_retrieval_stage("audit", audit_started_perf)
         placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
         candidate_cache_hit = bool(
