@@ -546,8 +546,6 @@ class MatrixArkMcpServer:
                     self.metrics.observe_backpressure(name)
                     raise MatrixArkBackpressureError("matrixark_retrieve rejected by adaptive retrieve shed cooldown")
                 acquired = limiter.acquire(blocking=False)
-                if acquired:
-                    self._retrieve_shed_until_perf = now_perf + self._retrieve_shed_cooldown_ms / 1000.0
         else:
             acquired = limiter.acquire(timeout=max(0.0, wait_ms / 1000.0)) if wait_ms > 0 else limiter.acquire(blocking=False)
         if not acquired:
