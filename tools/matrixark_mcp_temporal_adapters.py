@@ -1672,6 +1672,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         with self._records_lock:
             hot_cache_enabled = self.python_hot_cache_enabled()
             if hot_cache_enabled and self._records_cache is not None:
+                self._records_cache = compact_latest_context_state_records(self._records_cache)
                 return list(self._records_cache)
             count = self._get_count()
             if count > 0:
@@ -1680,24 +1681,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 if not hot_cache_enabled:
                     self._records_cache = None
                     self._drop_direct_record_cache()
-                    return self._load_records_by_count(count)
+                    return compact_latest_context_state_records(self._load_records_by_count(count))
                 cached = self._get_direct_record_cache(count)
                 if cached is not None:
-                    self._records_cache = cached
+                    self._records_cache = compact_latest_context_state_records(cached)
                     return list(self._records_cache)
                 with self._direct_record_load_lock():
                     cached = self._get_direct_record_cache(count)
                     if cached is not None:
-                        self._records_cache = cached
+                        self._records_cache = compact_latest_context_state_records(cached)
                         return list(self._records_cache)
-                    self._records_cache = self._load_records_by_count(count)
+                    self._records_cache = compact_latest_context_state_records(self._load_records_by_count(count))
                     self._put_direct_record_cache(count, self._records_cache)
                     return list(self._records_cache)
             index = self._get_index()
             self._index_cache = index
             self._legacy_index_mode = bool(index)
             self._entry_count_cache = None
-            records = self._load_records(index)
+            records = compact_latest_context_state_records(self._load_records(index))
             if hot_cache_enabled:
                 self._records_cache = records
             else:
@@ -1948,6 +1949,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scan_stats.setdefault("record_types", sorted(record_types))
         scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
         scan_stats.setdefault("pack_assembly_location", "python_reference_packer")
+        records = compact_latest_context_state_records(records)
+        scan_stats["latest_summary_state_compaction"] = True
         return {"records": records, "scan_stats": scan_stats}
 
     def _direct_record_load_lock(self) -> threading.RLock:
@@ -4215,6 +4218,8 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
         scan_stats.setdefault("pack_assembly_location", "native_backend_candidate_scan")
         scan_stats.setdefault("rust_proxy_dedicated_retrieve_lane", True)
+        records = compact_latest_context_state_records(records)
+        scan_stats["latest_summary_state_compaction"] = True
         return {"records": records, "scan_stats": scan_stats}
 
     def _backend_metaserver(self) -> str:

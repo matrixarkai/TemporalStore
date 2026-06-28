@@ -1777,6 +1777,88 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "compacted scope_key should still satisfy scoped retrieval",
             )
 
+    def test_latest_context_state_compacts_summary_and_summary_embedding_versions(self) -> None:
+        records = [
+            {"record_type": "context_event", "event_id_hash": 7, "text": "keep me"},
+            {
+                "record_type": "context_summary",
+                "summary_type": "session_l0",
+                "summary_hash": 11,
+                "summary_text": "old summary",
+                "summary_version_hash": 101,
+                "updated_at_ms": 1000,
+            },
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "session_l0",
+                "ref_type": "summary",
+                "ref_hash": 11,
+                "vector": [0.1],
+                "summary_version_hash": 101,
+                "updated_at_ms": 1000,
+            },
+            {
+                "record_type": "context_summary",
+                "summary_type": "session_l0",
+                "summary_hash": 11,
+                "summary_text": "new summary",
+                "summary_version_hash": 202,
+                "updated_at_ms": 2000,
+            },
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "session_l0",
+                "ref_type": "summary",
+                "ref_hash": 11,
+                "vector": [0.9],
+                "summary_version_hash": 202,
+                "updated_at_ms": 2000,
+            },
+        ]
+
+        compacted = mcp.compact_latest_context_state_records(records)
+        summaries = [record for record in compacted if record.get("record_type") == "context_summary"]
+        embeddings = [record for record in compacted if record.get("record_type") == "context_embedding"]
+
+        self.assertEqual(1, len(summaries))
+        self.assertEqual("new summary", summaries[0]["summary_text"])
+        self.assertNotIn("summary_version_hash", summaries[0])
+        self.assertEqual(1, len(embeddings))
+        self.assertEqual([0.9], embeddings[0]["vector"])
+        self.assertNotIn("summary_version_hash", embeddings[0])
+        self.assertTrue(any(record.get("record_type") == "context_event" for record in compacted))
+
+    def test_local_read_all_returns_latest_summary_state_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = {"account_id": "acct_local", "tenant_id": "tenant_codex", "user_id": "codex_user", "session_id": "summary-latest-test"}
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "session_l0",
+                        "summary_hash": 22,
+                        "summary_text": "old session summary",
+                        "summary_version_hash": 1,
+                        "scope": scope,
+                        "updated_at_ms": 1000,
+                    },
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "session_l0",
+                        "summary_hash": 22,
+                        "summary_text": "new session summary",
+                        "summary_version_hash": 2,
+                        "scope": scope,
+                        "updated_at_ms": 2000,
+                    },
+                ]
+            )
+
+            summaries = [record for record in adapter.read_all() if record.get("record_type") == "context_summary"]
+            self.assertEqual(1, len(summaries))
+            self.assertEqual("new session summary", summaries[0]["summary_text"])
+            self.assertNotIn("summary_version_hash", summaries[0])
     def test_context_events_do_not_duplicate_summaries_or_embeddings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")

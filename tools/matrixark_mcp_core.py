@@ -1021,6 +1021,45 @@ def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
         materialized.extend(materialize_serving_records(record))
     return compact_context_index_postings(materialized)
 
+def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
+    """Return the logical latest-state key for versionless context records."""
+    record_type = str(record.get("record_type") or "")
+    if record_type == "context_summary":
+        summary_type = str(record.get("summary_type") or "")
+        summary_hash = record.get("summary_hash") or record.get("node_hash")
+        if summary_type and summary_hash is not None:
+            return ("context_summary", summary_type, summary_hash)
+    if record_type == "context_embedding":
+        embedding_type = str(record.get("embedding_type") or "")
+        ref_type = str(record.get("ref_type") or "")
+        if embedding_type in {"session_l0", "node_l0", "node_l1", "resource_l0", "skill_l0", "skill_summary"} and ref_type in {"summary", "node"}:
+            ref_hash = record.get("ref_hash") or record.get("node_hash")
+            if ref_hash is not None:
+                return ("context_embedding", embedding_type, ref_type, ref_hash)
+    return None
+
+
+def compact_latest_context_state_records(records: list[Json]) -> list[Json]:
+    """Collapse append-log summary state into one latest serving record per key.
+
+    The physical log can retain older writes for durability/debug, but serving,
+    retrieval, and normal debug tables should see ContextSummary L0/L1 as state:
+    one logical row per summary key, updated in place by latest timestamp/order.
+    """
+    latest: dict[tuple[Any, ...], tuple[int, Json]] = {}
+    passthrough: list[tuple[int, Json]] = []
+    for index, record in enumerate(records):
+        key = latest_context_state_key(record)
+        if key is None:
+            passthrough.append((index, record))
+            continue
+        compacted = dict(record)
+        compacted.pop("summary_version_hash", None)
+        latest[key] = (index, compacted)
+    combined = passthrough + list(latest.values())
+    combined.sort(key=lambda item: item[0])
+    return [record for _index, record in combined]
+
 
 def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:
     account_id = str(identity["account_id"])

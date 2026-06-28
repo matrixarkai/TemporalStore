@@ -209,6 +209,7 @@ class MatrixArkLocalAdapter:
         with self._read_cache_lock:
             if self._read_cache_records is not None:
                 self._read_cache_records.extend(records)
+                self._read_cache_records = compact_latest_context_state_records(self._read_cache_records)
             try:
                 stat = self.event_log.stat()
                 self._read_cache_size = int(stat.st_size)
@@ -221,10 +222,10 @@ class MatrixArkLocalAdapter:
             cached = _LOCAL_READ_CACHE.get(cache_key)
             if cached is not None:
                 _, _, cached_records = cached
-                cached_records = list(cached_records) + list(records)
+                cached_records = compact_latest_context_state_records(list(cached_records) + list(records))
                 _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, cached_records)
             elif self._read_cache_records is not None:
-                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, list(self._read_cache_records))
+                _LOCAL_READ_CACHE[cache_key] = (self._read_cache_size, self._read_cache_mtime_ns, compact_latest_context_state_records(list(self._read_cache_records)))
         if any(str(record.get("record_type") or "") in RETRIEVAL_HOT_RECORD_TYPES for record in records):
             with self._retrieval_records_cache_lock:
                 self._retrieval_records_cache_generation += 1
@@ -1533,9 +1534,6 @@ class MatrixArkLocalAdapter:
                     limit=1200,
                 )
                 summary_specs.append(("node_l1", l1_summary, "node_l1"))
-            version_hash = stable_hash(
-                f"summary_version:{node_hash}:{dirty.get('dirty_hash')}:{source_event_ids}:{source_summary_hashes}:{refreshed_at_ms}:{l1_policy}"
-            )
             for level, summary_text, embedding_type in summary_specs:
                 summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
                 self.append(
@@ -1634,7 +1632,6 @@ class MatrixArkLocalAdapter:
                     "dirty_hash": dirty.get("dirty_hash"),
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "summary_version_hash": version_hash,
                     "source_event_count": len(source_event_ids),
                     "source_summary_count": len(source_summary_hashes),
                     "source_entity_count": len(source_entity_hashes),
@@ -3210,15 +3207,11 @@ class MatrixArkLocalAdapter:
                 )
                 session_summary_text = summarize_text(session_summary_source, limit=512)
                 session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
-                session_summary_version_hash = stable_hash(
-                    f"session_summary_version:{session_summary_hash}:{event_id_hash}:{envelope['ingestion_time_ms']}:{session_summary_text}"
-                )
                 self.append(
                     {
                         "record_type": "context_summary",
                         "summary_type": "session_l0",
                         "summary_hash": session_summary_hash,
-                        "summary_version_hash": session_summary_version_hash,
                         "summary_identity": "stable_per_session_node",
                         "node_hash": node_hash,
                         "node_path": node_path,
