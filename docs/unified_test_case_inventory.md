@@ -117,6 +117,9 @@ across single-page object, multi-object, multi-page object, delete, compaction, 
 dump/load, and restart. `storage_model_layout_compaction_policies` covers
 model-layout-aware compaction policy evidence for string, hash, set, timestamped, and
 context model families, including stale-page and tombstone-density fields.
+`storage_merged_dump_load_lifecycle` covers the merged dump/load policy evidence:
+multi-slot source manifests, rollback marker evidence, load-version handoff, and stale
+object/page conflict preflight reports.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
@@ -407,10 +410,10 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 563
-shared-corpus marked Rust tests: 67
-shared corpus cases: 154
-shared corpus steps: 316
+Rust attributed tests: 564
+shared-corpus marked Rust tests: 68
+shared corpus cases: 155
+shared corpus steps: 317
 C++ existing-test surfaces: 185
 ```
 
