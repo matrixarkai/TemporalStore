@@ -6333,15 +6333,24 @@ fn execute_on_shard(
             }
             cached_response(cache, CacheKey::string(shard_id, &key), || {
                 CommandResponse::Bytes {
-                    value: shard
-                        .strings
-                        .get(&key)
-                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address)),
+                    value: read_slot_index_value(
+                        cache, page_store, shard_id, shard, "string", &key, None,
+                    )
+                    .or_else(|| {
+                        if shard.slot_index.slots.is_empty() {
+                            shard.strings.get(&key).and_then(|address| {
+                                read_page_bytes(cache, page_store, shard_id, address)
+                            })
+                        } else {
+                            None
+                        }
+                    }),
                 }
             })
         }
         Command::StringDelete { key } => {
-            mutated = shard.strings.remove(&key).is_some();
+            mutated |= mark_slot_index_object_deleted(shard, &key);
+            mutated |= shard.strings.remove(&key).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }
@@ -6388,11 +6397,28 @@ fn execute_on_shard(
             }
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
                 CommandResponse::Bytes {
-                    value: shard
-                        .hashes
-                        .get(&key)
-                        .and_then(|fields| fields.get(&field))
-                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address)),
+                    value: read_slot_index_value(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        "hash",
+                        &key,
+                        Some(field.as_str()),
+                    )
+                    .or_else(|| {
+                        if shard.slot_index.slots.is_empty() {
+                            shard
+                                .hashes
+                                .get(&key)
+                                .and_then(|fields| fields.get(&field))
+                                .and_then(|address| {
+                                    read_page_bytes(cache, page_store, shard_id, address)
+                                })
+                        } else {
+                            None
+                        }
+                    }),
                 }
             })
         }
@@ -6410,11 +6436,28 @@ fn execute_on_shard(
             let values = fields
                 .iter()
                 .map(|field| {
-                    shard
-                        .hashes
-                        .get(&key)
-                        .and_then(|entries| entries.get(field))
-                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
+                    read_slot_index_value(
+                        cache,
+                        page_store,
+                        shard_id,
+                        shard,
+                        "hash",
+                        &key,
+                        Some(field.as_str()),
+                    )
+                    .or_else(|| {
+                        if shard.slot_index.slots.is_empty() {
+                            shard
+                                .hashes
+                                .get(&key)
+                                .and_then(|entries| entries.get(field))
+                                .and_then(|address| {
+                                    read_page_bytes(cache, page_store, shard_id, address)
+                                })
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
             CommandResponse::Values { values }
@@ -6459,13 +6502,28 @@ fn execute_on_shard(
             increment,
         } => {
             remove_if_expired(shard, &key);
-            let current = shard
-                .hashes
-                .get(&key)
-                .and_then(|entries| entries.get(&field))
-                .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
-                .and_then(|bytes| parse_i64(&bytes))
-                .unwrap_or_default();
+            let current = read_slot_index_value(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                "hash",
+                &key,
+                Some(field.as_str()),
+            )
+            .or_else(|| {
+                if shard.slot_index.slots.is_empty() {
+                    shard
+                        .hashes
+                        .get(&key)
+                        .and_then(|entries| entries.get(&field))
+                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
+                } else {
+                    None
+                }
+            })
+            .and_then(|bytes| parse_i64(&bytes))
+            .unwrap_or_default();
             let value = current.saturating_add(increment);
             if let Ok(address) = append_value(
                 cache,
@@ -6510,21 +6568,31 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = shard
-                .hashes
-                .get(&key)
-                .map(|fields| {
-                    let mut entries = fields
-                        .iter()
-                        .filter_map(|(field, address)| {
-                            read_page_bytes(cache, page_store, shard_id, address)
-                                .map(|value| (field.clone(), value))
-                        })
-                        .collect::<Vec<_>>();
-                    entries.sort_by(|a, b| a.0.cmp(&b.0));
-                    entries
-                })
-                .unwrap_or_default();
+            let entries = if shard.slot_index.slots.is_empty() {
+                shard
+                    .hashes
+                    .get(&key)
+                    .map(|fields| {
+                        let mut entries = fields
+                            .iter()
+                            .filter_map(|(field, address)| {
+                                read_page_bytes(cache, page_store, shard_id, address)
+                                    .map(|value| (field.clone(), value))
+                            })
+                            .collect::<Vec<_>>();
+                        entries.sort_by(|a, b| a.0.cmp(&b.0));
+                        entries
+                    })
+                    .unwrap_or_default()
+            } else {
+                slot_index_component_page_addresses(shard, "hash", &key)
+                    .into_iter()
+                    .filter_map(|(field, address)| {
+                        read_page_bytes(cache, page_store, shard_id, &address)
+                            .map(|value| (field.unwrap_or_default(), value))
+                    })
+                    .collect()
+            };
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
@@ -6537,16 +6605,21 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: shard
-                    .hashes
-                    .get(&key)
-                    .map(|fields| fields.len() as i64)
-                    .unwrap_or_default(),
+                value: if shard.slot_index.slots.is_empty() {
+                    shard
+                        .hashes
+                        .get(&key)
+                        .map(|fields| fields.len() as i64)
+                        .unwrap_or_default()
+                } else {
+                    slot_index_component_page_addresses(shard, "hash", &key).len() as i64
+                },
             }
         }
         Command::HashDelete { key, field } => {
+            mutated |= mark_slot_index_page_deleted(shard, "hash", &key, Some(field.as_str()));
             if let Some(fields) = shard.hashes.get_mut(&key) {
-                mutated = fields.remove(&field).is_some();
+                mutated |= fields.remove(&field).is_some();
             }
             let _ = cache.invalidate(&CacheKey::hash(shard_id, &key, &field));
             CommandResponse::Empty
@@ -6596,23 +6669,34 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = shard
-                    .sets
-                    .get(&key)
-                    .map(|set| {
-                        set.values()
-                            .filter_map(|address| {
-                                read_page_bytes(cache, page_store, shard_id, address)
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
+                let members = if shard.slot_index.slots.is_empty() {
+                    shard
+                        .sets
+                        .get(&key)
+                        .map(|set| {
+                            set.values()
+                                .filter_map(|address| {
+                                    read_page_bytes(cache, page_store, shard_id, address)
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                } else {
+                    slot_index_component_page_addresses(shard, "set", &key)
+                        .into_iter()
+                        .filter_map(|(_, address)| {
+                            read_page_bytes(cache, page_store, shard_id, &address)
+                        })
+                        .collect()
+                };
                 CommandResponse::Members { members }
             })
         }
         Command::SetRemove { key, member } => {
+            let member_component = hex::encode(&member);
+            mutated |= mark_slot_index_page_deleted(shard, "set", &key, Some(&member_component));
             if let Some(set) = shard.sets.get_mut(&key) {
-                mutated = set.remove(&member).is_some();
+                mutated |= set.remove(&member).is_some();
             }
             let _ = cache.invalidate_record(shard_id, "set", &key);
             CommandResponse::Empty
@@ -8803,6 +8887,36 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
+fn mark_slot_index_page_deleted(
+    shard: &mut ShardState,
+    model_id: &str,
+    key: &str,
+    component: Option<&str>,
+) -> bool {
+    let mut removed = false;
+    for slot in shard.slot_index.slots.values_mut() {
+        let mut slot_removed = false;
+        slot.page_refs.retain(|_, page| {
+            let matches = page.model_id == model_id
+                && page.object_key == key
+                && page.component.as_deref() == component;
+            if matches {
+                slot_removed = true;
+                removed = true;
+                false
+            } else {
+                true
+            }
+        });
+        if slot_removed {
+            slot.dirty = true;
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            update_slot_layout(slot);
+        }
+    }
+    removed
+}
+
 fn associated_record_keys(key: &str) -> Vec<String> {
     if key.starts_with("risk:") {
         return vec![key.to_string()];
@@ -9779,6 +9893,39 @@ fn storage_physical_index_report(
         slot.page_ref_count = runtime_slot.page_refs.len() as u64;
         slot.dirty_generation = runtime_slot.dirty_generation;
         slot.last_dump_sequence = runtime_slot.last_dump_sequence;
+        for page in runtime_slot.page_refs.values() {
+            let already_present = slot.page_indexes.iter().any(|existing| {
+                existing.object_key == page.object_key
+                    && existing.model_id == page.model_id
+                    && existing.component == page.component
+                    && existing.page_segment_id == page.address.page_segment_id
+                    && existing.offset == page.address.offset
+            });
+            if already_present {
+                continue;
+            }
+            let mut page_index = StoragePhysicalPageIndex {
+                object_key: page.object_key.clone(),
+                model_id: page.model_id.clone(),
+                component: page.component.clone(),
+                routing_slot: *routing_slot,
+                page_segment_id: page.address.page_segment_id,
+                offset: page.address.offset,
+                length: page.address.length,
+                page_id: page.address.page_id,
+                object_id: Some(page.object_id),
+                zone_id: page.address.zone_id,
+                checksum: page.address.sha256.clone(),
+                dirty: page.dirty,
+                deleted: page.deleted,
+                log_backed: page.log_backed,
+                cpp_packed_page_index_len: CPP_PACKED_PAGE_INDEX_SIZE,
+                cpp_packed_page_index_hex: String::new(),
+            };
+            page_index.cpp_packed_page_index_hex =
+                hex::encode(cpp_packed_page_index_bytes(&page_index));
+            slot.page_indexes.push(page_index);
+        }
     }
     for slot in slots.values_mut() {
         slot.page_indexes.sort_by(|left, right| {
@@ -10978,6 +11125,57 @@ fn read_page_bytes(
     Some(bytes)
 }
 
+fn slot_index_page_address(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<PageAddress> {
+    shard
+        .slot_index
+        .slots
+        .values()
+        .flat_map(|slot| slot.page_refs.values())
+        .filter(|page| {
+            !page.deleted
+                && page.model_id == model_id
+                && page.object_key == object_key
+                && page.component.as_deref() == component
+        })
+        .map(|page| page.address.clone())
+        .next()
+}
+
+fn slot_index_component_page_addresses(
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+) -> Vec<(Option<String>, PageAddress)> {
+    let mut refs = shard
+        .slot_index
+        .slots
+        .values()
+        .flat_map(|slot| slot.page_refs.values())
+        .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
+        .map(|page| (page.component.clone(), page.address.clone()))
+        .collect::<Vec<_>>();
+    refs.sort_by(|left, right| left.0.cmp(&right.0));
+    refs
+}
+
+fn read_slot_index_value(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    component: Option<&str>,
+) -> Option<Vec<u8>> {
+    slot_index_page_address(shard, model_id, object_key, component)
+        .and_then(|address| read_page_bytes(cache, page_store, shard_id, &address))
+}
+
 fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
         .windows(2)
@@ -11704,13 +11902,16 @@ fn command_updates_slot_index_directly(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }
+            | Command::StringDelete { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
             | Command::HashMultiSet { .. }
             | Command::HashIncrBy { .. }
+            | Command::HashDelete { .. }
             | Command::SetAdd { .. }
+            | Command::SetRemove { .. }
             | Command::RiskIncrement { .. }
             | Command::RiskIncrementWithOptions { .. }
             | Command::RiskSet { .. }
@@ -14453,6 +14654,31 @@ mod tests {
                         key: "k".to_string(),
                         value: b"v".to_vec(),
                         ttl_ms: 60_000,
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: "cold-hot-hash".to_string(),
+                        field: "field-a".to_string(),
+                        value: b"hash-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SetAdd {
+                        key: "cold-hot-set".to_string(),
+                        member: b"set-member".to_vec(),
                     },
                 })
                 .status
@@ -19509,7 +19735,16 @@ mod tests {
             page_dir.clone(),
             index_dir.clone(),
         );
-        engine.load_shard(1);
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 1,
+            load_version: 1,
+            local_node_id: Some(1),
+            shard_uri: "local://cold-hot/shard-1".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: u32::MAX,
+            readonly: false,
+            table_name: "cold_hot_table".to_string(),
+        });
         assert!(
             engine
                 .execute(ExecuteRequest {
@@ -19538,6 +19773,37 @@ mod tests {
         let hot_stats = engine.cache().stats();
         assert!(hot_stats.puts > 0);
 
+        {
+            let mut shards = engine.shards.write().unwrap();
+            let shard = shards.get_mut(&1).unwrap();
+            shard.strings.clear();
+        }
+        engine.cache().invalidate_shard(1).unwrap();
+        let authority_report = engine.storage_physical_index_report(1);
+        assert!(authority_report.slot_index_authority);
+        assert!(
+            authority_report
+                .slot_nodes
+                .iter()
+                .flat_map(|slot| slot.page_indexes.iter())
+                .any(|page| page.model_id == "string"
+                    && page.object_key == "cold-hot"
+                    && page.component.is_none()),
+            "{authority_report:?}"
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "cold-hot".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"object-value".to_vec())
+            }
+        );
         engine.cache().clear_memory_for_test();
         assert_eq!(
             engine
@@ -19572,7 +19838,16 @@ mod tests {
         assert!(engine.page_store().stats().reads > reads_before);
 
         let restored = TemporalEngine::with_local_dirs(32, cache_dir, page_dir, index_dir);
-        restored.load_shard(1);
+        restored.load_shard_with(LoadShardRequest {
+            shard_id: 1,
+            load_version: 1,
+            local_node_id: Some(1),
+            shard_uri: "local://cold-hot/shard-1".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: u32::MAX,
+            readonly: false,
+            table_name: "cold_hot_table".to_string(),
+        });
         let report = restored.storage_physical_index_report(1);
         assert!(report.slot_index_authority);
         assert!(report

@@ -201,10 +201,10 @@ C++ execution should progressively cover every executable case.
 | `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, and latency samples are recorded. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
-| `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after memory eviction and restart. |
+| `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after logical map removal, memory eviction, and restart. |
 | `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index, including live/dirty/deleted/loading/in-memory rows, object IDs, page refs, dirty generations, and TTL metadata. |
 | `storage_slot_layout_transitions` | Rust verifies C++-style SlotStore layout transitions for single-object, single-page-object, multi-object, multi-page-object, compaction, dump/load, and restart. |
-| `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
+| `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies SlotStore PageAddress-driven disk cache and persistent page-store fallback after logical map removal and memory eviction. |
 | `storage_tombstone_compaction` | Rust verifies tombstoned object reporting plus model-layout tombstone-density and rewrite-action evidence. |
 | `storage_stale_page_density_compaction` | Rust verifies stale page estimate, density evidence, cold-page rewrite, object-page packing, and rewritten index refs for compaction decisions. |
 | `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers, merged-installer roll-forward, load-version handoff after retry, and incomplete-commit reporting. |
