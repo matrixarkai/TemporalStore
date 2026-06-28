@@ -720,7 +720,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
     rows keep provider payloads, raw extraction details, old entity patches, and
     full path context without forcing every hot read to load them.
     """
-    record = attach_storage_route(record)
+    record = attach_context_event_time_key(attach_storage_route(record))
     record_type = str(record.get("record_type") or "")
     if record_type not in HOT_SERVING_RECORD_TYPES:
         return [record]

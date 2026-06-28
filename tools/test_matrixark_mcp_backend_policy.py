@@ -2211,6 +2211,40 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(second["scan_stats"]["candidate_cache_scope"], "process_global")
         self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
 
+    def test_direct_append_time_index_uses_segment_parent_when_present(self) -> None:
+        client = _NativeAppendClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:segment-time"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        adapter._append_many_materialized(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 456,
+                    "node_hash": 999,
+                    "parent_segment_hash": 777,
+                    "updated_at_ms": 1780000000001,
+                    "text": "segmented event",
+                }
+            ]
+        )
+
+        time_entry = next(entry for entry in client.calls[0]["entries"] if "context_event_by_ingestion_time" in entry["key"])
+        self.assertIn("context_event_by_ingestion_time:context_segment:777", time_entry["key"])
+        self.assertEqual(time_entry["field"], f"{1780000000001:020d}:456")
 
 
     def test_direct_retrieval_records_prefilters_scope_type_and_secondary_indexes(self) -> None:

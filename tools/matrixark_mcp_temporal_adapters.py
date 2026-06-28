@@ -1057,9 +1057,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return context_event_timestamp_ms(record)
 
     def _context_event_time_index_key(self, record: Json) -> str:
-        scope_key = str(record.get("scope_key") or "")
-        scope_hash = stable_hash(scope_key) if scope_key else int(record.get("node_hash") or 0)
-        return f"{self._storage_prefix}:context_event_by_ingestion_time:{scope_hash}"
+        enriched = attach_context_event_time_key(record)
+        parent_type = str(enriched.get("context_event_parent_type") or "context_node")
+        parent_hash = enriched.get("context_event_parent_hash") or 0
+        return f"{self._storage_prefix}:context_event_by_ingestion_time:{parent_type}:{parent_hash}"
 
     def _context_event_time_index_field(self, record: Json) -> str:
         event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))

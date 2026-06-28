@@ -3359,6 +3359,15 @@ class MatrixArkLocalAdapter:
         event_hashes: list[int] = list(source_event_ids) if derive_from_existing_events else []
         records_to_append: list[Json] = []
         event_rows: list[tuple[int, Json, str, int]] = []
+        segment_hash_by_position: dict[int, int] = {}
+        segment_hashes_by_position: dict[int, list[int]] = {}
+        for segment in extraction["segments"]:
+            segment_hash = stable_hash(f"{batch_id_hash}:segment:{segment['topic']}:{segment['coordinate_tuples']}")
+            for message_index in segment.get("message_indexes", []):
+                if not isinstance(message_index, int):
+                    continue
+                segment_hashes_by_position.setdefault(message_index, []).append(segment_hash)
+                segment_hash_by_position.setdefault(message_index, segment_hash)
         if not derive_from_existing_events:
             for index, message in enumerate(envelope["messages"]):
                 event_text = f"{message['role']}: {message['content']}"
@@ -3372,6 +3381,8 @@ class MatrixArkLocalAdapter:
                         "record_type": "context_event",
                         "event_id_hash": event_id_hash,
                         "batch_id_hash": batch_id_hash,
+                        "parent_segment_hash": segment_hash_by_position.get(_index),
+                        "parent_segment_hashes": segment_hashes_by_position.get(_index, []),
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "text": event_text,
@@ -3389,6 +3400,7 @@ class MatrixArkLocalAdapter:
                         "prior_context": prior_context,
                         "agent_hook": hook,
                         "storage_options": envelope.get("storage_options", {}),
+                        "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
                 records_to_append.append(
