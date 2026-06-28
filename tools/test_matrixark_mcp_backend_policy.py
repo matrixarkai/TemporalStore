@@ -1257,6 +1257,47 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
 
+    def test_context_node_topology_records_store_compact_scope_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = mcp.enrich_scope_with_identity(
+                {"session_id": "debug-message-pdf-session"},
+                {
+                    "account_id": "acct_local",
+                    "tenant_id": "tenant_codex",
+                    "user_id": "codex_user",
+                    "session_id": "",
+                    "agent_name": "codex",
+                    "mode": "dev",
+                },
+            )
+
+            adapter.ensure_context_node_path(
+                node_path=["tenant:tenant_codex", "user:codex_user", "session:debug-message-pdf-session"],
+                scope=scope,
+                updated_at_ms=1780000000000,
+            )
+
+            topology_records = [
+                record
+                for record in adapter.read_all()
+                if record.get("record_type") in {"context_node", "context_child_ref"}
+            ]
+            self.assertTrue(topology_records)
+            for record in topology_records:
+                self.assertEqual(scope["scope_key"], record.get("scope_key"))
+                self.assertNotIn("scope", record)
+                for duplicate_field in (
+                    "account_id",
+                    "tenant_id",
+                    "user_id",
+                    "session_id",
+                    "tenant_hash",
+                    "user_hash",
+                    "session_hash",
+                ):
+                    self.assertNotIn(duplicate_field, record)
+
     def test_production_profile_rejects_local_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = False

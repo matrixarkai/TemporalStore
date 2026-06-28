@@ -725,6 +725,7 @@ class MatrixArkLocalAdapter:
         if not prefixes:
             return {"nodes_created": 0, "child_refs_created": 0, "node_hashes": []}
 
+        compact_scope = serving_scope_ref(scope)
         self._ensure_context_node_cache_loaded()
         existing_nodes = self._context_node_hashes
         existing_child_refs = self._context_child_ref_hashes
