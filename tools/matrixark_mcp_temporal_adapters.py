@@ -12,6 +12,9 @@ try:
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -21,6 +24,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
+        _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
         _mcp_debug_log,
     )
 
@@ -1134,6 +1140,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return json.dumps(
             {
                 "count": count,
+                "storage_prefix": self._storage_prefix,
                 "scope": scope or {},
                 "record_types": sorted(record_types or RETRIEVAL_HOT_RECORD_TYPES),
                 "secondary_index_groups": [
@@ -1147,19 +1154,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         )
 
     def _prune_retrieval_candidate_cache(self, current_count: int) -> None:
-        if not hasattr(self, "_retrieval_candidate_cache"):
-            return
-        with self._retrieval_candidate_cache_lock:
+        with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
             stale_keys = [
                 key
-                for key, cached in self._retrieval_candidate_cache.items()
-                if int(cached.get("count") or -1) != int(current_count)
+                for key, cached in _DIRECT_RETRIEVAL_CANDIDATE_CACHE.items()
+                if cached.get("storage_prefix") == self._storage_prefix
+                and int(cached.get("count") or -1) != int(current_count)
             ]
             for key in stale_keys:
-                self._retrieval_candidate_cache.pop(key, None)
-            if len(self._retrieval_candidate_cache) > 32:
-                for key in list(self._retrieval_candidate_cache)[: len(self._retrieval_candidate_cache) - 32]:
-                    self._retrieval_candidate_cache.pop(key, None)
+                _DIRECT_RETRIEVAL_CANDIDATE_CACHE.pop(key, None)
+            if len(_DIRECT_RETRIEVAL_CANDIDATE_CACHE) > _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES:
+                overflow = len(_DIRECT_RETRIEVAL_CANDIDATE_CACHE) - _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES
+                for key in list(_DIRECT_RETRIEVAL_CANDIDATE_CACHE)[:overflow]:
+                    _DIRECT_RETRIEVAL_CANDIDATE_CACHE.pop(key, None)
 
     def retrieval_records(
         self,
@@ -1178,13 +1185,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             selected_node_hashes=selected_node_hashes,
         )
         self._ensure_backend_metric_fields()
-        with self._retrieval_candidate_cache_lock:
-            cached = self._retrieval_candidate_cache.get(cache_key)
+        with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
+            cached = _DIRECT_RETRIEVAL_CANDIDATE_CACHE.get(cache_key)
             if cached is not None:
                 result = dict(cached)
                 result["records"] = list(cached.get("records", []))
                 stats = dict(result.get("scan_stats", {}))
                 stats["candidate_cache_hit"] = True
+                stats["candidate_cache_scope"] = "process_global"
                 result["scan_stats"] = stats
                 return result
 
@@ -1226,6 +1234,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "execution_mode": "temporalstore_candidate_cache",
                 "native_pushdown": True,
                 "candidate_cache_hit": False,
+                "candidate_cache_scope": "process_global",
                 "watermark_count": count,
                 "scanned": scanned,
                 "returned": len(filtered),
@@ -1235,9 +1244,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "record_types": sorted(allowed_types),
             },
         }
-        with self._retrieval_candidate_cache_lock:
-            self._retrieval_candidate_cache[cache_key] = {
+        with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
+            _DIRECT_RETRIEVAL_CANDIDATE_CACHE[cache_key] = {
                 **result,
+                "storage_prefix": self._storage_prefix,
                 "records": list(filtered),
             }
             self._prune_retrieval_candidate_cache(count)
@@ -1519,7 +1529,8 @@ class MatrixArkRustCliClient:
             samples = list(self._latency_samples_ms)
             context_counts = dict(sorted(self._context_record_counts.items()))
             return {
-                "gateway_mode": "long_lived_stdio_gateway",
+                "gateway_mode": "rust_direct_sdk_bridge",
+                "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
                 "transport": "stdio",
                 "cli_path": self.cli_path,
                 "max_inflight": 1,
@@ -1543,6 +1554,8 @@ class MatrixArkRustCliClient:
                 "matrixark_context_records_by_type": context_counts,
                 "process_per_operation_enabled": False,
                 "single_shot_mode": "debug_only",
+                "direct_sdk_bridge": True,
+                "pure_embedded_direct_sdk": False,
                 "supports_health": True,
                 "supports_readiness": True,
                 "supports_metrics": True,
@@ -1700,10 +1713,10 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             f'matrixark_backend_timeouts_total{{backend="{backend}"}} {int(snapshot.get("timeouts_total") or 0)}',
             "# HELP matrixark_backend_info MatrixArk storage backend identity and mode.",
             "# TYPE matrixark_backend_info gauge",
-            f'matrixark_backend_info{{backend="{backend}",storage_mode="rust-gateway"}} 1',
+            f'matrixark_backend_info{{backend="{backend}",storage_mode="rust-direct-sdk-bridge"}} 1',
             "# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.",
             "# TYPE matrixark_backend_ready gauge",
-            f'matrixark_backend_ready{{backend="{backend}",storage_mode="rust-gateway",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
+            f'matrixark_backend_ready{{backend="{backend}",storage_mode="rust-direct-sdk-bridge",status="{"ready" if self._backend_ready else "unknown"}"}} {1 if self._backend_ready else 0}',
             "# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.",
             "# TYPE matrixark_backend_command_latency_ms gauge",
             f'matrixark_backend_command_latency_ms{{backend="{backend}",quantile="0.50"}} {round(_latency_quantile_from_bucket_map(buckets, int(snapshot.get("latency_ms_count") or 0), 0.50), 3)}',
@@ -1766,10 +1779,13 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         return {
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
-            "gateway_mode": "long_lived_stdio_gateway",
-            "production_path": "long_lived_only",
+            "gateway_mode": "rust_direct_sdk_bridge",
+            "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
+            "production_path": "rust_direct_sdk_bridge",
             "process_per_operation_enabled": False,
             "single_shot_mode": "debug_only",
+            "direct_sdk_bridge": True,
+            "pure_embedded_direct_sdk": False,
             "capabilities": {
                 "health_endpoint": True,
                 "readiness_endpoint": True,
