@@ -1771,9 +1771,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 if not index_name:
                     continue
                 index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
-                ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
-                if ref_hash is not None:
-                    index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                ref_hashes = context_index_record_ref_hashes(record)
+                for legacy_field in ("chunk_hash", "section_hash", "skill_hash"):
+                    legacy_value = record.get(legacy_field)
+                    if legacy_value is not None:
+                        ref_hashes.append(legacy_value)
+                ref_hashes = ordered_unique(ref_hashes)
+                if ref_hashes:
+                    for ref_hash in ref_hashes:
+                        index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                 else:
                     index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
                 try:

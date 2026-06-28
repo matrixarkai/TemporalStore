@@ -1285,7 +1285,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("user_hash", access)
         self.assertNotIn("session_hash", access)
 
-    def test_message_event_secondary_indexes_are_capped(self) -> None:
+    def test_message_event_secondary_indexes_are_not_written_per_event(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
             adapter.ingest(
@@ -1301,14 +1301,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             )
             records = adapter.read_all()
             event_indexes = [
-                record.get("index_name")
+                record
                 for record in records
-                if record.get("record_type") == "context_index" and record.get("ref_type") == "event"
+                if record.get("record_type") == "context_index" and record.get("data_model") == "context_event"
             ]
-            self.assertLessEqual(len(event_indexes), mcp.MAX_INDEX_TERMS_PER_MESSAGE_EVENT)
-            self.assertIn("event_type:confirmation", event_indexes)
-            self.assertIn("source_type:message", event_indexes)
-            self.assertNotIn("status:observed", event_indexes)
+            self.assertEqual([], event_indexes)
 
     def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
         budget = mcp.new_secondary_index_budget(3)
