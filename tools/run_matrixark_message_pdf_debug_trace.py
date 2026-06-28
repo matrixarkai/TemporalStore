@@ -642,7 +642,7 @@ def read_records(path: Path) -> list[Json]:
         for line in handle:
             if line.strip():
                 records.append(json.loads(line))
-    return records
+    return compact_latest_context_state_records(records)
 
 
 def latest_by_key(records: list[Json], key_fields: list[str]) -> list[Json]:
