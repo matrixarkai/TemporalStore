@@ -4969,6 +4969,39 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
+def compact_context_pack_policy(policy: Any) -> Json:
+    if not isinstance(policy, dict):
+        return {}
+    keep_fields = [
+        "enabled",
+        "mode",
+        "decision",
+        "strategy",
+        "quality_gate",
+        "resource_mode",
+        "skill_mode",
+    ]
+    compact: Json = {
+        field: policy.get(field)
+        for field in keep_fields
+        if policy.get(field) not in (None, "", [], {})
+    }
+    for field in [
+        "selected_ref_count",
+        "selected_session_count",
+        "resource_selected_ref_count",
+        "skill_selected_ref_count",
+        "entity_bridge_selected_ref_count",
+        "selected_tokens",
+        "resource_selected_tokens",
+        "skill_selected_tokens",
+    ]:
+        value = policy.get(field)
+        if isinstance(value, int) and value > 0:
+            compact[field] = value
+    return compact
+
+
 def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool = False) -> Json:
     if include_debug or not isinstance(dropped, dict):
         return dropped
@@ -4987,11 +5020,13 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         "deadline_reason",
         "min_score",
         "budget_fill_policy",
-        "cross_session_policy",
-        "shared_context_policy",
     ]:
         value = dropped.get(field)
         if value not in (None, "", [], {}):
+            compact[field] = value
+    for field in ["cross_session_policy", "shared_context_policy"]:
+        value = compact_context_pack_policy(dropped.get(field))
+        if value:
             compact[field] = value
     if dropped.get("refs"):
         compact["dropped_ref_detail_available_in_audit"] = True
