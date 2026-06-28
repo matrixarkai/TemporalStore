@@ -780,6 +780,34 @@ pub struct OpenRaftProcessNodeEvidence {
     pub snapshot_files_inspected: u64,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftProcessPathSemanticsEvidence {
+    #[serde(default)]
+    pub observed_process_requests: u64,
+    #[serde(default)]
+    pub read_index_responses_observed: u64,
+    #[serde(default)]
+    pub per_peer_pipeline_state_observed: bool,
+    #[serde(default)]
+    pub append_pipeline_state_observed: bool,
+    #[serde(default)]
+    pub snapshot_lifecycle_observed: bool,
+    #[serde(default)]
+    pub wal_segment_lifecycle_observed: bool,
+    #[serde(default)]
+    pub restart_recovery_observed: bool,
+    #[serde(default)]
+    pub failover_observed: bool,
+    #[serde(default)]
+    pub membership_change_observed: bool,
+    #[serde(default)]
+    pub secondary_lag_observed: bool,
+    #[serde(default)]
+    pub ready: bool,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct OpenRaftDataNodeProcessRolloutReport {
     pub shard_id: ShardId,
@@ -813,6 +841,8 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub snapshot_install_validated: bool,
     pub applied_fence_validated: bool,
     pub multi_process_log_store_validated: bool,
+    #[serde(default)]
+    pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
@@ -854,6 +884,8 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub recovered_after_restart: bool,
     pub scheduler_task_replay_validated: bool,
     pub multi_process_log_store_validated: bool,
+    #[serde(default)]
+    pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }

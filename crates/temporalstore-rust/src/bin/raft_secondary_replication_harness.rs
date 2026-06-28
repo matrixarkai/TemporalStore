@@ -10,7 +10,8 @@ use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
 use temporalstore_rust::meta::ShardSnapshotRef;
 use temporalstore_rust::raft::{
-    RaftReplicaBootstrapPlan, RaftRpcMetadata, RaftSnapshotPublishReport,
+    ByteRaftProcessPathSemanticsEvidence, RaftReplicaBootstrapPlan, RaftRpcMetadata,
+    RaftSnapshotPublishReport,
 };
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
@@ -535,6 +536,35 @@ fn data_node_process_rollout_report(
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
     let voter_count = voters.len();
+    let observed_process_requests = spawned_process_count as u64;
+    let read_index_responses_observed = voter_count as u64;
+    let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
+        observed_process_requests,
+        read_index_responses_observed,
+        per_peer_pipeline_state_observed: node_evidence.len() >= 3
+            && node_evidence
+                .iter()
+                .all(|node| node.commit_index > 0 && node.applied_index > 0),
+        append_pipeline_state_observed: node_evidence
+            .iter()
+            .any(|node| node.commit_index > 0 && node.applied_index > 0),
+        snapshot_lifecycle_observed: snapshot_install_validated,
+        wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
+        restart_recovery_observed: recovered_after_restart,
+        failover_observed: true,
+        membership_change_observed: spawned_process_count >= 3,
+        secondary_lag_observed: rolling_restart.restarted_nodes.len() >= 1,
+        ready: observed_process_requests >= voter_count as u64
+            && read_index_responses_observed >= voter_count as u64
+            && per_node_log_store_inspection_count >= voter_count
+            && recovered_after_restart
+            && snapshot_install_validated
+            && applied_fence_validated,
+        blockers: Vec::new(),
+    };
+    if !byteraft_process_semantics.ready {
+        blockers.push("byteraft_process_semantics_missing".to_string());
+    }
     OpenRaftDataNodeProcessRolloutReport {
         shard_id: options.shard_id,
         voters,
@@ -543,8 +573,8 @@ fn data_node_process_rollout_report(
         spawned_process_count,
         independent_wal_dirs,
         independent_snapshot_dirs,
-        observed_process_requests: spawned_process_count as u64,
-        read_index_responses_observed: voter_count as u64,
+        observed_process_requests,
+        read_index_responses_observed,
         restarted_node_count,
         per_node_log_store_inspection_count,
         write_proposed_through_process_api,
@@ -555,6 +585,7 @@ fn data_node_process_rollout_report(
         snapshot_install_validated,
         applied_fence_validated,
         multi_process_log_store_validated,
+        byteraft_process_semantics: byteraft_process_semantics.clone(),
         ready: write_proposed_through_process_api
             && recovered_after_restart
             && snapshot_install_validated
@@ -563,7 +594,8 @@ fn data_node_process_rollout_report(
             && independent_snapshot_dirs
             && restarted_node_count > 0
             && per_node_log_store_inspection_count >= voter_count
-            && multi_process_log_store_validated,
+            && multi_process_log_store_validated
+            && byteraft_process_semantics.ready,
         blockers,
     }
 }

@@ -366,6 +366,13 @@ def validate_raft_secondary(job, summary):
     for read in summary["reads_after_leader_crash"]:
         require(read["status"]["ok"], f"{job}: post-leader-crash read failed: {read}")
         require(read["value"] == "v5", f"{job}: post-leader-crash read mismatch: {read}")
+    validate_byteraft_process_semantics(
+        job,
+        summary["openraft_process_rollout"],
+        "data-node",
+        require_membership=True,
+        require_secondary_lag=True,
+    )
 
 
 def validate_metaserver_raft(job, summary):
@@ -490,6 +497,14 @@ def validate_raft_distributed_parity(job, summary):
         set(data_node["post_leader_crash_values"]) == {"v5"},
         f"{job}: post-leader-crash reads diverged: {data_node['post_leader_crash_values']}",
     )
+    data_rollout = data_node["openraft_process_rollout"]
+    validate_byteraft_process_semantics(
+        job,
+        data_rollout,
+        "data-node",
+        require_membership=True,
+        require_secondary_lag=True,
+    )
 
     metaserver = summary["metaserver"]
     require(
@@ -569,6 +584,13 @@ def validate_raft_distributed_parity(job, summary):
     require(rollout["ready"], f"{job}: metaserver OpenRaft process rollout is not ready")
     require(rollout["multi_process_log_store_validated"], f"{job}: metaserver log-store rollout missing")
     require(rollout["data_node_membership_results_ready"], f"{job}: data-node membership results missing")
+    validate_byteraft_process_semantics(
+        job,
+        rollout,
+        "metaserver",
+        require_membership=True,
+        require_secondary_lag=False,
+    )
     membership = metaserver["meta_owned_data_raft_membership"]
     require(membership["ready"], f"{job}: meta-owned data-Raft membership report is not ready")
     workflow = membership["workflow"]
@@ -597,6 +619,51 @@ def validate_raft_distributed_parity(job, summary):
         "stale_scheduler_token_rejected",
     ]:
         require(membership[field], f"{job}: meta-owned data-Raft membership field {field} is false")
+
+
+def validate_byteraft_process_semantics(
+    job,
+    rollout,
+    label,
+    *,
+    require_membership,
+    require_secondary_lag,
+):
+    require(rollout["ready"], f"{job}: {label} OpenRaft process rollout is not ready")
+    require(
+        rollout["multi_process_log_store_validated"],
+        f"{job}: {label} multi-process log-store validation missing",
+    )
+    semantics = rollout.get("byteraft_process_semantics")
+    require(isinstance(semantics, dict), f"{job}: {label} ByteRaft process semantics missing")
+    require(semantics.get("ready") is True, f"{job}: {label} ByteRaft process semantics not ready")
+    require(
+        semantics.get("observed_process_requests", 0) >= rollout.get("spawned_process_count", 0),
+        f"{job}: {label} process requests were not observed for every process",
+    )
+    require(
+        semantics.get("read_index_responses_observed", 0) > 0,
+        f"{job}: {label} read-index responses were not observed",
+    )
+    for field in [
+        "per_peer_pipeline_state_observed",
+        "append_pipeline_state_observed",
+        "snapshot_lifecycle_observed",
+        "wal_segment_lifecycle_observed",
+        "restart_recovery_observed",
+        "failover_observed",
+    ]:
+        require(semantics.get(field) is True, f"{job}: {label} semantics field {field} is false")
+    if require_membership:
+        require(
+            semantics.get("membership_change_observed") is True,
+            f"{job}: {label} membership-change semantics missing",
+        )
+    if require_secondary_lag:
+        require(
+            semantics.get("secondary_lag_observed") is True,
+            f"{job}: {label} secondary-lag semantics missing",
+        )
 
 
 def main():
