@@ -3898,12 +3898,13 @@ class MatrixArkLocalAdapter:
             if len(selected) >= 8:
                 break
         context_pack_id = str(stable_hash(f"deadline:{query}:{selected}:{now_ms()}"))
+        serving_selected = compact_context_pack_refs(selected, include_debug=False)
         pack = {
             "context_pack_id": context_pack_id,
             "context_sources_order": ["local_context", "matrixark_remote_context"],
             "local_context_refs": local_context_refs_for_pack(local_budget),
-            "selected_refs": selected,
-            "remote_context_refs": selected,
+            "selected_refs": serving_selected,
+            "remote_context_refs": serving_selected,
             "layer_scores": [],
             "question_type": question_type,
             "packing_policy": f"deadline_fallback:{question_type}",
@@ -3936,7 +3937,7 @@ class MatrixArkLocalAdapter:
                 "dedupe_remote_against_local": True,
                 "remote_is_additive_only_within_remaining_budget": True,
             },
-            "dropped_refs": [],
+            "dropped_refs": {},
             "quality_warnings": [f"retrieval_deadline_exceeded:{reason}"],
             "insufficient_context": not selected,
             "partial_context_pack": True,
@@ -4207,6 +4208,7 @@ class MatrixArkLocalAdapter:
             selected_refs = native_pack.get("selected_refs", []) if isinstance(native_pack.get("selected_refs"), list) else []
             context_pack_id_text = str(native_pack.get("context_pack_id") or stable_hash(f"native:{query}:{selected_refs}:{now_ms()}"))
             native_pack["context_pack_id"] = context_pack_id_text
+            debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
             if audit_mode == "full" and audit_sample_rate > 0 and (audit_sample_rate >= 1.0 or stable_hash(context_pack_id_text) % 10000 < int(audit_sample_rate * 10000)):
                 self.append_audit(
                     {
@@ -4232,6 +4234,16 @@ class MatrixArkLocalAdapter:
                         "created_at_ms": now_ms(),
                     }
                 )
+            serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
+            native_pack["selected_refs"] = serving_selected_refs
+            native_pack["remote_context_refs"] = serving_selected_refs
+            native_pack["dropped_refs"] = compact_dropped_refs_for_context_pack(native_pack.get("dropped_refs", {}), include_debug=debug_refs)
+            native_pack["context_pack_payload_policy"] = {
+                "serving_refs": "compact" if not debug_refs else "debug_full",
+                "hashes_and_matched_indexes": "audit_only" if not debug_refs else "included",
+                "dropped_ref_details": "audit_only" if not debug_refs else "included",
+                "enable_debug_refs_with": "include_debug_refs=true or MATRIXARK_CONTEXT_PACK_DEBUG_REFS=1",
+            }
             return native_pack
         if self.native_context_pack_required():
             raise MatrixArkError(
@@ -5174,6 +5186,9 @@ class MatrixArkLocalAdapter:
                 "skipped": True,
                 "reason": "disabled_for_read_only_scale_or_benchmark_run",
             }
+        debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
+        serving_selected = compact_context_pack_refs(selected, include_debug=debug_refs)
+        serving_dropped = compact_dropped_refs_for_context_pack(dropped_over_budget, include_debug=debug_refs)
         pack_summary = summarize_text(
             " ".join(str(item.get("text", "")) for item in selected),
             limit=512,
@@ -5206,8 +5221,8 @@ class MatrixArkLocalAdapter:
             "context_pack_id": str(context_pack_id),
             "context_sources_order": ["local_context", "matrixark_remote_context"],
             "local_context_refs": local_context_refs_for_pack(local_budget),
-            "selected_refs": selected,
-            "remote_context_refs": selected,
+            "selected_refs": serving_selected,
+            "remote_context_refs": serving_selected,
             "selected_ref_counts": selected_context_counts,
             "context_assembly_policy": {
                 "access_scope_before_scoring": True,
@@ -5314,10 +5329,16 @@ class MatrixArkLocalAdapter:
                 "dedupe_remote_against_local": True,
                 "remote_is_additive_only_within_remaining_budget": True,
             },
-            "dropped_refs": dropped_over_budget,
+            "dropped_refs": serving_dropped,
             "quality_warnings": quality_warnings,
             "insufficient_context": not selected,
             "partial_context_pack": partial_context_pack,
+            "context_pack_payload_policy": {
+                "serving_refs": "compact" if not debug_refs else "debug_full",
+                "hashes_and_matched_indexes": "audit_only" if not debug_refs else "included",
+                "dropped_ref_details": "audit_only" if not debug_refs else "included",
+                "enable_debug_refs_with": "include_debug_refs=true or MATRIXARK_CONTEXT_PACK_DEBUG_REFS=1",
+            },
             "operational_visibility_policy": {
                 "audit_mode": audit_mode,
                 "audit_sample_rate": audit_sample_rate,
