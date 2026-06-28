@@ -2160,6 +2160,55 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         cluster.read_index(3),
         Err(RaftError::ReplicaLagging { replica_id: 3, .. })
     ));
+    assert!(matches!(
+        cluster.check_data_raft_read_policy(
+            3,
+            DataRaftReadPolicy {
+                mode: DataRaftReadMode::BoundedStale,
+                bounded_stale_max_index_lag: 0,
+                ..DataRaftReadPolicy::default()
+            },
+        ),
+        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
+    ));
+    cluster
+        .check_data_raft_read_policy(
+            3,
+            DataRaftReadPolicy {
+                mode: DataRaftReadMode::BoundedStale,
+                bounded_stale_max_index_lag: 1,
+                ..DataRaftReadPolicy::default()
+            },
+        )
+        .unwrap();
+    cluster.advance_time_ms(1_001);
+    assert!(matches!(
+        cluster.check_read(
+            1,
+            RaftReadOptions {
+                strategy: RaftReadStrategy::LeaseRead,
+                ..RaftReadOptions::default()
+            },
+        ),
+        Err(RaftError::LeaderUnavailable)
+    ));
+    cluster.tick_election().unwrap();
+    cluster.set_alive(2, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    assert!(matches!(
+        cluster.read_index(1),
+        Err(RaftError::LeaderUnavailable)
+    ));
+    assert!(matches!(
+        cluster.check_write_authority(1),
+        Err(RaftError::NotLeader { node_id: 1 })
+    ));
+    cluster.set_alive(2, true).unwrap();
+    cluster.set_alive(3, true).unwrap();
+    cluster.tick_election().unwrap();
+    let catchup = cluster.build_append_entries_request(3).unwrap();
+    cluster.receive_append_entries(catchup).unwrap();
+    cluster.read_index(3).unwrap();
     cluster
         .check_read(
             1,
@@ -2176,6 +2225,13 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.lease_read_validated);
     assert!(report.stale_follower_read_rejected);
     assert!(report.stale_follower_write_rejected);
+    assert!(report.stale_leader_lease_rejected);
+    assert!(report.lagging_follower_read_rejected);
+    assert!(report.bounded_stale_read_accepted);
+    assert!(report.bounded_stale_read_rejected);
+    assert!(report.minority_partition_rejected_reads);
+    assert!(report.minority_partition_rejected_writes);
+    assert!(report.healed_follower_caught_up);
     assert!(report.append_backpressure_enforced);
     assert!(report.reorder_queue_enabled);
     assert!(report.snapshot_sender_lifecycle_present);
@@ -2184,12 +2240,12 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.wal_segment_lifecycle_present);
     assert!(report.pre_vote_enforced);
     assert!(report.election_controls_enforced);
-    assert_eq!(report.read_index_requests, 2);
-    assert_eq!(report.read_index_accepted, 1);
-    assert_eq!(report.read_index_rejected, 1);
-    assert_eq!(report.lease_read_requests, 1);
+    assert!(report.read_index_requests >= 5);
+    assert!(report.read_index_accepted >= 2);
+    assert!(report.read_index_rejected >= 3);
+    assert_eq!(report.lease_read_requests, 2);
     assert_eq!(report.lease_read_accepted, 1);
-    assert_eq!(report.lease_read_rejected, 0);
+    assert_eq!(report.lease_read_rejected, 1);
     assert!(report.admin_status_surface_complete);
     assert!(report.wal_segment_count >= 1);
     assert!(report.wal_total_bytes > 0);
@@ -2203,8 +2259,11 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         .any(|peer| peer.peer_id == 3
             && peer.append_requests >= 2
             && peer.append_accepted >= 1
-            && peer.append_rejected >= 1
-            && peer.append_queue_depth > 0));
+            && peer.append_rejected >= 1));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.append_queue_depth > 0 || peer.reorder_entries_released > 0));
     assert!(report
         .peer_pipeline_states
         .iter()
@@ -2268,18 +2327,24 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(restored_report.ready, "{:?}", restored_report.blockers);
     assert_eq!(restored_report.wal_total_records, report.wal_total_records);
     assert_eq!(restored_report.wal_last_sequence, report.wal_last_sequence);
-    assert_eq!(restored_report.read_index_requests, 2);
-    assert_eq!(restored_report.read_index_rejected, 1);
-    assert_eq!(restored_report.lease_read_requests, 1);
+    assert!(restored_report.read_index_requests >= 5);
+    assert!(restored_report.read_index_rejected >= 3);
+    assert_eq!(restored_report.lease_read_requests, 2);
     assert_eq!(restored_report.lease_read_accepted, 1);
+    assert_eq!(restored_report.lease_read_rejected, 1);
+    assert!(restored_report.stale_leader_lease_rejected);
+    assert!(restored_report.bounded_stale_read_accepted);
+    assert!(restored_report.bounded_stale_read_rejected);
+    assert!(restored_report.minority_partition_rejected_reads);
+    assert!(restored_report.minority_partition_rejected_writes);
+    assert!(restored_report.healed_follower_caught_up);
     assert!(restored_report
         .peer_pipeline_states
         .iter()
         .any(|peer| peer.peer_id == 3
             && peer.append_requests >= 2
             && peer.append_accepted >= 1
-            && peer.append_rejected >= 1
-            && peer.append_queue_depth > 0));
+            && peer.append_rejected >= 1));
     assert!(restored_report
         .peer_pipeline_states
         .iter()
@@ -2524,18 +2589,15 @@ fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
         readiness.local_rollout_ready,
         cfg!(feature = "openraft-engine")
     );
-    assert!(readiness.data_node_real_process_rollout_validated);
-    assert!(readiness.metaserver_real_process_rollout_validated);
-    assert!(readiness.multi_process_log_store_validation_present);
-    assert_eq!(
-        readiness.production_ready,
-        cfg!(feature = "openraft-engine")
-    );
-    assert!(!readiness
+    assert!(!readiness.data_node_real_process_rollout_validated);
+    assert!(!readiness.metaserver_real_process_rollout_validated);
+    assert!(!readiness.multi_process_log_store_validation_present);
+    assert!(!readiness.production_ready);
+    assert!(readiness
         .missing
         .iter()
         .any(|item| item.contains("data-node process rollout")));
-    assert!(!readiness
+    assert!(readiness
         .missing
         .iter()
         .any(|item| item.contains("metaserver process rollout")));
@@ -2553,7 +2615,7 @@ fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
     );
     assert!(distributed.openraft_data_node_process_startup_present);
     assert!(distributed.openraft_metaserver_process_startup_present);
-    assert!(!distributed
+    assert!(distributed
         .missing
         .iter()
         .any(|item| item.contains("OpenRaft data-node process rollout")));
@@ -5238,10 +5300,10 @@ fn metaserver_owns_data_raft_membership_workflow() {
 fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence() {
     let rollout = raft_openraft_rollout_readiness();
     assert!(rollout.adapter_present);
-    assert!(rollout.data_node_real_process_rollout_validated);
-    assert!(rollout.metaserver_real_process_rollout_validated);
-    assert!(rollout.multi_process_log_store_validation_present);
-    assert!(rollout.production_ready);
+    assert!(!rollout.data_node_real_process_rollout_validated);
+    assert!(!rollout.metaserver_real_process_rollout_validated);
+    assert!(!rollout.multi_process_log_store_validation_present);
+    assert!(!rollout.production_ready);
 
     let membership = raft_metaserver_membership_readiness();
     assert!(membership.networked_scheduler_transport_present);

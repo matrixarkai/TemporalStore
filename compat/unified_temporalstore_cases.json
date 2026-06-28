@@ -3868,8 +3868,18 @@
         {
           "command": {
             "description": "Runs the Rust-native data-node Raft/proxy workflow with repeated hash writes, linearizable reads, failover, and secondary read validation.",
-            "kind": "raft_linearizable_hash_failover",
-            "scenario": "data_node_mixed_rw_failover"
+            "kind": "existing_test",
+            "mode": "runtime",
+            "required_paths": [
+              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
+              "src/partition/storage/data_raft_replication.cc"
+            ],
+            "runner": "BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-linearizable-hash",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
+            "scenario": "data_node_mixed_rw_failover",
+            "suite": "cpp_data_raft_parity",
+            "timeout_s": 900
           },
           "name": "raft_linearizable_hash_failover",
           "skip_client": true
@@ -4039,7 +4049,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout plus log-store validation evidence.",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, and per-node log-store inspection evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5078,7 +5088,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
+            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce accept/reject lag bounds, stale follower writes are rejected, minority partitions reject reads/writes, and healed followers catch up before read eligibility.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5377,7 +5387,7 @@
               "minority rejects stale reads and writes while isolated",
               "healed peer catches up before becoming read-eligible"
             ],
-            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
+            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, minority side rejects stale reads/writes, and healed follower catches up before read eligibility.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -8185,7 +8195,6 @@
       "storage_cache_refill",
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
-      "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
       "object_store_backend_detect"
