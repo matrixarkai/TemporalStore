@@ -14951,6 +14951,7 @@ mod tests {
         assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
     }
 
+    // rust-internal: packed page decode-cache microbenchmark validates Rust scan internals.
     #[test]
     fn feature_query_decodes_each_packed_page_once_per_scan() {
         let engine = TemporalEngine::default();
