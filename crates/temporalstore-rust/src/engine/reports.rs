@@ -271,6 +271,8 @@ pub struct StoragePhysicalPageIndex {
     pub dirty: bool,
     pub deleted: bool,
     pub log_backed: bool,
+    pub cpp_packed_page_index_len: usize,
+    pub cpp_packed_page_index_hex: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -287,6 +289,8 @@ pub struct StoragePhysicalSlotNode {
     pub physical_bytes: u64,
     pub dirty_generation: u64,
     pub last_dump_sequence: u64,
+    pub cpp_packed_slot_node_len: usize,
+    pub cpp_packed_slot_node_hex: String,
     #[serde(default)]
     pub page_indexes: Vec<StoragePhysicalPageIndex>,
 }
@@ -302,6 +306,9 @@ pub struct StoragePhysicalIndexReport {
     pub missing_routing_slot_count: usize,
     pub missing_page_id_count: usize,
     pub missing_checksum_count: usize,
+    pub cpp_packed_page_index_size: usize,
+    pub cpp_packed_slot_node_size: usize,
+    pub cpp_packed_layout_compatible: bool,
     #[serde(default)]
     pub slot_nodes: Vec<StoragePhysicalSlotNode>,
 }
