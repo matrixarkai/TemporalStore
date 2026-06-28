@@ -3629,6 +3629,66 @@ def integer_arg(data: Json, field: str, default: int, *, minimum: int = 0) -> in
     return value
 
 
+def float_arg(data: Json, field: str, default: float, *, minimum: float = 0.0, maximum: float | None = None) -> float:
+    value = data.get(field, default)
+    if not isinstance(value, (int, float)):
+        raise MatrixArkError(f"{field} must be a number")
+    result = float(value)
+    if result < minimum:
+        raise MatrixArkError(f"{field} must be >= {minimum}")
+    if maximum is not None and result > maximum:
+        raise MatrixArkError(f"{field} must be <= {maximum}")
+    return result
+
+
+def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str, session_scope: str, remote_budget_tokens: int) -> Json:
+    raw = args.get("cross_session", ranking.get("cross_session", {}))
+    if isinstance(raw, bool):
+        config: Json = {"enabled": raw}
+    elif raw is None:
+        config = {}
+    elif isinstance(raw, dict):
+        config = raw
+    else:
+        raise MatrixArkError("cross_session must be an object or boolean")
+
+    default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
+    enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
+    default_ratio = 0.45 if question_type in {"current_state", "latest"} else 0.35
+    env_ratio = os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO")
+    if env_ratio is not None and "budget_ratio" not in config:
+        try:
+            default_ratio = float(env_ratio)
+        except ValueError:
+            raise MatrixArkError("MATRIXARK_CROSS_SESSION_BUDGET_RATIO must be a number")
+    budget_ratio = float_arg(config, "budget_ratio", default_ratio, minimum=0.0, maximum=1.0)
+    max_budget_default = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "4096"))
+    max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
+    computed_budget = int(remote_budget_tokens * budget_ratio)
+    if remote_budget_tokens >= 1200 and computed_budget > 0:
+        computed_budget = max(512, computed_budget)
+    budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
+    budget_tokens = min(remote_budget_tokens, budget_tokens, max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens)
+    max_sessions = integer_arg(config, "max_sessions", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "8")), minimum=0)
+    max_candidates = integer_arg(config, "max_candidates", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "256")), minimum=0)
+    min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", 3, minimum=0)
+    parallelism = integer_arg(config, "parallelism", int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4")), minimum=1)
+    return {
+        "enabled": enabled,
+        "mode": "prefer" if enabled else "disabled",
+        "budget_ratio": round(budget_ratio, 6),
+        "budget_tokens": budget_tokens if enabled else 0,
+        "remote_budget_tokens": remote_budget_tokens,
+        "max_budget_tokens": max_budget_tokens,
+        "max_sessions": max_sessions if enabled else 0,
+        "max_candidates": max_candidates if enabled else 0,
+        "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
+        "parallelism": parallelism if enabled else 0,
+        "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
+        "budget_guidance": "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens",
+    }
+
+
 def bounded_max_children_scored_per_parent(value: int) -> int:
     hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
     if value > hard_cap:
@@ -4165,6 +4225,7 @@ def select_token_budgeted_refs(
     duplicate_text_hashes: set[int] | None = None,
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
+    cross_session_policy: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -4180,6 +4241,25 @@ def select_token_budgeted_refs(
     candidates = diversify_for_question_type(candidates, question_type, total_limit=candidate_pool_limit)
     selected: list[Json] = []
     used_tokens = 0
+    cross_session_policy = cross_session_policy or {"enabled": False, "budget_tokens": 0, "max_sessions": 0, "max_candidates": 0, "min_entity_bridge_refs": 0}
+    cross_enabled = bool(cross_session_policy.get("enabled"))
+    cross_budget_tokens = int(cross_session_policy.get("budget_tokens") or 0)
+    cross_max_sessions = int(cross_session_policy.get("max_sessions") or 0)
+    cross_max_candidates = int(cross_session_policy.get("max_candidates") or 0)
+    cross_min_entity_bridge_refs = int(cross_session_policy.get("min_entity_bridge_refs") or 0)
+    cross_used_tokens = 0
+    cross_selected_ref_count = 0
+    entity_bridge_selected_ref_count = 0
+    selected_cross_sessions: set[str] = set()
+    def cross_session_key(candidate: Json) -> str:
+        for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
+            if isinstance(source, dict):
+                for field in ["session_id", "scope_key", "node_hash"]:
+                    value = source.get(field)
+                    if value:
+                        return str(value)
+        return "unknown_cross_session"
+
     dropped: Json = {
         "over_budget": 0,
         "duplicate": 0,
@@ -4187,6 +4267,9 @@ def select_token_budgeted_refs(
         "stale": 0,
         "summary": 0,
         "raw_l2": 0,
+        "cross_session_budget": 0,
+        "cross_session_session_cap": 0,
+        "cross_session_candidate_cap": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -4196,6 +4279,9 @@ def select_token_budgeted_refs(
             "stale": 0,
             "summary": 0,
             "raw_l2": 0,
+            "cross_session_budget": 0,
+            "cross_session_session_cap": 0,
+            "cross_session_candidate_cap": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -4206,6 +4292,9 @@ def select_token_budgeted_refs(
             "stale": "candidate was stale or superseded for the query policy",
             "summary": "summary text was dropped in favor of denser raw/evidence refs",
             "raw_l2": "raw L2 content was dropped because a smaller cited chunk or summary was enough",
+            "cross_session_budget": "cross-session candidate exceeded the configured cross-session token budget",
+            "cross_session_session_cap": "cross-session candidate came from a session beyond max cross-session session fanout",
+            "cross_session_candidate_cap": "cross-session candidate exceeded the configured cross-session candidate cap",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -4256,6 +4345,29 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["over_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="over_budget", token_estimate=ref_tokens)
             continue
+        is_cross_session = candidate.get("session_continuity") == "cross_session"
+        is_entity_bridge = is_cross_session and candidate.get("ref_type") == "entity"
+        candidate_cross_key = cross_session_key(candidate) if is_cross_session else ""
+        if is_cross_session and not cross_enabled:
+            dropped["cross_session_budget"] += 1
+            dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
+            continue
+        if is_cross_session and cross_max_candidates > 0 and cross_selected_ref_count >= cross_max_candidates:
+            dropped["cross_session_candidate_cap"] += 1
+            dropped["estimated_tokens"]["cross_session_candidate_cap"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="cross_session_candidate_cap", token_estimate=ref_tokens)
+            continue
+        if is_cross_session and cross_max_sessions > 0 and candidate_cross_key not in selected_cross_sessions and len(selected_cross_sessions) >= cross_max_sessions:
+            dropped["cross_session_session_cap"] += 1
+            dropped["estimated_tokens"]["cross_session_session_cap"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="cross_session_session_cap", token_estimate=ref_tokens)
+            continue
+        if is_cross_session and cross_budget_tokens > 0 and cross_used_tokens + ref_tokens > cross_budget_tokens and not (is_entity_bridge and entity_bridge_selected_ref_count < cross_min_entity_bridge_refs):
+            dropped["cross_session_budget"] += 1
+            dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -4266,8 +4378,21 @@ def select_token_budgeted_refs(
             }
         )
         used_tokens += ref_tokens
+        if is_cross_session:
+            cross_used_tokens += ref_tokens
+            cross_selected_ref_count += 1
+            selected_cross_sessions.add(candidate_cross_key)
+            if is_entity_bridge:
+                entity_bridge_selected_ref_count += 1
         if used_tokens >= remote_budget:
             break
+    dropped["cross_session_policy"] = {
+        **cross_session_policy,
+        "selected_tokens": cross_used_tokens,
+        "selected_ref_count": cross_selected_ref_count,
+        "selected_session_count": len(selected_cross_sessions),
+        "entity_bridge_selected_ref_count": entity_bridge_selected_ref_count,
+    }
     if not selected and candidates and remote_budget > 0:
         first = next(
             (
