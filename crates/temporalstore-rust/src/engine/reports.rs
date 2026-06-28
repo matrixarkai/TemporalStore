@@ -1058,6 +1058,8 @@ pub struct StorageManagerPressureSignals {
     pub total_pressure_score: u64,
 }
 
+pub type StorageManagerPressureSnapshot = StorageManagerPressureSignals;
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleReport {
     pub shard_id: ShardId,
@@ -1065,6 +1067,8 @@ pub struct StorageManagerCycleReport {
     pub cxx_stage_order: Vec<String>,
     pub completed: bool,
     pub production_parity_slice: bool,
+    #[serde(default)]
+    pub pressure_snapshot: StorageManagerPressureSnapshot,
     #[serde(default)]
     pub pressure_signals: StorageManagerPressureSignals,
     pub stages: Vec<StorageManagerStageReport>,

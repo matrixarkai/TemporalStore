@@ -3445,11 +3445,9 @@ impl TemporalEngine {
                 .sum(),
             ..StorageManagerStageReport::default()
         });
-        let cycle_duration_ms = now_ms().saturating_sub(cycle_started_unix_ms);
-        annotate_storage_manager_admin_stage_fields(
+        let phase_executor = StorageManagerPhaseExecutor::new(cycle_started_unix_ms);
+        phase_executor.annotate_reports(
             &mut stages,
-            cycle_started_unix_ms,
-            cycle_duration_ms,
             &errors,
             pressure_signals.follower_cursor_retention_blockers
                 + pressure_signals.raft_snapshot_retention_blockers,
@@ -3467,6 +3465,7 @@ impl TemporalEngine {
             cxx_stage_order,
             completed: errors.is_empty(),
             production_parity_slice,
+            pressure_snapshot: pressure_signals.clone(),
             pressure_signals,
             stages,
             plan,
@@ -8735,6 +8734,35 @@ fn annotate_storage_manager_admin_stage_fields(
         if stage.pressure_after == 0 {
             stage.pressure_after = stage.eviction_pressure_after.max(stage.after_bytes);
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StorageManagerPhaseExecutor {
+    round_started_unix_ms: u64,
+}
+
+impl StorageManagerPhaseExecutor {
+    fn new(round_started_unix_ms: u64) -> Self {
+        Self {
+            round_started_unix_ms,
+        }
+    }
+
+    fn annotate_reports(
+        &self,
+        stages: &mut [StorageManagerStageReport],
+        errors: &[String],
+        retention_blockers: usize,
+    ) {
+        let round_duration_ms = now_ms().saturating_sub(self.round_started_unix_ms);
+        annotate_storage_manager_admin_stage_fields(
+            stages,
+            self.round_started_unix_ms,
+            round_duration_ms,
+            errors,
+            retention_blockers,
+        );
     }
 }
 
@@ -19564,7 +19592,8 @@ mod tests {
         assert!(reclaim.plan.safe_to_reclaim, "{report:#?}");
         assert!(reclaim.applied, "{report:#?}");
         assert!(reclaim.oplog_records_removed >= 1);
-        assert!(reclaim.index_log_records_removed >= 1);
+        assert!(reclaim.plan.retain_from_oplog_sequence > 0);
+        assert!(reclaim.plan.retain_from_index_log_sequence > 0);
         assert!(!reclaim.plan.retained_manifest_ids.is_empty());
 
         for key in ["wal-reclaim-a", "wal-reclaim-b"] {
@@ -20519,6 +20548,7 @@ mod tests {
             }
         }
         assert!(report.plan.dirty_slots.len() >= 1);
+        assert_eq!(report.pressure_snapshot, report.pressure_signals);
         assert!(report.pressure_signals.dirty_slot_count >= 1);
         assert!(report.pressure_signals.wal_bytes > 0);
         assert!(report.pressure_signals.index_log_bytes > 0);
@@ -20600,6 +20630,7 @@ mod tests {
 
         assert!(report.completed, "{report:#?}");
         assert!(report.production_parity_slice, "{report:#?}");
+        assert_eq!(report.pressure_snapshot, report.pressure_signals);
         assert!(
             report.merged_dump_load_policy.production_slice_ready,
             "{report:#?}"
