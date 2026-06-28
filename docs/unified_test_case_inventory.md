@@ -114,7 +114,9 @@ including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` pack
 evidence while keeping C++ execution as a shared-corpus adapter target. It also includes
 `storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
 across single-page object, multi-object, multi-page object, delete, compaction, slot
-dump/load, and restart.
+dump/load, and restart. `storage_model_layout_compaction_policies` covers
+model-layout-aware compaction policy evidence for string, hash, set, timestamped, and
+context model families, including stale-page and tombstone-density fields.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
@@ -405,10 +407,10 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 562
-shared-corpus marked Rust tests: 66
-shared corpus cases: 153
-shared corpus steps: 315
+Rust attributed tests: 563
+shared-corpus marked Rust tests: 67
+shared corpus cases: 154
+shared corpus steps: 316
 C++ existing-test surfaces: 185
 ```
 

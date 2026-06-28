@@ -8410,7 +8410,12 @@ fn compaction_utility_report(
     page_store: &LocalPageStore,
     shard: &ShardState,
 ) -> ShardCompactionUtilityReport {
-    let addresses = collect_live_page_addresses(shard);
+    let entries = collect_live_page_entries(shard);
+    let addresses = entries
+        .iter()
+        .filter(|entry| !entry.deleted)
+        .map(|entry| entry.address.clone())
+        .collect::<Vec<_>>();
     let live_page_segment_ids = addresses
         .iter()
         .map(|address| address.page_segment_id)
@@ -8443,6 +8448,80 @@ fn compaction_utility_report(
         live_page_refs,
         stale_page_estimate,
         live_ref_density_basis_points,
+        model_policies: model_compaction_policy_reports(&entries, &segment_page_counts),
+    }
+}
+
+fn model_compaction_policy_reports(
+    entries: &[LivePageEntry],
+    segment_page_counts: &BTreeMap<u64, u64>,
+) -> Vec<ModelCompactionPolicyReport> {
+    #[derive(Default)]
+    struct ModelStats {
+        live_page_refs: u64,
+        deleted_page_refs: u64,
+        segment_ids: BTreeSet<u64>,
+    }
+
+    let mut by_model = BTreeMap::<String, ModelStats>::new();
+    for entry in entries {
+        let stats = by_model.entry(entry.kind.clone()).or_default();
+        if entry.deleted {
+            stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
+        } else {
+            stats.live_page_refs = stats.live_page_refs.saturating_add(1);
+            stats.segment_ids.insert(entry.address.page_segment_id);
+        }
+    }
+
+    by_model
+        .into_iter()
+        .map(|(model_id, stats)| {
+            let total_segment_pages = stats
+                .segment_ids
+                .iter()
+                .map(|segment_id| {
+                    segment_page_counts
+                        .get(segment_id)
+                        .copied()
+                        .unwrap_or_default()
+                })
+                .sum::<u64>();
+            let stale_page_estimate = total_segment_pages.saturating_sub(stats.live_page_refs);
+            let stale_density_basis_points = if total_segment_pages == 0 {
+                0
+            } else {
+                stale_page_estimate.saturating_mul(10_000) / total_segment_pages
+            };
+            let total_refs = stats.live_page_refs.saturating_add(stats.deleted_page_refs);
+            let tombstone_density_basis_points = if total_refs == 0 {
+                0
+            } else {
+                stats.deleted_page_refs.saturating_mul(10_000) / total_refs
+            };
+            ModelCompactionPolicyReport {
+                layout_policy: compaction_layout_policy_for_model(&model_id).to_string(),
+                model_id,
+                live_page_refs: stats.live_page_refs,
+                deleted_page_refs: stats.deleted_page_refs,
+                total_segment_pages,
+                stale_page_estimate,
+                stale_density_basis_points,
+                tombstone_density_basis_points,
+            }
+        })
+        .collect()
+}
+
+fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
+    match model_id {
+        "string" | "risk" | "context_node" | "context_entity" | "context_embedding" => {
+            "single_page_object"
+        }
+        "hash" | "set" => "component_page_object",
+        "feature" | "sequence" | "ips" => "timestamped_chunked_pages",
+        model if model.starts_with("context_") => "context_timeline_or_sidecar_pages",
+        _ => "generic_page_object",
     }
 }
 
@@ -16704,6 +16783,108 @@ mod tests {
                 .response,
             CommandResponse::FeaturePoints { points }
         );
+    }
+
+    // shared-corpus: storage_model_layout_compaction_policies
+    #[test]
+    fn storage_compaction_reports_model_layout_policies_and_density() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(61);
+        for command in [
+            Command::StringSet {
+                key: "compact-string".to_string(),
+                value: b"value".to_vec(),
+            },
+            Command::HashSet {
+                key: "compact-hash".to_string(),
+                field: "field-a".to_string(),
+                value: b"hash-value".to_vec(),
+            },
+            Command::SetAdd {
+                key: "compact-set".to_string(),
+                member: b"member-a".to_vec(),
+            },
+            Command::FeatureAppend {
+                key: "compact-feature".to_string(),
+                points: (0..4)
+                    .map(|offset| FeaturePoint {
+                        timestamp_ms: 1_000 + offset,
+                        value: vec![b'f' + offset as u8; 8 * 1024],
+                    })
+                    .collect(),
+            },
+            Command::ContextWriteEvent {
+                tenant_hash: 44,
+                node_hash: 55,
+                event: ContextEvent {
+                    event_id_hash: 66,
+                    event_time_ms: 4_000,
+                    kind: 1,
+                    event_type: 2,
+                    actor_hash: 77,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 0.99,
+                    importance: 0.75,
+                    text: "context event for compaction".to_string(),
+                    source_ref: "local://compaction-test".to_string(),
+                    related_node_hashes: vec![55],
+                    compact_attrs: vec![1, 2, 3],
+                },
+                first_write_only: false,
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 61,
+                        command,
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let report = engine.compact_shard_pages(61).unwrap();
+        assert!(report.rewritten_page_refs >= 5);
+        let policies = report
+            .before
+            .model_policies
+            .iter()
+            .map(|policy| {
+                (
+                    policy.model_id.as_str(),
+                    policy.layout_policy.as_str(),
+                    policy,
+                )
+            })
+            .collect::<Vec<_>>();
+        for (model_id, layout_policy) in [
+            ("string", "single_page_object"),
+            ("hash", "component_page_object"),
+            ("set", "component_page_object"),
+            ("feature", "timestamped_chunked_pages"),
+            ("context_event", "context_timeline_or_sidecar_pages"),
+        ] {
+            let (_, _, policy) = policies
+                .iter()
+                .find(|(actual_model, actual_policy, _)| {
+                    actual_model == &model_id && actual_policy == &layout_policy
+                })
+                .unwrap_or_else(|| {
+                    panic!("missing policy {model_id}/{layout_policy}: {policies:?}")
+                });
+            assert!(policy.live_page_refs > 0);
+            assert!(policy.total_segment_pages >= policy.live_page_refs);
+            assert!(policy.stale_density_basis_points <= 10_000);
+            assert!(policy.tombstone_density_basis_points <= 10_000);
+        }
+        assert!(report
+            .after
+            .model_policies
+            .iter()
+            .any(|policy| policy.model_id == "feature"
+                && policy.layout_policy == "timestamped_chunked_pages"));
     }
 
     #[test]

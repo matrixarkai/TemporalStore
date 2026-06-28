@@ -3037,6 +3037,23 @@
       ]
     },
     {
+      "name": "storage_model_layout_compaction_policies",
+      "shard_id": 61,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage compaction emits C++-style model-layout policy evidence for string, hash, set, timestamped, and context models, including stale-page and tombstone-density fields.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_compaction_reports_model_layout_policies_and_density"
+          },
+          "name": "rust_storage_compaction_reports_model_layout_policies",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [

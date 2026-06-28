@@ -26,6 +26,20 @@ pub struct ShardCompactionUtilityReport {
     pub live_page_refs: u64,
     pub stale_page_estimate: u64,
     pub live_ref_density_basis_points: u64,
+    #[serde(default)]
+    pub model_policies: Vec<ModelCompactionPolicyReport>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCompactionPolicyReport {
+    pub model_id: String,
+    pub layout_policy: String,
+    pub live_page_refs: u64,
+    pub deleted_page_refs: u64,
+    pub total_segment_pages: u64,
+    pub stale_page_estimate: u64,
+    pub stale_density_basis_points: u64,
+    pub tombstone_density_basis_points: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
