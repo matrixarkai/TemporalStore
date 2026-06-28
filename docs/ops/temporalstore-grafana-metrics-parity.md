@@ -72,8 +72,29 @@ Rust metrics:
 - `temporalstore_proxy_backend_events_total`
 - `temporalstore_proxy_serving_mode`
 - `temporalstore_proxy_drop_percent`
+- `temporalstore_proxy_metric_family_parity`
+- `temporalstore_proxy_service_registry_state`
+- `temporalstore_proxy_service_registry_events_total`
 
-Grafana panels cover route cache, backend failures, serving mode, and drop percent. Alerts cover continuous backend failures and degraded/not-serving policy.
+Grafana panels cover route cache, backend failures, serving mode, drop percent, service-registry
+freshness, and explicit C++-surface to Rust-family parity. Alerts cover continuous backend
+failures and degraded/not-serving policy.
+
+Proxy C++ metric/surface mapping:
+
+| C++ surface | Rust Prometheus family | Grafana panel |
+| --- | --- | --- |
+| `common::metrics::CounterHolder` proxy command/admission counters | `temporalstore_proxy_requests_total{kind}` | Proxy Requests And Admission |
+| proxy route cache hit/miss/refresh counters | `temporalstore_proxy_route_cache_events_total{kind}` | Proxy Route Cache |
+| proxy current route cache size | `temporalstore_proxy_route_cache_entries` | Proxy Route Cache |
+| proxy backend/metaserver errors | `temporalstore_proxy_backend_events_total{kind}` | Proxy Backend Health |
+| proxy serving mode and desired policy | `temporalstore_proxy_serving_mode{mode}` | Proxy Serving Policy |
+| proxy deterministic drop percent | `temporalstore_proxy_drop_percent` | Proxy Serving Policy |
+| heartbeat service registration freshness | `temporalstore_proxy_service_registry_state{state}` | Proxy Service Registry |
+| heartbeat registration and heartbeat outcomes | `temporalstore_proxy_service_registry_events_total{kind}` | Proxy Service Registry |
+
+The Rust proxy also exposes `/proxy/metrics_parity` and `/ProxyService/GetMetricsParity` so
+readiness tooling can inspect the same mapping without scraping text metrics.
 
 ### storage_cache
 

@@ -91,6 +91,7 @@ METRIC_FAMILIES = {
             "temporalstore_proxy_backend_events_total",
             "temporalstore_proxy_serving_mode",
             "temporalstore_proxy_drop_percent",
+            "temporalstore_proxy_metric_family_parity",
         ],
         "alerts": [
             "TemporalStoreProxyRouteQuarantineHigh",
@@ -103,6 +104,7 @@ METRIC_FAMILIES = {
             "temporalstore_proxy_backend_events_total",
             "temporalstore_proxy_serving_mode",
             "temporalstore_proxy_drop_percent",
+            "temporalstore_proxy_metric_family_parity",
         ],
     },
     "storage_cache": {

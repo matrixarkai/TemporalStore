@@ -4160,6 +4160,26 @@
       ]
     },
     {
+      "name": "control_proxy_tonic_streaming_maturity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust proxy streaming contract case for tonic long-running requests, client cancellation, backpressure, route callback reconnect, and preflight watch evidence through the Rust-native migration contract.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/client_sdk_contract.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_exposes_tonic_streaming_callback_contract -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "suite": "cpp_proxy_control_plane_parity"
+          },
+          "name": "proxy_tonic_streaming_maturity_shared"
+        }
+      ]
+    },
+    {
       "name": "control_readonly_write_disabled_tables",
       "shard_id": 1,
       "steps": [
@@ -7782,6 +7802,7 @@
       "control_stale_route_invalidation",
       "control_proxy_admission_policy",
       "control_proxy_operational_surface_aliases",
+      "control_proxy_tonic_streaming_maturity",
       "control_readonly_write_disabled_tables",
       "control_route_quarantine_recovery",
       "control_data_node_load_reload_unload_lifecycle",
