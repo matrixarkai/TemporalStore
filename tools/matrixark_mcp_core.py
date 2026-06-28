@@ -80,6 +80,7 @@ MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER = os.environ.get("MATRIXARK_REQUIRE
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "32000"))
+CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -4761,6 +4762,107 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
         context_class = str(ref.get("context_class") or ref.get("ref_type") or "")
         counts[context_class] = int(counts.get(context_class, 0)) + 1
     return counts
+
+
+def compact_context_pack_ref(ref: Json) -> Json:
+    """Return the prompt-facing ContextPack ref shape.
+
+    Audit records keep hashes, matched indexes, provider/debug fields, and full
+    score breakdowns. The live ContextPack should spend tokens on evidence and
+    citations, not routing internals.
+    """
+    item: Json = {}
+    for field in [
+        "ref_type",
+        "text",
+        "citation",
+        "source_ref",
+        "raw_uri",
+        "resource_type",
+        "resource_version",
+        "summary_type",
+        "operator",
+        "session_continuity",
+        "sharing_scope",
+        "packing_policy",
+    ]:
+        value = ref.get(field)
+        if value not in (None, "", [], {}):
+            item[field] = value
+    context_class = ref.get("context_class")
+    if context_class and context_class != item.get("ref_type"):
+        item["context_class"] = context_class
+    if "score" in ref:
+        try:
+            item["score"] = round(float(ref.get("score") or 0.0), 4)
+        except (TypeError, ValueError):
+            pass
+    if "token_estimate" in ref:
+        try:
+            item["token_estimate"] = int(ref.get("token_estimate") or 0)
+        except (TypeError, ValueError):
+            pass
+    metadata = ref.get("metadata")
+    if isinstance(metadata, dict):
+        compact_metadata = {
+            field: metadata[field]
+            for field in [
+                "unit_kind",
+                "heading",
+                "heading_slug",
+                "relative_path",
+                "page",
+                "page_section",
+                "slide_number",
+                "sheet_name",
+                "row_start",
+                "row_end",
+                "record_start",
+                "record_end",
+                "row_count",
+                "citation",
+            ]
+            if metadata.get(field) not in (None, "", [], {})
+        }
+        if compact_metadata:
+            item["metadata"] = compact_metadata
+    return item
+
+
+def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) -> list[Json]:
+    if include_debug:
+        return refs
+    return [compact_context_pack_ref(ref) for ref in refs]
+
+
+def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool = False) -> Json:
+    if include_debug or not isinstance(dropped, dict):
+        return dropped
+    compact: Json = {
+        key: value
+        for key, value in dropped.items()
+        if isinstance(value, int) and value
+    }
+    estimated = dropped.get("estimated_tokens")
+    if isinstance(estimated, dict):
+        compact_estimated = {key: value for key, value in estimated.items() if isinstance(value, int) and value}
+        if compact_estimated:
+            compact["estimated_tokens"] = compact_estimated
+    for field in [
+        "deadline_exceeded",
+        "deadline_reason",
+        "min_score",
+        "budget_fill_policy",
+        "cross_session_policy",
+        "shared_context_policy",
+    ]:
+        value = dropped.get(field)
+        if value not in (None, "", [], {}):
+            compact[field] = value
+    if dropped.get("refs"):
+        compact["dropped_ref_detail_available_in_audit"] = True
+        compact["dropped_ref_count"] = len(dropped.get("refs") or [])
+    return compact
 
 
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:

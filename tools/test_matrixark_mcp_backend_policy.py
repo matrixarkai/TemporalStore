@@ -1287,6 +1287,44 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             },
         )
 
+    def test_context_pack_serving_refs_drop_debug_index_and_hash_fields(self) -> None:
+        ref = {
+            "ref_type": "resource_chunk",
+            "ref_hash": 123,
+            "node_hash": 456,
+            "node_path": ["tenant", "shared", "resources"],
+            "score": 0.812345,
+            "matched_index_terms": ["keyword:gpu", "resource_type:pdf"],
+            "keyword_score": 2,
+            "embedding_score": 0.91,
+            "text": "Alice approved the GPU purchase after finance review.",
+            "source_ref": "docs/gpu.pdf#page=2",
+            "raw_uri": "s3://bucket/docs/gpu.pdf",
+            "resource_type": "pdf",
+            "metadata": {
+                "unit_kind": "pdf_page",
+                "page": 2,
+                "keywords": ["gpu", "approval", "finance"],
+                "content_hash": "abcdef",
+                "relative_path": "docs/gpu.pdf",
+            },
+        }
+        compact = mcp.compact_context_pack_refs([ref])[0]
+
+        self.assertEqual(compact["ref_type"], "resource_chunk")
+        self.assertEqual(compact["text"], ref["text"])
+        self.assertEqual(compact["source_ref"], "docs/gpu.pdf#page=2")
+        self.assertEqual(compact["score"], 0.8123)
+        self.assertNotIn("ref_hash", compact)
+        self.assertNotIn("node_hash", compact)
+        self.assertNotIn("node_path", compact)
+        self.assertNotIn("matched_index_terms", compact)
+        self.assertNotIn("keyword_score", compact)
+        self.assertNotIn("embedding_score", compact)
+        self.assertNotIn("keywords", compact.get("metadata", {}))
+        self.assertNotIn("content_hash", compact.get("metadata", {}))
+        self.assertEqual(compact["metadata"], {"unit_kind": "pdf_page", "relative_path": "docs/gpu.pdf", "page": 2})
+
     def test_serving_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
