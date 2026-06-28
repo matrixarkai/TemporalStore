@@ -1257,6 +1257,69 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
 
+    def test_serving_records_store_compact_scope_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = mcp.enrich_scope_with_identity(
+                {"session_id": "debug-message-pdf-session"},
+                {
+                    "account_id": "acct_local",
+                    "tenant_id": "tenant_codex",
+                    "user_id": "codex_user",
+                    "session_id": "",
+                    "agent_name": "codex",
+                    "mode": "dev",
+                },
+            )
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_summary",
+                        "summary_hash": 1,
+                        "node_hash": 10,
+                        "summary_text": "summary",
+                        "scope": scope,
+                    },
+                    {
+                        "record_type": "context_embedding",
+                        "embedding_type": "node_l0",
+                        "ref_type": "node",
+                        "ref_hash": 10,
+                        "node_hash": 10,
+                        "vector": [0.1],
+                        "scope": scope,
+                    },
+                    {
+                        "record_type": "resource_manifest",
+                        "resource_hash": 2,
+                        "raw_uri": "local://policy.pdf",
+                        "access_scope": mcp.registry_access_scope(scope),
+                        "scope": scope,
+                    },
+                    {
+                        "record_type": "resource_chunk",
+                        "chunk_hash": 3,
+                        "node_hash": 10,
+                        "text": "chunk",
+                        "access_scope": mcp.registry_access_scope(scope),
+                        "scope": scope,
+                    },
+                ]
+            )
+
+            compacted = adapter.read_all()
+            self.assertTrue(compacted)
+            for record in compacted:
+                if record.get("record_type") == "context_debug_record":
+                    continue
+                self.assertEqual(scope["scope_key"], record.get("scope_key"))
+                self.assertNotIn("scope", record)
+                self.assertNotIn("_explicit_scope_keys", str(record))
+            self.assertTrue(
+                mcp.scope_matches(mcp.candidate_access_scope(compacted[0]), scope),
+                "compacted scope_key should still satisfy scoped retrieval",
+            )
+
     def test_context_node_topology_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
