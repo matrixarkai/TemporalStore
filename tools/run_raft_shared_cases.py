@@ -35,6 +35,7 @@ RAFT_CASES = {
     "raft_openraft_process_rollout_evidence",
     "raft_production_gate",
     "raft_byteraft_read_safety_policy",
+    "raft_byteraft_membership_roles",
     "raft_byteraft_metrics_admin_pipeline_status",
     "raft_byteraft_snapshot_lifecycle_depth",
     "raft_byteraft_replication_backpressure",
@@ -81,6 +82,22 @@ BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS = {
         ["membership state", "not lost"],
     ],
 }
+MEMBERSHIP_CASE = "raft_byteraft_membership_roles"
+MEMBERSHIP_EXPECTED_OPS = {
+    "setup_cluster",
+    "add_replica",
+    "assert_cluster_status",
+    "assert_peer_status",
+    "assert_local_status_report",
+    "assert_runtime_admin_report",
+    "propose_string_set",
+    "read_from_replica",
+    "elect_leader",
+    "setup_wal_cluster",
+    "begin_joint_consensus",
+    "restore_wal_cluster",
+    "commit_joint_consensus",
+}
 
 
 def load_raft_cases(corpus_path: Path) -> list[dict]:
@@ -102,6 +119,10 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
     for step in steps:
         command = step.get("command", {})
         location = f"{case.get('name')}/{step.get('name')}"
+        if case.get("name") == MEMBERSHIP_CASE:
+            validate_membership_step(command, location)
+            rust_runners += 1
+            continue
         if command.get("kind") != "existing_test":
             raise SystemExit(f"{location}: Raft step must use existing_test command")
         if command.get("suite") != RAFT_SUITE:
@@ -141,6 +162,48 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
                     raise SystemExit(f"{location}: C++ required path missing: {required_path}")
         rust_runners += 1
     return rust_runners, cpp_paths
+
+
+def validate_membership_step(command: dict, location: str) -> None:
+    if command.get("kind") != "raft_membership_op":
+        raise SystemExit(f"{location}: membership case must use raft_membership_op")
+    op = command.get("op")
+    if op not in MEMBERSHIP_EXPECTED_OPS:
+        raise SystemExit(f"{location}: unknown raft_membership_op {op!r}")
+    if op in {"setup_cluster", "setup_wal_cluster", "restore_wal_cluster"}:
+        nodes = command.get("nodes")
+        if not isinstance(nodes, list) or not nodes or not all(isinstance(node, int) for node in nodes):
+            raise SystemExit(f"{location}: {op} must declare integer nodes")
+    if op == "add_replica":
+        if command.get("role") not in {"voter", "learner", "witness"}:
+            raise SystemExit(f"{location}: add_replica must declare voter/learner/witness role")
+        if not isinstance(command.get("node_id"), int):
+            raise SystemExit(f"{location}: add_replica must declare node_id")
+    if op == "assert_peer_status":
+        required = ["node_id", "role", "participates_in_quorum", "can_serve_data", "can_be_leader"]
+        for field in required:
+            if field not in command:
+                raise SystemExit(f"{location}: assert_peer_status missing {field}")
+    if op == "assert_cluster_status":
+        if "expected_voters" in command and not all(
+            isinstance(node, int) for node in command.get("expected_voters", [])
+        ):
+            raise SystemExit(f"{location}: expected_voters must be integer nodes")
+    if op == "propose_string_set":
+        if not isinstance(command.get("key"), str) or not isinstance(command.get("value"), str):
+            raise SystemExit(f"{location}: propose_string_set must declare string key/value")
+    if op == "read_from_replica":
+        if not isinstance(command.get("node_id"), int) or not isinstance(command.get("key"), str):
+            raise SystemExit(f"{location}: read_from_replica must declare node_id and key")
+        if "expected_value" not in command and "expected_error" not in command:
+            raise SystemExit(f"{location}: read_from_replica must expect value or error")
+    if op == "elect_leader":
+        if not isinstance(command.get("node_id"), int) or "expected_error" not in command:
+            raise SystemExit(f"{location}: elect_leader must declare node_id and expected_error")
+    if op == "begin_joint_consensus":
+        voters = command.get("new_voters")
+        if not isinstance(voters, list) or not voters or not all(isinstance(node, int) for node in voters):
+            raise SystemExit(f"{location}: begin_joint_consensus must declare new_voters")
 
 
 def validate_byteraft_fault_acceptance(case: dict, step: dict) -> None:
