@@ -1968,25 +1968,28 @@ class MatrixArkAccessManager:
         }
         backend_inner_metrics = backend_metrics.get("metrics") if isinstance(backend_metrics.get("metrics"), dict) else {}
         rust_client_metrics = backend_inner_metrics.get("rust_client") if isinstance(backend_inner_metrics.get("rust_client"), dict) else {}
-        context_pack_audits = sorted(
-            [record for record in scoped_records if record.get("record_type") == "context_pack_audit"],
+        context_pack_records = sorted(
+            [record for record in scoped_records if record.get("record_type") in {"context_pack_audit", "context_pack_telemetry"}],
             key=lambda row: int(row.get("created_at_ms") or 0),
             reverse=True,
         )
-        latest_pack_audit = context_pack_audits[0] if context_pack_audits else {}
+        latest_pack_audit = context_pack_records[0] if context_pack_records else {}
+        dropped_refs = latest_pack_audit.get("dropped_refs", {})
+        if latest_pack_audit.get("record_type") == "context_pack_telemetry":
+            dropped_refs = latest_pack_audit.get("dropped_ref_bucket_counts", {})
         context_pack_debugger = {
             "context_pack_id": latest_pack_audit.get("context_pack_id", ""),
-            "query": latest_pack_audit.get("query", ""),
+            "query": latest_pack_audit.get("query", "") if latest_pack_audit.get("record_type") == "context_pack_audit" else f"hash:{latest_pack_audit.get('query_hash', '')}",
             "selected_refs": latest_pack_audit.get("selected_refs", []),
-            "dropped_refs": latest_pack_audit.get("dropped_refs", {}),
-            "used_context_tokens": latest_pack_audit.get("used_context_tokens", 0),
+            "dropped_refs": dropped_refs,
+            "used_context_tokens": latest_pack_audit.get("used_context_tokens", latest_pack_audit.get("used_remote_context_tokens", 0)),
             "used_local_context_tokens": latest_pack_audit.get("used_local_context_tokens", 0),
             "used_remote_context_tokens": latest_pack_audit.get("used_remote_context_tokens", 0),
             "total_prompt_context_tokens": latest_pack_audit.get("total_prompt_context_tokens", 0),
             "remote_context_budget_tokens": latest_pack_audit.get("remote_context_budget_tokens", 0),
             "local_context_policy": latest_pack_audit.get("local_context_policy", {}),
-            "quality_warnings": latest_pack_audit.get("quality_warnings", []),
-            "recall_policy": latest_pack_audit.get("recall_policy", {}),
+            "quality_warnings": latest_pack_audit.get("quality_warnings", {"count": latest_pack_audit.get("quality_warning_count", 0)}),
+            "recall_policy": latest_pack_audit.get("recall_policy", latest_pack_audit.get("recall_policy_summary", {})),
             "replay_link": {
                 "tool": "matrixark_replay",
                 "arguments": {"context_pack_id": latest_pack_audit.get("context_pack_id", ""), "scope": effective_scope},
@@ -1995,11 +1998,17 @@ class MatrixArkAccessManager:
         import_tasks = [record for record in scoped_records if record.get("record_type") == "resource_import_task"]
         import_lag_count = len([record for record in import_tasks if record.get("status") not in {"completed", "failed"}])
         audit_write_failures = int(backend_inner_metrics.get("audit_flush_failures") or rust_client_metrics.get("commands_failed_total") or 0)
-        retrieve_count = len(context_pack_audits)
-        used_tokens = sum(int(record.get("used_context_tokens") or 0) for record in context_pack_audits)
-        max_tokens = sum(int(record.get("max_context_tokens") or 0) for record in context_pack_audits) or max(1, retrieve_count * 10000)
+        retrieve_count = len(context_pack_records)
+        used_tokens = sum(int(record.get("used_context_tokens") or record.get("used_remote_context_tokens") or 0) for record in context_pack_records)
+        max_tokens = sum(int(record.get("max_context_tokens") or record.get("requested_max_context_tokens") or record.get("remote_context_budget_tokens") or 0) for record in context_pack_records) or max(1, retrieve_count * 10000)
         token_pressure_pct = round(min(100.0, used_tokens * 100.0 / max_tokens), 2)
-        fallback_count = sum(1 for record in context_pack_audits if (record.get("recall_policy") or {}).get("tree_traversal", {}).get("fallback_to_flat"))
+        fallback_count = sum(
+            1
+            for record in context_pack_records
+            if ((record.get("recall_policy") or {}).get("tree_traversal", {}).get("fallback_to_flat")
+                or ((record.get("recall_policy_summary") or {}).get("tree") or {}).get("fallback_to_flat")
+                or bool(record.get("tree_fallback_to_flat")))
+        )
         fallback_rate_pct = round(fallback_count * 100.0 / max(1, retrieve_count), 2)
         revoked_key_usage = len([row for row in audit_rows.get("audit_logs", []) if row.get("status") == "denied" and "revoked" in json.dumps(row).lower()])
         model_fallback_flags = {

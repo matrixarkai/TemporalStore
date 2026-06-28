@@ -1325,6 +1325,48 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("content_hash", compact.get("metadata", {}))
         self.assertEqual(compact["metadata"], {"unit_kind": "pdf_page", "relative_path": "docs/gpu.pdf", "page": 2})
 
+    def test_replay_returns_compact_context_pack_scope_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            adapter.append_many([
+                {
+                    "record_type": "context_pack_audit",
+                    "context_pack_id": "pack-1",
+                    "query": "gpu approval",
+                    "selected_refs": [{"ref_type": "resource_chunk", "text_preview": "gpu approved", "ref_hash": 1}],
+                    "dropped_refs": {
+                        "over_budget": 2,
+                        "refs": [{"ref_type": "event", "ref_hash": 99, "text_preview": "debug"}],
+                        "reason_descriptions": {"over_budget": "verbose explanation"},
+                    },
+                    "recall_policy": {
+                        "query_plan": {"query_type": "fact", "secondary_filters": {"keyword": ["gpu"]}},
+                        "tree_traversal": {"enabled": True, "selected_node_count": 2, "trace": ["verbose"]},
+                        "secondary_index_filter": {"enabled": True, "matched_candidate_count": 3},
+                        "rerank": {"enabled": True, "mode": "question_type_token_efficiency"},
+                    },
+                    "layer_scores": [{"verbose": True}],
+                    "used_remote_context_tokens": 42,
+                    "created_at_ms": 10,
+                },
+                {"record_type": "context_pack_audit", "context_pack_id": "pack-2", "query": "other", "created_at_ms": 11},
+                {"record_type": "context_pack_telemetry", "context_pack_id": "pack-1", "selected_ref_count": 1, "dropped_ref_count": 2},
+                {"record_type": "context_event", "context_pack_id": "unrelated", "event_id_hash": 7, "text": "not replayed"},
+            ])
+
+            replay = adapter.replay({"context_pack_id": "pack-1"})
+            self.assertEqual(replay["replay_payload_policy"], "compact_context_pack_scope")
+            self.assertTrue(replay["events"])
+            self.assertTrue(all(row.get("context_pack_id") == "pack-1" for row in replay["events"]))
+            audit = next(row for row in replay["events"] if row.get("record_type") == "context_pack_audit")
+            self.assertNotIn("recall_policy", audit)
+            self.assertNotIn("layer_scores", audit)
+            self.assertNotIn("refs", audit.get("dropped_refs", {}))
+            self.assertNotIn("reason_descriptions", audit.get("dropped_refs", {}))
+            self.assertEqual(audit["dropped_refs"]["over_budget"], 2)
+            self.assertTrue(audit["dropped_refs"]["dropped_ref_detail_available_in_audit"])
+            self.assertIn("recall_policy_summary", audit)
+
     def test_serving_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
