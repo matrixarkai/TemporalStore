@@ -247,17 +247,30 @@ impl TemporalEngine {
             } else {
                 for object_key in object_keys {
                     shard.dirty_objects.insert(object_key.clone());
-                    sync_slot_page_ownership_for_object(
-                        request.shard_id,
-                        shard,
-                        &object_key,
-                        info.as_ref()
-                            .map(|info| info.start_routing_slot)
-                            .unwrap_or_default(),
-                        info.as_ref()
-                            .map(|info| info.end_routing_slot)
-                            .unwrap_or(u32::MAX),
-                    );
+                    let start_routing_slot = info
+                        .as_ref()
+                        .map(|info| info.start_routing_slot)
+                        .unwrap_or_default();
+                    let end_routing_slot = info
+                        .as_ref()
+                        .map(|info| info.end_routing_slot)
+                        .unwrap_or(u32::MAX);
+                    if config.async_storage {
+                        mark_async_dirty_object(
+                            shard,
+                            &object_key,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    } else {
+                        sync_slot_page_ownership_for_object(
+                            request.shard_id,
+                            shard,
+                            &object_key,
+                            start_routing_slot,
+                            end_routing_slot,
+                        );
+                    }
                 }
             }
             if !command_updates_slot_index_directly(&command)
@@ -10721,6 +10734,21 @@ fn slot_layout_transition_count(shard: &ShardState) -> u64 {
         .flat_map(|objects| objects.values())
         .map(|object| object.layout_transition_count)
         .sum()
+}
+
+fn mark_async_dirty_object(
+    shard: &mut ShardState,
+    object_key: &str,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    let routing_slot = page_routing_slot(object_key, start_routing_slot, end_routing_slot);
+    shard.dirty_slots.insert(routing_slot);
+    shard
+        .slot_dirty_generations
+        .entry(routing_slot)
+        .and_modify(|generation| *generation = generation.saturating_add(1))
+        .or_insert(1);
 }
 
 fn sync_slot_page_ownership_for_object(

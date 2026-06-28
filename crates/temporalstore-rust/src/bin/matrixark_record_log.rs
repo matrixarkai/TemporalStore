@@ -1987,15 +1987,13 @@ fn execute_record_log_request(
                 )?;
             }
             if !request.key.trim().is_empty() {
-                execute_empty(
-                    &engine,
-                    Command::StringSet {
-                        key: request.key,
-                        value: request.value.into_bytes(),
-                    },
-                )?;
+                commands.push(Command::StringSet {
+                    key: request.key,
+                    value: request.value.into_bytes(),
+                });
                 count += 1;
             }
+            execute_empty_batch_runtime(&engine, commands)?;
             RecordLogOutput {
                 count: Some(count),
                 append_path,
@@ -2280,8 +2278,13 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
             return Ok(engine.clone());
         }
     }
+    let cache_bytes = env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(128 * 1024 * 1024);
     let engine = TemporalEngine::with_local_dirs(
-        16 * 1024 * 1024,
+        cache_bytes,
         root.join("cache"),
         root.join("pages"),
         root.join("indexes"),
