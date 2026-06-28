@@ -93,6 +93,62 @@ Latest AWS/test state:
     - no benchmark query fails due to missing summaries;
     - tree-first retrieval improves or matches flat recall under the same token budget.
 
+- Add future cross-user context sharing with explicit consent and policy gates.
+  - Current status:
+    - MatrixArk retrieval supports cross-session context for the same resolved user, bounded by `cross_session` budget, session fanout, score threshold, and rerank policy;
+    - cross-user context is not current default behavior and must not be inferred from tenant/account membership alone;
+    - same-user context remains the only automatic memory bridge unless a future sharing policy explicitly authorizes more.
+  - Product goal:
+    - support team/org knowledge sharing without leaking private user memory;
+    - let users, teams, and admins publish selected memories/resources/skills into governed shared scopes;
+    - keep personal memory private by default while allowing reusable project facts, runbooks, decisions, and lessons learned to help other users.
+  - Scope model:
+    - `private_user`: default personal conversation/events/entities, visible only to the resolved MatrixArk user and authorized service keys;
+    - `session_shared`: explicitly shared within one session/thread or collaboration room;
+    - `team_shared`: curated or policy-approved context visible to members of a team/workspace;
+    - `tenant_shared`: org-wide shared resources/skills/policies, usually admin-managed;
+    - `public_template`: non-sensitive examples, skills, docs, and reusable patterns with no private user facts.
+  - Write/publish workflow:
+    - default ingestion writes to `private_user`;
+    - users or policy workers can promote selected refs into shared scope by writing a `ContextShareGrant` / `ContextPublishedRef`;
+    - promotions should copy or reference only safe summaries/facts/chunks, not raw private dialogue unless explicitly allowed;
+    - every share/publish action writes audit metadata: actor, source ref, destination scope, policy id, reason, expiry, and revocation state.
+  - Retrieval workflow:
+    - resolve identity and access scope first from API key/SSO/session;
+    - retrieve same-session and same-user private context first;
+    - retrieve shared resources/skills next because they are intentionally governed context;
+    - retrieve cross-user shared context only from authorized published scopes;
+    - apply secondary-index filters and score thresholds before scoring shared/cross-user candidates;
+    - apply a separate `cross_user` budget cap that is lower than cross-session by default, for example 5-10% of remote context budget, unless the query is clearly asking for team/shared knowledge;
+    - return provenance labels such as `private_user`, `team_shared`, `tenant_shared`, and `published_by` in `ContextPack` refs so the agent can cite why a memory is visible.
+  - Rerank policy:
+    - cross-user candidates must pass the normal similarity threshold first;
+    - rerank should favor curated shared resources, skill sections, approved decisions, and high-confidence project facts;
+    - demote raw cross-user conversation snippets unless they are explicitly published, cited, and high-confidence;
+    - prefer summaries/entities over raw dialogue for cross-user context to reduce privacy risk and token cost.
+  - Governance and security:
+    - require explicit sharing grants, RBAC scopes, and tenant policy before any cross-user memory is eligible;
+    - support expiry, revocation, legal hold, and data-retention class per shared ref;
+    - audit every cross-user candidate selection and replay request;
+    - never let a user query enumerate another user's private sessions through timing, counts, or dropped-ref metadata;
+    - portal should show "shared with me", "shared by me", policy source, expiry, and revoke controls.
+  - Data model candidates:
+    - `ContextShareGrant`: source scope, target scope, role/group/user selectors, allowed ref types, expiry, policy id;
+    - `ContextPublishedRef`: shared ref hash, source ref hash, sanitized text/summary, citation, sensitivity label, owner, version;
+    - `ContextAccessDecision`: request id, candidate ref, allow/deny reason, policy id, audit classification.
+  - Tests:
+    - private user A memory is invisible to user B by default;
+    - user B can retrieve user A's published team decision only when a valid share grant exists;
+    - revoked or expired grants disappear from normal retrieval but remain auditable;
+    - cross-user retrieval respects score thresholds, budget caps, and provenance labels;
+    - shared resources/skills remain retrievable separately from private memory;
+    - C++ and Rust native retrieval return identical allow/deny and selected-ref behavior under the shared corpus.
+  - Acceptance gates:
+    - zero private cross-user leakage in negative tests;
+    - portal and audit can explain every cross-user selected ref;
+    - benchmark/report fields separate `same_user_cross_session` from `cross_user_shared`;
+    - default `cross_user.enabled=false` until product policy, UI, and shared corpus tests are complete.
+
 - Promote secondary-index filtering from MatrixArk runtime into native TemporalStore serving APIs.
   - Current status: MatrixArk now writes general `ContextIndex` terms such as `event_type:*`, `entity_type:*`, `classification:*`, `status:*`, `source_type:*`, and `segment_topic:*`; scope fields such as `team` and `project` remain scope/path isolation fields, not default secondary indexes.
   - Current runtime behavior: retrieval infers conservative AND/OR filter groups from the query, applies them after tree selection and before event/entity/segment scoring, and records matched/dropped candidate counts in `ContextPack` audit metadata.
