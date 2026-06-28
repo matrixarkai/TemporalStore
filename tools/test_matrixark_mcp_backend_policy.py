@@ -1257,6 +1257,36 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
 
+    def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
+        budget = mcp.new_secondary_index_budget(3)
+        first = mcp.take_secondary_index_terms(
+            [
+                "source_type:resource",
+                "resource_type:pdf",
+                "keyword:gpu",
+                "keyword:budget",
+            ],
+            budget,
+        )
+        second = mcp.take_secondary_index_terms(
+            [
+                "event_type:approval",
+                "entity_type:owner",
+            ],
+            budget,
+        )
+
+        self.assertEqual(first, ["source_type:resource", "resource_type:pdf", "keyword:gpu"])
+        self.assertEqual(second, [])
+        self.assertEqual(
+            mcp.secondary_index_budget_summary(budget),
+            {
+                "index_total_cap": 3,
+                "index_emitted_count": 3,
+                "index_dropped_by_total_cap_count": 3,
+            },
+        )
+
     def test_serving_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
