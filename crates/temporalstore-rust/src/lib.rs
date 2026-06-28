@@ -92,11 +92,11 @@ pub use engine::reports::{
     StorageCacheSlotSummary, StorageCacheWarmupReport, StorageFeaturePageError,
     StorageFeaturePageLayoutReport, StorageFeaturePageTimestampMismatch, StorageLifecyclePlan,
     StorageLifecycleReport, StorageLifecycleRequest, StorageLogCompatibilityReport,
-    StorageObjectLifecycleReport, StoragePageFormatCompatibilityReport,
-    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
-    StorageProductionReadinessRequest, StorageReclaimCandidate, StorageRecoveryBoundaryReport,
-    StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch, StorageRecoveryReport,
-    StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
+    StorageManagerPressureSnapshot, StorageObjectLifecycleReport,
+    StoragePageFormatCompatibilityReport, StorageProductionReadinessPolicy,
+    StorageProductionReadinessReport, StorageProductionReadinessRequest, StorageReclaimCandidate,
+    StorageRecoveryBoundaryReport, StorageRecoveryPageError, StorageRecoveryPageOwnerMismatch,
+    StorageRecoveryReport, StorageRecoverySegmentLiveReport, StorageSegmentIntegrityReport,
     StorageTimestampedPageFamilyReport,
 };
 pub use engine::TemporalEngine;
