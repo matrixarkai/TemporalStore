@@ -694,6 +694,30 @@ pub struct StorageWalReclaimReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageIndexGcReport {
+    pub shard_id: ShardId,
+    pub enabled: bool,
+    pub applied: bool,
+    pub dirty_slots_committed_before_truncate: bool,
+    pub bytes_threshold: u64,
+    pub usage_ratio_trigger_basis_points: u64,
+    pub usage_ratio_basis_points: u64,
+    pub max_entries_per_round: usize,
+    pub retain_from_index_log_sequence: u64,
+    pub records_before: usize,
+    pub records_after: usize,
+    pub records_removed: usize,
+    pub removable_records_before_budget: usize,
+    pub budget_exhausted: bool,
+    pub bytes_before: u64,
+    pub bytes_after: u64,
+    pub threshold_triggered: bool,
+    pub usage_ratio_triggered: bool,
+    pub safe_to_truncate: bool,
+    pub skipped_reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageEvictionVictim {
     pub routing_slot: u32,
     pub object_count: u64,
@@ -857,6 +881,14 @@ pub struct StorageManagerCycleRequest {
     pub page_gc_raft_install_floor_segment_id: Option<u64>,
     #[serde(default)]
     pub page_gc_delayed_destroy_grace_ms: u64,
+    #[serde(default)]
+    pub index_gc_index_log_bytes_threshold: u64,
+    #[serde(default)]
+    pub index_gc_usage_ratio_trigger_basis_points: u64,
+    #[serde(default)]
+    pub index_gc_max_entries_per_round: usize,
+    #[serde(default)]
+    pub index_gc_commit_dirty_slots_before_truncation: bool,
 }
 
 impl Default for StorageManagerCycleRequest {
@@ -889,6 +921,10 @@ impl Default for StorageManagerCycleRequest {
             page_gc_checkpoint_floor_segment_id: None,
             page_gc_raft_install_floor_segment_id: None,
             page_gc_delayed_destroy_grace_ms: 0,
+            index_gc_index_log_bytes_threshold: 0,
+            index_gc_usage_ratio_trigger_basis_points: 0,
+            index_gc_max_entries_per_round: 0,
+            index_gc_commit_dirty_slots_before_truncation: true,
         }
     }
 }
@@ -1021,6 +1057,8 @@ pub struct StorageManagerCycleReport {
     pub compaction_report: Option<ShardCompactionReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wal_reclaim_report: Option<StorageWalReclaimReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub index_gc_report: Option<StorageIndexGcReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eviction_report: Option<StorageEvictionReport>,
     #[serde(default)]

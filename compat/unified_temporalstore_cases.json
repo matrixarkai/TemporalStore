@@ -3309,6 +3309,23 @@
       ]
     },
     {
+      "name": "storage_manager_index_gc_thresholds_recovery",
+      "shard_id": 72,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust Index GC uses index-log byte thresholds, reclaimable usage-ratio triggers, max entries per round, commits dirty slots before truncation, and preserves restart recovery after bounded index-log GC.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_index_gc_thresholds_budget_dirty_commit_and_restart_recovery"
+          },
+          "name": "rust_storage_manager_index_gc_thresholds_recovery",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
