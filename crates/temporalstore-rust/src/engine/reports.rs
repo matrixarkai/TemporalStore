@@ -654,6 +654,37 @@ pub struct StorageWalReclaimReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageEvictionVictim {
+    pub routing_slot: u32,
+    pub object_count: u64,
+    pub logical_bytes: u64,
+    pub physical_bytes: u64,
+    pub cache_memory_bytes: u64,
+    pub cache_disk_bytes: u64,
+    pub dirty_object_count: u64,
+    pub weight: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageEvictionReport {
+    pub shard_id: ShardId,
+    pub mode: String,
+    pub pressure_before: u64,
+    pub pressure_after: u64,
+    pub memory_pressure_threshold: u64,
+    pub pressure_gate_open: bool,
+    pub batch_limit: usize,
+    pub dump_before_evict: bool,
+    pub dump_manifest_ids: Vec<String>,
+    pub selected_victims: Vec<StorageEvictionVictim>,
+    pub cache_entries_removed: usize,
+    pub cache_disk_bytes_removed: u64,
+    pub dropped_object_count: usize,
+    pub cooldown: bool,
+    pub skipped_reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
     pub selected_slots: Vec<u32>,
@@ -746,6 +777,14 @@ pub struct StorageManagerCycleRequest {
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
     pub warm_cache: bool,
+    #[serde(default = "default_storage_manager_eviction_threshold")]
+    pub eviction_memory_pressure_threshold: u64,
+    #[serde(default)]
+    pub eviction_batch_limit: usize,
+    #[serde(default)]
+    pub eviction_dump_before_evict: bool,
+    #[serde(default)]
+    pub eviction_delete_drop: bool,
     #[serde(default)]
     pub max_expire_hot_slots_per_round: usize,
     #[serde(default)]
@@ -777,6 +816,10 @@ impl Default for StorageManagerCycleRequest {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             warm_cache: false,
+            eviction_memory_pressure_threshold: default_storage_manager_eviction_threshold(),
+            eviction_batch_limit: 0,
+            eviction_dump_before_evict: false,
+            eviction_delete_drop: false,
             max_expire_hot_slots_per_round: 0,
             max_expire_cold_slots_per_round: 0,
             expire_hot_cursor: None,
@@ -790,6 +833,10 @@ impl Default for StorageManagerCycleRequest {
 
 fn default_storage_manager_stage_enabled() -> bool {
     true
+}
+
+fn default_storage_manager_eviction_threshold() -> u64 {
+    1
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -843,6 +890,14 @@ pub struct StorageManagerStageReport {
     pub cache_entries_removed: usize,
     #[serde(default)]
     pub cache_disk_bytes_removed: u64,
+    #[serde(default)]
+    pub eviction_pressure_before: u64,
+    #[serde(default)]
+    pub eviction_pressure_after: u64,
+    #[serde(default)]
+    pub eviction_cooldown: bool,
+    #[serde(default)]
+    pub dropped_object_count: usize,
     #[serde(default)]
     pub page_segments_reclaimed: usize,
     #[serde(default)]
@@ -904,6 +959,8 @@ pub struct StorageManagerCycleReport {
     pub compaction_report: Option<ShardCompactionReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wal_reclaim_report: Option<StorageWalReclaimReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eviction_report: Option<StorageEvictionReport>,
     #[serde(default)]
     pub errors: Vec<String>,
 }

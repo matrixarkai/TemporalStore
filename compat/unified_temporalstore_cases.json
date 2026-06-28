@@ -3275,6 +3275,23 @@
       ]
     },
     {
+      "name": "storage_manager_active_eviction_runtime",
+      "shard_id": 70,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManager performs active weighted slot/object eviction with memory pressure gates, batch limits, dump-before-evict, optional delete/drop mode, and cooldown reporting when pressure does not fall.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_active_eviction_supports_weighted_dump_drop_batch_and_cooldown"
+          },
+          "name": "rust_storage_manager_active_eviction_runtime",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
