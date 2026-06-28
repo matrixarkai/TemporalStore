@@ -211,6 +211,7 @@ C++ execution should progressively cover every executable case.
 | `storage_manager_expire_cursor_scan_limits` | Rust verifies expire scanning uses hot/cold cursors, per-round limits, load-on-expire only when needed, and scanned/expired/skipped/loaded metrics. |
 | `storage_manager_active_eviction_runtime` | Rust verifies active weighted slot/object eviction with pressure gates, batch limits, dump-before-evict, delete/drop mode, and cooldown reporting. |
 | `storage_manager_page_gc_dependency_refusal` | Rust verifies page GC refuses reclaim when live refs, slot dump manifests, shared-store replay cursors, checkpoint/snapshot floors, Raft install floors, or delayed-destroy grace still retain a page segment. |
+| `storage_manager_index_gc_thresholds_recovery` | Rust verifies Index GC uses index-log byte thresholds, usage-ratio triggers, max entries per round, dirty-slot commit before truncation, and restart recovery after bounded truncation. |
 | `storage_risk_context_page_backed_parity` | Rust verifies Risk and Context writes are page-backed in the slot-first index and survive restart. |
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
 | `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |

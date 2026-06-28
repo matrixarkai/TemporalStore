@@ -38,9 +38,15 @@ pub struct IndexLogStats {
 pub struct IndexLogGcReport {
     pub shard_id: ShardId,
     pub retain_from_sequence: u64,
+    #[serde(default)]
+    pub max_entries_per_round: usize,
     pub records_before: usize,
     pub records_after: usize,
     pub records_removed: usize,
+    #[serde(default)]
+    pub removable_records_before_budget: usize,
+    #[serde(default)]
+    pub budget_exhausted: bool,
     pub bytes_before: u64,
     pub bytes_after: u64,
 }
@@ -165,6 +171,15 @@ impl LocalIndexLogStore {
         shard_id: ShardId,
         retain_from_sequence: u64,
     ) -> Result<IndexLogGcReport, IndexLogError> {
+        self.gc_before_sequence_limited(shard_id, retain_from_sequence, 0)
+    }
+
+    pub fn gc_before_sequence_limited(
+        &self,
+        shard_id: ShardId,
+        retain_from_sequence: u64,
+        max_entries_per_round: usize,
+    ) -> Result<IndexLogGcReport, IndexLogError> {
         let inner = self.inner.lock().expect("index log lock poisoned");
         fs::create_dir_all(&inner.root)?;
         let path = index_log_path(&inner.root, shard_id);
@@ -172,6 +187,7 @@ impl LocalIndexLogStore {
             return Ok(IndexLogGcReport {
                 shard_id,
                 retain_from_sequence,
+                max_entries_per_round,
                 ..IndexLogGcReport::default()
             });
         }
@@ -181,6 +197,8 @@ impl LocalIndexLogStore {
         let file = File::open(&path)?;
         let reader = BufReader::new(file);
         let mut records_before = 0usize;
+        let mut removed_this_round = 0usize;
+        let mut removable_records_before_budget = 0usize;
         let mut retained = Vec::new();
         for line in reader.lines() {
             let line = line?;
@@ -189,8 +207,15 @@ impl LocalIndexLogStore {
             }
             records_before += 1;
             let record: IndexLogRecord = serde_json::from_str(&line)?;
-            if record.sequence >= retain_from_sequence {
+            if record.sequence < retain_from_sequence {
+                removable_records_before_budget = removable_records_before_budget.saturating_add(1);
+            }
+            if record.sequence >= retain_from_sequence
+                || (max_entries_per_round > 0 && removed_this_round >= max_entries_per_round)
+            {
                 retained.push(record);
+            } else {
+                removed_this_round = removed_this_round.saturating_add(1);
             }
         }
 
@@ -210,9 +235,13 @@ impl LocalIndexLogStore {
         Ok(IndexLogGcReport {
             shard_id,
             retain_from_sequence,
+            max_entries_per_round,
             records_before,
             records_after: retained.len(),
             records_removed: records_before.saturating_sub(retained.len()),
+            removable_records_before_budget,
+            budget_exhausted: max_entries_per_round > 0
+                && removable_records_before_budget > max_entries_per_round,
             bytes_before,
             bytes_after,
         })

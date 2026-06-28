@@ -2310,17 +2310,9 @@ impl TemporalEngine {
             .oplog_store
             .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
             .ok();
-        let index_log_gc = self
-            .index_log_store
-            .gc_before_sequence(plan.shard_id, plan.retain_from_index_log_sequence)
-            .ok();
         StorageWalReclaimReport {
-            applied: oplog_gc.is_some() && index_log_gc.is_some(),
+            applied: oplog_gc.is_some(),
             oplog_records_removed: oplog_gc
-                .as_ref()
-                .map(|report| report.records_removed)
-                .unwrap_or_default(),
-            index_log_records_removed: index_log_gc
                 .as_ref()
                 .map(|report| report.records_removed)
                 .unwrap_or_default(),
@@ -2332,15 +2324,130 @@ impl TemporalEngine {
                 .as_ref()
                 .map(|report| report.bytes_after)
                 .unwrap_or_default(),
-            index_log_bytes_before: index_log_gc
-                .as_ref()
-                .map(|report| report.bytes_before)
-                .unwrap_or_default(),
-            index_log_bytes_after: index_log_gc
-                .as_ref()
-                .map(|report| report.bytes_after)
-                .unwrap_or_default(),
+            index_log_records_removed: 0,
+            index_log_bytes_before: self.index_log_store.stats(plan.shard_id).bytes_written,
+            index_log_bytes_after: self.index_log_store.stats(plan.shard_id).bytes_written,
             plan,
+        }
+    }
+
+    fn storage_index_gc_report(
+        &self,
+        plan: &StorageLifecyclePlan,
+        wal_plan: &StorageWalReclaimPlan,
+        lifecycle_report: Option<&StorageLifecycleReport>,
+        request: &StorageManagerCycleRequest,
+    ) -> StorageIndexGcReport {
+        let records = self
+            .index_log_store
+            .scan(request.shard_id, 0, u64::MAX, u64::MAX)
+            .unwrap_or_default();
+        let records_before = records.len();
+        let bytes_before = records
+            .iter()
+            .map(|(_, bytes)| bytes.len() as u64)
+            .sum::<u64>();
+        let removable_records_before_budget = records
+            .iter()
+            .filter_map(|(_, bytes)| {
+                serde_json::from_slice::<crate::index_log::IndexLogRecord>(bytes).ok()
+            })
+            .filter(|record| record.sequence < wal_plan.retain_from_index_log_sequence)
+            .count();
+        let usage_ratio_basis_points = if records_before == 0 {
+            0
+        } else {
+            (removable_records_before_budget as u64).saturating_mul(10_000) / records_before as u64
+        };
+        let threshold_triggered = request.index_gc_index_log_bytes_threshold == 0
+            || bytes_before >= request.index_gc_index_log_bytes_threshold;
+        let usage_ratio_triggered = request.index_gc_usage_ratio_trigger_basis_points == 0
+            || usage_ratio_basis_points >= request.index_gc_usage_ratio_trigger_basis_points;
+        let dirty_slots_committed_before_truncate = plan.selected_dump_slots.is_empty()
+            || lifecycle_report
+                .and_then(|report| report.dump_manifest.as_ref())
+                .map(|manifest| !manifest.slot_ids.is_empty())
+                .unwrap_or(false);
+        let safe_to_truncate = wal_plan.safe_to_reclaim
+            && removable_records_before_budget > 0
+            && (!request.index_gc_commit_dirty_slots_before_truncation
+                || dirty_slots_committed_before_truncate);
+        let should_apply = request.enable_index_gc
+            && !request.dry_run
+            && safe_to_truncate
+            && threshold_triggered
+            && usage_ratio_triggered;
+        let gc = should_apply
+            .then(|| {
+                self.index_log_store
+                    .gc_before_sequence_limited(
+                        request.shard_id,
+                        wal_plan.retain_from_index_log_sequence,
+                        request.index_gc_max_entries_per_round,
+                    )
+                    .ok()
+            })
+            .flatten();
+        let bytes_after = gc
+            .as_ref()
+            .map(|report| report.bytes_after)
+            .unwrap_or(bytes_before);
+        let records_after = gc
+            .as_ref()
+            .map(|report| report.records_after)
+            .unwrap_or(records_before);
+        let skipped_reason = if !request.enable_index_gc {
+            "index GC disabled"
+        } else if request.dry_run {
+            "dry_run"
+        } else if !wal_plan.safe_to_reclaim {
+            "durable WAL/index frontier not safe"
+        } else if removable_records_before_budget == 0 {
+            "no reclaimable index-log entries"
+        } else if request.index_gc_commit_dirty_slots_before_truncation
+            && !dirty_slots_committed_before_truncate
+        {
+            "dirty slots not committed before truncation"
+        } else if !threshold_triggered {
+            "index-log byte threshold not reached"
+        } else if !usage_ratio_triggered {
+            "index-log usage ratio trigger not reached"
+        } else if gc.is_none() {
+            "index-log truncation failed"
+        } else {
+            ""
+        }
+        .to_string();
+        StorageIndexGcReport {
+            shard_id: request.shard_id,
+            enabled: request.enable_index_gc,
+            applied: gc
+                .as_ref()
+                .map(|report| report.records_removed > 0)
+                .unwrap_or(false),
+            dirty_slots_committed_before_truncate,
+            bytes_threshold: request.index_gc_index_log_bytes_threshold,
+            usage_ratio_trigger_basis_points: request.index_gc_usage_ratio_trigger_basis_points,
+            usage_ratio_basis_points,
+            max_entries_per_round: request.index_gc_max_entries_per_round,
+            retain_from_index_log_sequence: wal_plan.retain_from_index_log_sequence,
+            records_before,
+            records_after,
+            records_removed: gc
+                .as_ref()
+                .map(|report| report.records_removed)
+                .unwrap_or_default(),
+            removable_records_before_budget,
+            budget_exhausted: gc
+                .as_ref()
+                .map(|report| report.budget_exhausted)
+                .unwrap_or(false),
+            bytes_before,
+            bytes_after,
+            threshold_triggered,
+            usage_ratio_triggered,
+            safe_to_truncate,
+            skipped_reason,
         }
     }
 
@@ -2801,16 +2908,22 @@ impl TemporalEngine {
         let wal_reclaim_report = if request.enable_oplog_reclaim {
             Some(if request.dry_run {
                 StorageWalReclaimReport {
-                    plan: wal_reclaim_plan,
+                    plan: wal_reclaim_plan.clone(),
                     applied: false,
                     ..StorageWalReclaimReport::default()
                 }
             } else {
-                self.apply_storage_wal_reclaim(wal_reclaim_plan)
+                self.apply_storage_wal_reclaim(wal_reclaim_plan.clone())
             })
         } else {
             None
         };
+        let index_gc_report = Some(self.storage_index_gc_report(
+            &plan,
+            &wal_reclaim_plan,
+            lifecycle_report.as_ref(),
+            &request,
+        ));
 
         stages.push(StorageManagerStageReport {
             stage: "reclaim_oplog".to_string(),
@@ -3101,22 +3214,26 @@ impl TemporalEngine {
             enabled: request.enable_index_gc,
             applied: request.enable_index_gc
                 && !request.dry_run
-                && lifecycle_report
+                && (lifecycle_report
                     .as_ref()
                     .and_then(|report| report.manifest_prune_report.as_ref())
                     .map(|report| {
                         !report.removed_manifest_ids.is_empty() || report.removed_marker_files > 0
                     })
-                    .unwrap_or(false),
+                    .unwrap_or(false)
+                    || index_gc_report
+                        .as_ref()
+                        .map(|report| report.applied)
+                        .unwrap_or(false)),
             skipped: !request.enable_index_gc,
             reason: if request.enable_index_gc {
-                "pruned obsolete slot-dump manifests and rolled forward safe install markers"
+                "pruned obsolete manifests, rolled forward safe install markers, and applied thresholded index-log GC"
                     .to_string()
             } else {
                 "index GC disabled".to_string()
             },
-            pressure_signal:
-                "obsolete_manifests+install_markers+follower_cursor_retention_blockers".to_string(),
+            pressure_signal: "obsolete_manifests+install_markers+index_log_bytes+usage_ratio+max_entries"
+                .to_string(),
             pressure_score: lifecycle_report
                 .as_ref()
                 .map(|report| {
@@ -3129,16 +3246,35 @@ impl TemporalEngine {
                 })
                 .unwrap_or_default() as u64
                 + pressure_signals.follower_cursor_retention_blockers as u64
-                + pressure_signals.raft_snapshot_retention_blockers as u64,
-            pressure_threshold: 1,
+                + pressure_signals.raft_snapshot_retention_blockers as u64
+                + index_gc_report
+                    .as_ref()
+                    .map(|report| {
+                        report
+                            .bytes_before
+                            .saturating_add(report.usage_ratio_basis_points)
+                    })
+                    .unwrap_or_default(),
+            pressure_threshold: index_gc_report
+                .as_ref()
+                .map(|report| {
+                    report
+                        .bytes_threshold
+                        .max(report.usage_ratio_trigger_basis_points)
+                })
+                .unwrap_or(1),
             pressure_triggered: request.enable_index_gc
-                && lifecycle_report
+                && (lifecycle_report
                     .as_ref()
                     .map(|report| {
                         report.manifest_prune_report.is_some()
                             || !report.install_roll_forward_reports.is_empty()
                     })
-                    .unwrap_or(false),
+                    .unwrap_or(false)
+                    || index_gc_report
+                        .as_ref()
+                        .map(|report| report.threshold_triggered || report.usage_ratio_triggered)
+                        .unwrap_or(false)),
             candidate_count: lifecycle_report
                 .as_ref()
                 .map(|report| {
@@ -3149,6 +3285,30 @@ impl TemporalEngine {
                         .unwrap_or_default()
                         + report.install_roll_forward_reports.len()
                 })
+                .unwrap_or_default()
+                + index_gc_report
+                    .as_ref()
+                    .map(|report| report.removable_records_before_budget)
+                    .unwrap_or_default(),
+            skipped_count: lifecycle_report
+                .as_ref()
+                .map(|report| report.manifest_prune_plan.blocked_manifest_ids.len())
+                .unwrap_or_default()
+                + index_gc_report
+                    .as_ref()
+                    .map(|report| {
+                        report
+                            .removable_records_before_budget
+                            .saturating_sub(report.records_removed)
+                    })
+                    .unwrap_or_default(),
+            before_bytes: index_gc_report
+                .as_ref()
+                .map(|report| report.bytes_before)
+                .unwrap_or_default(),
+            after_bytes: index_gc_report
+                .as_ref()
+                .map(|report| report.bytes_after)
                 .unwrap_or_default(),
             manifest_pruned_count: lifecycle_report
                 .as_ref()
@@ -3158,6 +3318,10 @@ impl TemporalEngine {
             install_roll_forward_count: lifecycle_report
                 .as_ref()
                 .map(|report| report.install_roll_forward_reports.len())
+                .unwrap_or_default(),
+            index_log_records_removed: index_gc_report
+                .as_ref()
+                .map(|report| report.records_removed)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -3301,6 +3465,7 @@ impl TemporalEngine {
             expiry_report,
             compaction_report,
             wal_reclaim_report,
+            index_gc_report,
             eviction_report,
             page_gc_dependency_plan,
             errors,
@@ -20424,7 +20589,10 @@ mod tests {
         assert!(wal_reclaim.plan.safe_to_reclaim, "{report:#?}");
         assert!(wal_reclaim.applied, "{report:#?}");
         assert!(wal_reclaim.oplog_records_removed >= 1, "{report:#?}");
-        assert!(wal_reclaim.index_log_records_removed >= 1, "{report:#?}");
+        let index_gc_report = report.index_gc_report.as_ref().expect("index GC report");
+        assert!(index_gc_report.applied, "{report:#?}");
+        assert!(index_gc_report.records_removed >= 1, "{report:#?}");
+        assert!(index_gc_report.dirty_slots_committed_before_truncate);
         assert_eq!(
             reclaim_oplog.retain_from_wal_sequence,
             wal_reclaim.plan.retain_from_oplog_sequence
@@ -20484,7 +20652,11 @@ mod tests {
             .expect("index_gc stage");
         assert_eq!(
             index_gc.pressure_signal,
-            "obsolete_manifests+install_markers+follower_cursor_retention_blockers"
+            "obsolete_manifests+install_markers+index_log_bytes+usage_ratio+max_entries"
+        );
+        assert_eq!(
+            index_gc.index_log_records_removed,
+            index_gc_report.records_removed
         );
         let compact = report
             .stages
@@ -20530,6 +20702,104 @@ mod tests {
             CommandResponse::Bytes { value: None },
             "expired record should stay removed after StorageManager eviction and GC"
         );
+    }
+
+    // shared-corpus: storage_manager_index_gc_thresholds_recovery
+    #[test]
+    fn storage_manager_index_gc_thresholds_budget_dirty_commit_and_restart_recovery() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache-a");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+        for idx in 0..5 {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: "index-gc-key".to_string(),
+                            value: format!("value-{idx}").into_bytes(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        assert_eq!(engine.index_log_store().stats(1).last_sequence, 5);
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            enable_prepare: true,
+            enable_oplog_reclaim: true,
+            enable_evict: false,
+            enable_expire: false,
+            enable_page_reclaim: false,
+            enable_page_compaction: false,
+            enable_index_gc: true,
+            max_dump_slots_per_round: 8,
+            index_gc_index_log_bytes_threshold: 1,
+            index_gc_usage_ratio_trigger_basis_points: 1,
+            index_gc_max_entries_per_round: 2,
+            index_gc_commit_dirty_slots_before_truncation: true,
+            ..StorageManagerCycleRequest::default()
+        });
+
+        assert!(report.completed, "{report:#?}");
+        assert!(report
+            .lifecycle_report
+            .as_ref()
+            .and_then(|lifecycle| lifecycle.dump_manifest.as_ref())
+            .is_some());
+        let index_gc = report.index_gc_report.as_ref().expect("index GC report");
+        assert!(index_gc.applied, "{report:#?}");
+        assert!(index_gc.threshold_triggered, "{report:#?}");
+        assert!(index_gc.usage_ratio_triggered, "{report:#?}");
+        assert!(index_gc.safe_to_truncate, "{report:#?}");
+        assert!(index_gc.dirty_slots_committed_before_truncate);
+        assert_eq!(index_gc.max_entries_per_round, 2);
+        assert_eq!(index_gc.records_removed, 2);
+        assert!(index_gc.budget_exhausted, "{report:#?}");
+        assert!(index_gc.bytes_after < index_gc.bytes_before, "{report:#?}");
+        let stage = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "index_gc")
+            .expect("index_gc stage");
+        assert_eq!(
+            stage.pressure_signal,
+            "obsolete_manifests+install_markers+index_log_bytes+usage_ratio+max_entries"
+        );
+        assert_eq!(stage.index_log_records_removed, 2);
+        assert_eq!(stage.before_bytes, index_gc.bytes_before);
+        assert_eq!(stage.after_bytes, index_gc.bytes_after);
+
+        let restarted = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache-b"),
+            &page_dir,
+            &index_dir,
+        );
+        restarted.load_shard(1);
+        let response = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "index-gc-key".to_string(),
+            },
+        });
+        assert_eq!(
+            response.response,
+            CommandResponse::Bytes {
+                value: Some(b"value-4".to_vec())
+            }
+        );
+        let boundary = restarted.storage_recovery_boundary_report(1);
+        assert!(
+            boundary.corrupt_page_segment_ids.is_empty(),
+            "{boundary:#?}"
+        );
+        assert!(boundary.stale_index_page_refs.is_empty(), "{boundary:#?}");
     }
 
     // shared-corpus: storage_manager_page_gc_dependency_refusal
