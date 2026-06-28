@@ -376,6 +376,7 @@ pub struct CacheReplacementPolicySoakReport {
     pub hot_memory_survivors: usize,
     pub cold_memory_survivors: usize,
     pub pinned_memory_survived: bool,
+    pub restart_disk_refill_ready: bool,
     pub observed_evictions: u64,
     pub observed_pinned_skips: u64,
     pub observed_disk_refills: u64,
@@ -967,7 +968,20 @@ impl MultiLayerCache {
             cold_keys.push(cold);
         }
 
-        let _ = self.get(&cold_keys[0]);
+        let restart_probe_key = cold_keys[0].clone();
+        let restart_probe_value = self.get(&restart_probe_key).ok().flatten();
+        let (memory_capacity_bytes, disk_dir) = {
+            let inner = self.inner.read().expect("cache lock poisoned");
+            (inner.memory_capacity_bytes, inner.disk_dir.clone())
+        };
+        let restarted_cache = MultiLayerCache::new(memory_capacity_bytes, disk_dir);
+        let restart_disk_refill_ready = restart_probe_value.is_some()
+            && restarted_cache
+                .get(&restart_probe_key)
+                .ok()
+                .flatten()
+                .as_ref()
+                == restart_probe_value.as_ref();
         let hot_memory_survivors = hot_keys
             .iter()
             .filter(|key| self.get_memory(key).is_some())
@@ -990,6 +1004,7 @@ impl MultiLayerCache {
             hot_memory_survivors,
             cold_memory_survivors,
             pinned_memory_survived: self.get_memory(&pinned_key).is_some(),
+            restart_disk_refill_ready,
             observed_evictions: stats.memory_evictions,
             observed_pinned_skips: stats.eviction_pinned_skips,
             observed_disk_refills: stats.disk_hits,
@@ -1024,6 +1039,11 @@ impl MultiLayerCache {
             report
                 .reasons
                 .push("missing_disk_refill_observation".to_string());
+        }
+        if !report.restart_disk_refill_ready {
+            report
+                .reasons
+                .push("missing_restart_disk_refill_observation".to_string());
         }
         if report.get_latency_samples == 0 || report.put_latency_samples == 0 {
             report.reasons.push("missing_latency_samples".to_string());
@@ -1547,6 +1567,7 @@ mod tests {
         assert!(report.observed_evictions > 0);
         assert!(report.observed_pinned_skips > 0);
         assert!(report.observed_disk_refills > 0);
+        assert!(report.restart_disk_refill_ready);
         assert!(report.get_latency_samples > 0);
         assert!(report.put_latency_samples > 0);
     }
