@@ -119,6 +119,10 @@ struct RecordLogOutput {
     extra: BTreeMap<String, Value>,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.iter().any(|arg| arg == "--serve") {
@@ -629,6 +633,13 @@ fn invalidate_hgetall_snapshot(key: &str) {
     }
 }
 
+fn hgetall_snapshot_contains(key: &str) -> bool {
+    hgetall_snapshot_cache()
+        .lock()
+        .map(|cache| cache.contains_key(key))
+        .unwrap_or(false)
+}
+
 fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
         if let Some(snapshot) = cache.get_mut(key) {
@@ -877,13 +888,20 @@ fn cross_session_rerank_boost(
         }
         "resource_chunk" if has_citation => 0.04,
         "context_event" | "context_segment"
-            if matches!(question_type, "multi_hop" | "why_emotion" | "fact" | "evidence") =>
+            if matches!(
+                question_type,
+                "multi_hop" | "why_emotion" | "fact" | "evidence"
+            ) =>
         {
             0.01
         }
         "context_compression_event" => 0.05,
         "context_summary" => {
-            if question_type == "broad_exploration" { 0.05 } else { 0.02 }
+            if question_type == "broad_exploration" {
+                0.05
+            } else {
+                0.02
+            }
         }
         _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
             if has_citation {
@@ -973,7 +991,10 @@ fn parse_cross_session_policy(
     let config = request
         .get("cross_session")
         .filter(|value| value.is_object());
-    let mut budget_ratio = if matches!(question_type, "current_state" | "latest" | "multi_hop" | "date") {
+    let mut budget_ratio = if matches!(
+        question_type,
+        "current_state" | "latest" | "multi_hop" | "date"
+    ) {
         0.20
     } else if matches!(question_type, "broad_exploration" | "evidence") {
         0.15
@@ -1324,13 +1345,35 @@ fn scan_matrixark_candidates(
             })
             .collect::<Vec<_>>()
     };
+    let mut non_serving_dropped = 0_u64;
+    let returned_records = if command.return_index_records {
+        filtered
+    } else {
+        filtered
+            .into_iter()
+            .filter(|record| {
+                let record_type = record
+                    .get("record_type")
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let drop = matches!(record_type, "context_index" | "context_embedding" | "resource_manifest" | "skill_registry_update");
+                if drop {
+                    non_serving_dropped += 1;
+                }
+                !drop
+            })
+            .collect::<Vec<_>>()
+    };
 
-    let dropped_ref_count =
-        dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
+    let dropped_ref_count = dropped_by_type
+        + dropped_by_scope
+        + selected_node_dropped
+        + secondary_dropped
+        + non_serving_dropped;
     Ok(json!({
         "ok": true,
-        "count": filtered.len(),
-        "records": filtered,
+        "count": returned_records.len(),
+        "records": returned_records,
         "native_candidate_prefilter": true,
         "scan_count": scanned_records,
         "cache_hit": false,
@@ -1341,7 +1384,9 @@ fn scan_matrixark_candidates(
             "native_prefix_scan": true,
             "native_secondary_index_prefilter": !secondary_groups.is_empty(),
             "scanned_records": scanned_records,
-            "returned_records": filtered.len(),
+            "returned_records": returned_records.len(),
+            "non_serving_record_dropped_count": non_serving_dropped,
+            "return_index_records": command.return_index_records,
             "dropped_by_type": dropped_by_type,
             "dropped_by_scope": dropped_by_scope,
             "selected_node_dropped_candidate_count": selected_node_dropped,
@@ -1650,8 +1695,8 @@ fn retrieve_context_pack_native(
             .and_then(Value::as_str)
             .unwrap_or("");
         let is_entity_bridge = is_cross_session && context_class == "entity";
-        let is_cross_session_raw_evidence = is_cross_session
-            && matches!(record_type, "context_event" | "context_segment");
+        let is_cross_session_raw_evidence =
+            is_cross_session && matches!(record_type, "context_event" | "context_segment");
         let cross_key = if is_cross_session {
             cross_session_key(&record)
         } else {
@@ -2031,6 +2076,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
             }
+            for CompactHashEntry(key, field, _) in &request.entries_compact {
+                require_non_empty("key", key)?;
+                require_non_empty("field", field)?;
+            }
             Ok(())
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
@@ -2040,6 +2089,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
             for entry in expanded_hash_entries(request) {
                 require_non_empty("key", &entry.key)?;
                 require_non_empty("field", &entry.field)?;
+            }
+            for CompactHashEntry(key, field, _) in &request.entries_compact {
+                require_non_empty("key", key)?;
+                require_non_empty("field", field)?;
             }
             Ok(())
         }
@@ -2190,10 +2243,12 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
     let cache_update = match &command {
-        Command::HashSet { key, field, value } => {
+        Command::HashSet { key, field, value } if hgetall_snapshot_contains(key) => {
             Some((key.clone(), vec![(field.clone(), value.clone())]))
         }
-        Command::HashMultiSet { key, entries } => Some((key.clone(), entries.clone())),
+        Command::HashMultiSet { key, entries } if hgetall_snapshot_contains(key) => {
+            Some((key.clone(), entries.clone()))
+        }
         _ => None,
     };
     let cache_invalidate = match &command {

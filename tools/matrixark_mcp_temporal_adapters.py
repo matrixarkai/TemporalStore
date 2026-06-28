@@ -1108,8 +1108,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             )
             entries.append(
                 {
-                    "key": self._context_event_time_index_key(record),
-                    "field": self._context_event_time_index_field(record),
+                    "key": self._context_event_time_index_key(enriched),
+                    "field": self._context_event_time_index_field(enriched),
                     "value": payload,
                     "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
                 }
@@ -3438,17 +3438,15 @@ class MatrixArkRustProxyClient:
             shard_size=shard_size,
             record_types=[
                 "context_compression_event",
-                "context_embedding",
                 "context_entity",
                 "context_event",
                 "context_index",
                 "context_segment",
                 "context_summary",
                 "resource_chunk",
-                "resource_manifest",
-                "skill_registry_update",
                 "skill_section",
             ],
+            return_index_records=False,
             scope=request.get("scope", {}),
             secondary_index_groups=request.get("secondary_index_groups", []),
             record=request,
