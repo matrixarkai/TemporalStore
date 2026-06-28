@@ -95,12 +95,16 @@ Each `PageIndex` carries the object key, model id, optional component, routing
 slot, segment/offset/length, page id, object id, zone id, checksum, and
 dirty/deleted/log-backed flags. The focused shared case
 `storage_slot_first_physical_index` verifies that mixed page-backed
-string/hash/set/Feature/Sequence/IPS/Risk writes all produce complete
-slot-owned page indexes. The report also emits C++-size packed evidence bytes
-for the 17-byte `PageIndex` and 24-byte `SlotNode` layouts. Rust still keeps
-Rust-native in-memory structs rather than adopting C++ ABI-packed internals,
-but Risk now participates in the same page-backed ownership, recovery,
-compaction, and GC paths as the other product models.
+string/hash/set/Feature/Sequence/IPS/Risk writes all populate the persisted
+`SlotFirstIndex -> SlotNodeIndex -> PageIndexEntry` authority in `ShardState`.
+Storage lifecycle enumeration now prefers that native slot index instead of
+rebuilding ownership from product maps when the slot index is present. The
+report also emits C++-size packed evidence bytes for the 17-byte `PageIndex`
+and 24-byte `SlotNode` layouts. Rust still keeps Rust-native in-memory structs
+rather than adopting C++ ABI-packed internals, and product read maps remain the
+API lookup layer during migration, but Risk now participates in the same
+page-backed ownership, recovery, compaction, and GC paths as the other product
+models.
 
 For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
 

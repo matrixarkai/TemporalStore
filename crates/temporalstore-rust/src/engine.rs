@@ -390,6 +390,15 @@ impl TemporalEngine {
             for object_key in command_object_keys(&command) {
                 shard.dirty_objects.insert(object_key);
             }
+            rebuild_slot_first_index(
+                shard,
+                info.as_ref()
+                    .map(|info| info.start_routing_slot)
+                    .unwrap_or_default(),
+                info.as_ref()
+                    .map(|info| info.end_routing_slot)
+                    .unwrap_or(u32::MAX),
+            );
             if write_command && !config.async_storage {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
@@ -3862,6 +3871,7 @@ impl TemporalEngine {
             }
         }
 
+        rebuild_slot_first_index(shard, 0, u32::MAX);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         let stale_page_segment_ids = before_segments
@@ -7321,9 +7331,12 @@ fn storage_reclaim_candidates_from_recovery(
 #[derive(Debug, Clone)]
 struct LivePageEntry {
     object_key: String,
-    kind: &'static str,
+    kind: String,
     component: Option<String>,
     address: PageAddress,
+    dirty: bool,
+    deleted: bool,
+    log_backed: bool,
 }
 
 #[derive(Debug, Default)]
@@ -7332,196 +7345,224 @@ struct StoragePageOwnershipValidation {
     missing_owner_page_refs: usize,
 }
 
+fn live_page_entry(
+    object_key: impl Into<String>,
+    kind: impl Into<String>,
+    component: Option<String>,
+    address: PageAddress,
+) -> LivePageEntry {
+    LivePageEntry {
+        object_key: object_key.into(),
+        kind: kind.into(),
+        component,
+        address,
+        dirty: false,
+        deleted: false,
+        log_backed: true,
+    }
+}
+
 fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+    if !shard.slot_index.slots.is_empty() {
+        return collect_slot_index_live_page_entries(shard);
+    }
+    collect_model_live_page_entries(shard)
+}
+
+fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
-    entries.extend(shard.strings.iter().map(|(key, address)| LivePageEntry {
-        object_key: key.clone(),
-        kind: "string",
-        component: None,
-        address: address.clone(),
-    }));
+    for slot in shard.slot_index.slots.values() {
+        for page in slot.page_refs.values() {
+            entries.push(LivePageEntry {
+                object_key: page.object_key.clone(),
+                kind: page.model_id.clone(),
+                component: page.component.clone(),
+                address: page.address.clone(),
+                dirty: page.dirty,
+                deleted: page.deleted,
+                log_backed: page.log_backed,
+            });
+        }
+    }
+    entries
+}
+
+fn collect_model_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
+    let mut entries = Vec::new();
+    entries.extend(
+        shard
+            .strings
+            .iter()
+            .map(|(key, address)| live_page_entry(key.clone(), "string", None, address.clone())),
+    );
     for (key, fields) in &shard.hashes {
-        entries.extend(fields.iter().map(|(field, address)| LivePageEntry {
-            object_key: key.clone(),
-            kind: "hash",
-            component: Some(field.clone()),
-            address: address.clone(),
+        entries.extend(fields.iter().map(|(field, address)| {
+            live_page_entry(key.clone(), "hash", Some(field.clone()), address.clone())
         }));
     }
     for (key, members) in &shard.sets {
-        entries.extend(members.iter().map(|(member, address)| LivePageEntry {
-            object_key: key.clone(),
-            kind: "set",
-            component: Some(hex::encode(member)),
-            address: address.clone(),
+        entries.extend(members.iter().map(|(member, address)| {
+            live_page_entry(
+                key.clone(),
+                "set",
+                Some(hex::encode(member)),
+                address.clone(),
+            )
         }));
     }
     for (key, series) in &shard.features {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "feature",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "feature", None, address)),
         );
     }
     for (key, series) in &shard.sequences {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "sequence",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "sequence", None, address)),
         );
     }
     for (key, series) in &shard.ips {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "ips",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "ips", None, address)),
         );
     }
-    entries.extend(shard.risk_pages.iter().map(|(key, address)| LivePageEntry {
-        object_key: key.clone(),
-        kind: "risk",
-        component: None,
-        address: address.clone(),
-    }));
     entries.extend(
         shard
-            .context_nodes
+            .risk_pages
             .iter()
-            .map(|(key, address)| LivePageEntry {
-                object_key: key.clone(),
-                kind: "context_node",
-                component: None,
-                address: address.clone(),
-            }),
+            .map(|(key, address)| live_page_entry(key.clone(), "risk", None, address.clone())),
+    );
+    entries.extend(
+        shard.context_nodes.iter().map(|(key, address)| {
+            live_page_entry(key.clone(), "context_node", None, address.clone())
+        }),
     );
     for (key, series) in &shard.context_events {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_event",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_event", None, address)),
         );
     }
     for (key, series) in &shard.context_indexes {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_index",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_index", None, address)),
         );
     }
     for (key, series) in &shard.context_audits {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_audit",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_audit", None, address)),
         );
     }
     for (key, series) in &shard.context_dirty {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_dirty",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_dirty", None, address)),
         );
     }
-    entries.extend(
-        shard
-            .context_entities
-            .iter()
-            .map(|(key, address)| LivePageEntry {
-                object_key: key.clone(),
-                kind: "context_entity",
-                component: None,
-                address: address.clone(),
-            }),
-    );
+    entries.extend(shard.context_entities.iter().map(|(key, address)| {
+        live_page_entry(key.clone(), "context_entity", None, address.clone())
+    }));
     for (key, series) in &shard.context_children {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_child",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_child", None, address)),
         );
     }
-    entries.extend(
-        shard
-            .context_embeddings
-            .iter()
-            .map(|(key, address)| LivePageEntry {
-                object_key: key.clone(),
-                kind: "context_embedding",
-                component: None,
-                address: address.clone(),
-            }),
-    );
+    entries.extend(shard.context_embeddings.iter().map(|(key, address)| {
+        live_page_entry(key.clone(), "context_embedding", None, address.clone())
+    }));
     for (key, series) in &shard.context_summaries {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_summary",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_summary", None, address)),
         );
     }
     for (key, series) in &shard.context_compressions {
         entries.extend(
             unique_timestamped_kv_page_addresses(series)
                 .into_iter()
-                .map(|address| LivePageEntry {
-                    object_key: key.clone(),
-                    kind: "context_compression",
-                    component: None,
-                    address,
-                }),
+                .map(|address| live_page_entry(key.clone(), "context_compression", None, address)),
         );
     }
     entries
 }
 
+fn page_index_ref_key(entry: &LivePageEntry) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        entry.kind,
+        entry.object_key,
+        entry.component.as_deref().unwrap_or(""),
+        entry.address.page_segment_id,
+        entry.address.offset
+    )
+}
+
+fn rebuild_slot_first_index(
+    shard: &mut ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    let mut slot_index = SlotFirstIndex::default();
+    for entry in collect_model_live_page_entries(shard) {
+        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
+        let object_id = entry.address.object_id.unwrap_or_else(|| {
+            stable_page_object_id(
+                0,
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+            )
+        });
+        let slot = slot_index
+            .slots
+            .entry(routing_slot)
+            .or_insert_with(|| SlotNodeIndex {
+                routing_slot,
+                meta_loaded: true,
+                in_memory: true,
+                ..SlotNodeIndex::default()
+            });
+        let page_dirty = shard.dirty_objects.contains(&entry.object_key) || entry.dirty;
+        slot.dirty |= page_dirty;
+        slot.in_memory |= true;
+        slot.object_ids.insert(object_id);
+        slot.page_refs.insert(
+            page_index_ref_key(&entry),
+            PageIndexEntry {
+                object_key: entry.object_key,
+                model_id: entry.kind,
+                component: entry.component,
+                object_id,
+                address: entry.address,
+                dirty: page_dirty,
+                deleted: entry.deleted,
+                log_backed: entry.log_backed,
+            },
+        );
+    }
+    shard.slot_index = slot_index;
+}
+
 fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64 {
     stable_page_object_id(
         shard_id,
-        entry.kind,
+        &entry.kind,
         &entry.object_key,
         entry.component.as_deref(),
     )
@@ -7805,7 +7846,7 @@ fn storage_physical_index_report(
             });
         let mut page_index = StoragePhysicalPageIndex {
             object_key: entry.object_key.clone(),
-            model_id: entry.kind.to_string(),
+            model_id: entry.kind.clone(),
             component: entry.component.clone(),
             routing_slot,
             page_segment_id: entry.address.page_segment_id,
@@ -7815,9 +7856,9 @@ fn storage_physical_index_report(
             object_id: entry.address.object_id,
             zone_id: entry.address.zone_id,
             checksum: entry.address.sha256.clone(),
-            dirty: shard.dirty_objects.contains(&entry.object_key),
-            deleted: false,
-            log_backed: true,
+            dirty: entry.dirty,
+            deleted: entry.deleted,
+            log_backed: entry.log_backed,
             cpp_packed_page_index_len: CPP_PACKED_PAGE_INDEX_SIZE,
             cpp_packed_page_index_hex: String::new(),
         };
@@ -7860,6 +7901,7 @@ fn storage_physical_index_report(
     StoragePhysicalIndexReport {
         shard_id,
         slot_first: true,
+        slot_index_authority: !shard.slot_index.slots.is_empty(),
         slot_count: slots.len(),
         page_index_count,
         dirty_slot_count: slots.values().filter(|slot| slot.dirty).count(),
@@ -16269,6 +16311,7 @@ mod tests {
 
         let report = engine.storage_physical_index_report(9);
         assert!(report.slot_first);
+        assert!(report.slot_index_authority);
         assert!(report.slot_count > 0);
         assert_eq!(report.page_index_count, 7);
         assert_eq!(report.missing_object_id_count, 0);

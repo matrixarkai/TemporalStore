@@ -299,6 +299,7 @@ pub struct StoragePhysicalSlotNode {
 pub struct StoragePhysicalIndexReport {
     pub shard_id: ShardId,
     pub slot_first: bool,
+    pub slot_index_authority: bool,
     pub slot_count: usize,
     pub page_index_count: usize,
     pub dirty_slot_count: usize,

@@ -3008,7 +3008,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage exposes C++-style Index -> SlotNode -> PageIndex ownership with routing slot, object id, page id, checksum, dirty/log flags, C++ 17-byte PageIndex / 24-byte SlotNode packed-size evidence, and per-slot bytes for mixed page-backed product models including Risk.",
+            "description": "Rust storage exposes C++-style Index -> SlotNode -> PageIndex ownership from a persisted native slot-index authority with routing slot, object id, page id, checksum, dirty/log flags, C++ 17-byte PageIndex / 24-byte SlotNode packed-size evidence, and per-slot bytes for mixed page-backed product models including Risk.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
