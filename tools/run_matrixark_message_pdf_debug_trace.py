@@ -654,6 +654,16 @@ def records_table(records: list[Json], fields: list[str]) -> str:
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+def latest_records_by_key(records: list[Json], key_fields: list[str]) -> list[Json]:
+    latest: dict[tuple[str, ...], Json] = {}
+    for record in records:
+        key = tuple(str(record.get(field, "")) for field in key_fields)
+        previous = latest.get(key)
+        if previous is None or int(record.get("updated_at_ms") or 0) >= int(previous.get("updated_at_ms") or 0):
+            latest[key] = record
+    return sorted(latest.values(), key=lambda item: (str(item.get("summary_type", "")), str(item.get("node_path", "")), int(item.get("updated_at_ms") or 0)))
+
+
 
 PIPELINE_MERMAID = """flowchart TD
   A["Codex/agent message or file URI"]

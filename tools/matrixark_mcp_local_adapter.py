@@ -3229,11 +3229,16 @@ class MatrixArkLocalAdapter:
                 )
                 session_summary_text = summarize_text(session_summary_source, limit=512)
                 session_summary_hash = stable_hash("session:" + "/".join(session_key_parts))
+                session_summary_version_hash = stable_hash(
+                    f"session_summary_version:{session_summary_hash}:{event_id_hash}:{envelope['ingestion_time_ms']}:{session_summary_text}"
+                )
                 self.append(
                     {
                         "record_type": "context_summary",
                         "summary_type": "session_l0",
                         "summary_hash": session_summary_hash,
+                        "summary_version_hash": session_summary_version_hash,
+                        "summary_identity": "stable_per_session_node",
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "context_node_key": session_key_parts,
