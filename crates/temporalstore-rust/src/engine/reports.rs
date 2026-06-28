@@ -945,6 +945,14 @@ pub struct StorageManagerStageReport {
     pub skipped: bool,
     pub reason: String,
     #[serde(default)]
+    pub last_run_unix_ms: u64,
+    #[serde(default)]
+    pub duration_ms: u64,
+    #[serde(default)]
+    pub skipped_reason: String,
+    #[serde(default)]
+    pub errors: Vec<String>,
+    #[serde(default)]
     pub pressure_signal: String,
     #[serde(default)]
     pub pressure_score: u64,
@@ -1001,6 +1009,10 @@ pub struct StorageManagerStageReport {
     #[serde(default)]
     pub page_bytes_reclaimed: u64,
     #[serde(default)]
+    pub bytes_reclaimed: u64,
+    #[serde(default)]
+    pub pages_compacted: usize,
+    #[serde(default)]
     pub manifest_pruned_count: usize,
     #[serde(default)]
     pub install_roll_forward_count: usize,
@@ -1008,6 +1020,16 @@ pub struct StorageManagerStageReport {
     pub compacted_page_segment_id: Option<u64>,
     #[serde(default)]
     pub rewritten_page_refs: usize,
+    #[serde(default)]
+    pub wal_floor_sequence: u64,
+    #[serde(default)]
+    pub index_log_floor_sequence: u64,
+    #[serde(default)]
+    pub retention_blockers: usize,
+    #[serde(default)]
+    pub pressure_before: u64,
+    #[serde(default)]
+    pub pressure_after: u64,
     #[serde(default)]
     pub metrics_slot_count: usize,
     #[serde(default)]

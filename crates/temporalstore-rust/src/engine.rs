@@ -2612,6 +2612,7 @@ impl TemporalEngine {
         &self,
         request: StorageManagerCycleRequest,
     ) -> StorageManagerCycleReport {
+        let cycle_started_unix_ms = now_ms();
         let cxx_stage_order = [
             "prepare",
             "reclaim_oplog",
@@ -3444,6 +3445,15 @@ impl TemporalEngine {
                 .sum(),
             ..StorageManagerStageReport::default()
         });
+        let cycle_duration_ms = now_ms().saturating_sub(cycle_started_unix_ms);
+        annotate_storage_manager_admin_stage_fields(
+            &mut stages,
+            cycle_started_unix_ms,
+            cycle_duration_ms,
+            &errors,
+            pressure_signals.follower_cursor_retention_blockers
+                + pressure_signals.raft_snapshot_retention_blockers,
+        );
 
         let production_parity_slice = errors.is_empty()
             && cxx_stage_order
@@ -8682,6 +8692,50 @@ fn storage_reclaim_candidates_from_recovery(
             .then_with(|| left.page_segment_id.cmp(&right.page_segment_id))
     });
     candidates
+}
+
+fn annotate_storage_manager_admin_stage_fields(
+    stages: &mut [StorageManagerStageReport],
+    last_run_unix_ms: u64,
+    duration_ms: u64,
+    errors: &[String],
+    retention_blockers: usize,
+) {
+    for stage in stages {
+        stage.last_run_unix_ms = last_run_unix_ms;
+        stage.duration_ms = duration_ms;
+        if stage.skipped && stage.skipped_reason.is_empty() {
+            stage.skipped_reason = stage.reason.clone();
+        }
+        if !errors.is_empty() {
+            let prefix = format!("{}:", stage.stage);
+            stage.errors = errors
+                .iter()
+                .filter(|error| error.starts_with(&prefix))
+                .cloned()
+                .collect();
+        }
+        stage.bytes_reclaimed = stage
+            .page_bytes_reclaimed
+            .max(stage.cache_disk_bytes_removed)
+            .max(stage.before_bytes.saturating_sub(stage.after_bytes));
+        stage.pages_compacted = stage.rewritten_page_refs;
+        if stage.wal_floor_sequence == 0 {
+            stage.wal_floor_sequence = stage.retain_from_wal_sequence;
+        }
+        if stage.index_log_floor_sequence == 0 {
+            stage.index_log_floor_sequence = stage.retain_from_index_log_sequence;
+        }
+        if stage.retention_blockers == 0 {
+            stage.retention_blockers = retention_blockers;
+        }
+        if stage.pressure_before == 0 {
+            stage.pressure_before = stage.eviction_pressure_before.max(stage.before_bytes);
+        }
+        if stage.pressure_after == 0 {
+            stage.pressure_after = stage.eviction_pressure_after.max(stage.after_bytes);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -20414,7 +20468,7 @@ mod tests {
         assert!(engine.cache().stats().puts >= 1);
     }
 
-    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_manager_real_pressure_signals
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_manager_real_pressure_signals storage_manager_metrics_admin_phase_reports
     #[test]
     fn storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run() {
         let dir = tempfile::tempdir().unwrap();
@@ -20457,6 +20511,13 @@ mod tests {
             ]
         );
         assert_eq!(report.stages.len(), report.cxx_stage_order.len());
+        for stage in &report.stages {
+            assert!(stage.last_run_unix_ms > 0, "{stage:#?}");
+            assert!(stage.errors.is_empty(), "{stage:#?}");
+            if stage.skipped {
+                assert!(!stage.skipped_reason.is_empty(), "{stage:#?}");
+            }
+        }
         assert!(report.plan.dirty_slots.len() >= 1);
         assert!(report.pressure_signals.dirty_slot_count >= 1);
         assert!(report.pressure_signals.wal_bytes > 0);
@@ -20601,6 +20662,14 @@ mod tests {
             reclaim_oplog.retain_from_index_log_sequence,
             wal_reclaim.plan.retain_from_index_log_sequence
         );
+        assert_eq!(
+            reclaim_oplog.wal_floor_sequence,
+            wal_reclaim.plan.retain_from_oplog_sequence
+        );
+        assert_eq!(
+            reclaim_oplog.index_log_floor_sequence,
+            wal_reclaim.plan.retain_from_index_log_sequence
+        );
         let expire = report
             .stages
             .iter()
@@ -20628,6 +20697,8 @@ mod tests {
             "weighted_slot_object_eviction+memory_pressure_gate+batch_limit"
         );
         assert!(evict.pressure_triggered, "{report:#?}");
+        assert!(evict.pressure_before > evict.pressure_after, "{report:#?}");
+        assert!(evict.bytes_reclaimed >= evict.cache_disk_bytes_removed);
         assert!(report.eviction_report.is_some(), "{report:#?}");
         let eviction_report = report.eviction_report.as_ref().unwrap();
         assert!(eviction_report.pressure_gate_open, "{report:#?}");
@@ -20645,6 +20716,7 @@ mod tests {
             "stale_page_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
         );
         assert!(reclaim_page.candidate_count >= reclaim_page.page_segments_reclaimed);
+        assert!(reclaim_page.bytes_reclaimed >= reclaim_page.page_bytes_reclaimed);
         let index_gc = report
             .stages
             .iter()
@@ -20667,6 +20739,8 @@ mod tests {
             compact.pressure_signal,
             "model_layout_compaction_debt+stale_segment_density"
         );
+        assert_eq!(compact.pages_compacted, compact.rewritten_page_refs);
+        assert!(compact.pressure_before >= compact.pressure_after);
         let metrics = report
             .stages
             .iter()
