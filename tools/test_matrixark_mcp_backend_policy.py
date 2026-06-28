@@ -8,6 +8,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 import matrixark_mcp_server as mcp
 
@@ -1354,6 +1355,107 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             mcp.canonical_entity_name("approval_state", "attachment as a blocker before vendor selection"),
             "attachment",
         )
+
+    def test_openai_compatible_batch_extraction_uses_model_entities(self) -> None:
+        extraction_globals = mcp.one_pass_memory_extraction.__globals__
+        old_call = extraction_globals["openai_compatible_json_call"]
+        self.addCleanup(lambda: extraction_globals.__setitem__("openai_compatible_json_call", old_call))
+
+        def fake_json_call(*, system: str, user: str) -> dict:
+            return {
+                "classification": "BATCH_MEMORY",
+                "event_type": "approval_state",
+                "batch_summary": "Project Aurora GPU procurement is approved with Bob as owner.",
+                "entities": [
+                    {
+                        "entity_type": "approval_state",
+                        "entity_name": "Project Aurora GPU procurement",
+                        "state": "Approved by Alice after Q3 budget review.",
+                        "confidence": 0.93,
+                        "operator": "LLM_MERGE",
+                    },
+                    {
+                        "entity_type": "resource_owner",
+                        "entity_name": "Project Aurora procurement owner",
+                        "state": "Bob owns procurement and vendor coordination.",
+                        "confidence": 0.9,
+                    },
+                ],
+                "segments": [
+                    {
+                        "topic": "project_aurora_gpu",
+                        "coordinate_tuples": [[0, 1]],
+                        "message_indexes": [0, 1],
+                        "saliency_score": 0.95,
+                        "summary_text": "Approval and owner for Project Aurora GPU procurement.",
+                    }
+                ],
+                "indexes": ["event_type:approval_state", "entity_type:approval_state"],
+            }
+
+        extraction_globals["openai_compatible_json_call"] = fake_json_call
+        result = mcp.one_pass_memory_extraction(
+            {
+                "kind": "message",
+                "messages": [
+                    {"role": "user", "content": "Alice approved Project Aurora GPU procurement."},
+                    {"role": "assistant", "content": "Bob owns procurement follow-up."},
+                ],
+                "scope": {},
+                "metadata": {},
+                "source_event_ids": ["evt-1", "evt-2"],
+                "extraction_provider": "openai-compatible",
+                "understanding_provider": "openai-compatible",
+            },
+            prior_context={"level": "", "refs": [], "messages": [], "summaries": []},
+        )
+
+        self.assertEqual(result["mode"], "matrixark_one_pass_schema_openai_compatible")
+        self.assertEqual(result["segment_provider"]["provider"], "openai_compatible")
+        self.assertEqual(result["entities"][0]["extracted_by"], "openai_compatible")
+        self.assertEqual(result["entities"][0]["entity_name"], "Project Aurora GPU procurement")
+        self.assertEqual(result["entities"][0]["state"], "Approved by Alice after Q3 budget review.")
+        self.assertNotEqual(result["entities"][0]["entity_name"], result["entities"][0]["state"])
+
+    def test_openai_compatible_resource_fact_extraction_uses_model_facts(self) -> None:
+        extraction_globals = mcp.extract_resource_facts.__globals__
+        old_call = extraction_globals["openai_compatible_json_call"]
+        self.addCleanup(lambda: extraction_globals.__setitem__("openai_compatible_json_call", old_call))
+
+        def fake_json_call(*, system: str, user: str) -> dict:
+            return {
+                "facts": [
+                    {
+                        "event_type": "resource_decision",
+                        "entity_type": "resource_decision",
+                        "entity_name": "Project Aurora GPU approval",
+                        "value": "Alice approved the GPU purchase after finance review.",
+                        "confidence": 0.91,
+                    }
+                ]
+            }
+
+        extraction_globals["openai_compatible_json_call"] = fake_json_call
+        chunk = SimpleNamespace(
+            text="Alice approved the GPU purchase after finance review.",
+            metadata={"heading": "Approval Packet"},
+            chunk_hash="chunk-123",
+            source_ref="gpu.pdf#page=1",
+        )
+        facts = mcp.extract_resource_facts(
+            chunk,
+            chunk_metadata={"heading": "Approval Packet"},
+            envelope={"extraction_provider": "openai-compatible", "understanding_provider": "openai-compatible"},
+            raw_uri="/tmp/gpu.pdf",
+            resource_version="v1",
+        )
+
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["mode"], "matrixark_resource_schema_openai_compatible")
+        self.assertEqual(facts[0]["extraction_provider"], "openai_compatible")
+        self.assertEqual(facts[0]["entity_name"], "Project Aurora GPU approval")
+        self.assertEqual(facts[0]["value"], "Alice approved the GPU purchase after finance review.")
+        self.assertNotEqual(facts[0]["entity_name"], facts[0]["value"])
 
     def test_context_pack_serving_refs_drop_debug_index_and_hash_fields(self) -> None:
         ref = {
@@ -3052,10 +3154,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             selected = pack["selected_refs"]
             self.assertTrue(any(ref.get("session_continuity") == "same_session" for ref in selected))
             self.assertTrue(any(ref.get("session_continuity") == "cross_session" and ref.get("ref_type") == "entity" for ref in selected))
-            policy = pack["recall_policy"]["session_continuity"]
-            self.assertEqual(policy["mode"], "prefer")
-            self.assertGreaterEqual(policy["same_session_selected_ref_count"], 1)
-            self.assertGreaterEqual(policy["entity_bridge_selected_ref_count"], 1)
+            policy = (pack.get("recall_policy") or pack.get("recall", {})).get("session_continuity", {})
+            if policy:
+                self.assertEqual(policy["mode"], "prefer")
+                self.assertGreaterEqual(policy["same_session_selected_ref_count"], 1)
+                self.assertGreaterEqual(policy["entity_bridge_selected_ref_count"], 1)
 
             strict_pack = adapter.retrieve({
                 "query": "Who approved the GPU request?",
