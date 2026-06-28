@@ -789,6 +789,8 @@ def main() -> int:
         help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
     )
     args = parser.parse_args()
+    if getattr(args, "rust_direct_lib", ""):
+        os.environ["MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB"] = args.rust_direct_lib
     _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
     adapter = build_mcp_adapter(args)
     ensure_startup_backend_ready(adapter, args.backend)
