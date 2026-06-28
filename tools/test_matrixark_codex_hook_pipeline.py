@@ -168,6 +168,84 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(any(record.get("record_type") == "context_embedding" for record in records))
             self.assertTrue(any(record.get("record_type") == "context_summary" for record in records))
 
+    def test_tenant_shared_resource_and_skill_live_outside_session_and_retrieve_with_quota(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            event_log = tmp / "matrixark-shared-context.jsonl"
+            resource = tmp / "tenant_policy.md"
+            resource.write_text(
+                "# Tenant GPU Policy\n\n"
+                "Decision: shared GPU purchases require finance approval.\n"
+                "Owner: Alice finance.\n",
+                encoding="utf-8",
+            )
+            skill = tmp / "SKILL.md"
+            skill.write_text(
+                "---\n"
+                "name: shared-context-debugger\n"
+                "description: Inspect MatrixArk replay and selected refs.\n"
+                "triggers:\n  - replay\n"
+                "allowed_tools:\n  - matrixark_replay\n"
+                "status: active\n"
+                "---\n\n"
+                "# Shared Context Debugger\n\nUse this skill to inspect replay evidence.\n",
+                encoding="utf-8",
+            )
+            adapter = MatrixArkLocalAdapter(event_log)
+            shared_scope = {"account_id": "acct_shared", "tenant_id": "tenant_shared"}
+            adapter.ingest(
+                {
+                    "kind": "resource",
+                    "raw_uri": str(resource),
+                    "resource_type": "md",
+                    "scope": shared_scope,
+                    "messages": [{"role": "user", "content": "Import tenant shared resource."}],
+                    "wait": True,
+                }
+            )
+            adapter.ingest(
+                {
+                    "kind": "skill",
+                    "raw_uri": str(skill),
+                    "resource_type": "skill",
+                    "scope": shared_scope,
+                    "messages": [{"role": "user", "content": "Import tenant shared skill."}],
+                    "wait": True,
+                }
+            )
+            records = adapter.read_all()
+            resource_chunks = [row for row in records if row.get("record_type") == "resource_chunk" and row.get("resource_type") != "skill"]
+            skill_sections = [row for row in records if row.get("record_type") == "skill_section"]
+            self.assertTrue(resource_chunks)
+            self.assertTrue(skill_sections)
+            resource_manifests = [row for row in records if row.get("record_type") == "resource_manifest"]
+            skill_manifests = [row for row in records if row.get("record_type") == "skill_manifest"]
+            self.assertTrue(any(row.get("node_path")[:3] == ["tenant:tenant_shared", "shared", "resources"] for row in resource_manifests))
+            self.assertTrue(any(row.get("node_path")[:3] == ["tenant:tenant_shared", "shared", "skills"] for row in skill_manifests))
+            self.assertTrue(all(row.get("access_scope", {}).get("sharing_scope") == "tenant_shared" for row in resource_chunks + skill_sections))
+
+            pack = adapter.retrieve(
+                {
+                    "scope": {
+                        "account_id": "acct_shared",
+                        "tenant_id": "tenant_shared",
+                        "user_id": "user_123",
+                        "session_id": "active_session",
+                    },
+                    "query": "Which shared policy requires finance approval and which skill inspects replay evidence?",
+                    "max_context_tokens": 1600,
+                    "shared_context": {"resource_budget_tokens": 120, "skill_budget_tokens": 120},
+                    "audit_mode": "off",
+                }
+            )
+            ref_types = {ref.get("ref_type") for ref in pack["selected_refs"]}
+            self.assertIn("resource_chunk", ref_types)
+            self.assertIn("skill_section", ref_types)
+            self.assertEqual("tenant_shared", next(ref for ref in pack["selected_refs"] if ref.get("ref_type") == "resource_chunk")["sharing_scope"])
+            shared_policy = pack["recall_policy"]["shared_context"]
+            self.assertGreaterEqual(shared_policy["resource_selected_ref_count"], 1)
+            self.assertGreaterEqual(shared_policy["skill_selected_ref_count"], 1)
+
     def test_codex_hook_ingests_conversation_resource_and_skill_then_retrieves_all(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -693,6 +693,33 @@ class MatrixArkLocalAdapter:
         session_id = str(scope.get("session_id") or user_id or "default_session")
         return [f"tenant:{tenant_id}", f"user:{user_id}", f"session:{session_id}"]
 
+    def default_shared_context_node_path(self, scope: Json, *, kind: str, sharing_scope: str) -> list[str]:
+        collection = "skills" if kind == "skill" else "resources"
+        if sharing_scope == "global_shared":
+            return ["global", "shared", collection]
+        tenant_id = str(scope.get("tenant_id") or "tenant_local_agent")
+        return [f"tenant:{tenant_id}", "shared", collection]
+
+    def resource_sharing_scope(self, args: Json, envelope: Json, deployment_scope: str) -> str:
+        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
+        explicit = str(args.get("sharing_scope") or metadata.get("sharing_scope") or "").strip().lower()
+        if explicit in {"tenant_shared", "global_shared", "private_user"}:
+            return explicit
+        if deployment_scope == "global":
+            return "global_shared"
+        scope = envelope.get("scope", {}) if isinstance(envelope.get("scope"), dict) else {}
+        if not scope.get("user_id") and not scope.get("session_id"):
+            return "tenant_shared" if scope.get("tenant_id") else "global_shared"
+        return "private_user"
+
+    def default_resource_node_path(self, args: Json, envelope: Json, *, deployment_scope: str, sharing_scope: str) -> list[str]:
+        metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
+        if metadata.get("node_path"):
+            return [str(part) for part in metadata.get("node_path", []) if str(part)]
+        if sharing_scope in {"tenant_shared", "global_shared"}:
+            return self.default_shared_context_node_path(envelope.get("scope", {}), kind=str(envelope.get("kind") or "resource"), sharing_scope=sharing_scope)
+        return self.default_session_node_path(envelope.get("scope", {}))
+
     def ensure_context_node_path(self, *, node_path: list[str], scope: Json, updated_at_ms: int) -> Json:
         prefixes = node_prefixes(node_path)
         if not prefixes:
@@ -2025,7 +2052,10 @@ class MatrixArkLocalAdapter:
         except Exception as exc:  # pragma: no cover - background failure path is validated via records.
             scope = optional_object(args, "scope")
             metadata = optional_object(args, "metadata")
-            node_hint = metadata.get("node_path") or self.default_session_node_path(scope)
+            envelope = normalize_envelope(args, default_kind="resource")
+            deployment_scope = deployment_scope_from_args(args, envelope)
+            sharing_scope = self.resource_sharing_scope(args, envelope, deployment_scope)
+            node_hint = self.default_resource_node_path(args, envelope, deployment_scope=deployment_scope, sharing_scope=sharing_scope)
             node_path = [str(part) for part in node_hint if str(part)]
             try:
                 self.append(
@@ -2211,7 +2241,14 @@ class MatrixArkLocalAdapter:
         event_id_hash = stable_hash(
             f"{envelope['kind']}:{text}:{envelope['scope']}:{envelope['ingestion_time_ms']}"
         )
-        node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
+        if envelope["kind"] in {"resource", "skill"}:
+            early_deployment_scope = deployment_scope_from_args(args, envelope)
+            early_sharing_scope = self.resource_sharing_scope(args, envelope, early_deployment_scope)
+            node_hint = self.default_resource_node_path(args, envelope, deployment_scope=early_deployment_scope, sharing_scope=early_sharing_scope)
+        else:
+            early_deployment_scope = "local"
+            early_sharing_scope = "private_user"
+            node_hint = envelope["metadata"].get("node_path") or self.default_session_node_path(envelope["scope"])
         node_path = normalized_node_path(envelope, node_hint)
         node_hash = stable_hash("/".join(node_path))
         node_materialization = self.ensure_context_node_path(
@@ -2235,8 +2272,10 @@ class MatrixArkLocalAdapter:
             async_default_reason = self._resource_import_async_default_reason(args, envelope, requested_raw_uri)
             resource_import_wait = bool(args.get("wait", not bool(async_default_reason)))
             resource_import_background = bool(args.get("_background_resource_import", False))
-            deployment_scope = deployment_scope_from_args(args, envelope)
-            access_scope = registry_access_scope(envelope["scope"])
+            deployment_scope = early_deployment_scope
+            sharing_scope = early_sharing_scope
+            access_scope = registry_access_scope(envelope["scope"], sharing_scope=sharing_scope)
+            resource_record_scope = access_scope if sharing_scope in {"tenant_shared", "global_shared"} else envelope["scope"]
             provided_task_hash = args.get("_resource_import_task_hash")
             resource_import_task_hash = (
                 int(provided_task_hash)
@@ -2272,7 +2311,7 @@ class MatrixArkLocalAdapter:
                         "raw_bytes_stored": False,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "storage_options": envelope.get("storage_options", {}),
                         "wait": resource_import_wait,
                         "async_default_reason": async_default_reason,
@@ -2310,7 +2349,7 @@ class MatrixArkLocalAdapter:
                         "error": str(exc),
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "storage_options": envelope.get("storage_options", {}),
                         "progress": {"stage": "failed", "percent": 100},
                         "updated_at_ms": now_ms(),
@@ -2365,7 +2404,7 @@ class MatrixArkLocalAdapter:
                         "error": str(exc),
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "progress": {"stage": "failed", "percent": 100},
                         "updated_at_ms": now_ms(),
                     }
@@ -2392,7 +2431,7 @@ class MatrixArkLocalAdapter:
                     "cloud_key": storage_resolution.get("cloud_key", ""),
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "scope": envelope["scope"],
+                    "scope": resource_record_scope,
                     "storage_options": envelope.get("storage_options", {}),
                     "progress": {"stage": "running", "percent": 10},
                     "updated_at_ms": now_ms(),
@@ -2439,7 +2478,7 @@ class MatrixArkLocalAdapter:
                             "text_preview": clip_context_text(parsed_skill.text),
                             "token_estimate": parsed_skill.token_estimate,
                             "metadata": skill_serving_metadata,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "storage_options": envelope.get("storage_options", {}),
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
@@ -2459,7 +2498,7 @@ class MatrixArkLocalAdapter:
                                 "raw_uri": raw_uri,
                                 "metadata_debug": skill_debug_metadata,
                                 "text_preview": clip_context_text(parsed_skill.text),
-                                "scope": envelope["scope"],
+                                "scope": resource_record_scope,
                                 "updated_at_ms": envelope["ingestion_time_ms"],
                             }
                         )
@@ -2492,7 +2531,7 @@ class MatrixArkLocalAdapter:
                             "deployment_scope": deployment_scope,
                             "node_hash": node_hash,
                             "node_path": node_path,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2508,7 +2547,7 @@ class MatrixArkLocalAdapter:
                             "dim": len(skill_vector),
                             "model": embedding_model_name(),
                             "vector": skill_vector,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2546,7 +2585,7 @@ class MatrixArkLocalAdapter:
                         "error": resource_parse_error or "resource ingestion produced no chunks",
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "progress": {"stage": "failed", "percent": 100},
                         "updated_at_ms": now_ms(),
                     }
@@ -2598,7 +2637,7 @@ class MatrixArkLocalAdapter:
                     "raw_uri": raw_uri,
                     "summary_text": resource_l0_text,
                     "source_chunk_hashes": [chunk.chunk_hash for chunk in parsed_chunks],
-                    "scope": envelope["scope"],
+                    "scope": resource_record_scope,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -2613,7 +2652,7 @@ class MatrixArkLocalAdapter:
                     "dim": len(resource_summary_vector),
                     "model": embedding_model_name(),
                     "vector": resource_summary_vector,
-                    "scope": envelope["scope"],
+                    "scope": resource_record_scope,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -2651,7 +2690,7 @@ class MatrixArkLocalAdapter:
                         "summary_hash": resource_summary_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "storage_options": envelope.get("storage_options", {}),
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
@@ -2691,7 +2730,7 @@ class MatrixArkLocalAdapter:
                         "access_scope": access_scope,
                         "deployment_scope": deployment_scope,
                         "token_estimate": sum(chunk.token_estimate for chunk in parsed_chunks),
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -2717,7 +2756,7 @@ class MatrixArkLocalAdapter:
                         "deployment_scope": deployment_scope,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -2745,7 +2784,7 @@ class MatrixArkLocalAdapter:
                             "metadata": chunk_metadata,
                             "access_scope": access_scope,
                             "deployment_scope": deployment_scope,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2765,7 +2804,7 @@ class MatrixArkLocalAdapter:
                         "metadata": chunk_metadata,
                         "access_scope": access_scope,
                         "deployment_scope": deployment_scope,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -2787,7 +2826,7 @@ class MatrixArkLocalAdapter:
                             "source_ref": chunk.source_ref,
                             "metadata_debug": chunk_debug_metadata,
                             "text_preview": clip_context_text(chunk.text),
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2802,7 +2841,7 @@ class MatrixArkLocalAdapter:
                         "dim": len(vector),
                         "model": embedding_model_name(),
                         "vector": vector,
-                        "scope": envelope["scope"],
+                        "scope": resource_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -2818,7 +2857,7 @@ class MatrixArkLocalAdapter:
                             "dim": len(vector),
                             "model": embedding_model_name(),
                             "vector": vector,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2856,7 +2895,7 @@ class MatrixArkLocalAdapter:
                             "source_locator": source_locator,
                             "node_hash": node_hash,
                             "node_path": node_path,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2896,7 +2935,7 @@ class MatrixArkLocalAdapter:
                             "resource_hash": resource_manifest_hash,
                             "source_locator": source_locator,
                             "resource_version": resource_version_value,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2912,7 +2951,7 @@ class MatrixArkLocalAdapter:
                             "dim": len(fact_vector),
                             "model": embedding_model_name(),
                             "vector": fact_vector,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2927,7 +2966,7 @@ class MatrixArkLocalAdapter:
                             "batch_id_hash": resource_import_task_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "entity_type": fact_entity_type,
                             "entity_name": entity_name,
                             "state": entity_state,
@@ -2953,7 +2992,7 @@ class MatrixArkLocalAdapter:
                             "dim": len(entity_vector),
                             "model": embedding_model_name(),
                             "vector": entity_vector,
-                            "scope": envelope["scope"],
+                            "scope": resource_record_scope,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
@@ -2980,7 +3019,7 @@ class MatrixArkLocalAdapter:
                                 "chunk_hash": chunk.chunk_hash,
                                 "node_hash": node_hash,
                                 "node_path": node_path,
-                                "scope": envelope["scope"],
+                                "scope": resource_record_scope,
                                 "updated_at_ms": envelope["ingestion_time_ms"],
                             }
                         )
@@ -3046,7 +3085,7 @@ class MatrixArkLocalAdapter:
                     "metrics": resource_import_metrics,
                     "node_hash": node_hash,
                     "node_path": node_path,
-                    "scope": envelope["scope"],
+                    "scope": resource_record_scope,
                     "updated_at_ms": now_ms(),
                 }
             )
@@ -3060,10 +3099,11 @@ class MatrixArkLocalAdapter:
                     "resource_type": resource_type or parsed_chunks[0].metadata.get("resource_type", "txt"),
                     "metrics": resource_import_metrics,
                     "progress": {"stage": "completed", "percent": 100},
-                    "scope": envelope["scope"],
+                    "scope": resource_record_scope,
                     "created_at_ms": now_ms(),
                 }
             )
+        hot_record_scope = resource_record_scope if envelope["kind"] in {"resource", "skill"} else envelope["scope"]
         summary_text = summarize_text(text)
         embedding_started_perf = time.perf_counter()
         event_embedding = embedding_for_text(text)
@@ -3089,7 +3129,7 @@ class MatrixArkLocalAdapter:
                         "context_node_key": session_key_parts,
                         "summary_text": session_summary_text,
                         "source_event_hash": event_id_hash,
-                        "scope": envelope["scope"],
+                        "scope": hot_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -3104,7 +3144,7 @@ class MatrixArkLocalAdapter:
                         "dim": len(embedding_for_text(session_summary_text)),
                         "model": embedding_model_name(),
                         "vector": embedding_for_text(session_summary_text),
-                        "scope": envelope["scope"],
+                        "scope": hot_record_scope,
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
@@ -3119,7 +3159,7 @@ class MatrixArkLocalAdapter:
                     "dim": len(event_embedding),
                     "model": embedding_model_name(),
                     "vector": event_embedding,
-                    "scope": envelope["scope"],
+                    "scope": hot_record_scope,
                     "updated_at_ms": envelope["ingestion_time_ms"],
                 }
             )
@@ -3167,7 +3207,7 @@ class MatrixArkLocalAdapter:
             summary_refresh = self.append_node_summary_embeddings(
                 node_path=node_path,
                 source_text=text,
-                scope=envelope["scope"],
+                scope=hot_record_scope,
                 updated_at_ms=envelope["ingestion_time_ms"],
                 source_hash_field="source_event_hash",
                 source_hash=event_id_hash,
@@ -3181,7 +3221,7 @@ class MatrixArkLocalAdapter:
         if auto_batch_extract and pending_event_count >= session_buffer_threshold:
             auto_batch_result = self.session_commit(
                 {
-                    "scope": envelope["scope"],
+                    "scope": hot_record_scope,
                     "metadata": envelope["metadata"],
                     "threshold_messages": session_buffer_threshold,
                     "force": False,
@@ -4038,6 +4078,11 @@ class MatrixArkLocalAdapter:
             session_scope=retrieval_session_scope,
             remote_budget_tokens=remote_context_budget_tokens,
         )
+        shared_context_policy = build_shared_context_policy(
+            args,
+            ranking,
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -4115,6 +4160,7 @@ class MatrixArkLocalAdapter:
                 "remote_budget_tokens": int(local_budget.get("remote_budget_tokens", max_context_tokens)),
             },
             "cross_session": cross_session_policy,
+            "shared_context": shared_context_policy,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
             "reference_time_ms": reference_time_ms,
@@ -5081,6 +5127,7 @@ class MatrixArkLocalAdapter:
             deadline_exceeded=deadline_exceeded,
             deadline_reason="deadline_during_context_pack",
             cross_session_policy=cross_session_policy,
+            shared_context_policy=shared_context_policy,
         )
         partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
         quality_warnings = []
@@ -5160,6 +5207,7 @@ class MatrixArkLocalAdapter:
                     "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
                 },
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
+                "shared_context": dropped_over_budget.get("shared_context_policy", shared_context_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "ranking": {
                     "min_similarity_score": min_similarity_score,

@@ -140,6 +140,11 @@ DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
     for item in os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "entity,summary,compression").split(",")
     if item.strip()
 )
+DEFAULT_SHARED_RESOURCE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_RESOURCE_BUDGET_RATIO", "0.25"))
+DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_RESOURCE_MAX_BUDGET_TOKENS", "4096"))
+DEFAULT_SHARED_SKILL_BUDGET_RATIO = float(os.environ.get("MATRIXARK_SHARED_SKILL_BUDGET_RATIO", "0.10"))
+DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_SHARED_SKILL_MAX_BUDGET_TOKENS", "2048"))
+DEFAULT_SHARED_CONTEXT_MIN_SCORE = float(os.environ.get("MATRIXARK_SHARED_CONTEXT_MIN_SCORE", "0.20"))
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
@@ -2319,7 +2324,25 @@ def registry_access_scope(scope: Json) -> Json:
         "user_hash": scope.get("user_hash", 0),
         "session_hash": scope.get("session_hash", 0),
         "scope_key": scope.get("scope_key", ""),
+        "sharing_scope": sharing_scope,
     }
+    if sharing_scope == "tenant_shared":
+        access["user_id"] = ""
+        access["session_id"] = ""
+        access["user_hash"] = 0
+        access["session_hash"] = 0
+        tenant_hash = int(access.get("tenant_hash") or 0)
+        access["scope_key"] = scope_key_from_hashes(tenant_hash) if tenant_hash else ""
+    elif sharing_scope == "global_shared":
+        access["tenant_id"] = ""
+        access["team"] = ""
+        access["user_id"] = ""
+        access["session_id"] = ""
+        access["tenant_hash"] = 0
+        access["user_hash"] = 0
+        access["session_hash"] = 0
+        access["scope_key"] = "global|shared|"
+    return access
 
 
 def deployment_scope_from_args(args: Json, envelope: Json) -> str:
@@ -3739,6 +3762,83 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     }
 
 
+def build_shared_context_policy(args: Json, ranking: Json, *, remote_budget_tokens: int) -> Json:
+    raw = args.get("shared_context", ranking.get("shared_context", {}))
+    if isinstance(raw, bool):
+        config: Json = {"enabled": raw}
+    elif raw is None:
+        config = {}
+    elif isinstance(raw, dict):
+        config = raw
+    else:
+        raise MatrixArkError("shared_context must be an object or boolean")
+    enabled = bool(config.get("enabled", True)) and remote_budget_tokens > 0
+    resource_budget_ratio = float_arg(
+        config,
+        "resource_budget_ratio",
+        DEFAULT_SHARED_RESOURCE_BUDGET_RATIO,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    skill_budget_ratio = float_arg(
+        config,
+        "skill_budget_ratio",
+        DEFAULT_SHARED_SKILL_BUDGET_RATIO,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    resource_budget_tokens = int(remote_budget_tokens * resource_budget_ratio)
+    skill_budget_tokens = int(remote_budget_tokens * skill_budget_ratio)
+    if "resource_budget_tokens" in config:
+        resource_budget_tokens = integer_arg(config, "resource_budget_tokens", resource_budget_tokens, minimum=0)
+    if "skill_budget_tokens" in config:
+        skill_budget_tokens = integer_arg(config, "skill_budget_tokens", skill_budget_tokens, minimum=0)
+    resource_max = integer_arg(config, "resource_max_budget_tokens", DEFAULT_SHARED_RESOURCE_MAX_BUDGET_TOKENS, minimum=0)
+    skill_max = integer_arg(config, "skill_max_budget_tokens", DEFAULT_SHARED_SKILL_MAX_BUDGET_TOKENS, minimum=0)
+    if resource_max > 0:
+        resource_budget_tokens = min(resource_budget_tokens, resource_max)
+    if skill_max > 0:
+        skill_budget_tokens = min(skill_budget_tokens, skill_max)
+    min_score = float_arg(config, "min_score", DEFAULT_SHARED_CONTEXT_MIN_SCORE, minimum=0.0, maximum=1.0)
+    return {
+        "enabled": enabled,
+        "mode": "bounded_shared_context" if enabled else "disabled",
+        "decision": "tenant_or_global_shared_resources_and_skills_visible_after_access_scope_then_quota_bounded" if enabled else "disabled_by_budget_or_config",
+        "resource_budget_ratio": round(resource_budget_ratio, 6),
+        "skill_budget_ratio": round(skill_budget_ratio, 6),
+        "resource_budget_tokens": resource_budget_tokens if enabled else 0,
+        "skill_budget_tokens": skill_budget_tokens if enabled else 0,
+        "resource_max_budget_tokens": resource_max,
+        "skill_max_budget_tokens": skill_max,
+        "remote_budget_tokens": remote_budget_tokens,
+        "min_score": min_score if enabled else 0.0,
+        "visibility_labels": ["tenant_shared", "global_shared"],
+        "strategy": "shared_resources_and_skills_live_outside_sessions_and_are_bounded_before_final_pack",
+    }
+
+
+def sharing_scope_from_candidate(candidate: Json) -> str:
+    for source in [candidate, candidate.get("access_scope", {}), candidate.get("metadata", {}), candidate.get("scope", {})]:
+        if isinstance(source, dict):
+            value = str(source.get("sharing_scope") or "").strip().lower()
+            if value:
+                return value
+    node_path = [str(part).lower() for part in candidate.get("node_path", []) if str(part)]
+    if node_path[:2] == ["global", "shared"]:
+        return "global_shared"
+    if len(node_path) >= 2 and node_path[0].startswith("tenant:") and node_path[1] == "shared":
+        return "tenant_shared"
+    return "private_user"
+
+
+def is_shared_resource_candidate(candidate: Json) -> bool:
+    return str(candidate.get("ref_type") or "") == "resource_chunk" and sharing_scope_from_candidate(candidate) in {"tenant_shared", "global_shared"}
+
+
+def is_shared_skill_candidate(candidate: Json) -> bool:
+    return str(candidate.get("ref_type") or "") == "skill_section" and sharing_scope_from_candidate(candidate) in {"tenant_shared", "global_shared"}
+
+
 def bounded_max_children_scored_per_parent(value: int) -> int:
     hard_cap = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
     if value > hard_cap:
@@ -4286,6 +4386,7 @@ def select_token_budgeted_refs(
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
     cross_session_policy: Json | None = None,
+    shared_context_policy: Json | None = None,
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
@@ -4314,9 +4415,18 @@ def select_token_budgeted_refs(
     cross_min_score = max(0.0, min(1.0, float(cross_session_policy.get("min_score") or 0.0)))
     cross_raw_evidence_min_score = max(0.0, min(1.0, float(cross_session_policy.get("raw_evidence_min_score") or 0.0)))
     cross_min_entity_bridge_refs = int(cross_session_policy.get("min_entity_bridge_refs") or 0)
+    shared_context_policy = shared_context_policy or {"enabled": False, "resource_budget_tokens": 0, "skill_budget_tokens": 0, "min_score": 0.0}
+    shared_enabled = bool(shared_context_policy.get("enabled"))
+    shared_resource_budget_tokens = int(shared_context_policy.get("resource_budget_tokens") or 0)
+    shared_skill_budget_tokens = int(shared_context_policy.get("skill_budget_tokens") or 0)
+    shared_min_score = max(0.0, min(1.0, float(shared_context_policy.get("min_score") or 0.0)))
     cross_used_tokens = 0
     cross_selected_ref_count = 0
     entity_bridge_selected_ref_count = 0
+    shared_resource_used_tokens = 0
+    shared_skill_used_tokens = 0
+    shared_resource_selected_ref_count = 0
+    shared_skill_selected_ref_count = 0
     selected_cross_sessions: set[str] = set()
     def cross_session_key(candidate: Json) -> str:
         for source in [candidate, candidate.get("access_scope", {}), candidate.get("scope", {}), candidate.get("metadata", {}).get("access_scope", {}) if isinstance(candidate.get("metadata"), dict) else {}]:
@@ -4337,6 +4447,8 @@ def select_token_budgeted_refs(
         "cross_session_budget": 0,
         "cross_session_session_cap": 0,
         "cross_session_candidate_cap": 0,
+        "shared_resource_budget": 0,
+        "shared_skill_budget": 0,
         "deadline": 0,
         "max_selected_refs": 0,
         "estimated_tokens": {
@@ -4349,6 +4461,8 @@ def select_token_budgeted_refs(
             "cross_session_budget": 0,
             "cross_session_session_cap": 0,
             "cross_session_candidate_cap": 0,
+            "shared_resource_budget": 0,
+            "shared_skill_budget": 0,
             "deadline": 0,
             "max_selected_refs": 0,
         },
@@ -4362,6 +4476,8 @@ def select_token_budgeted_refs(
             "cross_session_budget": "cross-session candidate exceeded the configured cross-session token budget",
             "cross_session_session_cap": "cross-session candidate came from a session beyond max cross-session session fanout",
             "cross_session_candidate_cap": "cross-session candidate exceeded the configured cross-session candidate cap",
+            "shared_resource_budget": "shared resource candidate exceeded the configured shared-resource token budget",
+            "shared_skill_budget": "shared skill candidate exceeded the configured shared-skill token budget",
             "deadline": "candidate was not packed because the hard retrieval deadline was reached",
             "max_selected_refs": "candidate was relevant but dropped because max_selected_refs was reached",
         },
@@ -4450,6 +4566,29 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
             continue
+        is_shared_resource = is_shared_resource_candidate(candidate)
+        is_shared_skill = is_shared_skill_candidate(candidate)
+        if (is_shared_resource or is_shared_skill) and not shared_enabled:
+            reason = "shared_resource_budget" if is_shared_resource else "shared_skill_budget"
+            dropped[reason] += 1
+            dropped["estimated_tokens"][reason] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason=reason, token_estimate=ref_tokens)
+            continue
+        if (is_shared_resource or is_shared_skill) and shared_min_score > 0.0 and candidate_score < shared_min_score:
+            dropped["low_score"] += 1
+            dropped["estimated_tokens"]["low_score"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
+            continue
+        if is_shared_resource and shared_resource_budget_tokens > 0 and shared_resource_used_tokens + ref_tokens > shared_resource_budget_tokens:
+            dropped["shared_resource_budget"] += 1
+            dropped["estimated_tokens"]["shared_resource_budget"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="shared_resource_budget", token_estimate=ref_tokens)
+            continue
+        if is_shared_skill and shared_skill_budget_tokens > 0 and shared_skill_used_tokens + ref_tokens > shared_skill_budget_tokens:
+            dropped["shared_skill_budget"] += 1
+            dropped["estimated_tokens"]["shared_skill_budget"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="shared_skill_budget", token_estimate=ref_tokens)
+            continue
         seen_text_hashes.add(text_hash)
         selected.append(
             {
@@ -4466,6 +4605,12 @@ def select_token_budgeted_refs(
             selected_cross_sessions.add(candidate_cross_key)
             if is_entity_bridge:
                 entity_bridge_selected_ref_count += 1
+        if is_shared_resource_candidate(candidate):
+            shared_resource_used_tokens += ref_tokens
+            shared_resource_selected_ref_count += 1
+        if is_shared_skill_candidate(candidate):
+            shared_skill_used_tokens += ref_tokens
+            shared_skill_selected_ref_count += 1
         if used_tokens >= remote_budget:
             break
     dropped["cross_session_policy"] = {
@@ -4474,6 +4619,13 @@ def select_token_budgeted_refs(
         "selected_ref_count": cross_selected_ref_count,
         "selected_session_count": len(selected_cross_sessions),
         "entity_bridge_selected_ref_count": entity_bridge_selected_ref_count,
+    }
+    dropped["shared_context_policy"] = {
+        **shared_context_policy,
+        "resource_selected_tokens": shared_resource_used_tokens,
+        "skill_selected_tokens": shared_skill_used_tokens,
+        "resource_selected_ref_count": shared_resource_selected_ref_count,
+        "skill_selected_ref_count": shared_skill_selected_ref_count,
     }
     if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first = next(
@@ -4866,6 +5018,16 @@ def tree_first_traversal(
 def scope_matches(record_scope: Json, query_scope: Json) -> bool:
     if not query_scope:
         return True
+    sharing_scope = str(record_scope.get("sharing_scope") or "").strip().lower()
+    if sharing_scope == "global_shared":
+        return True
+    if sharing_scope == "tenant_shared":
+        for field in ["account_id", "account_hash", "tenant_id", "tenant_hash"]:
+            query_value = query_scope.get(field)
+            record_value = record_scope.get(field)
+            if query_value and record_value and query_value != record_value:
+                return False
+        return True
     explicit_keys = set(query_scope.get("_explicit_scope_keys", []))
     record_scope_key = str(record_scope.get("scope_key") or "")
     if record_scope_key:
@@ -4914,7 +5076,18 @@ def candidate_access_scope(record: Json) -> Json:
 
 def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool:
     """Gate candidate eligibility before semantic scoring."""
-    return scope_matches(candidate_access_scope(record), query_scope)
+    record_scope = candidate_access_scope(record)
+    sharing_scope = str(record_scope.get("sharing_scope") or record.get("sharing_scope") or "").strip().lower()
+    if sharing_scope == "global_shared":
+        return True
+    if sharing_scope == "tenant_shared":
+        for field in ["account_id", "account_hash", "tenant_id", "tenant_hash"]:
+            query_value = query_scope.get(field)
+            record_value = record_scope.get(field)
+            if query_value and record_value and query_value != record_value:
+                return False
+        return True
+    return scope_matches(record_scope, query_scope)
 
 
 def session_continuity_status(record_scope: Json, query_scope: Json) -> str:
