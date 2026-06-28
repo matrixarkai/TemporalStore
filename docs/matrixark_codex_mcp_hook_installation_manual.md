@@ -293,7 +293,9 @@ Important rules:
 | Keep `local_context_refs` and `remote_context_refs` separate | The agent can dedupe, display, debug, and audit what came from local workspace versus MatrixArk. |
 | Call `matrixark_ingest` after answering | MatrixArk learns from the actual outcome and can update events, entities, summaries, and audit/replay records. |
 
-If an agent cannot estimate token budget, MatrixArk defaults to 10000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
+Default cross-session policy: MatrixArk always considers same-user cross-session context when `session_scope=prefer`, but it keeps that lane bounded. Normal queries get about 12% of the remote MatrixArk budget, broad/evidence queries get about 15%, and current/latest/multi-hop/date queries get about 20%. Cross-session candidates still must pass the score threshold, session fanout, candidate cap, and token budget; same-session continuity, shared resources, and relevant skills keep most of the budget.
+
+If an agent cannot estimate token budget, MatrixArk defaults to 32000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
 
 ```json
 {

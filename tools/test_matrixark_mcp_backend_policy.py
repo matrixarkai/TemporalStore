@@ -2489,10 +2489,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(client.calls[0]["request"]["query"], "What did Alice approve?")
         cross_session = client.calls[0]["request"]["cross_session"]
         self.assertTrue(cross_session["enabled"])
-        self.assertEqual(cross_session["budget_ratio"], 0.2)
-        self.assertEqual(cross_session["budget_tokens"], 190)
-        self.assertEqual(cross_session["max_sessions"], 4)
-        self.assertEqual(cross_session["max_candidates"], 32)
+        self.assertEqual(cross_session["budget_ratio"], 0.12)
+        self.assertEqual(cross_session["budget_tokens"], 114)
+        self.assertEqual(cross_session["max_sessions"], 3)
+        self.assertEqual(cross_session["max_candidates"], 24)
+        self.assertEqual(cross_session["min_score"], 0.2)
+        self.assertEqual(cross_session["decision"], "always_consider_same_user_cross_session_when_session_scope_prefer")
         self.assertEqual(cross_session["strategy"], "same_session_first_entity_bridge_then_bounded_cross_session")
 
     def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
@@ -2711,6 +2713,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertIn("budget_tokens", source)
             self.assertIn("max_sessions", source)
             self.assertIn("max_candidates", source)
+            self.assertIn("min_score", source)
             self.assertIn("entity_bridge_selected_ref_count", source)
             self.assertIn("same_session_first_entity_bridge_then_bounded_cross_session", source)
 

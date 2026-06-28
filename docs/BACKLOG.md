@@ -116,6 +116,10 @@ Latest AWS/test state:
     - every share/publish action writes audit metadata: actor, source ref, destination scope, policy id, reason, expiry, and revocation state.
   - Retrieval workflow:
     - resolve identity and access scope first from API key/SSO/session;
+    - same-user cross-session retrieval is enabled by default only in `session_scope=prefer`, not `only`;
+    - default cross-session budget is deliberately bounded: 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date, capped by `MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS`;
+    - cross-session candidates must pass `MATRIXARK_CROSS_SESSION_MIN_SCORE` before fanout/top-k/token packing;
+    - default cross-session fanout is 3 sessions and 24 candidates so same-session continuity, resources, and skills keep most of the remote budget;
     - retrieve same-session and same-user private context first;
     - retrieve shared resources/skills next because they are intentionally governed context;
     - retrieve cross-user shared context only from authorized published scopes;

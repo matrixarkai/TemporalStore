@@ -417,11 +417,12 @@ std::string CrossSessionKey(const rapidjson::Value& record) {
 
 struct CrossSessionPolicy {
     bool enabled = false;
-    double budget_ratio = 0.20;
+    double budget_ratio = 0.12;
     uint64_t budget_tokens = 0;
-    uint64_t max_budget_tokens = 2048;
-    uint64_t max_sessions = 4;
-    uint64_t max_candidates = 32;
+    uint64_t max_budget_tokens = 1536;
+    uint64_t max_sessions = 3;
+    uint64_t max_candidates = 24;
+    double min_score = 0.20;
     uint64_t min_entity_bridge_refs = 2;
     uint64_t parallelism = 4;
 };
@@ -430,13 +431,20 @@ CrossSessionPolicy ParseCrossSessionPolicy(const rapidjson::Value& request, cons
                                            uint64_t remote_budget, const std::string& question_type) {
     CrossSessionPolicy policy;
     bool default_enabled = scope != nullptr && scope->IsObject() && SessionScopeMode(*scope) == "prefer" && remote_budget > 0;
-    policy.budget_ratio = (question_type == "current_state" || question_type == "latest") ? 0.30 : 0.20;
+    if (question_type == "current_state" || question_type == "latest" || question_type == "multi_hop" || question_type == "date") {
+        policy.budget_ratio = 0.20;
+    } else if (question_type == "broad_exploration" || question_type == "evidence") {
+        policy.budget_ratio = 0.15;
+    } else {
+        policy.budget_ratio = 0.12;
+    }
     if (const rapidjson::Value* config = JsonObjectMember(request, "cross_session")) {
         policy.enabled = JsonBoolMember(*config, "enabled", default_enabled);
         policy.budget_ratio = std::max(0.0, std::min(1.0, JsonDoubleMember(*config, "budget_ratio", policy.budget_ratio)));
         policy.max_budget_tokens = JsonUintMember(*config, "max_budget_tokens", policy.max_budget_tokens);
         policy.max_sessions = JsonUintMember(*config, "max_sessions", policy.max_sessions);
         policy.max_candidates = JsonUintMember(*config, "max_candidates", policy.max_candidates);
+        policy.min_score = std::max(0.0, std::min(1.0, JsonDoubleMember(*config, "min_score", policy.min_score)));
         policy.min_entity_bridge_refs = JsonUintMember(*config, "min_entity_bridge_refs", policy.min_entity_bridge_refs);
         policy.parallelism = std::max<uint64_t>(1, JsonUintMember(*config, "parallelism", policy.parallelism));
         uint64_t computed = static_cast<uint64_t>(static_cast<double>(remote_budget) * policy.budget_ratio);
@@ -458,6 +466,7 @@ CrossSessionPolicy ParseCrossSessionPolicy(const rapidjson::Value& request, cons
         policy.budget_tokens = 0;
         policy.max_sessions = 0;
         policy.max_candidates = 0;
+        policy.min_score = 0.0;
         policy.min_entity_bridge_refs = 0;
         policy.parallelism = 0;
     } else {
@@ -1013,6 +1022,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     uint64_t dropped_cross_budget = 0;
     uint64_t dropped_cross_session_cap = 0;
     uint64_t dropped_cross_candidate_cap = 0;
+    uint64_t dropped_low_score = 0;
     uint64_t cross_used_tokens = 0;
     uint64_t cross_selected_refs = 0;
     uint64_t entity_bridge_selected_refs = 0;
@@ -1036,6 +1046,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         std::string cross_key = is_cross_session ? CrossSessionKey(record) : "";
         if (is_cross_session && !cross_policy.enabled) {
             ++dropped_cross_budget;
+            continue;
+        }
+        if (is_cross_session && cross_policy.min_score > 0.0 && item.score < cross_policy.min_score) {
+            ++dropped_low_score;
             continue;
         }
         if (is_cross_session && cross_policy.max_candidates > 0 && cross_selected_refs >= cross_policy.max_candidates) {
@@ -1101,11 +1115,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     dropped.AddMember("cross_session_budget", dropped_cross_budget, alloc);
     dropped.AddMember("cross_session_session_cap", dropped_cross_session_cap, alloc);
     dropped.AddMember("cross_session_candidate_cap", dropped_cross_candidate_cap, alloc);
+    dropped.AddMember("low_score", dropped_low_score, alloc);
     rapidjson::Value reasons(rapidjson::kObjectType);
     reasons.AddMember("over_budget", dropped_over_budget, alloc);
     reasons.AddMember("cross_session_budget", dropped_cross_budget, alloc);
     reasons.AddMember("cross_session_session_cap", dropped_cross_session_cap, alloc);
     reasons.AddMember("cross_session_candidate_cap", dropped_cross_candidate_cap, alloc);
+    reasons.AddMember("low_score", dropped_low_score, alloc);
     dropped.AddMember("reason_counts", reasons, alloc);
     pack.AddMember("dropped_refs", dropped, alloc);
     pack.AddMember("used_context_tokens", used_tokens, alloc);
@@ -1180,13 +1196,14 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     cross.AddMember("max_budget_tokens", cross_policy.max_budget_tokens, alloc);
     cross.AddMember("max_sessions", cross_policy.max_sessions, alloc);
     cross.AddMember("max_candidates", cross_policy.max_candidates, alloc);
+    cross.AddMember("min_score", cross_policy.min_score, alloc);
     cross.AddMember("parallelism", cross_policy.parallelism, alloc);
     cross.AddMember("selected_tokens", cross_used_tokens, alloc);
     cross.AddMember("selected_ref_count", cross_selected_refs, alloc);
     cross.AddMember("selected_session_count", static_cast<uint64_t>(selected_cross_sessions.size()), alloc);
     cross.AddMember("entity_bridge_selected_ref_count", entity_bridge_selected_refs, alloc);
     cross.AddMember("strategy", "same_session_first_entity_bridge_then_bounded_cross_session", alloc);
-    cross.AddMember("budget_guidance", "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest", alloc);
+    cross.AddMember("budget_guidance", "default cross-session budget is conservative: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date, capped by max_budget_tokens; same-session, resources, and skills keep the rest", alloc);
     recall.AddMember("cross_session", cross, alloc);
     rapidjson::Value tree(rapidjson::kObjectType);
     tree.AddMember("enabled", true, alloc);

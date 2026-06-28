@@ -467,6 +467,15 @@ cross-session question:
   MatrixArk first
   local files only if current code state matters
 
+Default MatrixArk cross-session policy:
+  always consider same-user cross-session context when session_scope=prefer
+  require normal similarity/weighted score threshold before packing
+  use about 12% of remote MatrixArk budget for ordinary queries
+  use about 15% for broad/evidence queries
+  use about 20% for current/latest/multi-hop/date queries
+  cap default fanout to 3 sessions and 24 candidates
+  reserve the remaining budget for same-session continuity, shared resources, and relevant skills
+
 current-state question:
   ContextEntity + fresh ContextEvent first
   stale blockers included only as warnings/evidence
