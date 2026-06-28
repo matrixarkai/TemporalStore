@@ -3765,6 +3765,13 @@ impl TemporalEngine {
             &self.page_store,
             &self.cache,
             shard_id,
+            shard.risk_pages.values_mut(),
+            &mut rewritten_page_refs,
+        )?;
+        compact_page_addresses(
+            &self.page_store,
+            &self.cache,
+            shard_id,
             shard.context_nodes.values_mut(),
             &mut rewritten_page_refs,
         )?;
@@ -5734,10 +5741,20 @@ fn execute_on_shard(
             remove_if_expired(shard, &key);
             *shard
                 .risk
-                .entry(key)
+                .entry(key.clone())
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
+            persist_risk_page(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &key,
+                start_routing_slot,
+                end_routing_slot,
+                async_storage,
+            );
             mutated = true;
             CommandResponse::Empty
         }
@@ -5762,8 +5779,18 @@ fn execute_on_shard(
             if let Some(ttl_ms) = ttl_ms {
                 shard
                     .expires_at_ms
-                    .insert(key, now_ms().saturating_add(ttl_ms));
+                    .insert(key.clone(), now_ms().saturating_add(ttl_ms));
             }
+            persist_risk_page(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &key,
+                start_routing_slot,
+                end_routing_slot,
+                async_storage,
+            );
             mutated = true;
             CommandResponse::Empty
         }
@@ -5890,10 +5917,20 @@ fn execute_on_shard(
             let key = risk_family_key(family, &key);
             *shard
                 .risk
-                .entry(key)
+                .entry(key.clone())
                 .or_default()
                 .entry(timestamp_ms)
                 .or_default() += amount;
+            persist_risk_page(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &key,
+                start_routing_slot,
+                end_routing_slot,
+                async_storage,
+            );
             mutated = true;
             CommandResponse::Empty
         }
@@ -5908,12 +5945,22 @@ fn execute_on_shard(
         } => {
             remove_if_expired(shard, &key);
             let key = risk_family_key(family, &key);
-            let series = shard.risk.entry(key).or_default();
+            let series = shard.risk.entry(key.clone()).or_default();
             *series.entry(timestamp_ms).or_default() += amount;
             let values = series
                 .range(start_ms..=end_ms)
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
+            persist_risk_page(
+                cache,
+                page_store,
+                shard_id,
+                shard,
+                &key,
+                start_routing_slot,
+                end_routing_slot,
+                async_storage,
+            );
             mutated = true;
             CommandResponse::Integer {
                 value: aggregate_risk_values(&values, &aggregator),
@@ -7077,6 +7124,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.ips_meta.remove(key).is_some();
     removed |= shard.ips_request_ids.remove(key).is_some();
     removed |= shard.risk.remove(key).is_some();
+    removed |= shard.risk_pages.remove(key).is_some();
     removed |= shard.risk_changes.remove(key).is_some();
     removed |= shard.risk_fol.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
@@ -7344,6 +7392,12 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
                 }),
         );
     }
+    entries.extend(shard.risk_pages.iter().map(|(key, address)| LivePageEntry {
+        object_key: key.clone(),
+        kind: "risk",
+        component: None,
+        address: address.clone(),
+    }));
     entries.extend(
         shard
             .context_nodes
@@ -7609,6 +7663,93 @@ fn slot_storage_summaries(
     slots.into_values().collect()
 }
 
+const CPP_PACKED_PAGE_INDEX_SIZE: usize = 17;
+const CPP_PACKED_SLOT_NODE_SIZE: usize = 24;
+
+fn storage_model_code(kind: &str) -> u8 {
+    match kind {
+        "string" => 1,
+        "hash" => 2,
+        "set" => 3,
+        "feature" => 4,
+        "sequence" => 5,
+        "ips" => 6,
+        "risk" => 7,
+        "context_node" => 8,
+        "context_event" => 9,
+        "context_index" => 10,
+        "context_audit" => 11,
+        "context_dirty" => 12,
+        "context_entity" => 13,
+        "context_child" => 14,
+        "context_embedding" => 15,
+        "context_summary" => 16,
+        "context_compression" => 17,
+        _ => 0,
+    }
+}
+
+fn physical_address_word(address: &PageAddress) -> u64 {
+    address.page_segment_id.wrapping_shl(32) | (address.offset & u32::MAX as u64)
+}
+
+fn cpp_packed_page_index_bytes(
+    page: &StoragePhysicalPageIndex,
+) -> [u8; CPP_PACKED_PAGE_INDEX_SIZE] {
+    let mut bytes = [0u8; CPP_PACKED_PAGE_INDEX_SIZE];
+    bytes[0] = page.object_id.unwrap_or_default() as u8;
+    bytes[1] = storage_model_code(&page.model_id);
+    bytes[2..4].copy_from_slice(&(page.page_id.unwrap_or_default() as u16).to_le_bytes());
+    bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
+    let page_size = if page.deleted { 0 } else { page.length as u32 };
+    bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
+    let address = physical_address_word(&PageAddress {
+        page_segment_id: page.page_segment_id,
+        offset: page.offset,
+        length: page.length,
+        page_id: page.page_id,
+        object_id: page.object_id,
+        routing_slot: Some(page.routing_slot),
+        zone_id: page.zone_id,
+        sha256: page.checksum.clone(),
+    });
+    bytes[9..17].copy_from_slice(&address.to_le_bytes());
+    bytes
+}
+
+fn cpp_packed_slot_node_bytes(slot: &StoragePhysicalSlotNode) -> [u8; CPP_PACKED_SLOT_NODE_SIZE] {
+    let mut bytes = [0u8; CPP_PACKED_SLOT_NODE_SIZE];
+    let page_in_log = slot.page_indexes.iter().any(|page| page.log_backed);
+    let trivial_page = slot.page_ref_count <= 1;
+    let page_deleted = slot.page_ref_count == 0;
+    let mut flags = 0u32;
+    flags |= (slot.ttl_ms.is_some() as u32) << 1;
+    flags |= (slot.dirty as u32) << 2;
+    flags |= (slot.loading as u32) << 4;
+    flags |= (slot.in_memory as u32) << 5;
+    flags |= (slot.dirty as u32) << 6;
+    flags |= (page_deleted as u32) << 7;
+    flags |= (page_in_log as u32) << 8;
+    flags |= (trivial_page as u32) << 9;
+    let flag_bytes = flags.to_le_bytes();
+    bytes[0..3].copy_from_slice(&flag_bytes[0..3]);
+    bytes[3..7].copy_from_slice(&(slot.physical_bytes as u32).to_le_bytes());
+    let model_code = slot
+        .page_indexes
+        .first()
+        .map(|page| storage_model_code(&page.model_id))
+        .unwrap_or_default();
+    bytes[7] = model_code;
+    bytes[8..16].copy_from_slice(&slot.ttl_ms.unwrap_or_default().to_le_bytes());
+    let address = slot
+        .page_indexes
+        .first()
+        .map(|page| page.page_segment_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
+        .unwrap_or_default();
+    bytes[16..24].copy_from_slice(&address.to_le_bytes());
+    bytes
+}
+
 fn storage_physical_index_report(
     shard_id: ShardId,
     shard: &ShardState,
@@ -7636,6 +7777,8 @@ fn storage_physical_index_report(
                     physical_bytes: summary.physical_bytes,
                     dirty_generation: summary.dirty_generation,
                     last_dump_sequence: summary.last_dump_sequence,
+                    cpp_packed_slot_node_len: CPP_PACKED_SLOT_NODE_SIZE,
+                    cpp_packed_slot_node_hex: String::new(),
                     page_indexes: Vec::new(),
                 },
             )
@@ -7657,9 +7800,10 @@ fn storage_physical_index_report(
                 routing_slot,
                 meta_loaded: true,
                 in_memory: true,
+                cpp_packed_slot_node_len: CPP_PACKED_SLOT_NODE_SIZE,
                 ..StoragePhysicalSlotNode::default()
             });
-        slot.page_indexes.push(StoragePhysicalPageIndex {
+        let mut page_index = StoragePhysicalPageIndex {
             object_key: entry.object_key.clone(),
             model_id: entry.kind.to_string(),
             component: entry.component.clone(),
@@ -7674,7 +7818,12 @@ fn storage_physical_index_report(
             dirty: shard.dirty_objects.contains(&entry.object_key),
             deleted: false,
             log_backed: true,
-        });
+            cpp_packed_page_index_len: CPP_PACKED_PAGE_INDEX_SIZE,
+            cpp_packed_page_index_hex: String::new(),
+        };
+        page_index.cpp_packed_page_index_hex =
+            hex::encode(cpp_packed_page_index_bytes(&page_index));
+        slot.page_indexes.push(page_index);
     }
     for slot in slots.values_mut() {
         slot.page_indexes.sort_by(|left, right| {
@@ -7685,6 +7834,8 @@ fn storage_physical_index_report(
                 .then(left.page_segment_id.cmp(&right.page_segment_id))
                 .then(left.offset.cmp(&right.offset))
         });
+        slot.cpp_packed_slot_node_len = CPP_PACKED_SLOT_NODE_SIZE;
+        slot.cpp_packed_slot_node_hex = hex::encode(cpp_packed_slot_node_bytes(slot));
     }
     let page_index_count = slots
         .values()
@@ -7716,6 +7867,9 @@ fn storage_physical_index_report(
         missing_routing_slot_count,
         missing_page_id_count,
         missing_checksum_count,
+        cpp_packed_page_index_size: CPP_PACKED_PAGE_INDEX_SIZE,
+        cpp_packed_slot_node_size: CPP_PACKED_SLOT_NODE_SIZE,
+        cpp_packed_layout_compatible: true,
         slot_nodes: slots.into_values().collect(),
     }
 }
@@ -7785,6 +7939,7 @@ fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
     for series in shard.ips.values() {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
     }
+    addresses.extend(shard.risk_pages.values().cloned());
     addresses.extend(shard.context_nodes.values().cloned());
     for series in shard.context_events.values() {
         addresses.extend(unique_timestamped_kv_page_addresses(series));
@@ -8187,6 +8342,41 @@ fn append_value(
     Ok(address)
 }
 
+fn persist_risk_page(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    key: &str,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+    async_storage: bool,
+) -> bool {
+    let Some(series) = shard.risk.get(key) else {
+        shard.risk_pages.remove(key);
+        return false;
+    };
+    let Ok(bytes) = serde_json::to_vec(series) else {
+        return false;
+    };
+    let object_id = stable_page_object_id(shard_id, "risk", key, None);
+    let routing_slot = page_routing_slot(key, start_routing_slot, end_routing_slot);
+    if let Ok(address) = append_value(
+        cache,
+        page_store,
+        shard_id,
+        &bytes,
+        Some(object_id),
+        Some(routing_slot),
+        async_storage,
+    ) {
+        shard.risk_pages.insert(key.to_string(), address);
+        true
+    } else {
+        false
+    }
+}
+
 fn invalidate_cache_key(cache: &MultiLayerCache, key: CacheKey, memory_only: bool) {
     if memory_only {
         cache.invalidate_memory_only(&key);
@@ -8209,6 +8399,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.sequences.contains_key(key)
         || shard.ips.contains_key(key)
         || shard.risk.contains_key(key)
+        || shard.risk_pages.contains_key(key)
         || shard.risk_changes.contains_key(key)
         || shard.risk_fol.contains_key(key)
         || shard.context_nodes.contains_key(key)
@@ -16079,11 +16270,14 @@ mod tests {
         let report = engine.storage_physical_index_report(9);
         assert!(report.slot_first);
         assert!(report.slot_count > 0);
-        assert_eq!(report.page_index_count, 6);
+        assert_eq!(report.page_index_count, 7);
         assert_eq!(report.missing_object_id_count, 0);
         assert_eq!(report.missing_routing_slot_count, 0);
         assert_eq!(report.missing_page_id_count, 0);
         assert_eq!(report.missing_checksum_count, 0);
+        assert_eq!(report.cpp_packed_page_index_size, 17);
+        assert_eq!(report.cpp_packed_slot_node_size, 24);
+        assert!(report.cpp_packed_layout_compatible);
         assert!(report.dirty_slot_count > 0);
         assert_eq!(
             report
@@ -16097,6 +16291,8 @@ mod tests {
             slot.page_ref_count == slot.page_indexes.len() as u64
                 && slot.routing_slot >= 10
                 && slot.routing_slot <= 20
+                && slot.cpp_packed_slot_node_len == 24
+                && slot.cpp_packed_slot_node_hex.len() == 48
         }));
         assert!(report
             .slot_nodes
@@ -16108,9 +16304,10 @@ mod tests {
             .iter()
             .flat_map(|slot| slot.page_indexes.iter())
             .collect::<Vec<_>>();
-        assert!(page_indexes
-            .iter()
-            .all(|page| page.object_id.is_some() && page.page_id.is_some()));
+        assert!(page_indexes.iter().all(|page| page.object_id.is_some()
+            && page.page_id.is_some()
+            && page.cpp_packed_page_index_len == 17
+            && page.cpp_packed_page_index_hex.len() == 34));
         assert!(page_indexes.iter().all(|page| page
             .checksum
             .as_ref()
@@ -16128,6 +16325,9 @@ mod tests {
             .iter()
             .any(|page| page.object_key == "sequence-key"));
         assert!(page_indexes.iter().any(|page| page.object_key == "ips-key"));
+        assert!(page_indexes
+            .iter()
+            .any(|page| { page.model_id == "risk" && page.object_key == "risk:cpc:risk-key" }));
     }
 
     #[test]

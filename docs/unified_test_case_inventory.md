@@ -109,8 +109,9 @@ Current grandfathered Rust test dispositions:
 The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
 storage/cache recovery cases and Context pipeline model cases. The storage family now includes
 `storage_slot_first_physical_index`, which validates Rust's C++-style
-`Index -> SlotNode -> PageIndex` projection for mixed page-backed product-model writes and
-keeps C++ execution as a shared-corpus adapter target.
+`Index -> SlotNode -> PageIndex` projection for mixed page-backed product-model writes,
+including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` packed-size
+evidence while keeping C++ execution as a shared-corpus adapter target.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,

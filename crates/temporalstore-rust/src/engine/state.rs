@@ -21,6 +21,8 @@ pub(super) struct ShardState {
     pub(super) ips_request_ids: HashMap<String, BTreeSet<String>>,
     pub(super) risk: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
+    pub(super) risk_pages: HashMap<String, PageAddress>,
+    #[serde(default)]
     pub(super) risk_changes: HashMap<String, BTreeMap<u64, BTreeSet<Vec<u8>>>>,
     #[serde(default)]
     pub(super) risk_fol: HashMap<String, RiskFolValue>,
