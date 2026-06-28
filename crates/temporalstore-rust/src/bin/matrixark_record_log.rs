@@ -842,6 +842,32 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
     }
 }
 
+fn cross_session_rerank_boost(record: &Value, context_class: &str, status: &str, question_type: &str) -> f64 {
+    if status != "cross_session" {
+        return 0.0;
+    }
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let has_citation = record.get("source_ref").is_some()
+        || record.get("citation").is_some()
+        || record.get("source_chunk_hash").is_some();
+    match record_type {
+        "context_entity" => {
+            if matches!(question_type, "current_state" | "latest" | "multi_hop") { 0.08 } else { 0.04 }
+        }
+        "resource_chunk" if has_citation => 0.04,
+        "context_event" | "context_segment" if matches!(question_type, "multi_hop" | "why_emotion" | "fact") => 0.03,
+        "context_compression_event" => 0.02,
+        "context_summary" if question_type != "broad_exploration" => -0.04,
+        _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
+            if has_citation { 0.06 } else { 0.04 }
+        }
+        _ => 0.0,
+    }
+}
+
 fn type_priority_boost(record: &Value, context_class: &str, question_type: &str) -> f64 {
     let record_type = record
         .get("record_type")
@@ -1328,6 +1354,7 @@ fn pack_ref_from_record(
     reason: &str,
     session_continuity: &str,
     continuity_boost_value: f64,
+    cross_session_rerank_boost_value: f64,
 ) -> Value {
     let ref_type = context_class_name(record);
     let text = candidate_text(record);
@@ -1346,6 +1373,7 @@ fn pack_ref_from_record(
         "score": (score * 1000000.0).round() / 1000000.0,
         "session_continuity": session_continuity,
         "continuity_boost": (continuity_boost_value * 1000000.0).round() / 1000000.0,
+        "cross_session_rerank_boost": (cross_session_rerank_boost_value * 1000000.0).round() / 1000000.0,
         "continuity_reason": continuity_reason,
         "selection_reason": reason,
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
@@ -1450,7 +1478,7 @@ fn retrieve_context_pack_native(
         remote_budget,
         &question_type,
     );
-    let mut scored: Vec<(f64, Value, String, f64)> = records
+    let mut scored: Vec<(f64, Value, String, f64, f64)> = records
         .into_iter()
         .filter(|record| {
             matches!(
@@ -1488,10 +1516,13 @@ fn retrieve_context_pack_native(
             let continuity_boost_value =
                 continuity_boost(&record, &context_class, &session_continuity);
             score += continuity_boost_value;
+            let cross_session_rerank_boost_value =
+                cross_session_rerank_boost(&record, &context_class, &session_continuity, &question_type);
+            score += cross_session_rerank_boost_value;
             score += type_priority_boost(&record, &context_class, &question_type);
-            (score, record, session_continuity, continuity_boost_value)
+            (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value)
         })
-        .filter(|(score, _, _, _)| *score >= min_similarity_score)
+        .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
         .collect();
     scored.sort_by(|left, right| {
         right
@@ -1514,7 +1545,7 @@ fn retrieve_context_pack_native(
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     let mut used_tokens = 0_u64;
-    for (score, record, session_continuity, continuity_boost_value) in scored {
+    for (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value) in scored {
         if selected.len() as u64 >= max_refs {
             break;
         }
@@ -1579,6 +1610,7 @@ fn retrieve_context_pack_native(
             "native_rust_proxy_score_pack",
             &session_continuity,
             continuity_boost_value,
+            cross_session_rerank_boost_value,
         ));
     }
     let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
@@ -1630,6 +1662,13 @@ fn retrieve_context_pack_native(
                 "backend_role": "scan_filter_score_pack"
             },
             "scan_stats": scan_stats,
+            "rerank": {
+                "enabled": true,
+                "mode": "native_weighted_recall_plus_cross_session_rerank",
+                "cross_session_rerank_enabled": true,
+                "cross_session_signals": ["entity_state", "resource_fact_citation", "answer_event", "compression", "summary_demotion"],
+                "heavy_rerank_enabled": false
+            },
             "ranking": {
                 "min_similarity_score": min_similarity_score,
                 "max_global_candidates": max_global_candidates,
