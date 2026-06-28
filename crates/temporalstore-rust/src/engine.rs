@@ -403,6 +403,7 @@ impl TemporalEngine {
                         .unwrap_or(u32::MAX),
                 );
             }
+            refresh_slot_runtime_flags(shard);
             if write_command && !config.async_storage {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
@@ -5388,6 +5389,7 @@ impl TemporalEngine {
         }
 
         rebuild_slot_first_index(shard, 0, u32::MAX);
+        refresh_slot_runtime_flags(shard);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
         let stale_page_segment_ids = before_segments
@@ -8749,6 +8751,7 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
+    removed |= mark_slot_index_object_deleted(shard, key);
     removed |= shard.expires_at_ms.remove(key).is_some();
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.hashes.remove(key).is_some();
@@ -8772,6 +8775,31 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_embeddings.remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
+    removed
+}
+
+fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+    let mut removed = false;
+    for slot in shard.slot_index.slots.values_mut() {
+        let mut deleted_object_ids = BTreeSet::new();
+        slot.page_refs.retain(|_, page| {
+            if page.object_key == key {
+                deleted_object_ids.insert(page.object_id);
+                removed = true;
+                false
+            } else {
+                true
+            }
+        });
+        if !deleted_object_ids.is_empty() {
+            slot.object_ids.extend(deleted_object_ids);
+            slot.dirty = true;
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            slot.meta_loaded = true;
+            slot.in_memory = true;
+            update_slot_layout(slot);
+        }
+    }
     removed
 }
 
@@ -9259,6 +9287,9 @@ fn upsert_slot_index_page(
             ..SlotNodeIndex::default()
         });
     slot.dirty |= dirty;
+    if dirty {
+        slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+    }
     slot.in_memory = true;
     slot.object_ids.insert(object_id);
     slot.page_refs.insert(
@@ -9299,13 +9330,38 @@ fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
 }
 
 fn update_slot_layout(slot: &mut SlotNodeIndex) {
-    slot.object_ids = slot
+    let live_object_ids: BTreeSet<u64> = slot
         .page_refs
         .values()
         .filter(|page| !page.deleted)
         .map(|page| page.object_id)
         .collect();
+    if !live_object_ids.is_empty() {
+        slot.object_ids = live_object_ids;
+    } else if !slot.page_refs.is_empty() {
+        slot.object_ids.clear();
+    }
     slot.layout = classify_slot_layout(slot.object_ids.len(), slot.page_refs.len());
+}
+
+fn refresh_slot_runtime_flags(shard: &mut ShardState) {
+    let now = now_ms();
+    for slot in shard.slot_index.slots.values_mut() {
+        slot.meta_loaded = true;
+        slot.loading = false;
+        slot.in_memory = !slot.page_refs.is_empty();
+        slot.dirty |= slot
+            .page_refs
+            .values()
+            .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
+        slot.ttl_ms = slot
+            .page_refs
+            .values()
+            .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
+            .map(|expires_at| expires_at.saturating_sub(now))
+            .min();
+        update_slot_layout(slot);
+    }
 }
 
 fn rebuild_slot_first_index(
@@ -9337,6 +9393,9 @@ fn rebuild_slot_first_index(
             });
         let page_dirty = shard.dirty_objects.contains(&entry.object_key) || entry.dirty;
         slot.dirty |= page_dirty;
+        if page_dirty {
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+        }
         slot.in_memory |= true;
         slot.object_ids.insert(object_id);
         slot.page_refs.insert(
@@ -9702,6 +9761,25 @@ fn storage_physical_index_report(
             hex::encode(cpp_packed_page_index_bytes(&page_index));
         slot.page_indexes.push(page_index);
     }
+    for (routing_slot, runtime_slot) in &shard.slot_index.slots {
+        let slot = slots
+            .entry(*routing_slot)
+            .or_insert(StoragePhysicalSlotNode {
+                routing_slot: *routing_slot,
+                cpp_packed_slot_node_len: CPP_PACKED_SLOT_NODE_SIZE,
+                ..StoragePhysicalSlotNode::default()
+            });
+        slot.layout = slot_layout_name(runtime_slot.layout).to_string();
+        slot.dirty = runtime_slot.dirty;
+        slot.meta_loaded = runtime_slot.meta_loaded;
+        slot.loading = runtime_slot.loading;
+        slot.in_memory = runtime_slot.in_memory;
+        slot.ttl_ms = runtime_slot.ttl_ms;
+        slot.object_count = runtime_slot.object_ids.len() as u64;
+        slot.page_ref_count = runtime_slot.page_refs.len() as u64;
+        slot.dirty_generation = runtime_slot.dirty_generation;
+        slot.last_dump_sequence = runtime_slot.last_dump_sequence;
+    }
     for slot in slots.values_mut() {
         slot.page_indexes.sort_by(|left, right| {
             left.object_key
@@ -9711,14 +9789,17 @@ fn storage_physical_index_report(
                 .then(left.page_segment_id.cmp(&right.page_segment_id))
                 .then(left.offset.cmp(&right.offset))
         });
-        let object_count = slot
-            .page_indexes
-            .iter()
-            .filter_map(|page| page.object_id)
-            .collect::<BTreeSet<_>>()
-            .len();
-        slot.layout = slot_layout_name(classify_slot_layout(object_count, slot.page_indexes.len()))
-            .to_string();
+        if !shard.slot_index.slots.contains_key(&slot.routing_slot) {
+            let object_count = slot
+                .page_indexes
+                .iter()
+                .filter_map(|page| page.object_id)
+                .collect::<BTreeSet<_>>()
+                .len();
+            slot.layout =
+                slot_layout_name(classify_slot_layout(object_count, slot.page_indexes.len()))
+                    .to_string();
+        }
         slot.cpp_packed_slot_node_len = CPP_PACKED_SLOT_NODE_SIZE;
         slot.cpp_packed_slot_node_hex = hex::encode(cpp_packed_slot_node_bytes(slot));
     }
@@ -11622,7 +11703,8 @@ fn command_object_keys(command: &Command) -> Vec<String> {
 fn command_updates_slot_index_directly(command: &Command) -> bool {
     matches!(
         command,
-        Command::StringSet { .. }
+        Command::CommonDelete { .. }
+            | Command::StringSet { .. }
             | Command::StringSetEx { .. }
             | Command::StringSetConditional { .. }
             | Command::HashSet { .. }
@@ -18915,6 +18997,16 @@ mod tests {
             physical.page_index_count
         );
         assert!(object_manager.live_object_count >= 4);
+        assert!(object_manager.dirty_object_count >= 4);
+        assert!(object_manager.in_memory_object_count >= 4);
+        assert!(object_manager.objects.iter().any(|object| object
+            .model_ids
+            .iter()
+            .any(|model| model == "feature")
+            && object.page_ref_count >= 1
+            && object.dirty
+            && object.in_memory
+            && !object.loading));
         assert!(slot_store.slot_store_runtime_module);
         assert!(slot_store.slot_index_authority);
         assert_eq!(slot_store.page_ref_count, physical.page_index_count);
@@ -18928,20 +19020,37 @@ mod tests {
                 + slot_store.multi_object_slots,
             slot_store.slot_count
         );
+        assert_eq!(slot_store.loading_slot_count, 0);
+        assert_eq!(slot_store.in_memory_slot_count, slot_store.slot_count);
+        assert!(slot_store.max_dirty_generation > 0);
+        assert!(slot_store.slots.iter().all(|slot| {
+            slot.meta_loaded
+                && slot.in_memory
+                && !slot.loading
+                && !slot.object_ids.is_empty()
+                && slot.dirty_generation > 0
+        }));
     }
 
     // shared-corpus: storage_slot_layout_transitions
     #[test]
     fn storage_slot_layout_transitions_cover_growth_compaction_delete_dump_load_restart() {
-        fn single_slot_layout(engine: &TemporalEngine, shard_id: ShardId) -> String {
+        fn single_slot_state(
+            engine: &TemporalEngine,
+            shard_id: ShardId,
+        ) -> StoragePhysicalSlotNode {
             let report = engine.storage_physical_index_report(shard_id);
             let non_empty_slots = report
                 .slot_nodes
                 .iter()
-                .filter(|slot| !slot.page_indexes.is_empty())
+                .filter(|slot| !slot.page_indexes.is_empty() || slot.object_count > 0)
                 .collect::<Vec<_>>();
             assert_eq!(non_empty_slots.len(), 1, "{report:?}");
-            non_empty_slots[0].layout.clone()
+            non_empty_slots[0].clone()
+        }
+
+        fn single_slot_layout(engine: &TemporalEngine, shard_id: ShardId) -> String {
+            single_slot_state(engine, shard_id).layout
         }
 
         fn load_single_slot_shard(engine: &TemporalEngine) {
@@ -18989,20 +19098,32 @@ mod tests {
                     .ok
             );
             assert_eq!(single_slot_layout(&engine, 51), "single_page_object");
+            let first = single_slot_state(&engine, 51);
+            assert_eq!(first.object_count, 1);
+            assert_eq!(first.page_ref_count, 1);
+            assert!(first.dirty);
+            assert!(first.meta_loaded);
+            assert!(!first.loading);
+            assert!(first.in_memory);
+            assert!(first.dirty_generation > 0);
 
             assert!(
                 engine
                     .execute(ExecuteRequest {
                         shard_id: 51,
-                        command: Command::StringSet {
+                        command: Command::StringSetEx {
                             key: "slot-layout-b".to_string(),
                             value: b"v2".to_vec(),
+                            ttl_ms: 60_000,
                         },
                     })
                     .status
                     .ok
             );
             assert_eq!(single_slot_layout(&engine, 51), "multi_object");
+            let multi = single_slot_state(&engine, 51);
+            assert_eq!(multi.object_count, 2);
+            assert!(multi.ttl_ms.is_some());
 
             assert!(
                 engine
@@ -19016,6 +19137,9 @@ mod tests {
                     .ok
             );
             assert_eq!(single_slot_layout(&engine, 51), "single_page_object");
+            let after_delete_b = single_slot_state(&engine, 51);
+            assert_eq!(after_delete_b.object_count, 1);
+            assert_eq!(after_delete_b.page_ref_count, 1);
 
             assert!(
                 engine
@@ -19028,6 +19152,11 @@ mod tests {
                     .status
                     .ok
             );
+            assert_eq!(single_slot_layout(&engine, 51), "single_object");
+            let deleted_meta = single_slot_state(&engine, 51);
+            assert_eq!(deleted_meta.object_count, 1);
+            assert_eq!(deleted_meta.page_ref_count, 0);
+            assert!(deleted_meta.dirty);
             assert!(
                 engine
                     .execute(ExecuteRequest {
@@ -19041,10 +19170,27 @@ mod tests {
                     .ok
             );
             assert_eq!(single_slot_layout(&engine, 51), "multi_page_object");
+            let feature_slot = single_slot_state(&engine, 51);
+            assert_eq!(feature_slot.object_count, 1);
+            assert!(feature_slot.page_ref_count > 1);
+            let feature_object_id = feature_slot
+                .page_indexes
+                .first()
+                .and_then(|page| page.object_id)
+                .expect("feature object id");
+            assert!(feature_slot
+                .page_indexes
+                .iter()
+                .all(|page| page.object_id == Some(feature_object_id)));
 
             let compact_report = engine.compact_shard_pages(51).unwrap();
             assert!(compact_report.rewritten_page_refs > 0);
             assert_eq!(single_slot_layout(&engine, 51), "multi_page_object");
+            let compacted_slot = single_slot_state(&engine, 51);
+            assert_eq!(
+                compacted_slot.page_indexes[0].page_segment_id,
+                compact_report.compacted_page_segment_id
+            );
 
             let manifest = engine.create_slot_dump_manifest(51, [7]).unwrap();
             assert_eq!(manifest.slot_ids, vec![7]);
@@ -19056,7 +19202,13 @@ mod tests {
         let restored =
             TemporalEngine::with_local_dirs(8 * 1024 * 1024, cache_dir, pages_dir, indexes_dir);
         load_single_slot_shard(&restored);
-        assert_eq!(single_slot_layout(&restored, 51), "multi_page_object");
+        let restored_slot = single_slot_state(&restored, 51);
+        assert_eq!(restored_slot.layout, "multi_page_object");
+        assert_eq!(restored_slot.object_count, 1);
+        assert!(restored_slot.page_ref_count > 1);
+        assert!(restored_slot.meta_loaded);
+        assert!(restored_slot.in_memory);
+        assert!(!restored_slot.loading);
         assert_eq!(
             restored
                 .execute(ExecuteRequest {

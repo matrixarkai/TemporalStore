@@ -3042,7 +3042,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage exposes named ObjectManager and SlotStore runtime modules over the native slot/object/page authority, and validates their live object/page/slot counts against the physical index report.",
+            "description": "Rust storage exposes named ObjectManager and SlotStore runtime modules over the native slot/object/page authority, and validates live/dirty/deleted/loading/in-memory object and slot rows, object ids, page refs, dirty generations, TTL metadata, and counts against the physical index report.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
@@ -3059,7 +3059,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage models C++ SlotStore-style slot layout transitions across single-page object, multi-object, multi-page object, delete, compaction, slot dump/load, and restart.",
+            "description": "Rust storage models C++ SlotStore-style slot layout transitions across single-page object, multi-object, single-object delete metadata, multi-page object growth, compaction, slot dump/load, and restart while preserving object ids, page refs, dirty generation, TTL, loading, and in-memory flags.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
