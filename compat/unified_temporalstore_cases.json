@@ -3054,6 +3054,23 @@
       ]
     },
     {
+      "name": "storage_merged_dump_load_lifecycle",
+      "shard_id": 91,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage exposes a C++-style merged dump/load lifecycle with multi-slot source manifests, rollback marker evidence, load-version handoff, and stale object/page conflict preflight reports.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_merged_dump_load_tracks_rollback_handoff_and_conflicts"
+          },
+          "name": "rust_storage_merged_dump_load_lifecycle_reports_conflicts",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [

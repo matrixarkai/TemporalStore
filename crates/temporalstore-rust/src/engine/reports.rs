@@ -335,9 +335,15 @@ pub struct SlotDumpManifest {
     pub shard_id: ShardId,
     pub manifest_id: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub manifest_kind: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub dump_generation_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_manifest_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_manifest_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_version_handoff: Option<SlotDumpLoadVersionHandoff>,
     pub created_unix_ms: u64,
     pub slot_ids: Vec<u32>,
     pub page_segment_ids: Vec<u64>,
@@ -357,6 +363,13 @@ pub struct SlotDumpManifest {
     #[serde(default)]
     pub index_sha256: String,
     pub checksum: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpLoadVersionHandoff {
+    pub previous_load_version: u64,
+    pub next_load_version: u64,
+    pub applied: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,6 +397,30 @@ pub struct SlotDumpInstallPreflightReport {
     pub unreadable_page_ref_count: usize,
     pub unreadable_page_bytes: u64,
     pub stale_manifest: bool,
+    #[serde(default)]
+    pub stale_object_conflict_count: usize,
+    #[serde(default)]
+    pub stale_page_conflict_count: usize,
+    #[serde(default)]
+    pub stale_object_conflicts: Vec<String>,
+    #[serde(default)]
+    pub stale_page_conflicts: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotDumpMergedInstallReport {
+    pub shard_id: ShardId,
+    pub manifest_id: String,
+    pub source_manifest_ids: Vec<String>,
+    pub slot_ids: Vec<u32>,
+    pub preflight: SlotDumpInstallPreflightReport,
+    pub rollback_marker_written: bool,
+    pub prepare_marker_written: bool,
+    pub install_marker_written: bool,
+    pub commit_marker_written: bool,
+    pub load_version_handoff: Option<SlotDumpLoadVersionHandoff>,
+    pub installed: bool,
+    pub status_code: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

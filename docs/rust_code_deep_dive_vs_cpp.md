@@ -113,7 +113,10 @@ bytes for the 17-byte `PageIndex` and 24-byte `SlotNode` layouts. Rust still kee
 Rust-native in-memory structs rather than adopting C++ ABI-packed internals,
 and product read maps remain the API lookup layer during migration, but Risk
 now participates in the same page-backed ownership, recovery, compaction, and
-GC paths as the other product models.
+GC paths as the other product models. The merged dump/load lifecycle now has a
+shared case, `storage_merged_dump_load_lifecycle`, covering multi-slot source
+manifests, rollback marker evidence, load-version handoff, and stale
+object/page conflict reports.
 
 For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
 

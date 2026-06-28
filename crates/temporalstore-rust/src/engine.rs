@@ -750,8 +750,11 @@ impl TemporalEngine {
             version: 3,
             shard_id,
             manifest_id,
+            manifest_kind: "slot_dump".to_string(),
             dump_generation_id: String::new(),
+            source_manifest_ids: Vec::new(),
             parent_manifest_id,
+            load_version_handoff: None,
             created_unix_ms,
             slot_ids: slot_summaries
                 .iter()
@@ -779,6 +782,38 @@ impl TemporalEngine {
             checksum: String::new(),
         };
         manifest.dump_generation_id = slot_dump_generation_id(&manifest);
+        manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
+        self.persist_slot_dump_manifest(&manifest)
+            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
+        Ok(manifest)
+    }
+
+    pub fn create_merged_slot_dump_manifest(
+        &self,
+        shard_id: ShardId,
+        selected_slots: impl IntoIterator<Item = u32>,
+        source_manifest_ids: impl IntoIterator<Item = String>,
+        next_load_version: Option<u64>,
+    ) -> Result<SlotDumpManifest, Status> {
+        let mut manifest = self.create_slot_dump_manifest(shard_id, selected_slots)?;
+        manifest.manifest_kind = "merged_slot_dump".to_string();
+        manifest.source_manifest_ids = source_manifest_ids.into_iter().collect::<Vec<_>>();
+        manifest.source_manifest_ids.sort();
+        manifest.source_manifest_ids.dedup();
+        if let Some(next_load_version) = next_load_version {
+            let previous_load_version = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .map(|info| info.load_version)
+                .unwrap_or_default();
+            manifest.load_version_handoff = Some(SlotDumpLoadVersionHandoff {
+                previous_load_version,
+                next_load_version,
+                applied: false,
+            });
+        }
         manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
         self.persist_slot_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
@@ -1241,6 +1276,7 @@ impl TemporalEngine {
 
         let mut unreadable_page_ref_count = 0usize;
         let mut unreadable_page_bytes = 0u64;
+        let mut restored_index = None;
         if !manifest.index_bytes.is_empty() && missing_page_segment_ids.is_empty() {
             if let Ok(restored) = serde_json::from_slice::<ShardState>(&manifest.index_bytes) {
                 let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
@@ -1256,12 +1292,41 @@ impl TemporalEngine {
                         }
                     }
                 }
+                restored_index = Some(restored);
             } else {
                 blockers.push("invalid_manifest_index".to_string());
             }
         }
+        let (stale_object_conflicts, mut stale_page_conflicts) = restored_index
+            .as_ref()
+            .map(|restored| self.slot_dump_stale_conflict_report(manifest, restored))
+            .unwrap_or_default();
+        if stale_manifest && stale_page_conflicts.is_empty() {
+            stale_page_conflicts.push(format!(
+                "index_log_sequence:{}->{}",
+                manifest.index_log_sequence, current_index_log_sequence
+            ));
+        }
         if unreadable_page_ref_count > 0 {
             blockers.push("unreadable_page_refs".to_string());
+        }
+        if let Some(handoff) = &manifest.load_version_handoff {
+            let current_load_version = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&manifest.shard_id)
+                .map(|info| info.load_version)
+                .unwrap_or_default();
+            if current_load_version != handoff.previous_load_version {
+                blockers.push("load_version_handoff_mismatch".to_string());
+            }
+        }
+        if !stale_object_conflicts.is_empty() {
+            blockers.push("stale_object_conflicts".to_string());
+        }
+        if !stale_page_conflicts.is_empty() {
+            blockers.push("stale_page_conflicts".to_string());
         }
         blockers.sort();
         blockers.dedup();
@@ -1280,7 +1345,50 @@ impl TemporalEngine {
             unreadable_page_ref_count,
             unreadable_page_bytes,
             stale_manifest,
+            stale_object_conflict_count: stale_object_conflicts.len(),
+            stale_page_conflict_count: stale_page_conflicts.len(),
+            stale_object_conflicts,
+            stale_page_conflicts,
         }
+    }
+
+    fn slot_dump_stale_conflict_report(
+        &self,
+        manifest: &SlotDumpManifest,
+        restored: &ShardState,
+    ) -> (Vec<String>, Vec<String>) {
+        let manifest_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let manifest_entries =
+            slot_dump_entries_by_key(manifest.shard_id, restored, &manifest_slots, |key| {
+                self.routing_slot_for_key(manifest.shard_id, key)
+            });
+        let current_entries = {
+            let shards = self.shards.read().expect("engine lock poisoned");
+            let Some(current) = shards.get(&manifest.shard_id) else {
+                return (Vec::new(), Vec::new());
+            };
+            slot_dump_entries_by_key(manifest.shard_id, current, &manifest_slots, |key| {
+                self.routing_slot_for_key(manifest.shard_id, key)
+            })
+        };
+        let mut stale_object_conflicts = Vec::new();
+        let mut stale_page_conflicts = Vec::new();
+        for key in manifest_entries.keys().chain(current_entries.keys()) {
+            match (manifest_entries.get(key), current_entries.get(key)) {
+                (Some(manifest_address), Some(current_address)) => {
+                    if manifest_address != current_address {
+                        stale_page_conflicts.push(key.clone());
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => stale_object_conflicts.push(key.clone()),
+                (None, None) => {}
+            }
+        }
+        stale_object_conflicts.sort();
+        stale_object_conflicts.dedup();
+        stale_page_conflicts.sort();
+        stale_page_conflicts.dedup();
+        (stale_object_conflicts, stale_page_conflicts)
     }
 
     pub fn slot_dump_fault_matrix_report(&self, shard_id: ShardId) -> SlotDumpFaultMatrixReport {
@@ -1567,6 +1675,76 @@ impl TemporalEngine {
         self.persist_slot_dump_install_marker(manifest, "commit")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         Ok(())
+    }
+
+    pub fn install_merged_slot_dump_manifest(
+        &self,
+        manifest: &SlotDumpManifest,
+    ) -> SlotDumpMergedInstallReport {
+        let preflight = self.slot_dump_install_preflight_report(manifest);
+        let rollback_marker_written = self
+            .persist_slot_dump_install_marker(manifest, "rollback")
+            .is_ok();
+        if !preflight.install_safe {
+            return SlotDumpMergedInstallReport {
+                shard_id: manifest.shard_id,
+                manifest_id: manifest.manifest_id.clone(),
+                source_manifest_ids: manifest.source_manifest_ids.clone(),
+                slot_ids: manifest.slot_ids.clone(),
+                preflight,
+                rollback_marker_written,
+                prepare_marker_written: false,
+                install_marker_written: false,
+                commit_marker_written: false,
+                load_version_handoff: manifest.load_version_handoff.clone(),
+                installed: false,
+                status_code: "slot_dump_install_preflight_failed".to_string(),
+            };
+        }
+        match self.install_slot_dump_manifest(manifest) {
+            Ok(()) => {
+                let mut load_version_handoff = manifest.load_version_handoff.clone();
+                if let Some(handoff) = load_version_handoff.as_mut() {
+                    if let Some(info) = self
+                        .infos
+                        .write()
+                        .expect("info lock poisoned")
+                        .get_mut(&manifest.shard_id)
+                    {
+                        info.load_version = handoff.next_load_version;
+                        handoff.applied = true;
+                    }
+                }
+                SlotDumpMergedInstallReport {
+                    shard_id: manifest.shard_id,
+                    manifest_id: manifest.manifest_id.clone(),
+                    source_manifest_ids: manifest.source_manifest_ids.clone(),
+                    slot_ids: manifest.slot_ids.clone(),
+                    preflight,
+                    rollback_marker_written,
+                    prepare_marker_written: true,
+                    install_marker_written: true,
+                    commit_marker_written: true,
+                    load_version_handoff,
+                    installed: true,
+                    status_code: "ok".to_string(),
+                }
+            }
+            Err(status) => SlotDumpMergedInstallReport {
+                shard_id: manifest.shard_id,
+                manifest_id: manifest.manifest_id.clone(),
+                source_manifest_ids: manifest.source_manifest_ids.clone(),
+                slot_ids: manifest.slot_ids.clone(),
+                preflight,
+                rollback_marker_written,
+                prepare_marker_written: false,
+                install_marker_written: false,
+                commit_marker_written: false,
+                load_version_handoff: manifest.load_version_handoff.clone(),
+                installed: false,
+                status_code: status.code,
+            },
+        }
     }
 
     pub fn storage_lifecycle_plan(&self, request: StorageLifecycleRequest) -> StorageLifecyclePlan {
@@ -3954,8 +4132,14 @@ impl TemporalEngine {
             return Ok(());
         }
         let requested_slots = manifest.slot_ids.iter().copied().collect::<BTreeSet<_>>();
+        let source_manifest_ids = manifest
+            .source_manifest_ids
+            .iter()
+            .cloned()
+            .collect::<BTreeSet<_>>();
         for existing in self.list_slot_dump_manifests(manifest.shard_id) {
             if existing.manifest_id == manifest.manifest_id
+                || source_manifest_ids.contains(&existing.manifest_id)
                 || existing.dump_generation_id.is_empty()
                 || existing.dump_generation_id == manifest.dump_generation_id
             {
@@ -7806,6 +7990,42 @@ fn storage_object_lifecycle_report_for_slots(
         reused_object_ids,
         tombstoned_object_keys,
     }
+}
+
+fn slot_dump_entries_by_key(
+    shard_id: ShardId,
+    shard: &ShardState,
+    selected_slots: &BTreeSet<u32>,
+    routing_slot_for_key: impl Fn(&str) -> u32,
+) -> BTreeMap<String, PageAddress> {
+    collect_live_page_entries(shard)
+        .into_iter()
+        .filter(|entry| {
+            let routing_slot = entry
+                .address
+                .routing_slot
+                .unwrap_or_else(|| routing_slot_for_key(&entry.object_key));
+            selected_slots.is_empty() || selected_slots.contains(&routing_slot)
+        })
+        .map(|entry| {
+            let component = entry.component.unwrap_or_default();
+            let page_id = entry.address.page_id.unwrap_or_else(|| {
+                stable_page_object_id(
+                    shard_id,
+                    &entry.kind,
+                    &entry.object_key,
+                    (!component.is_empty()).then_some(component.as_str()),
+                )
+            });
+            (
+                format!(
+                    "{}:{}:{}:{}",
+                    entry.kind, entry.object_key, component, page_id
+                ),
+                entry.address,
+            )
+        })
+        .collect()
 }
 
 fn slot_storage_summaries(
@@ -16885,6 +17105,125 @@ mod tests {
             .iter()
             .any(|policy| policy.model_id == "feature"
                 && policy.layout_policy == "timestamped_chunked_pages"));
+    }
+
+    // shared-corpus: storage_merged_dump_load_lifecycle
+    #[test]
+    fn storage_merged_dump_load_tracks_rollback_handoff_and_conflicts() {
+        fn key_for_slot(engine: &TemporalEngine, shard_id: ShardId, slot: u32) -> String {
+            (0..10_000)
+                .map(|idx| format!("merged-slot-{slot}-{idx}"))
+                .find(|key| engine.routing_slot_for_key(shard_id, key) == slot)
+                .expect("test should find key for routing slot")
+        }
+
+        let engine = TemporalEngine::default();
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 91,
+            load_version: 5,
+            local_node_id: Some(1),
+            shard_uri: "local://merged-dump/shard-91".to_string(),
+            start_routing_slot: 10,
+            end_routing_slot: 12,
+            readonly: false,
+            table_name: "merged_dump_table".to_string(),
+        });
+        let key_a = key_for_slot(&engine, 91, 10);
+        let key_b = key_for_slot(&engine, 91, 11);
+        for (key, value) in [(&key_a, b"a".as_slice()), (&key_b, b"b".as_slice())] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 91,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: value.to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let manifest_a = engine.create_slot_dump_manifest(91, [10]).unwrap();
+        let manifest_b = engine.create_slot_dump_manifest(91, [11]).unwrap();
+        let merged = engine
+            .create_merged_slot_dump_manifest(
+                91,
+                [10, 11],
+                vec![
+                    manifest_b.manifest_id.clone(),
+                    manifest_a.manifest_id.clone(),
+                    manifest_a.manifest_id.clone(),
+                ],
+                Some(6),
+            )
+            .unwrap();
+        assert_eq!(merged.manifest_kind, "merged_slot_dump");
+        assert_eq!(
+            merged.source_manifest_ids,
+            vec![
+                manifest_a.manifest_id.clone(),
+                manifest_b.manifest_id.clone()
+            ]
+        );
+        assert_eq!(merged.slot_ids, vec![10, 11]);
+        assert_eq!(
+            merged.load_version_handoff,
+            Some(SlotDumpLoadVersionHandoff {
+                previous_load_version: 5,
+                next_load_version: 6,
+                applied: false,
+            })
+        );
+
+        let install = engine.install_merged_slot_dump_manifest(&merged);
+        assert!(install.installed, "{install:?}");
+        assert!(install.rollback_marker_written);
+        assert!(install.prepare_marker_written);
+        assert!(install.install_marker_written);
+        assert!(install.commit_marker_written);
+        assert_eq!(install.status_code, "ok");
+        assert_eq!(
+            install.load_version_handoff,
+            Some(SlotDumpLoadVersionHandoff {
+                previous_load_version: 5,
+                next_load_version: 6,
+                applied: true,
+            })
+        );
+        assert_eq!(
+            engine
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&91)
+                .map(|info| info.load_version),
+            Some(6)
+        );
+
+        let stale = engine
+            .create_merged_slot_dump_manifest(91, [10], vec![merged.manifest_id.clone()], Some(7))
+            .unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 91,
+                    command: Command::StringSet {
+                        key: key_a.clone(),
+                        value: b"new-a".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let preflight = engine.slot_dump_install_preflight_report(&stale);
+        assert!(!preflight.install_safe);
+        assert!(preflight.stale_manifest);
+        assert!(preflight.stale_page_conflict_count > 0);
+        assert!(preflight
+            .blockers
+            .contains(&"stale_page_conflicts".to_string()));
     }
 
     #[test]
