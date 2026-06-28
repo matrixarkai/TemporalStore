@@ -122,6 +122,14 @@ DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_P
 DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "24"))
 DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
+DEFAULT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", "0.20"))
+DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.30"))
+DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "2048"))
+DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "4"))
+DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "32"))
+DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
+DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4"))
+DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "256"))
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
@@ -3660,25 +3668,19 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
 
     default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
-    default_ratio = 0.45 if question_type in {"current_state", "latest"} else 0.35
-    env_ratio = os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO")
-    if env_ratio is not None and "budget_ratio" not in config:
-        try:
-            default_ratio = float(env_ratio)
-        except ValueError:
-            raise MatrixArkError("MATRIXARK_CROSS_SESSION_BUDGET_RATIO must be a number")
+    default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO if question_type in {"current_state", "latest"} else DEFAULT_CROSS_SESSION_BUDGET_RATIO
     budget_ratio = float_arg(config, "budget_ratio", default_ratio, minimum=0.0, maximum=1.0)
-    max_budget_default = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "4096"))
+    max_budget_default = DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
     computed_budget = int(remote_budget_tokens * budget_ratio)
     if remote_budget_tokens >= 1200 and computed_budget > 0:
-        computed_budget = max(512, computed_budget)
+        computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
     budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     budget_tokens = min(remote_budget_tokens, budget_tokens, max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens)
-    max_sessions = integer_arg(config, "max_sessions", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "8")), minimum=0)
-    max_candidates = integer_arg(config, "max_candidates", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "64")), minimum=0)
-    min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", 3, minimum=0)
-    parallelism = integer_arg(config, "parallelism", int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4")), minimum=1)
+    max_sessions = integer_arg(config, "max_sessions", DEFAULT_CROSS_SESSION_MAX_SESSIONS, minimum=0)
+    max_candidates = integer_arg(config, "max_candidates", DEFAULT_CROSS_SESSION_MAX_CANDIDATES, minimum=0)
+    min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS, minimum=0)
+    parallelism = integer_arg(config, "parallelism", DEFAULT_CROSS_SESSION_PARALLELISM, minimum=1)
     return {
         "enabled": enabled,
         "mode": "prefer" if enabled else "disabled",
@@ -3691,7 +3693,7 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
         "parallelism": parallelism if enabled else 0,
         "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens",
+        "budget_guidance": "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest",
     }
 
 
