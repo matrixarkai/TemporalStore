@@ -133,6 +133,13 @@ DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CRO
 DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4"))
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "256"))
 DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "0.20"))
+DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE", "0.45"))
+DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO", "0.20"))
+DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES = tuple(
+    item.strip()
+    for item in os.environ.get("MATRIXARK_CROSS_SESSION_PREFERRED_REF_TYPES", "entity,summary,compression").split(",")
+    if item.strip()
+)
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
@@ -3684,19 +3691,31 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     else:
         default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
         question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
-    budget_ratio = float_arg(config, "budget_ratio", default_ratio, minimum=0.0, maximum=1.0)
+    max_budget_ratio = max(0.0, min(1.0, float(config.get("max_budget_ratio", DEFAULT_CROSS_SESSION_MAX_BUDGET_RATIO))))
+    budget_ratio = float_arg(config, "budget_ratio", min(default_ratio, max_budget_ratio), minimum=0.0, maximum=max_budget_ratio)
     max_budget_default = DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
     computed_budget = int(remote_budget_tokens * budget_ratio)
     if remote_budget_tokens >= 1200 and computed_budget > 0:
         computed_budget = max(DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS, computed_budget)
     budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
-    budget_tokens = min(remote_budget_tokens, budget_tokens, max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens)
+    ratio_budget_cap = int(remote_budget_tokens * max_budget_ratio) if max_budget_ratio > 0 else 0
+    budget_tokens = min(
+        remote_budget_tokens,
+        budget_tokens,
+        ratio_budget_cap if ratio_budget_cap > 0 else remote_budget_tokens,
+        max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens,
+    )
     max_sessions = integer_arg(config, "max_sessions", DEFAULT_CROSS_SESSION_MAX_SESSIONS, minimum=0)
     max_candidates = integer_arg(config, "max_candidates", DEFAULT_CROSS_SESSION_MAX_CANDIDATES, minimum=0)
     min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS, minimum=0)
     parallelism = integer_arg(config, "parallelism", DEFAULT_CROSS_SESSION_PARALLELISM, minimum=1)
     min_score = float_arg(config, "min_score", DEFAULT_CROSS_SESSION_MIN_SCORE, minimum=0.0, maximum=1.0)
+    raw_evidence_min_score = float_arg(config, "raw_evidence_min_score", DEFAULT_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE, minimum=0.0, maximum=1.0)
+    preferred_ref_types = config.get("preferred_ref_types", list(DEFAULT_CROSS_SESSION_PREFERRED_REF_TYPES))
+    if not isinstance(preferred_ref_types, list):
+        raise MatrixArkError("cross_session.preferred_ref_types must be an array")
+    preferred_ref_types = [str(item).strip() for item in preferred_ref_types if str(item).strip()]
     return {
         "enabled": enabled,
         "mode": "prefer" if enabled else "disabled",
@@ -3704,16 +3723,19 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
         "question_type": normalized_question_type,
         "question_budget_reason": question_budget_reason,
         "budget_ratio": round(budget_ratio, 6),
+        "max_budget_ratio": round(max_budget_ratio, 6),
         "budget_tokens": budget_tokens if enabled else 0,
         "remote_budget_tokens": remote_budget_tokens,
         "max_budget_tokens": max_budget_tokens,
         "max_sessions": max_sessions if enabled else 0,
         "max_candidates": max_candidates if enabled else 0,
         "min_score": min_score if enabled else 0.0,
+        "raw_evidence_min_score": raw_evidence_min_score if enabled else 0.0,
+        "preferred_ref_types": preferred_ref_types if enabled else [],
         "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
         "parallelism": parallelism if enabled else 0,
         "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "default cross-session budget is conservative: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date, capped by max_budget_tokens; same-session, resources, and skills keep the rest",
+        "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events",
     }
 
 
@@ -4290,6 +4312,7 @@ def select_token_budgeted_refs(
     cross_max_sessions = int(cross_session_policy.get("max_sessions") or 0)
     cross_max_candidates = int(cross_session_policy.get("max_candidates") or 0)
     cross_min_score = max(0.0, min(1.0, float(cross_session_policy.get("min_score") or 0.0)))
+    cross_raw_evidence_min_score = max(0.0, min(1.0, float(cross_session_policy.get("raw_evidence_min_score") or 0.0)))
     cross_min_entity_bridge_refs = int(cross_session_policy.get("min_entity_bridge_refs") or 0)
     cross_used_tokens = 0
     cross_selected_ref_count = 0
@@ -4392,14 +4415,22 @@ def select_token_budgeted_refs(
             record_dropped_candidate(dropped, candidate, reason="over_budget", token_estimate=ref_tokens)
             continue
         is_cross_session = candidate.get("session_continuity") == "cross_session"
-        is_entity_bridge = is_cross_session and candidate.get("ref_type") == "entity"
+        ref_type = str(candidate.get("ref_type") or "")
+        is_entity_bridge = is_cross_session and ref_type == "entity"
+        is_cross_session_raw_evidence = is_cross_session and ref_type in {"event", "segment"}
+        candidate_score = float(candidate.get("score", 0.0))
         candidate_cross_key = cross_session_key(candidate) if is_cross_session else ""
         if is_cross_session and not cross_enabled:
             dropped["cross_session_budget"] += 1
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
             continue
-        if is_cross_session and cross_min_score > 0.0 and float(candidate.get("score", 0.0)) < cross_min_score:
+        if is_cross_session and cross_min_score > 0.0 and candidate_score < cross_min_score:
+            dropped["low_score"] += 1
+            dropped["estimated_tokens"]["low_score"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
+            continue
+        if is_cross_session_raw_evidence and cross_raw_evidence_min_score > 0.0 and candidate_score < cross_raw_evidence_min_score:
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
@@ -4929,15 +4960,15 @@ def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> floa
     context_class = str(candidate.get("context_class") or ref_type)
     has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
     if ref_type == "entity":
-        return 0.08 if question_type in {"current_state", "latest", "multi_hop"} else 0.04
+        return 0.10 if question_type in {"current_state", "latest", "multi_hop"} else 0.06
     if context_class in {"resource_fact", "resource_entity_fact"}:
         return 0.06 if has_citation else 0.04
     if ref_type == "resource_chunk" and has_citation:
         return 0.04
-    if ref_type in {"event", "segment"} and question_type in {"multi_hop", "why_emotion", "fact"}:
-        return 0.03
+    if ref_type in {"event", "segment"} and question_type in {"multi_hop", "why_emotion", "fact", "evidence"}:
+        return 0.01
     if ref_type == "compression":
-        return 0.02
-    if ref_type == "summary" and question_type != "broad_exploration":
-        return -0.04
+        return 0.05
+    if ref_type == "summary":
+        return 0.05 if question_type == "broad_exploration" else 0.02
     return 0.0
