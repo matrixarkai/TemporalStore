@@ -390,15 +390,17 @@ impl TemporalEngine {
             for object_key in command_object_keys(&command) {
                 shard.dirty_objects.insert(object_key);
             }
-            rebuild_slot_first_index(
-                shard,
-                info.as_ref()
-                    .map(|info| info.start_routing_slot)
-                    .unwrap_or_default(),
-                info.as_ref()
-                    .map(|info| info.end_routing_slot)
-                    .unwrap_or(u32::MAX),
-            );
+            if !command_updates_slot_index_directly(&command) || shard.slot_index.slots.is_empty() {
+                rebuild_slot_first_index(
+                    shard,
+                    info.as_ref()
+                        .map(|info| info.start_routing_slot)
+                        .unwrap_or_default(),
+                    info.as_ref()
+                        .map(|info| info.end_routing_slot)
+                        .unwrap_or(u32::MAX),
+                );
+            }
             if write_command && !config.async_storage {
                 let _ = self.oplog_store.append(request.shard_id, command);
             }
@@ -4686,6 +4688,15 @@ fn execute_on_shard(
                 Some(routing_slot),
                 async_storage,
             ) {
+                upsert_slot_index_page(
+                    shard,
+                    shard_id,
+                    "string",
+                    &key,
+                    None,
+                    address.clone(),
+                    true,
+                );
                 shard.strings.insert(key.clone(), address);
                 mutated = true;
             }
@@ -4705,6 +4716,15 @@ fn execute_on_shard(
                 Some(routing_slot),
                 async_storage,
             ) {
+                upsert_slot_index_page(
+                    shard,
+                    shard_id,
+                    "string",
+                    &key,
+                    None,
+                    address.clone(),
+                    true,
+                );
                 shard.strings.insert(key.clone(), address);
                 shard
                     .expires_at_ms
@@ -4744,6 +4764,15 @@ fn execute_on_shard(
                     Some(routing_slot),
                     async_storage,
                 ) {
+                    upsert_slot_index_page(
+                        shard,
+                        shard_id,
+                        "string",
+                        &key,
+                        None,
+                        address.clone(),
+                        true,
+                    );
                     shard.strings.insert(key.clone(), address);
                     if let Some(ttl_ms) = ttl_ms {
                         shard
@@ -4800,6 +4829,15 @@ fn execute_on_shard(
                 Some(routing_slot),
                 async_storage,
             ) {
+                upsert_slot_index_page(
+                    shard,
+                    shard_id,
+                    "hash",
+                    &key,
+                    Some(field.clone()),
+                    address.clone(),
+                    true,
+                );
                 shard
                     .hashes
                     .entry(key.clone())
@@ -4866,6 +4904,15 @@ fn execute_on_shard(
                     Some(routing_slot),
                     async_storage,
                 ) {
+                    upsert_slot_index_page(
+                        shard,
+                        shard_id,
+                        "hash",
+                        &key,
+                        Some(field.clone()),
+                        address.clone(),
+                        true,
+                    );
                     shard
                         .hashes
                         .entry(key.clone())
@@ -4904,6 +4951,15 @@ fn execute_on_shard(
                 )),
                 async_storage,
             ) {
+                upsert_slot_index_page(
+                    shard,
+                    shard_id,
+                    "hash",
+                    &key,
+                    Some(field.clone()),
+                    address.clone(),
+                    true,
+                );
                 shard
                     .hashes
                     .entry(key.clone())
@@ -4980,6 +5036,15 @@ fn execute_on_shard(
                 Some(routing_slot),
                 async_storage,
             ) {
+                upsert_slot_index_page(
+                    shard,
+                    shard_id,
+                    "set",
+                    &key,
+                    Some(member_component.clone()),
+                    address.clone(),
+                    true,
+                );
                 shard
                     .sets
                     .entry(key.clone())
@@ -7511,6 +7576,72 @@ fn page_index_ref_key(entry: &LivePageEntry) -> String {
     )
 }
 
+fn upsert_slot_index_page(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    component: Option<String>,
+    address: PageAddress,
+    dirty: bool,
+) {
+    let routing_slot = address
+        .routing_slot
+        .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+    let object_id = address
+        .object_id
+        .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, component.as_deref()));
+    let entry = LivePageEntry {
+        object_key: object_key.to_string(),
+        kind: kind.to_string(),
+        component,
+        address,
+        dirty,
+        deleted: false,
+        log_backed: true,
+    };
+    for slot in shard.slot_index.slots.values_mut() {
+        slot.page_refs.retain(|_, page| {
+            !(page.object_key == entry.object_key
+                && page.model_id == entry.kind
+                && page.component == entry.component)
+        });
+        if !slot
+            .page_refs
+            .values()
+            .any(|page| page.object_id == object_id)
+        {
+            slot.object_ids.remove(&object_id);
+        }
+    }
+    let slot = shard
+        .slot_index
+        .slots
+        .entry(routing_slot)
+        .or_insert_with(|| SlotNodeIndex {
+            routing_slot,
+            meta_loaded: true,
+            in_memory: true,
+            ..SlotNodeIndex::default()
+        });
+    slot.dirty |= dirty;
+    slot.in_memory = true;
+    slot.object_ids.insert(object_id);
+    slot.page_refs.insert(
+        page_index_ref_key(&entry),
+        PageIndexEntry {
+            object_key: entry.object_key,
+            model_id: entry.kind,
+            component: entry.component,
+            object_id,
+            address: entry.address,
+            dirty: entry.dirty,
+            deleted: entry.deleted,
+            log_backed: entry.log_backed,
+        },
+    );
+}
+
 fn rebuild_slot_first_index(
     shard: &mut ShardState,
     start_routing_slot: u32,
@@ -8412,6 +8543,7 @@ fn persist_risk_page(
         Some(routing_slot),
         async_storage,
     ) {
+        upsert_slot_index_page(shard, shard_id, "risk", key, None, address.clone(), true);
         shard.risk_pages.insert(key.to_string(), address);
         true
     } else {
@@ -9385,6 +9517,23 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextQueryCompressionEvents { .. }
         | Command::ContextQueryNodeContext { .. } => Vec::new(),
     }
+}
+
+fn command_updates_slot_index_directly(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::StringSet { .. }
+            | Command::StringSetEx { .. }
+            | Command::StringSetConditional { .. }
+            | Command::HashSet { .. }
+            | Command::HashMultiSet { .. }
+            | Command::HashIncrBy { .. }
+            | Command::SetAdd { .. }
+            | Command::RiskIncrement { .. }
+            | Command::RiskIncrementWithOptions { .. }
+            | Command::RiskSet { .. }
+            | Command::RiskSetAndGet { .. }
+    )
 }
 
 fn is_write_command(command: &Command) -> bool {
