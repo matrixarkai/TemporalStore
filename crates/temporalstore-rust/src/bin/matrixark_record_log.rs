@@ -609,10 +609,41 @@ fn required_option(value: Option<String>, name: &str) -> Result<String, String> 
         .ok_or_else(|| format!("missing {name}"))
 }
 
+fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, String>>> {
+    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> = OnceLock::new();
+    HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
+}
+
+fn invalidate_hgetall_snapshot(key: &str) {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        cache.remove(key);
+    }
+}
+
+fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
+    if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+        if let Some(snapshot) = cache.get_mut(key) {
+            for (field, value) in entries {
+                if let Ok(text) = String::from_utf8(value.clone()) {
+                    snapshot.insert(field.clone(), text);
+                } else {
+                    cache.remove(key);
+                    break;
+                }
+            }
+        }
+    }
+}
+
 fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, String>, String> {
+    if let Ok(cache) = hgetall_snapshot_cache().lock() {
+        if let Some(cached) = cache.get(&key) {
+            return Ok(cached.clone());
+        }
+    }
     let response = engine.execute_durable(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
-        command: Command::HashGetAll { key },
+        command: Command::HashGetAll { key: key.clone() },
     });
     if !response.status.ok {
         return Err(format!("{}: {}", response.status.code, response.status.message));
@@ -624,6 +655,9 @@ fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, 
                 let value = String::from_utf8(value)
                     .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
                 decoded.insert(field, value);
+            }
+            if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
+                cache.insert(key, decoded.clone());
             }
             Ok(decoded)
         }
@@ -1423,10 +1457,9 @@ fn execute_record_log_request(
             for entry in entries {
                 execute_empty(
                     &engine,
-                    Command::HashSet {
-                        key: entry.key,
-                        field: entry.field,
-                        value: entry.value.into_bytes(),
+                    Command::HashMultiSet {
+                        key,
+                        entries,
                     },
                 )?;
             }
@@ -1679,6 +1712,17 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
 }
 
 fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String> {
+    let cache_update = match &command {
+        Command::HashSet { key, field, value } => {
+            Some((key.clone(), vec![(field.clone(), value.clone())]))
+        }
+        Command::HashMultiSet { key, entries } => Some((key.clone(), entries.clone())),
+        _ => None,
+    };
+    let cache_invalidate = match &command {
+        Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
+        _ => None,
+    };
     let response = engine.execute_durable(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         command,
@@ -1690,7 +1734,15 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
         ));
     }
     match response.response {
-        CommandResponse::Empty => Ok(()),
+        CommandResponse::Empty => {
+            if let Some((key, entries)) = cache_update {
+                update_hgetall_snapshot_fields(&key, &entries);
+            }
+            if let Some(key) = cache_invalidate {
+                invalidate_hgetall_snapshot(&key);
+            }
+            Ok(())
+        }
         other => Err(format!("unexpected response for write: {other:?}")),
     }
 }
@@ -1936,11 +1988,55 @@ fn record_log_root(request: &RecordLogRequest) -> PathBuf {
     let namespace = non_empty_or(&request.namespace, "deploy_ns");
     let table = non_empty_or(&request.table, "deploy_table");
     let metaserver_hash = stable_hash64(non_empty_or(&request.metaserver, "local"));
-    env::temp_dir()
+    let mut root = env::temp_dir()
         .join("temporalstore-rust-matrixark-record-log")
         .join(sanitize_path_component(namespace))
         .join(sanitize_path_component(table))
-        .join(format!("{metaserver_hash:016x}"))
+        .join(format!("{metaserver_hash:016x}"));
+    if let Some(prefix) = matrixark_storage_prefix_partition(request) {
+        root = root.join(format!("prefix_{:016x}", stable_hash64(&prefix)));
+    }
+    root
+}
+
+fn matrixark_storage_prefix_partition(request: &RecordLogRequest) -> Option<String> {
+    let mut candidates: Vec<&str> = Vec::new();
+    candidates.push(&request.key);
+    if let Some(count_key) = request.count_key.as_deref() {
+        candidates.push(count_key);
+    }
+    if let Some(record_hash_key) = request.record_hash_key.as_deref() {
+        candidates.push(record_hash_key);
+    }
+    for entry in &request.entries {
+        candidates.push(&entry.key);
+    }
+    candidates
+        .into_iter()
+        .filter_map(matrixark_storage_prefix_from_key)
+        .next()
+}
+
+fn matrixark_storage_prefix_from_key(key: &str) -> Option<String> {
+    let trimmed = key.trim();
+    if !trimmed.starts_with("matrixark:mcp:") {
+        return None;
+    }
+    for marker in [
+        ":records",
+        ":record_count",
+        ":record_index",
+        ":event_time",
+        ":readiness",
+        ":direct_write_queue",
+    ] {
+        if let Some((prefix, _)) = trimmed.split_once(marker) {
+            if !prefix.is_empty() {
+                return Some(prefix.to_string());
+            }
+        }
+    }
+    Some(trimmed.to_string())
 }
 
 fn non_empty_or<'a>(value: &'a str, fallback: &'a str) -> &'a str {
@@ -2044,6 +2140,16 @@ mod tests {
         assert!(first_root.to_string_lossy().contains("codex_ns"));
         assert!(first_root.to_string_lossy().contains("codex_table"));
         assert_ne!(first_root, record_log_root(&second));
+
+        let mut prefixed = request("hset");
+        prefixed.key = "matrixark:mcp:scale:rust:abc:records:000000".to_string();
+        let prefixed_root = record_log_root(&prefixed);
+        assert!(prefixed_root.to_string_lossy().contains("prefix_"));
+        assert_ne!(first_root, prefixed_root);
+
+        let mut same_prefix_count = request("put_string");
+        same_prefix_count.key = "matrixark:mcp:scale:rust:abc:record_count".to_string();
+        assert_eq!(prefixed_root, record_log_root(&same_prefix_count));
     }
 
     // shared-corpus: codex_mcp_temporalstore_rust_record_log_backend
