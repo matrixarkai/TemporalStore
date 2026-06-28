@@ -1379,6 +1379,64 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             ]
             self.assertEqual([], event_indexes)
 
+    def test_context_index_postings_group_by_model_term_and_time_bucket(self) -> None:
+        scope = mcp.enrich_scope_with_identity(
+            {"session_id": "index-grouping-test"},
+            {
+                "account_id": "acct_local",
+                "tenant_id": "tenant_codex",
+                "user_id": "codex_user",
+                "session_id": "",
+                "agent_name": "codex",
+                "mode": "dev",
+            },
+        )
+        records = [
+            mcp.context_index_posting_record(
+                index_name="resource_type:pdf",
+                data_model="resource_chunk",
+                ref_type="resource_chunk",
+                ref_hashes=[100 + index],
+                node_hash=77,
+                scope=scope,
+                updated_at_ms=1780000000123 + index,
+            )
+            for index in range(8)
+        ]
+
+        materialized = mcp.materialize_serving_record_batch(records)
+        indexes = [record for record in materialized if record.get("record_type") == "context_index"]
+
+        self.assertEqual(1, len(indexes))
+        self.assertEqual("resource_chunk", indexes[0].get("data_model"))
+        self.assertEqual("resource_type:pdf", indexes[0].get("index_name"))
+        self.assertEqual(8, indexes[0].get("posting_count"))
+        self.assertEqual(list(range(100, 108)), indexes[0].get("ref_hashes"))
+        self.assertNotIn("ref_hash", indexes[0])
+        self.assertEqual((1780000000123 // mcp.SECONDARY_INDEX_TIME_BUCKET_MS) * mcp.SECONDARY_INDEX_TIME_BUCKET_MS, indexes[0].get("timestamp_key_ms"))
+
+    def test_context_index_postings_split_only_when_ref_cap_is_exceeded(self) -> None:
+        cap = mcp.MAX_SECONDARY_INDEX_REFS_PER_POSTING
+        records = [
+            mcp.context_index_posting_record(
+                index_name="keyword:gpu",
+                data_model="resource_chunk",
+                ref_type="resource_chunk",
+                ref_hashes=[index],
+                node_hash=88,
+                updated_at_ms=1780000060000,
+            )
+            for index in range(cap + 2)
+        ]
+        materialized = mcp.materialize_serving_record_batch(records)
+        indexes = [record for record in materialized if record.get("record_type") == "context_index"]
+
+        self.assertEqual(2, len(indexes))
+        self.assertEqual(list(range(cap)), indexes[0].get("ref_hashes"))
+        self.assertEqual([cap, cap + 1], indexes[1].get("ref_hashes"))
+        self.assertEqual([0, 1], [record.get("posting_part") for record in indexes])
+        self.assertEqual(cap + 2, indexes[0].get("posting_count"))
+
     def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
         budget = mcp.new_secondary_index_budget(3)
         first = mcp.take_secondary_index_terms(
