@@ -417,8 +417,8 @@ TOOLS: list[Json] = [
                 "api_key": API_KEY_SCHEMA,
                 "max_context_tokens": {
                     "type": "integer",
-                    "default": 10000,
-                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, currently 10000.",
+                    "default": 32000,
+                    "description": "Optional shared prompt context budget for local plus MatrixArk remote context. Defaults to MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS, currently 32000.",
                 },
                 "include_superseded_resources": {
                     "type": "boolean",
