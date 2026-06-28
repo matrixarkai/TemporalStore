@@ -33,13 +33,13 @@
 
 ## Summary
 
-MatrixArk should not preserve long history by synchronously double-writing every hot request to TemporalStore plus MatrixDB or MatrixKV. The production design is an async archive pipeline:
+MatrixArk should not preserve long history by synchronously double-writing every hot request to TemporalStore plus MatrixDB or MatrixKV. The production design is an async archive pipeline with a clear split: **MatrixKV is the default authoritative cold/offline store**, while **MatrixDB is an optional append-heavy analytics sink**.
 
 - **TemporalStore** remains the hot serving store for active context retrieval, tree traversal, current entity state, embeddings, summaries, indexes, and compact operational telemetry.
-- **MatrixKV** stores strongly consistent control-plane and archive metadata: users, accounts, API keys, retention policies, archive watermarks, cold refs, idempotency state, and compliance pointers.
-- **MatrixDB** stores analytical and cold-history data: full replay/debug payloads, historical ContextPacks, benchmark traces, token/quality metrics, long-term audit, and offline analysis tables.
+- **MatrixKV** stores strongly consistent control-plane and cold archive data: users, accounts, API keys, retention policies, archive watermarks, cold refs, idempotency state, compliance pointers, replay/debug manifests, and SQL-visible cold records.
+- **MatrixDB** is optional for high-QPS append and analytics: benchmark traces, token/quality metrics, dashboard aggregates, sampled observability streams, and offline analysis tables.
 
-The important rule is: hot ingestion writes once to TemporalStore. A background archiver tails or scans TemporalStore records, writes cold history idempotently to MatrixKV/MatrixDB, verifies the write, then records a compact cold pointer back in TemporalStore. Synchronous dual-write should be an optional compliance mode, not the default path.
+The important rule is: hot ingestion writes once to TemporalStore. A background archiver tails or scans TemporalStore records, writes cold history idempotently to MatrixKV, optionally mirrors analytics rows to MatrixDB, verifies the write, then records a compact cold pointer back in TemporalStore. Synchronous dual-write should be an optional compliance mode, not the default path.
 
 ## Why Not Double Write On The Hot Path
 
@@ -79,7 +79,7 @@ flowchart TD
   E["Secondary indexes"]
   F["Compressed windows"]
   G["Cold refs / archive markers"]
-  H["Raw historical payload in MatrixDB/object storage"]
+  H["Raw historical payload in MatrixKV/object storage"]
 
   A --> B
   A --> C
@@ -125,17 +125,22 @@ Raw events remain in the same TemporalStore object or prefix.
 - early CI and small benchmark runs;
 - compliance does not require long-term cold retention.
 
-### Option 2: TemporalStore Hot Set + MatrixKV/MatrixDB Cold Archive
+### Option 2: TemporalStore Hot Set + MatrixKV Cold Archive + Optional MatrixDB Analytics
 
 TemporalStore keeps active serving records, current state, summaries, indexes,
-embeddings, compressed windows, and compact cold refs. MatrixKV stores archive
-watermarks, policy, and cold-ref metadata. MatrixDB stores long-term replay,
-audit, benchmark traces, token/quality metrics, and historical rows.
+embeddings, compressed windows, and compact cold refs. MatrixKV stores the
+authoritative cold archive: archive watermarks, policy, cold-ref metadata,
+SQL-visible cold records, replay/debug manifests, and compliance-critical
+audit pointers. MatrixDB optionally stores high-QPS analytics rows such as
+benchmark traces, token/quality metrics, dashboard aggregates, and sampled
+observability streams.
 
 **Pros**
 
 - keeps TemporalStore small and serving-focused;
-- makes historical analytics cheap and SQL-friendly;
+- keeps cold history strongly consistent and SQL-friendly through MatrixKV;
+- allows MatrixDB to focus on high-volume analytics instead of serving as the
+  cold source of truth;
 - supports retention policies, audit dashboards, and replay debugging;
 - avoids synchronous dual-write on hot requests;
 - lets C++/Rust optimize hot retrieval without becoming an analytics database.
@@ -144,7 +149,7 @@ audit, benchmark traces, token/quality metrics, and historical rows.
 
 - requires archive workers, idempotency, watermarks, and verification;
 - eventual archive consistency must be visible in task/ops status;
-- replay can cross stores and may be slower than hot retrieval;
+- replay can cross MatrixKV/object storage and may be slower than hot retrieval;
 - more operational components.
 
 **Use when**
@@ -252,9 +257,10 @@ Use a three-tier lifecycle:
    - cold refs for raw payload if archived.
 
 3. **Cold history tier outside the serving path**
-   - MatrixKV for watermarks, cold refs, retention policies, and archive state;
-   - MatrixDB for replay rows, benchmark traces, token/quality analytics, and
-     historical audit;
+   - MatrixKV for watermarks, cold refs, retention policies, archive state,
+     replay manifests, compliance audit pointers, and SQL-visible cold records;
+   - MatrixDB optionally for benchmark traces, token/quality analytics,
+     dashboard aggregates, and sampled high-volume observability;
    - object storage for large raw payloads and raw resource bytes.
 
 ```mermaid
@@ -264,7 +270,7 @@ flowchart LR
   C["Warm compressed TemporalStore windows"]
   D["Archive worker"]
   E["MatrixKV cold refs + watermarks"]
-  F["MatrixDB historical rows"]
+  F["Optional MatrixDB analytics rows"]
   G["Object storage raw payloads"]
   H["TTL / prune marker"]
 
@@ -272,7 +278,7 @@ flowchart LR
   C --> D
   A --> D
   D --> E
-  D --> F
+  D -. "optional analytics mirror" .-> F
   D --> G
   E --> H
   C --> H
@@ -297,7 +303,7 @@ The production rule should be:
 - repeated scans defeat cache and storage-tier separation;
 - compression jobs can create unpredictable read amplification;
 - large tenants or agents can starve small hot serving queries;
-- if raw data was already archived, object/MatrixDB reads may be cheaper and
+- if raw data was already archived, MatrixKV/object-storage reads may be cheaper and
   more controllable than TemporalStore page scans.
 
 ### Cold Scans Must Not Pollute Hot Cache
@@ -334,7 +340,7 @@ In storage-engine terms, this means C++ and Rust should expose read options like
 
 For local files, the implementation can use bounded scan buffers and OS cache
 advice such as `POSIX_FADV_SEQUENTIAL` plus `POSIX_FADV_DONTNEED` after the
-window is processed. For object storage or MatrixDB archive reads, the scanner
+window is processed. For MatrixKV or object-storage archive reads, the scanner
 should stream into worker-local buffers and never backfill the TemporalStore hot
 page cache unless a recall reinforcement policy asks for it.
 
@@ -355,7 +361,7 @@ scanning raw cold pages:
 | `page_time_range` | TemporalStore page metadata | min/max event timestamp and record count per block/page |
 | `context_compression_event` | TemporalStore | warm summary used by retrieval |
 | `context_archive_marker` | TemporalStore | pointer proving raw data was archived |
-| `cold_ref` | MatrixKV | exact MatrixDB/object location and checksum |
+| `cold_ref` | MatrixKV | exact MatrixKV/object location, optional MatrixDB analytics mirror id, and checksum |
 
 With those records, the worker can select a bounded window such as:
 
@@ -447,9 +453,10 @@ Both C++ and Rust should expose the same lifecycle primitives:
   - replay cold-ref fetch latency.
 
 The key C++/Rust parity rule is that both backends can serve the same hot
-records and compression summaries without requiring MatrixDB on the retrieval
-hot path. MatrixDB/MatrixKV are lifecycle and analytics complements, not
-serving dependencies.
+records and compression summaries without requiring MatrixKV or MatrixDB on the
+retrieval hot path. MatrixKV is the cold archive/control-plane complement;
+MatrixDB is the optional analytics complement. Neither should be a normal
+serving dependency.
 
 ## Store Responsibilities
 
@@ -462,10 +469,10 @@ serving dependencies.
 | `ContextIndex` | TemporalStore | Secondary-index prefilter before scoring |
 | Active resource chunks and skill sections | TemporalStore | Cited evidence and prompt assembly |
 | Compact ContextPack telemetry | TemporalStore, sampled | Serving observability and replay pointer |
-| Full ContextPack replay/debug payload | MatrixDB, optional MatrixKV pointer | Large, offline, rarely queried on serving path |
+| Full ContextPack replay/debug payload | MatrixKV cold table or object storage with MatrixKV pointer | Large, offline, strongly consistent replay source |
 | User/account/API key metadata | MatrixKV or MySQL-compatible MatrixKV SQL | Strong consistency and portal queries |
 | Archive watermarks and cold refs | MatrixKV | Durable control-plane coordination |
-| Long-term audit and metrics | MatrixDB | Aggregation, dashboards, offline analysis |
+| Long-term audit and metrics | MatrixKV for compliance-critical records; MatrixDB optional for aggregates | Strong audit source plus cheap analytics |
 | Raw file bytes | Object storage or local file store | TemporalStore stores `raw_uri`, not bytes |
 
 ## Write Path
@@ -478,13 +485,15 @@ flowchart TD
   D["Mark dirty summary / compression / archive candidates"]
   E["Return to agent or importer"]
   F["Async archiver tails oplog or scans archive candidates"]
-  G["Idempotent write to MatrixKV/MatrixDB"]
+  G["Idempotent write to MatrixKV"]
+  K["Optional mirror to MatrixDB analytics"]
   H["Verify cold write"]
   I["Write cold_ref/archive_marker to TemporalStore"]
   J["TTL eligible only after safety gates pass"]
 
   A --> B --> C --> D --> E
   D --> F --> G --> H --> I --> J
+  G -. "analytics enabled" .-> K
 ```
 
 Hot writes should remain bounded:
@@ -504,16 +513,15 @@ flowchart LR
   A["TemporalStore oplog / prefix scan"]
   B["Archive policy filter"]
   C["Cold record batch"]
-  D["MatrixKV archive metadata"]
-  E["MatrixDB historical rows"]
+  D["MatrixKV cold archive records"]
+  E["Optional MatrixDB analytics rows"]
   F["TemporalStore cold_ref marker"]
   G["Retention / TTL decision"]
 
   A --> B --> C
   C --> D
-  C --> E
+  C -. "analytics enabled" .-> E
   D --> F
-  E --> F
   F --> G
 ```
 
@@ -571,7 +579,7 @@ Stored in TemporalStore.
   "source_type": "context_event",
   "archive_state": "cold_archived",
   "cold_ref_id": "coldref_01HX...",
-  "cold_store": "matrixdb",
+  "cold_store": "matrixkv",
   "archive_epoch": "2026-06",
   "archived_at_ms": 1782600000000,
   "checksum": "sha256:...",
@@ -590,7 +598,8 @@ Stored in MatrixKV and optionally mirrored as a compact TemporalStore marker.
   "record_type": "context_event",
   "record_id": "event_01HX...",
   "record_version": 3,
-  "matrixdb_table": "matrixark_context_event_history",
+  "matrixkv_table": "matrixark_context_cold_records",
+  "matrixdb_analytics_table": "matrixark_context_event_history",
   "object_uri": "s3://matrixark-history/acct_local/2026/06/event_01HX.json.zst",
   "checksum": "sha256:...",
   "created_at_ms": 1782600000000
@@ -641,7 +650,7 @@ flowchart TD
   E["Score hot events/entities/resources/skills"]
   F["Pack ContextPack"]
   G{"Historical replay requested?"}
-  H["Follow cold_ref to MatrixKV/MatrixDB/object store"]
+  H["Follow cold_ref to MatrixKV/object store"]
   I["Return hot pack plus replay links"]
 
   A --> B --> C --> D --> E --> F --> G
@@ -649,7 +658,7 @@ flowchart TD
   G -- "yes" --> H --> I
 ```
 
-Default retrieval should not scan MatrixDB. MatrixDB is for offline analytics, long-term replay, cold search jobs, and dashboards. Serving should follow cold refs only when the user asks for historical replay, compliance inspection, or deep debug.
+Default retrieval should not scan MatrixDB. Normal serving stays in TemporalStore. Historical replay, compliance inspection, and deep debug follow MatrixKV cold refs, then load object-storage payloads only when raw evidence is explicitly requested. MatrixDB is optional for offline analytics, cold search jobs, dashboards, and aggregate reporting.
 
 ## Compression And Retention Safety
 
@@ -658,7 +667,7 @@ Temporal compression and cold archive should work together:
 1. Generate `context_compression_event` for old event windows.
 2. Store source event ids, node path, temporal window, and summary embedding.
 3. Run compression safety gate, including benchmark answer-hidden checks where applicable.
-4. Archive raw source events to MatrixDB/object storage.
+4. Archive raw source events to MatrixKV cold tables or object storage.
 5. Write verified cold refs to TemporalStore.
 6. Mark raw events TTL eligible only after both compression and archive are verified.
 
@@ -670,8 +679,9 @@ Full replay/audit can be expensive. The default should be telemetry-first and sa
 
 - always store compact operational metrics in TemporalStore;
 - sample full `context_pack_audit` payloads according to policy;
-- write full replay/debug payloads to MatrixDB when enabled;
-- store compliance-critical admin/key/SSO actions in MatrixKV or MatrixDB with no sampling;
+- write full replay/debug payloads to MatrixKV or object storage when enabled;
+- optionally mirror sampled replay/debug rows to MatrixDB for offline analytics;
+- store compliance-critical admin/key/SSO actions in MatrixKV with no sampling;
 - keep `context_pack_id` and selected ref summaries hot enough for support/debug.
 
 This gives MatrixArk operational visibility similar to production memory systems without making every retrieval write a large replay record.
@@ -703,7 +713,8 @@ Expose these in the portal and Prometheus/Grafana:
 - `matrixark_cold_ref_missing_total`
 - `matrixark_ttl_candidates_total`
 - `matrixark_ttl_pruned_total`
-- `matrixark_replay_matrixdb_fetch_latency_ms`
+- `matrixark_replay_cold_fetch_latency_ms`
+- `matrixark_matrixdb_analytics_mirror_latency_ms`
 - `matrixark_hot_store_bytes_estimate`
 - `matrixark_cold_store_bytes_estimate`
 
@@ -714,7 +725,8 @@ Recommended defaults:
 - hot serving data stays in TemporalStore;
 - raw bytes stay in object/local file storage and are referenced by `raw_uri`;
 - portal/account/API-key metadata uses MatrixKV SQL or MySQL;
-- long replay/debug/benchmark traces go to MatrixDB;
+- long replay/debug manifests and cold records go to MatrixKV or object storage;
+- benchmark traces, token/quality metrics, and dashboard aggregates may mirror to MatrixDB;
 - full replay audit is sampled unless compliance mode requires every request;
 - cold archive is async and idempotent;
 - synchronous dual-write is disabled by default and allowed only in explicit compliance mode.
@@ -723,7 +735,7 @@ Recommended defaults:
 
 MatrixArk should claim this design is production-ready only when:
 
-- hot ingestion does not synchronously depend on MatrixDB;
+- hot ingestion does not synchronously depend on MatrixKV or MatrixDB;
 - archiver can restart from MatrixKV watermark without losing or duplicating records;
 - every cold ref has a checksum and replay test;
 - TemporalStore raw event pruning is blocked until cold archive and compression safety pass;
@@ -734,12 +746,11 @@ MatrixArk should claim this design is production-ready only when:
 
 1. Add logical record types: `context_archive_marker`, `context_cold_ref`, `archive_job_state`, and `retention_policy`.
 2. Add an archive worker that tails TemporalStore or scans archive candidates by prefix/time.
-3. Add MatrixKV metadata tables for cold refs, archive watermarks, and retention policies.
-4. Add MatrixDB history tables for events, entities, resource chunks, ContextPacks, audits, and benchmark traces.
+3. Add MatrixKV cold archive tables for cold refs, archive watermarks, retention policies, replay manifests, compliance audit pointers, and SQL-visible cold records.
+4. Add optional MatrixDB analytics tables for benchmark traces, token/quality metrics, dashboard aggregates, sampled retrieval traces, and offline reports.
 5. Add retrieval replay path that follows cold refs only when requested.
 6. Add retention safety gates tied to temporal compression and benchmark answer-hidden checks.
 7. Add C++/Rust shared corpus tests for archive, restore, replay, TTL, and failure recovery.
-
 </script>
 <script>
   const source = document.getElementById('markdown-source').textContent;
