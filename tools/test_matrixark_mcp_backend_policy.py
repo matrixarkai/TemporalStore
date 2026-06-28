@@ -1415,6 +1415,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(result["entities"][0]["extracted_by"], "openai_compatible")
         self.assertEqual(result["entities"][0]["entity_name"], "Project Aurora GPU procurement")
         self.assertEqual(result["entities"][0]["state"], "Approved by Alice after Q3 budget review.")
+        self.assertEqual(result["entities"][0]["operator"], "EUA_MERGE")
         self.assertNotEqual(result["entities"][0]["entity_name"], result["entities"][0]["state"])
 
     def test_openai_compatible_resource_fact_extraction_uses_model_facts(self) -> None:
@@ -1456,6 +1457,21 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(facts[0]["entity_name"], "Project Aurora GPU approval")
         self.assertEqual(facts[0]["value"], "Alice approved the GPU purchase after finance review.")
         self.assertNotEqual(facts[0]["entity_name"], facts[0]["value"])
+
+    def test_deterministic_entities_do_not_advertise_llm_merge(self) -> None:
+        result = mcp.one_pass_memory_extraction(
+            {
+                "kind": "message",
+                "messages": [{"role": "user", "content": "Alice approved Project Aurora GPU procurement."}],
+                "scope": {},
+                "metadata": {},
+            },
+            prior_context={"level": "", "refs": [], "messages": [], "summaries": []},
+        )
+
+        operators = {entity.get("operator") for entity in result["entities"]}
+        self.assertIn("EUA_MERGE", operators)
+        self.assertNotIn("LLM_MERGE", operators)
 
     def test_context_pack_serving_refs_drop_debug_index_and_hash_fields(self) -> None:
         ref = {

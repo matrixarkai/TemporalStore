@@ -166,6 +166,8 @@ EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.env
 EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
 EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
 EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
+ENABLE_LLM_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", "").strip().lower() in {"1", "true", "yes"}
+DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
@@ -1355,6 +1357,21 @@ def openai_compatible_json_call(*, system: str, user: str, model: str | None = N
         raise MatrixArkError(f"OpenAI-compatible extraction provider failed: {exc}") from exc
 
 
+def normalize_entity_operator(raw_operator: Any, entity_type: str) -> str:
+    """Return the operator actually used by runtime entity maintenance.
+
+    LLM_MERGE is a future/optional production operator because it implies a
+    separate LLM merge pass. The current online runtime applies field patches
+    deterministically, so serving records should say EUA_MERGE unless the LLM
+    merge feature is explicitly enabled.
+    """
+    if entity_type in {"confirmation", "correction"}:
+        return "LATEST"
+    operator = str(raw_operator or DEFAULT_ENTITY_MERGE_OPERATOR).strip().upper() or DEFAULT_ENTITY_MERGE_OPERATOR
+    if operator == "LLM_MERGE" and not ENABLE_LLM_MERGE_OPERATOR:
+        return DEFAULT_ENTITY_MERGE_OPERATOR
+    return operator
+
 def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
     if not isinstance(raw_entities, list):
         return []
@@ -1371,7 +1388,7 @@ def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, sourc
             confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.82))))
         except (TypeError, ValueError):
             confidence = 0.82
-        operator = str(raw.get("operator") or "LLM_MERGE")
+        operator = normalize_entity_operator(raw.get("operator"), entity_type)
         patches = raw.get("field_patches") if isinstance(raw.get("field_patches"), list) else []
         if not patches and entity_type not in {"confirmation", "correction"}:
             patches = [entity_patch("", state)]
@@ -1452,7 +1469,7 @@ def openai_compatible_one_pass_memory_extraction(envelope: Json, *, prior_contex
         "Extract memory from this logical conversation batch in one pass. "
         "Return JSON with keys classification, event_type, batch_summary, entities, segments, indexes. "
         "Entities must use a stable concise entity_name and a separate state sentence; do not copy the same phrase into both. "
-        "Each entity shape: {entity_type, entity_name, state, confidence, operator, field_patches}. "
+        "Each entity shape: {entity_type, entity_name, state, confidence, field_patches}; operator is optional and MatrixArk will coerce it to the actual runtime operator. "
         "Segments shape: {topic, coordinate_tuples, message_indexes, saliency_score, summary_text}. "
         "Use event_type values like approval_state, budget_update, deadline, procedure, correction, status_update.\n\n"
         f"Conversation:\n{indexed}\n\nJSON:"
@@ -2313,7 +2330,7 @@ def oss_encoder_extract_batch_entities(messages: list[Json], envelope: Json) -> 
                 "state": state,
                 "confidence": round(float(item["score"]), 6),
                 "source_refs": source_refs,
-                "operator": "LLM_MERGE" if entity_type not in {"confirmation", "correction"} else "LATEST",
+                "operator": normalize_entity_operator(None, entity_type),
                 "field_patches": [entity_patch("", state)] if entity_type != "session" else [],
                 "extracted_by": "oss_encoder",
             }
@@ -2326,7 +2343,7 @@ def oss_encoder_extract_batch_entities(messages: list[Json], envelope: Json) -> 
                 "state": summarize_text(text, limit=220),
                 "confidence": 0.5,
                 "source_refs": source_refs,
-                "operator": "LLM_MERGE",
+                "operator": normalize_entity_operator(None, "session"),
                 "field_patches": [],
                 "extracted_by": "oss_encoder",
             }
@@ -2403,7 +2420,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                     "state": summarize_text(value or text, limit=220),
                     "confidence": 0.82 if value else 0.66,
                     "source_refs": source_refs,
-                    "operator": "LLM_MERGE" if entity_type not in {"confirmation", "correction"} else "LATEST",
+                    "operator": normalize_entity_operator(None, entity_type),
                     "field_patches": field_patches,
                 }
             )
@@ -2415,7 +2432,7 @@ def extract_batch_entities(messages: list[Json], envelope: Json) -> list[Json]:
                 "state": summarize_text(text, limit=220),
                 "confidence": 0.6,
                 "source_refs": source_refs,
-                "operator": "LLM_MERGE",
+                "operator": normalize_entity_operator(None, "session"),
                 "field_patches": [],
             }
         )
