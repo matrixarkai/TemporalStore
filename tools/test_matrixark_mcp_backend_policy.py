@@ -1257,6 +1257,31 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
 
+    def test_message_event_secondary_indexes_are_capped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            adapter.ingest(
+                {
+                    "messages": [{"role": "user", "content": "Alice approved the GPU request."}],
+                    "scope": {
+                        "account_id": "acct_local",
+                        "tenant_id": "tenant_codex",
+                        "user_id": "codex_user",
+                        "session_id": "secondary-index-cap",
+                    },
+                }
+            )
+            records = adapter.read_all()
+            event_indexes = [
+                record.get("index_name")
+                for record in records
+                if record.get("record_type") == "context_index" and record.get("ref_type") == "event"
+            ]
+            self.assertLessEqual(len(event_indexes), mcp.MAX_INDEX_TERMS_PER_MESSAGE_EVENT)
+            self.assertIn("event_type:confirmation", event_indexes)
+            self.assertIn("source_type:message", event_indexes)
+            self.assertNotIn("status:observed", event_indexes)
+
     def test_secondary_index_budget_caps_total_operation_terms(self) -> None:
         budget = mcp.new_secondary_index_budget(3)
         first = mcp.take_secondary_index_terms(
