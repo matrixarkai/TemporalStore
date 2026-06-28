@@ -155,6 +155,9 @@ code-local question:
 
 cross-session question:
   MatrixArk first, local code only if current state matters
+  same-user cross-session is considered by default in session_scope=prefer
+  default budget is 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date
+  cross-session candidates still need to pass the score threshold, session fanout, candidate cap, and token budget
 
 current-state question:
   ContextEntity + fresh ContextEvent first, stale blockers as warnings

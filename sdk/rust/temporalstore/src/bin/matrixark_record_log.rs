@@ -1155,6 +1155,7 @@ struct CrossSessionPolicy {
     max_budget_tokens: u64,
     max_sessions: u64,
     max_candidates: u64,
+    min_score: f64,
     min_entity_bridge_refs: u64,
     parallelism: u64,
 }
@@ -1169,10 +1170,12 @@ fn parse_cross_session_policy(
     let config = request
         .get("cross_session")
         .filter(|value| value.is_object());
-    let mut budget_ratio = if matches!(question_type, "current_state" | "latest") {
-        0.30
-    } else {
+    let mut budget_ratio = if matches!(question_type, "current_state" | "latest" | "multi_hop" | "date") {
         0.20
+    } else if matches!(question_type, "broad_exploration" | "evidence") {
+        0.15
+    } else {
+        0.12
     };
     if let Some(value) = config
         .and_then(|cfg| cfg.get("budget_ratio"))
@@ -1183,7 +1186,7 @@ fn parse_cross_session_policy(
     let max_budget_tokens = config
         .and_then(|cfg| cfg.get("max_budget_tokens"))
         .and_then(Value::as_u64)
-        .unwrap_or(2048);
+        .unwrap_or(1536);
     let mut computed = (remote_budget as f64 * budget_ratio) as u64;
     if remote_budget >= 1200 && computed > 0 {
         computed = computed.max(256);
@@ -1200,11 +1203,16 @@ fn parse_cross_session_policy(
     let mut max_sessions = config
         .and_then(|cfg| cfg.get("max_sessions"))
         .and_then(Value::as_u64)
-        .unwrap_or(4);
+        .unwrap_or(3);
     let mut max_candidates = config
         .and_then(|cfg| cfg.get("max_candidates"))
         .and_then(Value::as_u64)
-        .unwrap_or(32);
+        .unwrap_or(24);
+    let mut min_score = config
+        .and_then(|cfg| cfg.get("min_score"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.20)
+        .clamp(0.0, 1.0);
     let mut min_entity_bridge_refs = config
         .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
         .and_then(Value::as_u64)
@@ -1218,6 +1226,7 @@ fn parse_cross_session_policy(
         budget_tokens = 0;
         max_sessions = 0;
         max_candidates = 0;
+        min_score = 0.0;
         min_entity_bridge_refs = 0;
         parallelism = 0;
     } else {
@@ -1235,6 +1244,7 @@ fn parse_cross_session_policy(
         max_budget_tokens,
         max_sessions,
         max_candidates,
+        min_score,
         min_entity_bridge_refs,
         parallelism,
     }
@@ -1773,6 +1783,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut dropped_cross_budget = 0_u64;
     let mut dropped_cross_session_cap = 0_u64;
     let mut dropped_cross_candidate_cap = 0_u64;
+    let mut dropped_low_score = 0_u64;
     let mut used_tokens = 0_u64;
     let mut cross_used_tokens = 0_u64;
     let mut cross_selected_refs = 0_u64;
@@ -1801,6 +1812,10 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         };
         if is_cross_session && !cross_policy.enabled {
             dropped_cross_budget += 1;
+            continue;
+        }
+        if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
+            dropped_low_score += 1;
             continue;
         }
         if is_cross_session
@@ -1875,11 +1890,13 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             "cross_session_budget": dropped_cross_budget,
             "cross_session_session_cap": dropped_cross_session_cap,
             "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "low_score": dropped_low_score,
             "reason_counts": {
                 "over_budget": dropped_over_budget,
                 "cross_session_budget": dropped_cross_budget,
                 "cross_session_session_cap": dropped_cross_session_cap,
-                "cross_session_candidate_cap": dropped_cross_candidate_cap
+                "cross_session_candidate_cap": dropped_cross_candidate_cap,
+                "low_score": dropped_low_score
             }
         },
         "used_context_tokens": used_tokens,
@@ -1932,13 +1949,14 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "max_budget_tokens": cross_policy.max_budget_tokens,
                 "max_sessions": cross_policy.max_sessions,
                 "max_candidates": cross_policy.max_candidates,
+                "min_score": cross_policy.min_score,
                 "parallelism": cross_policy.parallelism,
                 "selected_tokens": cross_used_tokens,
                 "selected_ref_count": cross_selected_refs,
                 "selected_session_count": selected_cross_sessions.len() as u64,
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
                 "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-                "budget_guidance": "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest"
+                "budget_guidance": "default cross-session budget is conservative: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date, capped by max_budget_tokens; same-session, resources, and skills keep the rest"
             },
             "tree_traversal": {
                 "enabled": true,

@@ -122,14 +122,17 @@ DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_P
 DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
 DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "24"))
 DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
-DEFAULT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", "0.20"))
-DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.30"))
-DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "2048"))
-DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "4"))
-DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "32"))
+DEFAULT_CROSS_SESSION_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BUDGET_RATIO", "0.12"))
+DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO", "0.20"))
+DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO", "0.20"))
+DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO = float(os.environ.get("MATRIXARK_CROSS_SESSION_BROAD_BUDGET_RATIO", "0.15"))
+DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS", "1536"))
+DEFAULT_CROSS_SESSION_MAX_SESSIONS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "3"))
+DEFAULT_CROSS_SESSION_MAX_CANDIDATES = int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "24"))
 DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS", "2"))
 DEFAULT_CROSS_SESSION_PARALLELISM = int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4"))
 DEFAULT_CROSS_SESSION_MIN_BUDGET_TOKENS = int(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_BUDGET_TOKENS", "256"))
+DEFAULT_CROSS_SESSION_MIN_SCORE = float(os.environ.get("MATRIXARK_CROSS_SESSION_MIN_SCORE", "0.20"))
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
@@ -3668,7 +3671,19 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
 
     default_enabled = session_scope == "prefer" and remote_budget_tokens > 0
     enabled = bool(config.get("enabled", default_enabled)) and session_scope == "prefer" and remote_budget_tokens > 0
-    default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO if question_type in {"current_state", "latest"} else DEFAULT_CROSS_SESSION_BUDGET_RATIO
+    normalized_question_type = str(question_type or "fact").strip().lower()
+    if normalized_question_type in {"current_state", "latest"}:
+        default_ratio = DEFAULT_CROSS_SESSION_CURRENT_STATE_BUDGET_RATIO
+        question_budget_reason = "current_state_or_latest_queries_need_prior entity state and stale blockers"
+    elif normalized_question_type in {"multi_hop", "date"}:
+        default_ratio = DEFAULT_CROSS_SESSION_MULTI_HOP_BUDGET_RATIO
+        question_budget_reason = "multi_hop_or_date_queries_often_need_multiple sessions"
+    elif normalized_question_type in {"broad_exploration", "evidence"}:
+        default_ratio = DEFAULT_CROSS_SESSION_BROAD_BUDGET_RATIO
+        question_budget_reason = "broad_or_evidence_queries_get_extra cross-session exploration"
+    else:
+        default_ratio = DEFAULT_CROSS_SESSION_BUDGET_RATIO
+        question_budget_reason = "normal_queries_keep_cross_session_small so current session/resources/skills dominate"
     budget_ratio = float_arg(config, "budget_ratio", default_ratio, minimum=0.0, maximum=1.0)
     max_budget_default = DEFAULT_CROSS_SESSION_MAX_BUDGET_TOKENS
     max_budget_tokens = integer_arg(config, "max_budget_tokens", max_budget_default, minimum=0)
@@ -3681,19 +3696,24 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     max_candidates = integer_arg(config, "max_candidates", DEFAULT_CROSS_SESSION_MAX_CANDIDATES, minimum=0)
     min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", DEFAULT_CROSS_SESSION_MIN_ENTITY_BRIDGE_REFS, minimum=0)
     parallelism = integer_arg(config, "parallelism", DEFAULT_CROSS_SESSION_PARALLELISM, minimum=1)
+    min_score = float_arg(config, "min_score", DEFAULT_CROSS_SESSION_MIN_SCORE, minimum=0.0, maximum=1.0)
     return {
         "enabled": enabled,
         "mode": "prefer" if enabled else "disabled",
+        "decision": "always_consider_same_user_cross_session_when_session_scope_prefer" if enabled else "disabled_by_session_scope_or_budget",
+        "question_type": normalized_question_type,
+        "question_budget_reason": question_budget_reason,
         "budget_ratio": round(budget_ratio, 6),
         "budget_tokens": budget_tokens if enabled else 0,
         "remote_budget_tokens": remote_budget_tokens,
         "max_budget_tokens": max_budget_tokens,
         "max_sessions": max_sessions if enabled else 0,
         "max_candidates": max_candidates if enabled else 0,
+        "min_score": min_score if enabled else 0.0,
         "min_entity_bridge_refs": min_entity_bridge_refs if enabled else 0,
         "parallelism": parallelism if enabled else 0,
         "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-        "budget_guidance": "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest",
+        "budget_guidance": "default cross-session budget is conservative: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date, capped by max_budget_tokens; same-session, resources, and skills keep the rest",
     }
 
 
@@ -4269,6 +4289,7 @@ def select_token_budgeted_refs(
     cross_budget_tokens = int(cross_session_policy.get("budget_tokens") or 0)
     cross_max_sessions = int(cross_session_policy.get("max_sessions") or 0)
     cross_max_candidates = int(cross_session_policy.get("max_candidates") or 0)
+    cross_min_score = max(0.0, min(1.0, float(cross_session_policy.get("min_score") or 0.0)))
     cross_min_entity_bridge_refs = int(cross_session_policy.get("min_entity_bridge_refs") or 0)
     cross_used_tokens = 0
     cross_selected_ref_count = 0
@@ -4377,6 +4398,11 @@ def select_token_budgeted_refs(
             dropped["cross_session_budget"] += 1
             dropped["estimated_tokens"]["cross_session_budget"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="cross_session_budget", token_estimate=ref_tokens)
+            continue
+        if is_cross_session and cross_min_score > 0.0 and float(candidate.get("score", 0.0)) < cross_min_score:
+            dropped["low_score"] += 1
+            dropped["estimated_tokens"]["low_score"] += ref_tokens
+            record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
             continue
         if is_cross_session and cross_max_candidates > 0 and cross_selected_ref_count >= cross_max_candidates:
             dropped["cross_session_candidate_cap"] += 1
