@@ -3326,6 +3326,23 @@
       ]
     },
     {
+      "name": "storage_manager_metrics_admin_phase_reports",
+      "shard_id": 73,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManager phase reports expose admin/metrics parity fields for last run time, duration, selected slots, skipped reason, errors, reclaimed bytes, compacted pages, WAL/index-log floors, retention blockers, and pressure before/after.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run"
+          },
+          "name": "rust_storage_manager_metrics_admin_phase_reports",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
