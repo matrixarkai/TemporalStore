@@ -438,6 +438,14 @@ pub struct SlotDumpInstallPreflightReport {
     pub stale_object_conflicts: Vec<String>,
     #[serde(default)]
     pub stale_page_conflicts: Vec<String>,
+    #[serde(default)]
+    pub source_manifest_count: usize,
+    #[serde(default)]
+    pub missing_source_manifest_ids: Vec<String>,
+    #[serde(default)]
+    pub source_manifest_slot_ids: Vec<u32>,
+    #[serde(default)]
+    pub source_slot_coverage_missing_slot_ids: Vec<u32>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -454,6 +462,16 @@ pub struct SlotDumpMergedInstallReport {
     pub load_version_handoff: Option<SlotDumpLoadVersionHandoff>,
     pub installed: bool,
     pub status_code: String,
+    #[serde(default)]
+    pub source_manifest_count: usize,
+    #[serde(default)]
+    pub missing_source_manifest_ids: Vec<String>,
+    #[serde(default)]
+    pub source_slot_coverage_missing_slot_ids: Vec<u32>,
+    #[serde(default)]
+    pub stale_object_conflict_count: usize,
+    #[serde(default)]
+    pub stale_page_conflict_count: usize,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1130,6 +1148,20 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub compaction_policy_applied: bool,
     pub index_gc_policy_applied: bool,
     pub cache_policy_applied: bool,
+    #[serde(default)]
+    pub merged_manifest_validated: bool,
+    #[serde(default)]
+    pub source_manifest_count: usize,
+    #[serde(default)]
+    pub source_slot_coverage_validated: bool,
+    #[serde(default)]
+    pub rollback_marker_policy_checked: bool,
+    #[serde(default)]
+    pub load_version_handoff_validated: bool,
+    #[serde(default)]
+    pub stale_object_conflict_reported: bool,
+    #[serde(default)]
+    pub stale_page_conflict_reported: bool,
     #[serde(default)]
     pub blockers: Vec<String>,
 }

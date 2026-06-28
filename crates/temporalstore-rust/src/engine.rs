@@ -797,11 +797,56 @@ impl TemporalEngine {
         source_manifest_ids: impl IntoIterator<Item = String>,
         next_load_version: Option<u64>,
     ) -> Result<SlotDumpManifest, Status> {
-        let mut manifest = self.create_slot_dump_manifest(shard_id, selected_slots)?;
+        let selected_slots = selected_slots.into_iter().collect::<BTreeSet<_>>();
+        let mut source_manifest_ids = source_manifest_ids.into_iter().collect::<Vec<_>>();
+        source_manifest_ids.sort();
+        source_manifest_ids.dedup();
+        if source_manifest_ids.is_empty() {
+            return Err(Status::error(
+                "merged_slot_dump_missing_sources",
+                "merged slot dump requires at least one source manifest",
+            ));
+        }
+        let (source_manifest_count, missing_source_manifest_ids, source_manifest_slot_ids) =
+            self.slot_dump_source_manifest_coverage(shard_id, &source_manifest_ids);
+        if !missing_source_manifest_ids.is_empty() {
+            return Err(Status::error(
+                "merged_slot_dump_missing_sources",
+                format!(
+                    "merged slot dump source manifests are missing or invalid: {:?}",
+                    missing_source_manifest_ids
+                ),
+            ));
+        }
+        let source_slot_set = source_manifest_slot_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let target_slots = self
+            .slot_storage_summaries(shard_id)
+            .into_iter()
+            .filter(|summary| {
+                selected_slots.is_empty() || selected_slots.contains(&summary.routing_slot)
+            })
+            .map(|summary| summary.routing_slot)
+            .collect::<Vec<_>>();
+        let missing_coverage = target_slots
+            .iter()
+            .copied()
+            .filter(|slot| !source_slot_set.contains(slot))
+            .collect::<Vec<_>>();
+        if !missing_coverage.is_empty() {
+            return Err(Status::error(
+                "merged_slot_dump_source_coverage",
+                format!(
+                    "merged slot dump sources do not cover target slots: {:?}",
+                    missing_coverage
+                ),
+            ));
+        }
+        let mut manifest = self.create_slot_dump_manifest(shard_id, target_slots)?;
         manifest.manifest_kind = "merged_slot_dump".to_string();
-        manifest.source_manifest_ids = source_manifest_ids.into_iter().collect::<Vec<_>>();
-        manifest.source_manifest_ids.sort();
-        manifest.source_manifest_ids.dedup();
+        manifest.source_manifest_ids = source_manifest_ids;
         if let Some(next_load_version) = next_load_version {
             let previous_load_version = self
                 .infos
@@ -817,6 +862,18 @@ impl TemporalEngine {
             });
         }
         manifest.checksum = slot_dump_manifest_checksum(&manifest)?;
+        let (_, missing_source_manifest_ids, _, missing_slot_ids) =
+            self.slot_dump_merged_source_preflight(&manifest);
+        if !missing_source_manifest_ids.is_empty() || !missing_slot_ids.is_empty() {
+            return Err(Status::error(
+                "merged_slot_dump_source_preflight",
+                format!(
+                    "merged source preflight failed sources={:?} missing_slots={:?}",
+                    missing_source_manifest_ids, missing_slot_ids
+                ),
+            ));
+        }
+        debug_assert!(source_manifest_count >= 1);
         self.persist_slot_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
@@ -893,8 +950,21 @@ impl TemporalEngine {
                     )
                     .ok()
                     .flatten()
-                    .map(|manifest| self.install_slot_dump_manifest(&manifest))
-                    {
+                    .map(|manifest| {
+                        if manifest.manifest_kind == "merged_slot_dump" {
+                            let merged_report = self.install_merged_slot_dump_manifest(&manifest);
+                            if merged_report.installed {
+                                Ok(())
+                            } else {
+                                Err(Status::error(
+                                    merged_report.status_code,
+                                    "merged slot dump roll-forward failed",
+                                ))
+                            }
+                        } else {
+                            self.install_slot_dump_manifest(&manifest)
+                        }
+                    }) {
                         Some(Ok(())) => {
                             report.completed_install = true;
                             report.completed_commit = true;
@@ -1303,6 +1373,18 @@ impl TemporalEngine {
             .as_ref()
             .map(|restored| self.slot_dump_stale_conflict_report(manifest, restored))
             .unwrap_or_default();
+        let (
+            source_manifest_count,
+            missing_source_manifest_ids,
+            source_manifest_slot_ids,
+            source_slot_coverage_missing_slot_ids,
+        ) = self.slot_dump_merged_source_preflight(manifest);
+        if !missing_source_manifest_ids.is_empty() {
+            blockers.push("missing_source_manifests".to_string());
+        }
+        if !source_slot_coverage_missing_slot_ids.is_empty() {
+            blockers.push("source_manifest_slot_coverage".to_string());
+        }
         if stale_manifest && stale_page_conflicts.is_empty() {
             stale_page_conflicts.push(format!(
                 "index_log_sequence:{}->{}",
@@ -1351,7 +1433,67 @@ impl TemporalEngine {
             stale_page_conflict_count: stale_page_conflicts.len(),
             stale_object_conflicts,
             stale_page_conflicts,
+            source_manifest_count,
+            missing_source_manifest_ids,
+            source_manifest_slot_ids,
+            source_slot_coverage_missing_slot_ids,
         }
+    }
+
+    fn slot_dump_merged_source_preflight(
+        &self,
+        manifest: &SlotDumpManifest,
+    ) -> (usize, Vec<String>, Vec<u32>, Vec<u32>) {
+        if manifest.manifest_kind != "merged_slot_dump" && manifest.source_manifest_ids.is_empty() {
+            return (0, Vec::new(), Vec::new(), Vec::new());
+        }
+        let (source_manifest_count, missing_source_manifest_ids, source_manifest_slot_ids) = self
+            .slot_dump_source_manifest_coverage(manifest.shard_id, &manifest.source_manifest_ids);
+        let source_slots = source_manifest_slot_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let missing_slot_ids = manifest
+            .slot_ids
+            .iter()
+            .copied()
+            .filter(|slot| !source_slots.contains(slot))
+            .collect::<Vec<_>>();
+        (
+            source_manifest_count,
+            missing_source_manifest_ids,
+            source_manifest_slot_ids,
+            missing_slot_ids,
+        )
+    }
+
+    fn slot_dump_source_manifest_coverage(
+        &self,
+        shard_id: ShardId,
+        source_manifest_ids: &[String],
+    ) -> (usize, Vec<String>, Vec<u32>) {
+        let mut source_manifest_count = 0usize;
+        let mut missing_source_manifest_ids = Vec::new();
+        let mut source_manifest_slot_ids = BTreeSet::new();
+        for manifest_id in source_manifest_ids {
+            match slot_dump_manifest_at(&self.index_dir, shard_id, manifest_id) {
+                Ok(Some(source))
+                    if source.shard_id == shard_id
+                        && slot_dump_manifest_checksum(&source)
+                            .map(|checksum| checksum == source.checksum)
+                            .unwrap_or(false) =>
+                {
+                    source_manifest_count = source_manifest_count.saturating_add(1);
+                    source_manifest_slot_ids.extend(source.slot_ids);
+                }
+                _ => missing_source_manifest_ids.push(manifest_id.clone()),
+            }
+        }
+        (
+            source_manifest_count,
+            missing_source_manifest_ids,
+            source_manifest_slot_ids.into_iter().collect(),
+        )
     }
 
     fn slot_dump_stale_conflict_report(
@@ -1693,6 +1835,13 @@ impl TemporalEngine {
                 manifest_id: manifest.manifest_id.clone(),
                 source_manifest_ids: manifest.source_manifest_ids.clone(),
                 slot_ids: manifest.slot_ids.clone(),
+                source_manifest_count: preflight.source_manifest_count,
+                missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
+                source_slot_coverage_missing_slot_ids: preflight
+                    .source_slot_coverage_missing_slot_ids
+                    .clone(),
+                stale_object_conflict_count: preflight.stale_object_conflict_count,
+                stale_page_conflict_count: preflight.stale_page_conflict_count,
                 preflight,
                 rollback_marker_written,
                 prepare_marker_written: false,
@@ -1722,6 +1871,13 @@ impl TemporalEngine {
                     manifest_id: manifest.manifest_id.clone(),
                     source_manifest_ids: manifest.source_manifest_ids.clone(),
                     slot_ids: manifest.slot_ids.clone(),
+                    source_manifest_count: preflight.source_manifest_count,
+                    missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
+                    source_slot_coverage_missing_slot_ids: preflight
+                        .source_slot_coverage_missing_slot_ids
+                        .clone(),
+                    stale_object_conflict_count: preflight.stale_object_conflict_count,
+                    stale_page_conflict_count: preflight.stale_page_conflict_count,
                     preflight,
                     rollback_marker_written,
                     prepare_marker_written: true,
@@ -1737,6 +1893,13 @@ impl TemporalEngine {
                 manifest_id: manifest.manifest_id.clone(),
                 source_manifest_ids: manifest.source_manifest_ids.clone(),
                 slot_ids: manifest.slot_ids.clone(),
+                source_manifest_count: preflight.source_manifest_count,
+                missing_source_manifest_ids: preflight.missing_source_manifest_ids.clone(),
+                source_slot_coverage_missing_slot_ids: preflight
+                    .source_slot_coverage_missing_slot_ids
+                    .clone(),
+                stale_object_conflict_count: preflight.stale_object_conflict_count,
+                stale_page_conflict_count: preflight.stale_page_conflict_count,
                 preflight,
                 rollback_marker_written,
                 prepare_marker_written: false,
@@ -3609,6 +3772,29 @@ impl TemporalEngine {
         report.live_page_refs_validated = live_page_entries.len() as u64 == manifest.live_page_refs
             && preflight.unreadable_page_ref_count == 0
             && preflight.unreadable_page_bytes == 0;
+        let merged_manifest = manifest.manifest_kind == "merged_slot_dump";
+        report.source_manifest_count = preflight.source_manifest_count;
+        report.merged_manifest_validated = !merged_manifest
+            || (!manifest.source_manifest_ids.is_empty()
+                && preflight.source_manifest_count == manifest.source_manifest_ids.len()
+                && preflight.missing_source_manifest_ids.is_empty());
+        report.source_slot_coverage_validated =
+            !merged_manifest || preflight.source_slot_coverage_missing_slot_ids.is_empty();
+        report.rollback_marker_policy_checked = report.install_marker_policy_checked;
+        report.load_version_handoff_validated = manifest
+            .load_version_handoff
+            .as_ref()
+            .map(|handoff| {
+                handoff.next_load_version > handoff.previous_load_version
+                    && !preflight
+                        .blockers
+                        .iter()
+                        .any(|blocker| blocker == "load_version_handoff_mismatch")
+            })
+            .unwrap_or(true);
+        report.stale_object_conflict_reported = preflight.stale_object_conflict_count > 0;
+        report.stale_page_conflict_reported =
+            preflight.stale_manifest || preflight.stale_page_conflict_count > 0;
         report.object_lifecycle_validated = expected_object_lifecycle
             .map(|expected| {
                 expected.live_object_ids == manifest.object_lifecycle.live_object_ids
@@ -3633,6 +3819,19 @@ impl TemporalEngine {
             (report.compaction_policy_applied, "compaction"),
             (report.index_gc_policy_applied, "index_gc"),
             (report.cache_policy_applied, "cache_policy"),
+            (report.merged_manifest_validated, "merged_manifest"),
+            (
+                report.source_slot_coverage_validated,
+                "source_slot_coverage",
+            ),
+            (
+                report.rollback_marker_policy_checked,
+                "rollback_marker_policy",
+            ),
+            (
+                report.load_version_handoff_validated,
+                "load_version_handoff",
+            ),
         ] {
             if !ready {
                 report.blockers.push(blocker.to_string());
@@ -18823,7 +19022,12 @@ mod tests {
         });
         let key_a = key_for_slot(&engine, 91, 10);
         let key_b = key_for_slot(&engine, 91, 11);
-        for (key, value) in [(&key_a, b"a".as_slice()), (&key_b, b"b".as_slice())] {
+        let key_c = key_for_slot(&engine, 91, 12);
+        for (key, value) in [
+            (&key_a, b"a".as_slice()),
+            (&key_b, b"b".as_slice()),
+            (&key_c, b"c".as_slice()),
+        ] {
             assert!(
                 engine
                     .execute(ExecuteRequest {
@@ -18840,6 +19044,19 @@ mod tests {
 
         let manifest_a = engine.create_slot_dump_manifest(91, [10]).unwrap();
         let manifest_b = engine.create_slot_dump_manifest(91, [11]).unwrap();
+        let missing_source = engine
+            .create_merged_slot_dump_manifest(91, [10], vec!["missing-source".to_string()], None)
+            .unwrap_err();
+        assert_eq!(missing_source.code, "merged_slot_dump_missing_sources");
+        let missing_coverage = engine
+            .create_merged_slot_dump_manifest(
+                91,
+                [10, 12],
+                vec![manifest_a.manifest_id.clone()],
+                None,
+            )
+            .unwrap_err();
+        assert_eq!(missing_coverage.code, "merged_slot_dump_source_coverage");
         let merged = engine
             .create_merged_slot_dump_manifest(
                 91,
@@ -18869,6 +19086,14 @@ mod tests {
                 applied: false,
             })
         );
+        let merged_preflight = engine.slot_dump_install_preflight_report(&merged);
+        assert!(merged_preflight.install_safe, "{merged_preflight:#?}");
+        assert_eq!(merged_preflight.source_manifest_count, 2);
+        assert!(merged_preflight.missing_source_manifest_ids.is_empty());
+        assert_eq!(merged_preflight.source_manifest_slot_ids, vec![10, 11]);
+        assert!(merged_preflight
+            .source_slot_coverage_missing_slot_ids
+            .is_empty());
 
         let install = engine.install_merged_slot_dump_manifest(&merged);
         assert!(install.installed, "{install:?}");
@@ -18877,6 +19102,11 @@ mod tests {
         assert!(install.install_marker_written);
         assert!(install.commit_marker_written);
         assert_eq!(install.status_code, "ok");
+        assert_eq!(install.source_manifest_count, 2);
+        assert!(install.missing_source_manifest_ids.is_empty());
+        assert!(install.source_slot_coverage_missing_slot_ids.is_empty());
+        assert_eq!(install.stale_object_conflict_count, 0);
+        assert_eq!(install.stale_page_conflict_count, 0);
         assert_eq!(
             install.load_version_handoff,
             Some(SlotDumpLoadVersionHandoff {
@@ -18913,6 +19143,7 @@ mod tests {
         let preflight = engine.slot_dump_install_preflight_report(&stale);
         assert!(!preflight.install_safe);
         assert!(preflight.stale_manifest);
+        assert_eq!(preflight.source_manifest_count, 1);
         assert!(preflight.stale_page_conflict_count > 0);
         assert!(preflight
             .blockers
@@ -19141,6 +19372,24 @@ mod tests {
         let roll_forward = engine.slot_dump_install_roll_forward_report(prepare_marker);
         assert_eq!(roll_forward.shard_id, 92);
         assert!(!roll_forward.completed_commit);
+        assert!(roll_forward.can_retry_install);
+
+        let applied = engine.roll_forward_slot_dump_installs(92);
+        let merged_applied = applied
+            .iter()
+            .find(|report| report.manifest_id == merged.manifest_id)
+            .expect("merged install roll-forward report");
+        assert!(merged_applied.completed_install, "{applied:#?}");
+        assert!(merged_applied.completed_commit, "{applied:#?}");
+        assert_eq!(
+            engine
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&92)
+                .map(|info| info.load_version),
+            Some(4)
+        );
     }
 
     // shared-corpus: storage_risk_context_page_backed_parity

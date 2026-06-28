@@ -3093,7 +3093,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage exposes a C++-style merged dump/load lifecycle with multi-slot source manifests, rollback marker evidence, load-version handoff, and stale object/page conflict preflight reports.",
+            "description": "Rust storage exposes a C++-style merged dump/load lifecycle with validated multi-slot source manifests, source-slot coverage rejection, rollback marker evidence, load-version handoff including restart roll-forward, and stale object/page conflict preflight reports.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
@@ -3178,7 +3178,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust merged dump/load install records prepare and rollback markers so restart interruption scans can roll forward or report incomplete commits safely.",
+            "description": "Rust merged dump/load install records prepare and rollback markers so restart interruption scans can roll forward through the merged installer, apply load-version handoff, or report incomplete commits safely.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
