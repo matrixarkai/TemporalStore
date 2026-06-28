@@ -622,8 +622,6 @@ class MatrixArkMcpServer:
                     reason="service_backpressure",
                 )
                 result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["service_backpressure"]
-                result["request_deadline_ms"] = request_deadline_ms
-                result["request_elapsed_ms"] = round(elapsed_ms, 3)
                 result["partial_context_pack"] = True
                 result["backpressure"] = True
                 self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)

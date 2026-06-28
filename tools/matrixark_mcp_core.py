@@ -4895,60 +4895,73 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
             compact[target] = compact.get(source)
         compact.pop(source, None)
     compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=False)
-    compact["remote_context_refs"] = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=False)
+    remote_refs = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=False)
+    if remote_refs and remote_refs != compact["selected_refs"]:
+        compact["remote_context_refs"] = remote_refs
+    else:
+        compact.pop("remote_context_refs", None)
     compact["dropped_refs"] = compact_dropped_refs_for_context_pack(compact.get("dropped_refs", {}), include_debug=False)
 
+    # Normal serving output should carry answer evidence, not operational counters.
+    for field in [
+        "context_sources_order",
+        "selected_ref_counts",
+        "primary_candidate_count",
+        "auxiliary_candidate_count",
+        "budget_source",
+        "local_context_safety_margin_tokens",
+        "remote_context_budget_tokens",
+        "request_deadline_ms",
+        "request_elapsed_ms",
+    ]:
+        compact.pop(field, None)
+    if compact.get("used_remote_context_tokens") == compact.get("used_context_tokens"):
+        compact.pop("used_remote_context_tokens", None)
+    if not compact.get("used_local_context_tokens"):
+        compact.pop("used_local_context_tokens", None)
+    if compact.get("total_prompt_context_tokens") == compact.get("used_context_tokens"):
+        compact.pop("total_prompt_context_tokens", None)
+    compact.pop("requested_max_context_tokens", None)
+    if not compact.get("quality_warnings"):
+        compact.pop("dropped_refs", None)
+    if not compact.get("insufficient_context"):
+        compact.pop("insufficient_context", None)
+    if not compact.get("partial_context_pack"):
+        compact.pop("partial_context_pack", None)
+    compact.pop("packing_policy", None)
+
     recall_summary = compact_recall_policy_for_audit(compact.get("recall_policy", {}))
-    if recall_summary:
-        query_plan = recall_summary.get("query_plan")
-        if isinstance(query_plan, dict):
-            secondary_filters = query_plan.pop("secondary_filters", None)
-            if isinstance(secondary_filters, dict) and secondary_filters:
-                query_plan["secondary_filter_fields"] = sorted(str(key) for key in secondary_filters.keys())[:10]
-                query_plan["secondary_filter_value_count"] = sum(
-                    len(value) if isinstance(value, list) else 1
-                    for value in secondary_filters.values()
-                )
-            temporal_window = query_plan.get("temporal_window")
-            if isinstance(temporal_window, dict):
-                query_plan["temporal_window"] = {
-                    field: temporal_window.get(field)
-                    for field in ["mode", "valid_as_of"]
-                    if temporal_window.get(field) not in (None, "", [], {})
-                }
-        tree = recall_summary.get("tree")
-        if isinstance(tree, dict):
-            recall_summary["tree"] = {
-                field: tree.get(field)
-                for field in ["enabled", "fallback_to_flat", "selected_node_count", "selected_leaf_count", "candidate_records_after_tree"]
-                if tree.get(field) not in (None, "", [], {})
-            }
-        rerank = recall_summary.get("rerank")
-        if isinstance(rerank, dict):
-            recall_summary["rerank"] = {
-                field: rerank.get(field)
-                for field in ["enabled", "mode", "reranked_candidate_count"]
-                if rerank.get(field) not in (None, "", [], {})
-            }
-        deadline = recall_summary.get("deadline")
-        if isinstance(deadline, dict) and not deadline.get("partial_context_pack"):
-            recall_summary.pop("deadline", None)
-        compact["recall_policy"] = recall_summary
-    else:
-        compact.pop("recall_policy", None)
+    serving_recall: Json = {}
+    query_plan = recall_summary.get("query_plan") if isinstance(recall_summary, dict) else {}
+    if isinstance(query_plan, dict):
+        temporal_window = query_plan.get("temporal_window")
+        if isinstance(temporal_window, dict) and temporal_window.get("mode") not in (None, "", [], {}):
+            serving_recall["temporal"] = temporal_window.get("mode")
+    tree = recall_summary.get("tree") if isinstance(recall_summary, dict) else {}
+    if isinstance(tree, dict) and tree.get("fallback_to_flat"):
+        serving_recall["tree_fallback"] = True
+    deadline = recall_summary.get("deadline") if isinstance(recall_summary, dict) else {}
+    if isinstance(deadline, dict) and deadline.get("partial_context_pack"):
+        serving_recall["partial_reason"] = deadline.get("fallback_reason") or "deadline"
+    if serving_recall:
+        compact["recall"] = serving_recall
+    compact.pop("recall_policy", None)
 
     local_policy = compact.get("local_context_policy")
     if isinstance(local_policy, dict):
-        compact["local_context_policy"] = {
+        compact_local_policy = {
             field: local_policy.get(field)
             for field in [
                 "local_context_count",
                 "local_context_tokens",
                 "safety_margin_tokens",
-                "remote_is_additive_only_within_remaining_budget",
             ]
             if local_policy.get(field) not in (None, "", [], {})
         }
+        if compact_local_policy.get("local_context_count") or compact_local_policy.get("local_context_tokens"):
+            compact["local_context_policy"] = compact_local_policy
+        else:
+            compact.pop("local_context_policy", None)
 
     if compact.get("embedding_fallback_used"):
         compact["embedding_status"] = {

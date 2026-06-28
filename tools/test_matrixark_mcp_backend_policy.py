@@ -1414,6 +1414,68 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("context_pack_assembly", compact)
         self.assertNotIn("context_pack_cache_hit", compact)
 
+    def test_context_pack_serving_omits_duplicate_and_operational_fields(self) -> None:
+        ref = {"ref_type": "event", "text": "Alice approved the GPU request."}
+        compact = mcp.compact_context_pack_for_serving({
+            "context_pack_id": "pack-123",
+            "selected_refs": [ref],
+            "remote_context_refs": [ref],
+            "selected_ref_counts": {"event": 1},
+            "context_sources_order": ["local_context", "matrixark_remote_context"],
+            "primary_candidate_count": 10,
+            "auxiliary_candidate_count": 2,
+            "budget_source": "agent_provided_max_context_tokens",
+            "local_context_safety_margin_tokens": 70,
+            "remote_context_budget_tokens": 1330,
+            "request_deadline_ms": 120000,
+            "request_elapsed_ms": 25.15,
+            "used_context_tokens": 12,
+            "used_remote_context_tokens": 12,
+            "used_local_context_tokens": 0,
+            "total_prompt_context_tokens": 12,
+            "local_context_policy": {
+                "local_context_count": 0,
+                "local_context_tokens": 0,
+                "safety_margin_tokens": 70,
+                "remote_is_additive_only_within_remaining_budget": True,
+            },
+            "recall_policy": {
+                "query_plan": {"query_type": "fact", "temporal_window": {"mode": "latest"}},
+                "tree_traversal": {"enabled": True, "selected_node_count": 3},
+            },
+            "dropped_refs": {"duplicate": 3},
+            "insufficient_context": False,
+            "partial_context_pack": False,
+            "packing_policy": "question_type_aware:fact",
+            "requested_max_context_tokens": 1000,
+        })
+
+        self.assertEqual(compact["selected_refs"], [{"ref_type": "event", "text": "Alice approved the GPU request."}])
+        self.assertNotIn("remote_context_refs", compact)
+        for field in [
+            "selected_ref_counts",
+            "context_sources_order",
+            "primary_candidate_count",
+            "auxiliary_candidate_count",
+            "budget_source",
+            "local_context_safety_margin_tokens",
+            "remote_context_budget_tokens",
+            "request_deadline_ms",
+            "request_elapsed_ms",
+            "used_remote_context_tokens",
+            "used_local_context_tokens",
+            "total_prompt_context_tokens",
+            "local_context_policy",
+            "recall_policy",
+            "dropped_refs",
+            "insufficient_context",
+            "partial_context_pack",
+            "packing_policy",
+            "requested_max_context_tokens",
+        ]:
+            self.assertNotIn(field, compact)
+        self.assertEqual(compact.get("recall"), {"temporal": "latest"})
+
     def test_context_pack_serving_dropped_policy_omits_numeric_knobs(self) -> None:
         compact = mcp.compact_dropped_refs_for_context_pack({
             "cross_session_budget": 2,
