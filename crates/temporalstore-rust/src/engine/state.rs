@@ -46,8 +46,42 @@ pub(super) struct ShardState {
     pub(super) context_summaries: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
     pub(super) context_compressions: HashMap<String, BTreeMap<u64, PageAddress>>,
+    #[serde(default)]
+    pub(super) slot_index: SlotFirstIndex,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub(super) struct SlotFirstIndex {
+    pub(super) slots: BTreeMap<u32, SlotNodeIndex>,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub(super) struct SlotNodeIndex {
+    pub(super) routing_slot: u32,
+    pub(super) dirty: bool,
+    pub(super) meta_loaded: bool,
+    pub(super) loading: bool,
+    pub(super) in_memory: bool,
+    pub(super) ttl_ms: Option<u64>,
+    pub(super) dirty_generation: u64,
+    pub(super) last_dump_sequence: u64,
+    pub(super) object_ids: BTreeSet<u64>,
+    pub(super) page_refs: BTreeMap<String, PageIndexEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct PageIndexEntry {
+    pub(super) object_key: String,
+    pub(super) model_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) component: Option<String>,
+    pub(super) object_id: u64,
+    pub(super) address: PageAddress,
+    pub(super) dirty: bool,
+    pub(super) deleted: bool,
+    pub(super) log_backed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
