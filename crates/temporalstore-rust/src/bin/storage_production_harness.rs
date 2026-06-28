@@ -143,6 +143,11 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
             oplog_sequence: 0,
             index_log_sequence: 0,
         }],
+        page_gc_shared_store_cursors: Vec::new(),
+        page_gc_raft_snapshot_refs: Vec::new(),
+        page_gc_checkpoint_floor_segment_id: None,
+        page_gc_raft_install_floor_segment_id: None,
+        page_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
     });
