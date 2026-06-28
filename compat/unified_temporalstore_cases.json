@@ -3241,6 +3241,23 @@
       ]
     },
     {
+      "name": "storage_manager_wal_reclaim_slot_generation_retention",
+      "shard_id": 68,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManager reclaims WAL/index-log only after slot-generation-matching dumps are durable and follower cursor or Raft snapshot retention frontiers allow the entries to be dropped.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_wal_reclaim"
+          },
+          "name": "rust_storage_manager_wal_reclaim_slot_generation_retention",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [

@@ -1946,6 +1946,188 @@ impl TemporalEngine {
         }
     }
 
+    pub fn storage_wal_reclaim_plan(
+        &self,
+        shard_id: ShardId,
+        follower_replay_cursors: impl IntoIterator<Item = SlotDumpFollowerReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+    ) -> StorageWalReclaimPlan {
+        let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
+        let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
+        let current_oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
+        let slot_summaries = self.slot_storage_summaries(shard_id);
+        let current_slot_fingerprints = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&shard_id)
+            .map(slot_generation_fingerprints_by_slot)
+            .unwrap_or_default();
+        let manifests = self.list_slot_dump_manifests(shard_id);
+        let mut missing_slot_generations = Vec::new();
+        let mut retained_manifest_ids = BTreeSet::<String>::new();
+        let mut durable_oplog_frontier = u64::MAX;
+        let mut durable_index_log_frontier = u64::MAX;
+        let mut covered_slot_count = 0usize;
+
+        for summary in &slot_summaries {
+            let matching_manifest = manifests.iter().rev().find(|manifest| {
+                let Ok(manifest_state) =
+                    serde_json::from_slice::<ShardState>(&manifest.index_bytes)
+                else {
+                    return false;
+                };
+                let manifest_slot_fingerprints =
+                    slot_generation_fingerprints_by_slot(&manifest_state);
+                manifest.slot_summaries.iter().any(|manifest_summary| {
+                    slot_dump_summary_matches_current_generation(
+                        manifest_summary,
+                        summary,
+                        &manifest_slot_fingerprints,
+                        &current_slot_fingerprints,
+                    )
+                })
+            });
+            let Some(manifest) = matching_manifest else {
+                missing_slot_generations.push(summary.routing_slot);
+                continue;
+            };
+            retained_manifest_ids.insert(manifest.manifest_id.clone());
+            covered_slot_count = covered_slot_count.saturating_add(1);
+            durable_oplog_frontier = durable_oplog_frontier.min(manifest.oplog_sequence);
+            durable_index_log_frontier =
+                durable_index_log_frontier.min(manifest.index_log_sequence);
+        }
+
+        let mut blocker_reasons = Vec::new();
+        if slot_summaries.is_empty() {
+            blocker_reasons.push("no_slot_generations_to_anchor_reclaim".to_string());
+            durable_oplog_frontier = 0;
+            durable_index_log_frontier = 0;
+        }
+        if !missing_slot_generations.is_empty() {
+            blocker_reasons.push("slot_generation_without_durable_dump".to_string());
+        }
+
+        let mut follower_cursor_block_count = 0usize;
+        for cursor in follower_replay_cursors
+            .iter()
+            .filter(|cursor| cursor.shard_id == shard_id)
+        {
+            follower_cursor_block_count = follower_cursor_block_count.saturating_add(1);
+            durable_oplog_frontier = durable_oplog_frontier.min(cursor.oplog_sequence);
+            durable_index_log_frontier = durable_index_log_frontier.min(cursor.index_log_sequence);
+            blocker_reasons.push(format!(
+                "follower_cursor_retains_logs:{}",
+                cursor.follower_id
+            ));
+        }
+
+        let mut raft_snapshot_block_count = 0usize;
+        for snapshot in raft_snapshot_refs
+            .iter()
+            .filter(|snapshot| snapshot.shard_id == shard_id)
+        {
+            raft_snapshot_block_count = raft_snapshot_block_count.saturating_add(1);
+            durable_oplog_frontier = durable_oplog_frontier.min(snapshot.oplog_sequence);
+            durable_index_log_frontier =
+                durable_index_log_frontier.min(snapshot.index_log_sequence);
+            blocker_reasons.push(format!(
+                "raft_snapshot_retains_logs:{}",
+                snapshot.snapshot_id
+            ));
+        }
+
+        if durable_oplog_frontier == u64::MAX {
+            durable_oplog_frontier = 0;
+        }
+        if durable_index_log_frontier == u64::MAX {
+            durable_index_log_frontier = 0;
+        }
+        let safe_to_reclaim = missing_slot_generations.is_empty()
+            && covered_slot_count == slot_summaries.len()
+            && durable_oplog_frontier > 0
+            && durable_index_log_frontier > 0;
+        let retain_from_oplog_sequence = if safe_to_reclaim {
+            durable_oplog_frontier.saturating_add(1)
+        } else {
+            0
+        };
+        let retain_from_index_log_sequence = if safe_to_reclaim {
+            durable_index_log_frontier.saturating_add(1)
+        } else {
+            0
+        };
+
+        StorageWalReclaimPlan {
+            shard_id,
+            safe_to_reclaim,
+            durable_slot_generation_frontier_oplog_sequence: durable_oplog_frontier,
+            durable_slot_generation_frontier_index_log_sequence: durable_index_log_frontier,
+            retain_from_oplog_sequence,
+            retain_from_index_log_sequence,
+            current_oplog_sequence,
+            current_index_log_sequence,
+            covered_slot_count,
+            uncovered_slot_count: missing_slot_generations.len(),
+            follower_cursor_block_count,
+            raft_snapshot_block_count,
+            missing_slot_generations,
+            retained_manifest_ids: retained_manifest_ids.into_iter().collect(),
+            blocker_reasons,
+        }
+    }
+
+    pub fn apply_storage_wal_reclaim(
+        &self,
+        plan: StorageWalReclaimPlan,
+    ) -> StorageWalReclaimReport {
+        if !plan.safe_to_reclaim {
+            return StorageWalReclaimReport {
+                plan,
+                applied: false,
+                ..StorageWalReclaimReport::default()
+            };
+        }
+        let oplog_gc = self
+            .oplog_store
+            .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
+            .ok();
+        let index_log_gc = self
+            .index_log_store
+            .gc_before_sequence(plan.shard_id, plan.retain_from_index_log_sequence)
+            .ok();
+        StorageWalReclaimReport {
+            applied: oplog_gc.is_some() && index_log_gc.is_some(),
+            oplog_records_removed: oplog_gc
+                .as_ref()
+                .map(|report| report.records_removed)
+                .unwrap_or_default(),
+            index_log_records_removed: index_log_gc
+                .as_ref()
+                .map(|report| report.records_removed)
+                .unwrap_or_default(),
+            oplog_bytes_before: oplog_gc
+                .as_ref()
+                .map(|report| report.bytes_before)
+                .unwrap_or_default(),
+            oplog_bytes_after: oplog_gc
+                .as_ref()
+                .map(|report| report.bytes_after)
+                .unwrap_or_default(),
+            index_log_bytes_before: index_log_gc
+                .as_ref()
+                .map(|report| report.bytes_before)
+                .unwrap_or_default(),
+            index_log_bytes_after: index_log_gc
+                .as_ref()
+                .map(|report| report.bytes_after)
+                .unwrap_or_default(),
+            plan,
+        }
+    }
+
     pub fn run_storage_manager_cycle(
         &self,
         request: StorageManagerCycleRequest,
@@ -2057,9 +2239,10 @@ impl TemporalEngine {
             .saturating_add(compaction_utility.stale_page_estimate)
             .saturating_add(reclaim_stale_bytes)
             .saturating_add(page_segment_stale_density_basis_points);
-        let retention_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+        let retention_prune_plan = self.slot_dump_manifest_prune_plan_with_retention_refs(
             request.shard_id,
             request.follower_replay_cursors.clone(),
+            request.raft_snapshot_refs.clone(),
         );
         let manifest_retention_blockers = retention_prune_plan
             .follower_blocks
@@ -2173,39 +2356,76 @@ impl TemporalEngine {
         } else {
             Some(self.apply_storage_lifecycle(plan_request))
         };
+        let wal_reclaim_plan = self.storage_wal_reclaim_plan(
+            request.shard_id,
+            request.follower_replay_cursors.clone(),
+            request.raft_snapshot_refs.clone(),
+        );
+        let wal_reclaim_report = if request.enable_oplog_reclaim {
+            Some(if request.dry_run {
+                StorageWalReclaimReport {
+                    plan: wal_reclaim_plan,
+                    applied: false,
+                    ..StorageWalReclaimReport::default()
+                }
+            } else {
+                self.apply_storage_wal_reclaim(wal_reclaim_plan)
+            })
+        } else {
+            None
+        };
 
         stages.push(StorageManagerStageReport {
             stage: "reclaim_oplog".to_string(),
             enabled: request.enable_oplog_reclaim,
-            applied: request.enable_oplog_reclaim
-                && !request.dry_run
-                && lifecycle_report
-                    .as_ref()
-                    .and_then(|report| report.dump_manifest.as_ref())
-                    .is_some(),
+            applied: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.applied)
+                .unwrap_or(false),
             skipped: !request.enable_oplog_reclaim
                 || plan.dump_delayed
-                || plan.selected_dump_slots.is_empty(),
+                || wal_reclaim_report
+                    .as_ref()
+                    .map(|report| !report.plan.safe_to_reclaim)
+                    .unwrap_or(true),
             reason: if !request.enable_oplog_reclaim {
                 "oplog reclaim disabled".to_string()
             } else if plan.dump_delayed {
                 "dirty slot dump delayed until the configured undumped log threshold is reached"
                     .to_string()
-            } else if plan.selected_dump_slots.is_empty() {
-                "no dirty slots selected for dump".to_string()
+            } else if wal_reclaim_report
+                .as_ref()
+                .map(|report| !report.plan.safe_to_reclaim)
+                .unwrap_or(true)
+            {
+                format!(
+                    "WAL/index-log reclaim blocked until durable slot generations and retention cursors allow it: {}",
+                    wal_reclaim_report
+                        .as_ref()
+                        .map(|report| report.plan.blocker_reasons.join(","))
+                        .unwrap_or_default()
+                )
             } else {
-                "dumped selected dirty slots and advanced reclaimable log boundary".to_string()
+                "reclaimed WAL/index-log through the slot-generation durable dump frontier"
+                    .to_string()
             },
             selected_slots: plan.selected_dump_slots.clone(),
-            pressure_signal: "undumped_wal_records+wal_bytes+index_log_bytes".to_string(),
+            pressure_signal:
+                "durable_slot_generation_frontier+follower_snapshot_retention+wal_bytes+index_log_bytes"
+                    .to_string(),
             pressure_score: pressure_signals
                 .undumped_wal_records
                 .saturating_add(pressure_signals.wal_bytes)
                 .saturating_add(pressure_signals.index_log_bytes),
-            pressure_threshold: request.min_undumped_oplog_records,
+            pressure_threshold: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.plan.retain_from_oplog_sequence)
+                .unwrap_or(request.min_undumped_oplog_records),
             pressure_triggered: request.enable_oplog_reclaim
-                && !plan.dump_delayed
-                && !plan.selected_dump_slots.is_empty(),
+                && wal_reclaim_report
+                    .as_ref()
+                    .map(|report| report.plan.safe_to_reclaim)
+                    .unwrap_or(false),
             candidate_count: plan.dirty_slots.len(),
             skipped_count: plan
                 .dirty_slots
@@ -2220,6 +2440,22 @@ impl TemporalEngine {
                 .as_ref()
                 .and_then(|report| report.dump_manifest.as_ref())
                 .map(|manifest| manifest.slot_ids.len())
+                .unwrap_or_default(),
+            wal_records_removed: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.oplog_records_removed)
+                .unwrap_or_default(),
+            index_log_records_removed: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.index_log_records_removed)
+                .unwrap_or_default(),
+            retain_from_wal_sequence: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.plan.retain_from_oplog_sequence)
+                .unwrap_or_default(),
+            retain_from_index_log_sequence: wal_reclaim_report
+                .as_ref()
+                .map(|report| report.plan.retain_from_index_log_sequence)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -2560,6 +2796,7 @@ impl TemporalEngine {
             lifecycle_report,
             expiry_report,
             compaction_report,
+            wal_reclaim_report,
             errors,
         }
     }
@@ -8472,6 +8709,52 @@ fn comparable_slot_dump_summaries(
     });
     summaries.sort_by_key(|summary| summary.routing_slot);
     summaries
+}
+
+fn slot_dump_summary_matches_current_generation(
+    manifest_summary: &SlotStorageSummary,
+    current_summary: &SlotStorageSummary,
+    manifest_slot_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
+    current_slot_fingerprints: &BTreeMap<u32, BTreeSet<String>>,
+) -> bool {
+    let mut manifest_segments = manifest_summary.page_segment_ids.clone();
+    manifest_segments.sort_unstable();
+    manifest_segments.dedup();
+    let mut current_segments = current_summary.page_segment_ids.clone();
+    current_segments.sort_unstable();
+    current_segments.dedup();
+    manifest_summary.routing_slot == current_summary.routing_slot
+        && manifest_summary.dirty_generation == current_summary.dirty_generation
+        && manifest_summary.object_count == current_summary.object_count
+        && manifest_summary.page_ref_count == current_summary.page_ref_count
+        && manifest_summary.logical_bytes == current_summary.logical_bytes
+        && manifest_summary.physical_bytes == current_summary.physical_bytes
+        && manifest_segments == current_segments
+        && manifest_slot_fingerprints.get(&manifest_summary.routing_slot)
+            == current_slot_fingerprints.get(&current_summary.routing_slot)
+}
+
+fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeMap<u32, BTreeSet<String>> {
+    let mut by_slot = BTreeMap::<u32, BTreeSet<String>>::new();
+    for entry in collect_live_page_entries(shard) {
+        let routing_slot = entry
+            .address
+            .routing_slot
+            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+        by_slot.entry(routing_slot).or_default().insert(format!(
+            "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+            entry.kind,
+            entry.object_key,
+            entry.component.unwrap_or_default(),
+            entry.address.page_segment_id,
+            entry.address.offset,
+            entry.address.length,
+            entry.address.page_id.unwrap_or_default(),
+            entry.address.object_id.unwrap_or_default(),
+            entry.address.sha256.unwrap_or_default()
+        ));
+    }
+    by_slot
 }
 
 fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
@@ -18355,6 +18638,121 @@ mod tests {
         );
     }
 
+    // shared-corpus: storage_manager_wal_reclaim_slot_generation_retention
+    #[test]
+    fn storage_manager_wal_reclaim_requires_durable_slot_generation_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-reclaim-a".to_string(),
+                value: b"a1".to_vec(),
+            },
+        });
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-reclaim-b".to_string(),
+                value: b"b1".to_vec(),
+            },
+        });
+        let _full_manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-reclaim-b".to_string(),
+                value: b"b2".to_vec(),
+            },
+        });
+
+        let blocked = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
+        assert!(!blocked.safe_to_reclaim, "{blocked:#?}");
+        assert_eq!(blocked.uncovered_slot_count, 1);
+        assert!(blocked
+            .blocker_reasons
+            .contains(&"slot_generation_without_durable_dump".to_string()));
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            max_dump_slots_per_round: 16,
+            ..StorageManagerCycleRequest::default()
+        });
+        let reclaim = report.wal_reclaim_report.as_ref().unwrap();
+        assert!(reclaim.plan.safe_to_reclaim, "{report:#?}");
+        assert!(reclaim.applied, "{report:#?}");
+        assert!(reclaim.oplog_records_removed >= 1);
+        assert!(reclaim.index_log_records_removed >= 1);
+        assert!(!reclaim.plan.retained_manifest_ids.is_empty());
+
+        for key in ["wal-reclaim-a", "wal-reclaim-b"] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: key.to_string(),
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+    }
+
+    // shared-corpus: storage_manager_wal_reclaim_slot_generation_retention
+    #[test]
+    fn storage_manager_wal_reclaim_honors_follower_cursor_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-cursor".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let first_manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-cursor".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        let _manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        let cursor = SlotDumpFollowerReplayCursor {
+            follower_id: "lagging-follower".to_string(),
+            shard_id: 1,
+            oplog_sequence: first_manifest.oplog_sequence,
+            index_log_sequence: first_manifest.index_log_sequence,
+        };
+
+        let plan = engine.storage_wal_reclaim_plan(1, vec![cursor.clone()], Vec::new());
+        assert!(plan.safe_to_reclaim, "{plan:#?}");
+        assert_eq!(plan.follower_cursor_block_count, 1);
+        assert_eq!(
+            plan.retain_from_oplog_sequence,
+            cursor.oplog_sequence.saturating_add(1)
+        );
+        assert_eq!(
+            plan.retain_from_index_log_sequence,
+            cursor.index_log_sequence.saturating_add(1)
+        );
+        assert!(plan
+            .blocker_reasons
+            .iter()
+            .any(|reason| reason.contains("follower_cursor_retains_logs")));
+    }
+
     #[test]
     fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         let dir = tempfile::tempdir().unwrap();
@@ -19338,9 +19736,23 @@ mod tests {
         assert!(reclaim_oplog.dumped_slot_count >= 1, "{report:#?}");
         assert_eq!(
             reclaim_oplog.pressure_signal,
-            "undumped_wal_records+wal_bytes+index_log_bytes"
+            "durable_slot_generation_frontier+follower_snapshot_retention+wal_bytes+index_log_bytes"
         );
         assert!(reclaim_oplog.pressure_triggered, "{report:#?}");
+        assert!(report.wal_reclaim_report.is_some(), "{report:#?}");
+        let wal_reclaim = report.wal_reclaim_report.as_ref().unwrap();
+        assert!(wal_reclaim.plan.safe_to_reclaim, "{report:#?}");
+        assert!(wal_reclaim.applied, "{report:#?}");
+        assert!(wal_reclaim.oplog_records_removed >= 1, "{report:#?}");
+        assert!(wal_reclaim.index_log_records_removed >= 1, "{report:#?}");
+        assert_eq!(
+            reclaim_oplog.retain_from_wal_sequence,
+            wal_reclaim.plan.retain_from_oplog_sequence
+        );
+        assert_eq!(
+            reclaim_oplog.retain_from_index_log_sequence,
+            wal_reclaim.plan.retain_from_index_log_sequence
+        );
         let expire = report
             .stages
             .iter()
