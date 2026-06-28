@@ -2580,6 +2580,51 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertGreaterEqual(dropped["low_score"], 1)
         self.assertEqual(dropped["cross_session_policy"]["selected_ref_count"], 1)
 
+    def test_shared_context_budget_caps_shared_resources_and_skills(self) -> None:
+        shared_policy = mcp.build_shared_context_policy(
+            {"shared_context": {"resource_budget_tokens": 8, "skill_budget_tokens": 8}},
+            {},
+            remote_budget_tokens=1000,
+        )
+        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "resource_chunk",
+                    "ref_hash": 1,
+                    "score": 0.9,
+                    "sharing_scope": "tenant_shared",
+                    "text": "GPU approval policy",
+                },
+                {
+                    "ref_type": "resource_chunk",
+                    "ref_hash": 2,
+                    "score": 0.88,
+                    "sharing_scope": "tenant_shared",
+                    "text": "finance review requires budget owner signoff",
+                },
+                {
+                    "ref_type": "skill_section",
+                    "ref_hash": 3,
+                    "score": 0.87,
+                    "sharing_scope": "tenant_shared",
+                    "text": "Use replay debugger for selected refs",
+                },
+            ],
+            [],
+            max_context_tokens=1000,
+            auxiliary_quota=0,
+            question_type="fact",
+            min_score=0.2,
+            shared_context_policy=shared_policy,
+        )
+
+        self.assertGreater(used_tokens, 0)
+        self.assertEqual(sum(1 for item in selected if item["ref_type"] == "resource_chunk"), 1)
+        self.assertEqual(sum(1 for item in selected if item["ref_type"] == "skill_section"), 1)
+        self.assertGreaterEqual(dropped["shared_resource_budget"], 1)
+        self.assertEqual(dropped["shared_context_policy"]["resource_selected_ref_count"], 1)
+        self.assertEqual(dropped["shared_context_policy"]["skill_selected_ref_count"], 1)
+
     def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
         client = _NativeContextPackClient()
         adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
