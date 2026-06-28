@@ -1,23 +1,8 @@
-﻿<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MatrixArk Codex MCP And Hook Installation Manual</title>
-  <style>
-    :root { color-scheme: light; --ink:#17202a; --line:#d6dbdf; --bg:#f8fafc; --panel:#ffffff; }
-    body { margin:0; font-family: Inter, Segoe UI, Arial, sans-serif; color:var(--ink); background:var(--bg); line-height:1.55; }
-    main { max-width: 1120px; margin: 0 auto; padding: 40px 28px 80px; }
-    article { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:32px; box-shadow:0 10px 30px rgba(15,23,42,.06); }
-    h1 { margin-top:0; font-size:32px; line-height:1.15; }
-    pre { overflow:auto; white-space:pre-wrap; background:#111827; color:#f8fafc; padding:18px; border-radius:7px; font-size:13px; line-height:1.45; }
-  </style>
-</head>
-<body><main><article><pre># MatrixArk Codex MCP And Hook Installation Manual
+<!doctype html><meta charset='utf-8'><title>MatrixArk Codex MCP And Hook Installation Manual</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># MatrixArk Codex MCP And Hook Installation Manual
 
 This manual explains how Codex connects to MatrixArk, how automatic hooks differ from MCP tool calls, and how to call the MatrixArk ingestion, extraction, retrieval, feedback, replay, resource, and skill APIs from Codex.
 
-MatrixArk should not require Codex, Claude, Cursor, or another agent to understand MatrixArk&#39;s internal data models. The agent sends messages, local context hints, files, and lifecycle events. MatrixArk resolves identity, extracts context, writes TemporalStore records, refreshes summaries, retrieves a ContextPack, and records audit/replay data.
+MatrixArk should not require Codex, Claude, Cursor, or another agent to understand MatrixArk&#x27;s internal data models. The agent sends messages, local context hints, files, and lifecycle events. MatrixArk resolves identity, extracts context, writes TemporalStore records, refreshes summaries, retrieves a ContextPack, and records audit/replay data.
 
 ## 1. Two Integration Modes
 
@@ -37,7 +22,7 @@ Use both modes when possible:
 
 | Mode | What it does | When to use |
 |---|---|---|
-| MCP tools | Exposes `matrixark_ingest`, `matrixark_retrieve`, `matrixark_feedback`, `matrixark_replay`, admin, resource, and skill APIs to Codex. | Reliable default in Codex Desktop and Codex CLI. Good for explicit agent calls and explicit offline debugging. JSONL files are allowed for MCP line-protocol inputs, miss/hypothesis artifacts, and debug event logs only; they are not real full retrieval proof. |
+| MCP tools | Exposes `matrixark_ingest`, `matrixark_retrieve`, `matrixark_feedback`, `matrixark_replay`, admin, resource, and skill APIs to Codex. | Reliable default in Codex Desktop and Codex CLI. Good for explicit agent calls and debugging. |
 | Codex hooks | Automatically captures lifecycle events and calls MatrixArk without the agent remembering to call tools. | Best for always-on ingestion, retrieval before LLM, tool-result capture, and session commits. |
 
 Important: MCP by itself does not automatically ingest every message. Codex must call the MCP tool, or a hook must call the MCP server on each lifecycle event.
@@ -125,7 +110,9 @@ Production hook mode must not use local JSONL as the retrieval or serving backen
 `temporalstore-direct` or `temporalstore-rust`; when the backend is omitted in
 production profile, MatrixArk defaults to the native TemporalStore path and
 refuses local `record_log` unless `MATRIXARK_ALLOW_LOCAL_BACKEND=1` is set for
-debugging.
+explicit offline debugging. JSONL files are allowed for MCP line-protocol inputs,
+miss/hypothesis artifacts, and debug event logs only; they are not real full
+retrieval proof.
 
 Local identity defaults for hooks:
 
@@ -302,11 +289,13 @@ Important rules:
 |---|---|
 | Send only visible local context | Prevents leakage of hidden prompts, private chain-of-thought, or agent-internal policy. |
 | Send `local_context_tokens` when known | MatrixArk can compute `remote_budget = max_context_tokens - local_context_tokens - safety_margin`. |
-| Send `max_context_tokens` when known | MatrixArk packs remote context to fit the agent&#39;s remaining prompt budget. |
+| Send `max_context_tokens` when known | MatrixArk packs remote context to fit the agent&#x27;s remaining prompt budget. |
 | Keep `local_context_refs` and `remote_context_refs` separate | The agent can dedupe, display, debug, and audit what came from local workspace versus MatrixArk. |
 | Call `matrixark_ingest` after answering | MatrixArk learns from the actual outcome and can update events, entities, summaries, and audit/replay records. |
 
-If an agent cannot estimate token budget, MatrixArk defaults to 10000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
+Default cross-session policy: MatrixArk always considers same-user cross-session context when `session_scope=prefer`, but it keeps that lane bounded. Normal queries get about 12% of the remote MatrixArk budget, broad/evidence queries get about 15%, and current/latest/multi-hop/date queries get about 20%. Cross-session candidates still must pass the score threshold, session fanout, candidate cap, and token budget; raw cross-session events need a higher evidence score, while entities, summaries, and time-compression records are preferred for most cross-session context. Same-session continuity, shared resources, and relevant skills keep most of the budget.
+
+If an agent cannot estimate token budget, MatrixArk defaults to 32000 tokens. This is intentionally larger than the measured average retrieval payload, roughly 1.2k tokens, so MatrixArk has headroom for resource chunks, skills, and multi-hop evidence without drifting into full-history stuffing. For production integrations, prefer explicit values based on the real remaining model prompt budget:
 
 ```json
 {
@@ -465,7 +454,7 @@ Use this for VikingMem-style logical session extraction after enough messages ac
 {
   &quot;messages&quot;: [
     {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;I prefer Qwen for local tests.&quot;},
-    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Noted. We&#39;ll use Qwen locally.&quot;},
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;Noted. We&#x27;ll use Qwen locally.&quot;},
     {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Also keep C++ TemporalStore as the production baseline.&quot;}
   ],
   &quot;scope&quot;: {
@@ -731,7 +720,7 @@ printf &#39;%s\n&#39; &#39;{&quot;prompt&quot;:&quot;Alice approved the GPU requ
 List tools through the configured C++ MCP launcher:
 
 ```powershell
-$req = &#39;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{}}&#39; + &quot;`n&quot;
+$req = &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{}}&#x27; + &quot;`n&quot;
 Set-Content -NoNewline -Encoding ascii &quot;$env:TEMP\matrixark-mcp-smoke.jsonl&quot; $req
 wsl --cd <repo> -e bash -lc &#39;timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json &lt; <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 1000&#39;
 ```
@@ -841,5 +830,35 @@ For reliable multi-user isolation, send at least:
 ```
 
 MatrixArk can infer defaults locally, but production should use an API key and explicit or hook-captured `user_id` / `session_id` for audit and isolation.
-</pre></article></main></body>
-</html>
+
+## OSS Understanding And Summary Requirement
+
+Production and benchmark integrations should use OSS/OpenAI-compatible models for
+message/resource extraction, query understanding, segmentation, and ContextNode
+L0/L1 summary synthesis. Do not rely on heuristic or deterministic summaries for
+quality claims.
+
+Recommended strict environment:
+
+```bash
+MATRIXARK_UNDERSTANDING_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_PROVIDER=openai_compatible
+MATRIXARK_SEGMENT_PROVIDER=openai_compatible
+MATRIXARK_SUMMARY_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_BASE_URL=http://127.0.0.1:8000/v1
+MATRIXARK_EXTRACTION_MODEL=qwen2.5:1.5b
+MATRIXARK_SUMMARY_MODEL=qwen2.5:1.5b
+MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1
+```
+
+With this setting, `matrixark_refresh_summaries` asks the configured model to
+generate `node_l0` and `node_l1` summaries. `node_l0` remains a compact routing
+abstract; `node_l1` is a richer semantic synthesis over child summaries, entity
+state, operator/compression state, and recent events. If the model endpoint is
+not available, strict mode fails instead of silently falling back to deterministic
+text.
+
+Local/offline CI may still use deterministic fallback for smoke tests, but those
+runs must be labeled as fallback and must not be used as OSS/VikingMem-style
+quality evidence.
+</pre>

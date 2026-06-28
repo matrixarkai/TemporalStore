@@ -1,4 +1,4 @@
-# MatrixArk Agent Policy
+<!doctype html><meta charset='utf-8'><title>MatrixArk Agent Policy</title><style>body{font-family:Inter,Segoe UI,Arial,sans-serif;max-width:1120px;margin:32px auto;padding:0 24px;color:#172033;line-height:1.45}pre{white-space:pre-wrap;background:#f6f8fb;border:1px solid #dde5f0;padding:14px;overflow:auto;border-radius:8px}</style><pre># MatrixArk Agent Policy
 
 Use this policy in Codex, Claude, Cursor, or a vertical AI harness when the
 agent can call MatrixArk MCP tools.
@@ -42,21 +42,21 @@ Request shape:
 
 ```json
 {
-  "query": "What did we decide about the GPU budget?",
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "cursor_thread_456"
+  &quot;query&quot;: &quot;What did we decide about the GPU budget?&quot;,
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
   },
-  "local_context": [
-    {"ref": "open-buffer:src/billing.py", "text": "short visible local summary"},
-    {"ref": "tool-output:test", "text": "relevant test output summary"}
+  &quot;local_context&quot;: [
+    {&quot;ref&quot;: &quot;open-buffer:src/billing.py&quot;, &quot;text&quot;: &quot;short visible local summary&quot;},
+    {&quot;ref&quot;: &quot;tool-output:test&quot;, &quot;text&quot;: &quot;relevant test output summary&quot;}
   ],
-  "local_context_tokens": 700,
-  "max_context_tokens": 2048,
-  "ranking": {
-    "weights": {"time": 0.2, "business": 0.1}
+  &quot;local_context_tokens&quot;: 700,
+  &quot;max_context_tokens&quot;: 2048,
+  &quot;ranking&quot;: {
+    &quot;weights&quot;: {&quot;time&quot;: 0.2, &quot;business&quot;: 0.1}
   }
 }
 ```
@@ -89,20 +89,20 @@ Post-answer ingest shape:
 
 ```json
 {
-  "messages": [
-    {"role": "user", "content": "What did we decide about the GPU budget?"},
-    {"role": "assistant", "content": "The GPU request is approved under capex."}
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;What did we decide about the GPU budget?&quot;},
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;The GPU request is approved under capex.&quot;}
   ],
-  "metadata": {
-    "source": "agent_post_answer",
-    "reply_to_context_pack_id": "pack_123",
-    "local_context_refs": ["open-buffer:src/billing.py", "tool-output:test"]
+  &quot;metadata&quot;: {
+    &quot;source&quot;: &quot;agent_post_answer&quot;,
+    &quot;reply_to_context_pack_id&quot;: &quot;pack_123&quot;,
+    &quot;local_context_refs&quot;: [&quot;open-buffer:src/billing.py&quot;, &quot;tool-output:test&quot;]
   },
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "cursor_thread_456"
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
   }
 }
 ```
@@ -111,18 +111,18 @@ Feedback shape:
 
 ```json
 {
-  "context_pack_id": "pack_123",
-  "messages": [
-    {"role": "assistant", "content": "The GPU request is approved under capex."},
-    {"role": "user", "content": "Yes, that is correct."}
+  &quot;context_pack_id&quot;: &quot;pack_123&quot;,
+  &quot;messages&quot;: [
+    {&quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: &quot;The GPU request is approved under capex.&quot;},
+    {&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: &quot;Yes, that is correct.&quot;}
   ],
-  "accepted_refs": ["event_gpu_approval"],
-  "rejected_refs": [],
-  "scope": {
-    "account_id": "acct_acme",
-    "tenant_id": "tenant_prod",
-    "user_id": "user_123",
-    "session_id": "cursor_thread_456"
+  &quot;accepted_refs&quot;: [&quot;event_gpu_approval&quot;],
+  &quot;rejected_refs&quot;: [],
+  &quot;scope&quot;: {
+    &quot;account_id&quot;: &quot;acct_acme&quot;,
+    &quot;tenant_id&quot;: &quot;tenant_prod&quot;,
+    &quot;user_id&quot;: &quot;user_123&quot;,
+    &quot;session_id&quot;: &quot;cursor_thread_456&quot;
   }
 }
 ```
@@ -135,7 +135,7 @@ Call `matrixark_session_commit` when:
 task is finished
 conversation is compacted
 agent is about to stop
-pending same-session messages >= 20
+pending same-session messages &gt;= 20
 session has been idle for 10-30 minutes
 ```
 
@@ -224,3 +224,4 @@ text.
 Local/offline CI may still use deterministic fallback for smoke tests, but those
 runs must be labeled as fallback and must not be used as OSS/VikingMem-style
 quality evidence.
+</pre>

@@ -1503,7 +1503,6 @@ class MatrixArkLocalAdapter:
             if not source_text:
                 source_text = " ".join(node_path)
             prefix_label = " / ".join(node_path)
-            l0_summary = summarize_text(f"{prefix_label} :: {source_text}", limit=220)
             source_event_ids = [int(record["event_id_hash"]) for record in events if record.get("event_id_hash") is not None]
             source_summary_hashes = [
                 int(record.get("summary_hash") or record.get("node_hash"))
@@ -1526,12 +1525,26 @@ class MatrixArkLocalAdapter:
                 child_summary_count=len(source_summary_hashes),
             )
             l1_policy = {**l1_policy, **summary_source_policy}
-            summary_specs = [("node_l0", l0_summary, "node_l0")]
+            l0_summary, l0_provider_meta = synthesize_context_node_summary(
+                level="node_l0",
+                node_path=node_path,
+                source_text=source_text,
+                fallback_text=f"{prefix_label} :: {source_text}",
+                max_chars=220,
+                policy=l1_policy,
+            )
+            summary_specs = [("node_l0", l0_summary, "node_l0", l0_provider_meta)]
             if l1_policy["generate_l1"]:
-                l1_summary = summarize_text(
-                    f"Context node {prefix_label}. Rich overview: {source_text}. "
-                    f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall.",
-                    limit=1200,
+                l1_summary, l1_provider_meta = synthesize_context_node_summary(
+                    level="node_l1",
+                    node_path=node_path,
+                    source_text=source_text,
+                    fallback_text=(
+                        f"Context node {prefix_label}. Rich overview: {source_text}. "
+                        f"This node belongs to path {prefix_label} and should be used for tree-first retrieval before leaf event/entity recall."
+                    ),
+                    max_chars=1200,
+                    policy=l1_policy,
                 )
                 summary_specs.append(("node_l1", l1_summary, "node_l1"))
             for level, summary_text, embedding_type in summary_specs:
@@ -1549,7 +1562,7 @@ class MatrixArkLocalAdapter:
                         "source_summary_hashes": source_summary_hashes,
                         "source_entity_hashes": source_entity_hashes,
                         "source_operator_hashes": source_operator_hashes,
-                        "summary_generation_policy": l1_policy,
+                        "summary_generation_policy": summary_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
                         "updated_at_ms": refreshed_at_ms,
@@ -1567,7 +1580,7 @@ class MatrixArkLocalAdapter:
                         "dim": len(embedding_for_text(summary_text)),
                         "model": embedding_model_name(),
                         "vector": embedding_for_text(summary_text),
-                        "summary_generation_policy": l1_policy,
+                        "summary_generation_policy": summary_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
                         "updated_at_ms": refreshed_at_ms,

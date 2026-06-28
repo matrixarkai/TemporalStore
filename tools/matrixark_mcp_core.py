@@ -166,6 +166,12 @@ EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.env
 EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
 EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
 EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
+SUMMARY_LLM_PROVIDER = os.environ.get(
+    "MATRIXARK_SUMMARY_PROVIDER",
+    os.environ.get("MATRIXARK_UNDERSTANDING_PROVIDER", os.environ.get("MATRIXARK_EXTRACTION_PROVIDER", "deterministic")),
+).strip().lower().replace("-", "_")
+SUMMARY_LLM_MODEL = os.environ.get("MATRIXARK_SUMMARY_MODEL", EXTRACTION_LLM_MODEL)
+SUMMARY_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_SUMMARY_MAX_TOKENS", "900"))
 ENABLE_LLM_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENABLE_LLM_MERGE_OPERATOR", "").strip().lower() in {"1", "true", "yes"}
 DEFAULT_ENTITY_MERGE_OPERATOR = os.environ.get("MATRIXARK_ENTITY_MERGE_OPERATOR", "EUA_MERGE").strip().upper() or "EUA_MERGE"
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
@@ -5722,6 +5728,75 @@ def estimated_context_tokens(text: str) -> int:
         return 0
     return max(1, (len(compact) + 3) // 4)
 
+
+
+def summary_provider() -> str:
+    provider = os.environ.get("MATRIXARK_SUMMARY_PROVIDER", SUMMARY_LLM_PROVIDER).strip().lower().replace("-", "_")
+    if provider in {"oss", "open_source", "local_llm", "oss_llm"}:
+        return "openai_compatible"
+    if provider in {"", "deterministic", "rules", "local"} and require_oss_understanding():
+        raise MatrixArkError("deterministic L0/L1 summary generation is disabled because MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1")
+    return provider or "deterministic"
+
+
+def synthesize_context_node_summary(
+    *,
+    level: str,
+    node_path: list[str],
+    source_text: str,
+    fallback_text: str,
+    max_chars: int,
+    policy: Json,
+) -> tuple[str, Json]:
+    provider = summary_provider()
+    fallback_summary = summarize_text(fallback_text, limit=max_chars)
+    provider_meta: Json = {
+        "provider": provider,
+        "model": SUMMARY_LLM_MODEL if provider in {"openai", "openai_compatible", "openai_compatible_llm"} else "",
+        "fallback_used": False,
+        "summary_level": level,
+    }
+    if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
+        system = (
+            "You generate MatrixArk ContextNode traversal summaries. Return JSON only. "
+            "The summary must be faithful to the supplied child summaries, entity state, operator state, and recent events. "
+            "For node_l0 return a compact routing abstract. For node_l1 return a richer semantic synthesis for tree-first retrieval. "
+            "Do not invent facts. Prefer current state and resolved contradictions."
+        )
+        user = json.dumps(
+            {
+                "summary_level": level,
+                "node_path": node_path,
+                "generation_policy": policy,
+                "source_text": summarize_text(source_text, limit=5000),
+                "required_json_shape": {"summary_text": "string"},
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        try:
+            result = openai_compatible_json_call(
+                system=system,
+                user=user,
+                model=SUMMARY_LLM_MODEL,
+                max_tokens=SUMMARY_LLM_MAX_TOKENS,
+            )
+            summary_text = summarize_text(str(result.get("summary_text") or result.get("summary") or ""), limit=max_chars)
+            if not summary_text:
+                raise MatrixArkError("summary provider returned empty summary_text")
+            provider_meta["execution_mode"] = "llm_json"
+            return summary_text, provider_meta
+        except MatrixArkError:
+            if require_oss_understanding():
+                raise
+            provider_meta["fallback_used"] = True
+            provider_meta["execution_mode"] = "deterministic_fallback"
+            return fallback_summary, provider_meta
+    if require_oss_understanding():
+        raise MatrixArkError(f"unsupported OSS summary provider: {provider}")
+    provider_meta["fallback_used"] = True
+    provider_meta["execution_mode"] = "deterministic_fallback"
+    return fallback_summary, provider_meta
 
 def node_l1_generation_policy(
     *,

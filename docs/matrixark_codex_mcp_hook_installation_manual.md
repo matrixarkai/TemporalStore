@@ -830,3 +830,34 @@ For reliable multi-user isolation, send at least:
 ```
 
 MatrixArk can infer defaults locally, but production should use an API key and explicit or hook-captured `user_id` / `session_id` for audit and isolation.
+
+## OSS Understanding And Summary Requirement
+
+Production and benchmark integrations should use OSS/OpenAI-compatible models for
+message/resource extraction, query understanding, segmentation, and ContextNode
+L0/L1 summary synthesis. Do not rely on heuristic or deterministic summaries for
+quality claims.
+
+Recommended strict environment:
+
+```bash
+MATRIXARK_UNDERSTANDING_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_PROVIDER=openai_compatible
+MATRIXARK_SEGMENT_PROVIDER=openai_compatible
+MATRIXARK_SUMMARY_PROVIDER=openai_compatible
+MATRIXARK_EXTRACTION_BASE_URL=http://127.0.0.1:8000/v1
+MATRIXARK_EXTRACTION_MODEL=qwen2.5:1.5b
+MATRIXARK_SUMMARY_MODEL=qwen2.5:1.5b
+MATRIXARK_REQUIRE_OSS_UNDERSTANDING=1
+```
+
+With this setting, `matrixark_refresh_summaries` asks the configured model to
+generate `node_l0` and `node_l1` summaries. `node_l0` remains a compact routing
+abstract; `node_l1` is a richer semantic synthesis over child summaries, entity
+state, operator/compression state, and recent events. If the model endpoint is
+not available, strict mode fails instead of silently falling back to deterministic
+text.
+
+Local/offline CI may still use deterministic fallback for smoke tests, but those
+runs must be labeled as fallback and must not be used as OSS/VikingMem-style
+quality evidence.
