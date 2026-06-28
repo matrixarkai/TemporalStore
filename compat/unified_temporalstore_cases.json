@@ -5114,16 +5114,241 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived membership role case: witness participates in quorum without serving data or leadership, learner serves caught-up reads without quorum, auto-promote learner transitions to voter after catch-up, local-status/admin reports expose role semantics, and pending joint consensus survives rolling restart before safe commit.",
-            "kind": "existing_test",
-            "mode": "runtime",
-            "runner": "BUILD_TYPE=Release MEMBERSHIP_OPS=200 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust learner_and_witness_roles_match_cpp_membership_shape pending_joint_consensus_survives_rolling_restore_and_completes --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-membership-roles.json>",
-            "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "kind": "raft_membership_op",
+            "nodes": [
+              1,
+              2,
+              3
+            ],
+            "op": "setup_cluster"
           },
-          "name": "witness_learner_auto_promote_and_pending_joint_restart"
+          "name": "setup_three_voter_cluster"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "node_id": 4,
+            "op": "add_replica",
+            "role": "learner"
+          },
+          "name": "add_caught_up_learner"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "node_id": 5,
+            "op": "add_replica",
+            "role": "witness"
+          },
+          "name": "add_quorum_witness"
+        },
+        {
+          "command": {
+            "auto_promote": true,
+            "kind": "raft_membership_op",
+            "node_id": 6,
+            "op": "add_replica",
+            "role": "learner"
+          },
+          "name": "add_auto_promoted_learner"
+        },
+        {
+          "command": {
+            "expected_live_voters": 5,
+            "expected_majority": 3,
+            "expected_voters": [
+              1,
+              2,
+              3,
+              5,
+              6
+            ],
+            "kind": "raft_membership_op",
+            "op": "assert_cluster_status"
+          },
+          "name": "assert_witness_and_auto_promote_membership"
+        },
+        {
+          "command": {
+            "can_be_leader": false,
+            "can_serve_data": true,
+            "kind": "raft_membership_op",
+            "node_id": 4,
+            "op": "assert_peer_status",
+            "participates_in_quorum": false,
+            "role": "learner"
+          },
+          "name": "assert_learner_role_semantics"
+        },
+        {
+          "command": {
+            "can_be_leader": false,
+            "can_serve_data": false,
+            "kind": "raft_membership_op",
+            "node_id": 5,
+            "op": "assert_peer_status",
+            "participates_in_quorum": true,
+            "role": "witness"
+          },
+          "name": "assert_witness_role_semantics"
+        },
+        {
+          "command": {
+            "auto_promoted_from_learner": true,
+            "can_be_leader": true,
+            "can_serve_data": true,
+            "kind": "raft_membership_op",
+            "node_id": 6,
+            "op": "assert_peer_status",
+            "participates_in_quorum": true,
+            "role": "voter"
+          },
+          "name": "assert_auto_promoted_voter_semantics"
+        },
+        {
+          "command": {
+            "expect_learner": true,
+            "expect_pending_joint": false,
+            "expect_witness": true,
+            "kind": "raft_membership_op",
+            "op": "assert_local_status_report"
+          },
+          "name": "assert_local_status_role_fields"
+        },
+        {
+          "command": {
+            "expect_auto_promote": true,
+            "expect_pending_joint": false,
+            "expect_witness": true,
+            "kind": "raft_membership_op",
+            "op": "assert_runtime_admin_report"
+          },
+          "name": "assert_admin_role_fields"
+        },
+        {
+          "command": {
+            "key": "role-k",
+            "kind": "raft_membership_op",
+            "op": "propose_string_set",
+            "value": "role-v"
+          },
+          "name": "commit_role_payload"
+        },
+        {
+          "command": {
+            "expected_value": "role-v",
+            "key": "role-k",
+            "kind": "raft_membership_op",
+            "node_id": 4,
+            "op": "read_from_replica"
+          },
+          "name": "learner_serves_caught_up_read"
+        },
+        {
+          "command": {
+            "expected_error": "NodeNotFound",
+            "key": "role-k",
+            "kind": "raft_membership_op",
+            "node_id": 5,
+            "op": "read_from_replica"
+          },
+          "name": "witness_rejects_data_read"
+        },
+        {
+          "command": {
+            "expected_error": "NodeNotFound",
+            "kind": "raft_membership_op",
+            "node_id": 4,
+            "op": "elect_leader"
+          },
+          "name": "learner_cannot_be_leader"
+        },
+        {
+          "command": {
+            "expected_error": "NodeNotFound",
+            "kind": "raft_membership_op",
+            "node_id": 5,
+            "op": "elect_leader"
+          },
+          "name": "witness_cannot_be_leader"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "nodes": [
+              1,
+              2,
+              3
+            ],
+            "op": "setup_wal_cluster"
+          },
+          "name": "setup_wal_cluster_for_joint_consensus"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "new_voters": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "op": "begin_joint_consensus"
+          },
+          "name": "begin_pending_joint_consensus"
+        },
+        {
+          "command": {
+            "expect_pending_joint": true,
+            "kind": "raft_membership_op",
+            "new_voter": 4,
+            "op": "assert_local_status_report",
+            "phase": "before_restart"
+          },
+          "name": "assert_pending_joint_before_restart"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "nodes": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "op": "restore_wal_cluster"
+          },
+          "name": "restore_cluster_from_wal"
+        },
+        {
+          "command": {
+            "expect_pending_joint": true,
+            "kind": "raft_membership_op",
+            "new_voter": 4,
+            "op": "assert_local_status_report",
+            "phase": "after_restart"
+          },
+          "name": "assert_pending_joint_after_restart"
+        },
+        {
+          "command": {
+            "kind": "raft_membership_op",
+            "op": "commit_joint_consensus"
+          },
+          "name": "commit_joint_consensus"
+        },
+        {
+          "command": {
+            "expected_voters": [
+              1,
+              2,
+              3,
+              4
+            ],
+            "kind": "raft_membership_op",
+            "op": "assert_cluster_status"
+          },
+          "name": "assert_joint_consensus_completed"
         }
       ]
     },
@@ -8136,6 +8361,7 @@
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates",
       "raft_byteraft_read_safety_policy",
+      "raft_byteraft_membership_roles",
       "raft_byteraft_metrics_admin_pipeline_status",
       "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",
@@ -8263,7 +8489,8 @@
       "storage_stream_reopen_scan",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
-      "object_store_backend_detect"
+      "object_store_backend_detect",
+      "raft_membership_op"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -8278,6 +8505,7 @@
       "raft_metaserver_membership_add_promote_remove",
       "raft_openraft_process_rollout_evidence",
       "raft_byteraft_read_safety_policy",
+      "raft_byteraft_membership_roles",
       "raft_byteraft_metrics_admin_pipeline_status",
       "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",

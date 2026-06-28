@@ -3994,84 +3994,269 @@ fn scale_up_adds_caught_up_replica() {
     );
 }
 
+fn load_shared_raft_case(name: &str) -> serde_json::Value {
+    let corpus_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../compat/unified_temporalstore_cases.json");
+    let bytes = std::fs::read(&corpus_path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read shared corpus {}: {err}",
+            corpus_path.display()
+        )
+    });
+    let corpus: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    corpus["cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|case| case["name"].as_str() == Some(name))
+        .cloned()
+        .unwrap_or_else(|| panic!("shared corpus case {name} not found"))
+}
+
+fn json_u64(value: &serde_json::Value, field: &str) -> u64 {
+    value[field]
+        .as_u64()
+        .unwrap_or_else(|| panic!("field {field} must be u64 in {value}"))
+}
+
+fn json_bool(value: &serde_json::Value, field: &str) -> bool {
+    value[field]
+        .as_bool()
+        .unwrap_or_else(|| panic!("field {field} must be bool in {value}"))
+}
+
+fn json_u64_list(value: &serde_json::Value, field: &str) -> Vec<u64> {
+    value[field]
+        .as_array()
+        .unwrap_or_else(|| panic!("field {field} must be u64 list in {value}"))
+        .iter()
+        .map(|node| node.as_u64().unwrap())
+        .collect()
+}
+
+fn json_role(value: &serde_json::Value) -> RaftReplicaRole {
+    match value["role"].as_str().unwrap() {
+        "voter" => RaftReplicaRole::Voter,
+        "learner" => RaftReplicaRole::Learner,
+        "witness" => RaftReplicaRole::Witness,
+        role => panic!("unknown shared Raft role {role}"),
+    }
+}
+
+fn assert_shared_error<T: std::fmt::Debug>(
+    actual: Result<T, RaftError>,
+    command: &serde_json::Value,
+) {
+    let expected = command["expected_error"].as_str().unwrap();
+    match (expected, actual) {
+        ("NodeNotFound", Err(RaftError::NodeNotFound(_))) => {}
+        (_, other) => panic!("expected shared error {expected}, got {other:?}"),
+    }
+}
+
+fn execute_raft_membership_shared_case(case_name: &str) {
+    let case = load_shared_raft_case(case_name);
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cluster: Option<RaftCluster> = None;
+    for step in case["steps"].as_array().unwrap() {
+        let command = &step["command"];
+        assert_eq!(
+            command["kind"].as_str(),
+            Some("raft_membership_op"),
+            "step {} must be executable raft_membership_op",
+            step["name"]
+        );
+        match command["op"].as_str().unwrap() {
+            "setup_cluster" => {
+                cluster = Some(RaftCluster::new_single_shard(
+                    case["shard_id"].as_u64().unwrap(),
+                    json_u64_list(command, "nodes"),
+                ));
+            }
+            "setup_wal_cluster" => {
+                cluster = Some(
+                    RaftCluster::new_single_shard_with_wal(
+                        tmp.path(),
+                        case["shard_id"].as_u64().unwrap(),
+                        json_u64_list(command, "nodes"),
+                        RaftConfig::default(),
+                    )
+                    .unwrap(),
+                );
+            }
+            "restore_wal_cluster" => {
+                cluster = Some(
+                    RaftCluster::restore_single_shard_from_wal(
+                        tmp.path(),
+                        case["shard_id"].as_u64().unwrap(),
+                        json_u64_list(command, "nodes"),
+                        RaftConfig::default(),
+                    )
+                    .unwrap(),
+                );
+            }
+            "add_replica" => {
+                let cluster = cluster.as_ref().unwrap();
+                let node_id = json_u64(command, "node_id");
+                if command["auto_promote"].as_bool().unwrap_or(false) {
+                    cluster
+                        .add_learner_with_auto_promote(node_id, true)
+                        .unwrap();
+                } else {
+                    cluster
+                        .add_node_with_role(node_id, json_role(command))
+                        .unwrap();
+                }
+            }
+            "assert_cluster_status" => {
+                let cluster = cluster.as_ref().unwrap();
+                let status = cluster.status();
+                if command.get("expected_majority").is_some() {
+                    assert_eq!(
+                        status.majority,
+                        json_u64(command, "expected_majority") as usize
+                    );
+                }
+                if command.get("expected_live_voters").is_some() {
+                    assert_eq!(
+                        status.live_voters,
+                        json_u64(command, "expected_live_voters") as usize
+                    );
+                }
+                if command.get("expected_voters").is_some() {
+                    assert_eq!(
+                        cluster.membership().voters,
+                        json_u64_list(command, "expected_voters")
+                    );
+                }
+            }
+            "assert_peer_status" => {
+                let cluster = cluster.as_ref().unwrap();
+                let node_id = json_u64(command, "node_id");
+                let local = cluster.local_status(node_id).unwrap();
+                assert_eq!(local.replica_role, json_role(command));
+                let report = cluster.byteraft_local_status_report();
+                let peer = report
+                    .peers
+                    .iter()
+                    .find(|peer| peer.status.node_id == node_id)
+                    .unwrap_or_else(|| panic!("peer {node_id} missing in local status report"));
+                assert_eq!(
+                    peer.participates_in_quorum,
+                    json_bool(command, "participates_in_quorum")
+                );
+                assert_eq!(peer.can_serve_data, json_bool(command, "can_serve_data"));
+                assert_eq!(peer.can_be_leader, json_bool(command, "can_be_leader"));
+                if command.get("auto_promoted_from_learner").is_some() {
+                    assert_eq!(
+                        peer.pipeline_state.auto_promoted_from_learner,
+                        json_bool(command, "auto_promoted_from_learner")
+                    );
+                }
+            }
+            "assert_local_status_report" => {
+                let cluster = cluster.as_ref().unwrap();
+                let report = cluster.byteraft_local_status_report();
+                if command.get("expect_witness").is_some() {
+                    assert_eq!(
+                        report.witness_membership_present,
+                        json_bool(command, "expect_witness")
+                    );
+                }
+                if command.get("expect_learner").is_some() {
+                    assert_eq!(
+                        report.learner_membership_present,
+                        json_bool(command, "expect_learner")
+                    );
+                }
+                if command.get("expect_pending_joint").is_some() {
+                    assert_eq!(
+                        report.pending_joint_consensus.is_some(),
+                        json_bool(command, "expect_pending_joint")
+                    );
+                }
+                if command.get("new_voter").is_some() {
+                    let new_voter = json_u64(command, "new_voter");
+                    assert!(report
+                        .pending_joint_consensus
+                        .as_ref()
+                        .unwrap()
+                        .new_voters
+                        .contains(&new_voter));
+                }
+            }
+            "assert_runtime_admin_report" => {
+                let cluster = cluster.as_ref().unwrap();
+                let report = cluster.byteraft_runtime_admin_report();
+                if command.get("expect_witness").is_some() {
+                    assert_eq!(
+                        report.witness_membership_present,
+                        json_bool(command, "expect_witness")
+                    );
+                }
+                if command.get("expect_auto_promote").is_some() {
+                    assert_eq!(
+                        report.learner_auto_promote_present,
+                        json_bool(command, "expect_auto_promote")
+                    );
+                }
+                if command.get("expect_pending_joint").is_some() {
+                    assert_eq!(
+                        report.pending_joint_consensus_present,
+                        json_bool(command, "expect_pending_joint")
+                    );
+                }
+            }
+            "propose_string_set" => {
+                let cluster = cluster.as_ref().unwrap();
+                cluster
+                    .propose(Command::StringSet {
+                        key: command["key"].as_str().unwrap().to_string(),
+                        value: command["value"].as_str().unwrap().as_bytes().to_vec(),
+                    })
+                    .unwrap();
+            }
+            "read_from_replica" => {
+                let cluster = cluster.as_ref().unwrap();
+                let response = cluster.read_from_replica(
+                    json_u64(command, "node_id"),
+                    Command::StringGet {
+                        key: command["key"].as_str().unwrap().to_string(),
+                    },
+                );
+                if let Some(value) = command["expected_value"].as_str() {
+                    assert_eq!(
+                        response,
+                        Ok(CommandResponse::Bytes {
+                            value: Some(value.as_bytes().to_vec())
+                        })
+                    );
+                } else {
+                    assert_shared_error(response, command);
+                }
+            }
+            "elect_leader" => {
+                let cluster = cluster.as_ref().unwrap();
+                assert_shared_error(cluster.elect_leader(json_u64(command, "node_id")), command);
+            }
+            "begin_joint_consensus" => {
+                let cluster = cluster.as_ref().unwrap();
+                cluster
+                    .begin_joint_consensus(json_u64_list(command, "new_voters"))
+                    .unwrap();
+            }
+            "commit_joint_consensus" => {
+                cluster.as_ref().unwrap().commit_joint_consensus().unwrap();
+            }
+            op => panic!("unsupported executable shared Raft membership op {op}"),
+        }
+    }
+}
+
 // shared-corpus: raft_byteraft_membership_roles
 #[test]
 fn learner_and_witness_roles_match_cpp_membership_shape() {
-    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
-    cluster
-        .add_node_with_role(4, RaftReplicaRole::Learner)
-        .unwrap();
-    cluster
-        .add_node_with_role(5, RaftReplicaRole::Witness)
-        .unwrap();
-    cluster.add_learner_with_auto_promote(6, true).unwrap();
-
-    let status = cluster.status();
-    assert_eq!(status.majority, 3);
-    assert_eq!(status.live_voters, 5);
-    assert_eq!(
-        cluster.local_status(4).unwrap().replica_role,
-        RaftReplicaRole::Learner
-    );
-    assert_eq!(
-        cluster.local_status(5).unwrap().replica_role,
-        RaftReplicaRole::Witness
-    );
-    assert_eq!(
-        cluster.local_status(6).unwrap().replica_role,
-        RaftReplicaRole::Voter
-    );
-    assert_eq!(cluster.membership().voters, vec![1, 2, 3, 5, 6]);
-    let local_status = cluster.byteraft_local_status_report();
-    assert!(local_status.witness_membership_present);
-    assert!(local_status.learner_membership_present);
-    assert!(local_status.learner_auto_promote_present);
-    assert!(local_status.peers.iter().any(|peer| {
-        peer.status.node_id == 5 && peer.participates_in_quorum && !peer.can_serve_data
-    }));
-    assert!(local_status.peers.iter().any(|peer| {
-        peer.status.node_id == 6
-            && peer.can_be_leader
-            && peer.pipeline_state.auto_promoted_from_learner
-    }));
-    let admin = cluster.byteraft_runtime_admin_report();
-    assert!(admin.witness_membership_present);
-    assert!(admin.learner_auto_promote_present);
-
-    cluster
-        .propose(Command::StringSet {
-            key: "role-k".to_string(),
-            value: b"role-v".to_vec(),
-        })
-        .unwrap();
-    assert_eq!(
-        cluster.read_from_replica(
-            4,
-            Command::StringGet {
-                key: "role-k".to_string()
-            }
-        ),
-        Ok(CommandResponse::Bytes {
-            value: Some(b"role-v".to_vec())
-        })
-    );
-    assert_eq!(
-        cluster.read_from_replica(
-            5,
-            Command::StringGet {
-                key: "role-k".to_string()
-            }
-        ),
-        Err(RaftError::NodeNotFound(5))
-    );
-    assert!(matches!(
-        cluster.elect_leader(4),
-        Err(RaftError::NodeNotFound(4))
-    ));
-    assert!(matches!(
-        cluster.elect_leader(5),
-        Err(RaftError::NodeNotFound(5))
-    ));
+    execute_raft_membership_shared_case("raft_byteraft_membership_roles");
 }
 
 #[test]
