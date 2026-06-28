@@ -182,6 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
     parser.add_argument("--temporalstore-lib", default=os.environ.get("TEMPORALSTORE_LIB", ""))
     parser.add_argument("--rust-proxy", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY", os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", "")))
+    parser.add_argument("--rust-direct-sdk", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", ""))
     parser.add_argument("--rust-cli", default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""))
     parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:codex-hook"))
     parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "60000")))
@@ -554,10 +555,6 @@ def build_server(args: argparse.Namespace):
                 args.repo_root / "target" / "release" / "matrixark_rust_proxy",
                 args.repo_root / "target" / "debug" / "matrixark_rust_proxy",
                 args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_rust_proxy",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
-                args.repo_root / "target" / "release" / "matrixark_record_log",
-                args.repo_root / "target" / "debug" / "matrixark_record_log",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_record_log",
             ]:
                 if candidate.exists() and os.access(candidate, os.X_OK):
                     rust_proxy = str(candidate)
@@ -573,17 +570,13 @@ def build_server(args: argparse.Namespace):
             io_timeout_ms=args.io_timeout_ms,
         )
     elif args.backend == "temporalstore-rust-direct":
-        rust_proxy = args.rust_proxy or args.rust_cli
+        rust_proxy = args.rust_direct_sdk or args.rust_proxy or args.rust_cli
         if not rust_proxy:
             for candidate in [
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_rust_proxy",
-                args.repo_root / "target" / "release" / "matrixark_rust_proxy",
-                args.repo_root / "target" / "debug" / "matrixark_rust_proxy",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_rust_proxy",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
-                args.repo_root / "target" / "release" / "matrixark_record_log",
-                args.repo_root / "target" / "debug" / "matrixark_record_log",
-                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_record_log",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_rust_direct_sdk",
+                args.repo_root / "target" / "release" / "matrixark_rust_direct_sdk",
+                args.repo_root / "target" / "debug" / "matrixark_rust_direct_sdk",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_rust_direct_sdk",
             ]:
                 if candidate.exists() and os.access(candidate, os.X_OK):
                     rust_proxy = str(candidate)

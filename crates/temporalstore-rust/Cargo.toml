@@ -35,6 +35,10 @@ name = "matrixark_rust_proxy"
 path = "src/bin/matrixark_rust_proxy.rs"
 
 [[bin]]
+name = "matrixark_rust_direct_sdk"
+path = "src/bin/matrixark_rust_direct_sdk.rs"
+
+[[bin]]
 name = "matrixark_record_log"
 path = "src/bin/matrixark_record_log.rs"
 

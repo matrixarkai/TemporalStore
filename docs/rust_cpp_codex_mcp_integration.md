@@ -2,7 +2,7 @@
 
 This repo now uses the same MatrixArk MCP server shape as the C++ TemporalStore
 thread. The server remains the C++ MatrixArk MCP implementation, while backend
-selection chooses which TemporalStore record-log adapter owns persistence.
+selection chooses which TemporalStore native adapter owns persistence.
 
 ## Backends
 
@@ -11,7 +11,6 @@ selection chooses which TemporalStore record-log adapter owns persistence.
 | `temporalstore-direct` | C++ TemporalStore SDK | C++ thread compatibility path. |
 | `temporalstore-rust` | Rust proxy `matrixark_rust_proxy --serve` | Rust-native Codex integration path. |
 | `temporalstore-rust-direct` | Long-lived Rust direct SDK bridge | Embedded/local Rust parity path matching the C++ direct SDK contract. |
-| `local` | JSONL file | Local diagnostic path only. |
 
 Rust does not add brpc or thrift. The Rust production/migration contract remains
 Rust-native MCP plus HTTP/JSON, RESP, and tonic surfaces.
@@ -66,11 +65,11 @@ tools/run_matrixark_mcp_server.sh \
 ```
 
 The Rust launcher builds `matrixark_rust_proxy` when needed and passes its path
-through `MATRIXARK_TEMPORALSTORE_RUST_PROXY`, which is what the shared MCP server
-expects for the `temporalstore-rust` and `temporalstore-rust-direct` adapters.
-Use `temporalstore-rust` for the production gateway/proxy path. Use
-`temporalstore-rust-direct` when validating embedded/local parity with the C++
-direct SDK path.
+through `MATRIXARK_TEMPORALSTORE_RUST_PROXY` for the `temporalstore-rust`
+adapter. For `temporalstore-rust-direct`, it builds `matrixark_rust_direct_sdk`
+and passes `MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK`. Use `temporalstore-rust`
+for the production proxy path. Use `temporalstore-rust-direct` when validating
+embedded/local parity with the C++ direct SDK path.
 
 Optional Rust storage root:
 
@@ -94,7 +93,7 @@ The shared server exposes the same Codex-facing tool names for both C++ and Rust
 - `matrixark_replay`
 - MatrixArk admin account/user/API-key tools
 
-The Rust backend supplies the C++ server's required record-log operations:
+The Rust backend supplies the C++ server's required storage operations:
 
 - `put_string`
 - `get_string`
@@ -105,12 +104,12 @@ Those operations are executed through Rust `TemporalEngine` string/hash commands
 and durable local index/page/oplog persistence, so Codex ingestion and retrieval
 exercise Rust TemporalStore storage instead of a Python-only side log.
 
-The Rust CLI also exposes production diagnostics and replay helpers used by
+The Rust proxy/direct-SDK bridge also exposes production diagnostics and replay helpers used by
 MatrixArk MCP readiness checks:
 
 - `health` / `preflight`: open the durable Rust engine and return the selected
   storage root.
-- `delete` / `del`: remove a record-log key.
+- `delete` / `del`: remove a storage key.
 - `hdel`: remove one hash field.
 - `hgetall` / `scan_hash`: return all hash fields as deterministic JSON plus an
   `entries` object and `count`.
@@ -130,7 +129,7 @@ python3 tools/validate_codex_mcp_parity.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
 
-Direct Rust CLI smoke:
+Direct Rust proxy smoke:
 
 ```bash
 printf '%s' '{"op":"health","namespace":"deploy_ns","table":"deploy_table"}' |
@@ -153,6 +152,7 @@ Rust direct SDK bridge smoke:
 
 ```bash
 MATRIXARK_MCP_BACKEND=temporalstore-rust-direct \
+MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK=target/debug/matrixark_rust_direct_sdk \
 MATRIXARK_CPP_TEMPORALSTORE_REPO=<cpp-temporalstore-checkout> \
 tools/run_matrixark_mcp_server.sh \
   --metaserver 127.0.0.1:18000 \
@@ -165,8 +165,8 @@ Expected result:
 
 - `initialize` returns `serverInfo.name = matrixark-context`.
 - `tools/list` includes the MatrixArk context tools listed above.
-- The Rust backend fails closed if `matrixark_rust_proxy` cannot be built or
-  launched.
+- The Rust backend fails closed if the selected `matrixark_rust_proxy` or
+  `matrixark_rust_direct_sdk` binary cannot be built or launched.
 - In `temporalstore-rust-direct` mode, backend metrics report
   `sdk_mode=direct_sdk`, `storage_mode=rust-direct-sdk-bridge`, and
   `matrixark_append_write_path=rust_direct_sdk_matrixark_batch_append_records`.

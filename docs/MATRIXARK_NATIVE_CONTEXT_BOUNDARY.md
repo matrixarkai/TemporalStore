@@ -17,7 +17,10 @@ Both C++ and Rust should implement the same behavior behind the shared test corp
 
 ## Current Rust Surface
 
-`sdk/rust/temporalstore/src/bin/matrixark_record_log.rs` supports the original string/hash operations plus MatrixArk-native record envelope operations:
+`matrixark_rust_proxy` and `matrixark_rust_direct_sdk` are the production-facing
+Rust binaries. They share the same implementation as the legacy
+`matrixark_record_log` compatibility wrapper and support the original
+string/hash operations plus MatrixArk-native record envelope operations:
 
 - `batch_hset`
 - `matrixark_append_records`
@@ -141,6 +144,8 @@ The intended production split is now explicit in code:
   secondary-index filtering targets, cache/persistence/eviction behavior, and
   backend metrics.
 
-C++ and Rust still differ in depth: Rust has a long-lived record gateway with
-MatrixArk batch commands; C++ now has the C ABI batch boundary and should next
-push the loop below `HSet` into a native append queue/batch-write engine path.
+C++ and Rust still differ in depth: Rust has a long-lived proxy/direct-SDK
+bridge with MatrixArk batch commands; C++ now has the C ABI batch boundary and
+should next push the loop below `HSet` into a native append queue/batch-write
+engine path. The `matrixark_record_log` name remains a compatibility/debug
+wrapper only, not a production MatrixArk concept.

@@ -2620,16 +2620,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
     def test_rust_matrixark_append_uses_native_proxy_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
-        source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
+        source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
+        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
 
-        self.assertIn('"batch_hset" =>', source)
-        self.assertIn('"matrixark_append_records" | "matrixark_batch_append_records" =>', source)
-        self.assertNotIn('"batch_hset" | "matrixark_append_records"', source)
-        self.assertIn("client\n                .matrixark_batch_append_records", source)
-        self.assertIn('"native_append": true', source)
+        self.assertIn("Production-facing alias for the MatrixArk Rust proxy", source)
+        self.assertIn('"batch_hset" =>', implementation)
+        self.assertIn('"matrixark_append_records" | "matrixark_batch_append_records" =>', implementation)
+        self.assertNotIn('"batch_hset" | "matrixark_append_records"', implementation)
+        self.assertIn("client\n                .matrixark_batch_append_records", implementation)
+        self.assertIn('"native_append": true', implementation)
 
-        self.assertIn('"scan_hash" =>', source)
-        self.assertIn("client.hgetall", source)
+        self.assertIn('"scan_hash" =>', implementation)
+        self.assertIn("client.hgetall", implementation)
+
+    def test_rust_direct_sdk_bridge_has_production_binary(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        cargo = (repo / "sdk/rust/temporalstore/Cargo.toml").read_text()
+        direct_source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_direct_sdk.rs").read_text()
+        implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
+        server = (repo / "tools/matrixark_mcp_server.py").read_text()
+
+        self.assertIn('name = "matrixark_rust_direct_sdk"', cargo)
+        self.assertIn("Production-facing alias for the MatrixArk Rust direct SDK bridge", direct_source)
+        self.assertIn("matrixark_rust_sdk_mode_is_direct", implementation)
+        self.assertIn("matrixark_rust_direct_sdk", implementation)
+        self.assertIn("rust-direct-sdk-bridge", implementation)
+        self.assertIn("--rust-direct-sdk", server)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", server)
 
     def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
         repo = Path(__file__).resolve().parents[1]

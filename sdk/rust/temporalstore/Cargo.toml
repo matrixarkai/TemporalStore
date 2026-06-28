@@ -18,6 +18,11 @@ path = "src/bin/matrixark_rust_proxy.rs"
 required-features = ["direct"]
 
 [[bin]]
+name = "matrixark_rust_direct_sdk"
+path = "src/bin/matrixark_rust_direct_sdk.rs"
+required-features = ["direct"]
+
+[[bin]]
 name = "matrixark_record_log"
 path = "src/bin/matrixark_record_log.rs"
 required-features = ["direct"]

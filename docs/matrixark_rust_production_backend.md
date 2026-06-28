@@ -5,9 +5,10 @@ into the Rust TemporalStore proxy or Rust direct SDK path.
 
 ## Current Production Path
 
-The Rust crate exposes one production proxy binary:
+The Rust crate exposes two production-facing MatrixArk binaries:
 
 - `matrixark_rust_proxy`
+- `matrixark_rust_direct_sdk`
 
 MatrixArk should run `matrixark_rust_proxy --serve` for the Rust proxy path, or
 use `temporalstore-rust-direct` for the Rust direct SDK bridge. Both avoid the
@@ -15,6 +16,7 @@ old process-per-operation CLI path.
 
 ```bash
 sdk/rust/temporalstore/target/release/matrixark_rust_proxy --serve
+sdk/rust/temporalstore/target/release/matrixark_rust_direct_sdk --serve
 ```
 
 Python MCP owns:
@@ -87,6 +89,19 @@ python3 tools/matrixark_mcp_server.py \
   --storage-prefix matrixark:mcp
 ```
 
+For the Rust direct SDK parity path:
+
+```bash
+python3 tools/matrixark_mcp_server.py \
+  --line-json \
+  --backend temporalstore-rust-direct \
+  --rust-direct-sdk sdk/rust/temporalstore/target/release/matrixark_rust_direct_sdk \
+  --metaserver 127.0.0.1:18000 \
+  --namespace deploy_ns \
+  --table deploy_table \
+  --storage-prefix matrixark:mcp
+```
+
 Operational probes:
 
 - `matrixark_backend_ready`: verifies topology and warmup storage.
@@ -95,7 +110,8 @@ Operational probes:
 
 ## Parity Requirement
 
-Full benchmark parity must use the Rust proxy or Rust direct SDK. The shared
-corpus rejects Rust CLI-per-operation mode for full parity. The accepted modes
-are `stdio-proxy` and `direct-sdk`; deprecated gateway names are normalized only
-as compatibility aliases and should not appear in new reports.
+Full benchmark parity must use the Rust proxy or Rust direct SDK bridge. The
+shared corpus rejects Rust CLI-per-operation mode for full parity. The accepted
+production-facing binaries are `matrixark_rust_proxy` and
+`matrixark_rust_direct_sdk`; `matrixark_record_log` is retained only as a
+compatibility/debug wrapper and should not appear in new production reports.

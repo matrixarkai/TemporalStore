@@ -54,7 +54,10 @@ separate from production-performance parity claims.
 Rust:
 
 - `matrixark_rust_proxy --serve` is the long-lived production path.
-- `matrixark_record_log --serve` is retained only as a compatibility/debug alias.
+- `matrixark_rust_direct_sdk --serve` is the Rust direct SDK parity bridge for
+  C++ direct SDK comparison and embedded/local validation.
+- `matrixark_record_log --serve` is retained only as a compatibility/debug alias,
+  not as a production MatrixArk concept.
 - Single-shot record-log CLI is debug-only.
 - Batch append/read: `batch_hset` / `batch_hget`.
 - Prefix/hash scan fast path: `scan_hash` / `hgetall`.

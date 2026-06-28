@@ -3,8 +3,8 @@
 
 This is intentionally a contract validator, not a replacement for the shared
 MatrixArk MCP server tests in the C++ repo. It verifies that the Rust repo
-provides the Rust record-log CLI and launcher expected by that shared server,
-and that both C++ and Rust backend names remain documented.
+    provides the Rust proxy/direct-SDK launcher expected by that shared server,
+    and that both C++ and Rust backend names remain documented.
 """
 
 from __future__ import annotations
@@ -50,8 +50,10 @@ REQUIRED_BACKEND_TOKENS = [
     "temporalstore-direct",
     "temporalstore-rust",
     "temporalstore-rust-direct",
-    "MATRIXARK_TEMPORALSTORE_RUST_CLI",
-    "matrixark_record_log",
+    "MATRIXARK_TEMPORALSTORE_RUST_PROXY",
+    "MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK",
+    "matrixark_rust_proxy",
+    "matrixark_rust_direct_sdk",
 ]
 
 REQUIRED_TOOL_NAMES = [
@@ -90,7 +92,7 @@ def validate_cpp_server_when_available() -> dict[str, object]:
             "MatrixArkTemporalStoreDirectAdapter",
             "MatrixArkTemporalStoreRustAdapter",
             "MatrixArkTemporalStoreRustDirectAdapter",
-            "MatrixArkRustCliClient",
+            "MatrixArkRustProxyClient",
             *REQUIRED_BACKEND_TOKENS,
             *REQUIRED_TOOL_NAMES,
         ]
@@ -101,7 +103,7 @@ def validate_cpp_server_when_available() -> dict[str, object]:
     return {
         "cpp_server_checked": True,
         "cpp_server_path": str(CPP_SERVER),
-        "backends": ["local", "temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
+        "backends": ["temporalstore-direct", "temporalstore-rust", "temporalstore-rust-direct"],
     }
 
 
@@ -121,11 +123,11 @@ def validate_rust_cli_smoke() -> dict[str, object]:
         "key": "matrixark:mcp:parity",
         "value": "rust-temporalstore-ok",
     }
-    rust_cli = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI")
-    sdk_release_cli = ROOT / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log"
-    if rust_cli and Path(rust_cli).exists():
-        cargo_command = [rust_cli]
-        command_source = "MATRIXARK_TEMPORALSTORE_RUST_CLI"
+    rust_proxy = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_PROXY")
+    sdk_release_cli = ROOT / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_rust_proxy"
+    if rust_proxy and Path(rust_proxy).exists():
+        cargo_command = [rust_proxy]
+        command_source = "MATRIXARK_TEMPORALSTORE_RUST_PROXY"
     elif sdk_release_cli.exists():
         cargo_command = [str(sdk_release_cli)]
         command_source = "sdk_release_binary"
@@ -137,9 +139,13 @@ def validate_rust_cli_smoke() -> dict[str, object]:
             "-p",
             "temporalstore-rust",
             "--bin",
-            "matrixark_record_log",
+            "matrixark_rust_proxy",
         ]
         command_source = "cargo_run"
+    if cargo_command[0] == "cargo":
+        cargo_command.extend(["--", "--serve"])
+    else:
+        cargo_command.append("--serve")
     cwd = ROOT
     if cargo_command[0] == "cargo" and shutil.which("cargo") is None and shutil.which("wsl.exe") is not None:
         wsl_root = subprocess.run(
@@ -162,7 +168,7 @@ def validate_rust_cli_smoke() -> dict[str, object]:
         check=False,
     )
     if proc.returncode != 0:
-        raise SystemExit(f"matrixark_record_log put_string failed:\n{proc.stderr}\n{proc.stdout}")
+        raise SystemExit(f"matrixark_rust_proxy put_string failed:\n{proc.stderr}\n{proc.stdout}")
     payload = json.loads(proc.stdout.splitlines()[-1])
     if not payload.get("ok"):
         health_proc = subprocess.run(
@@ -177,10 +183,10 @@ def validate_rust_cli_smoke() -> dict[str, object]:
             check=False,
         )
         if health_proc.returncode != 0:
-            raise SystemExit(f"matrixark_record_log health failed after put_string failure:\n{health_proc.stderr}\n{health_proc.stdout}")
+            raise SystemExit(f"matrixark_rust_proxy health failed after put_string failure:\n{health_proc.stderr}\n{health_proc.stdout}")
         health_payload = json.loads(health_proc.stdout.splitlines()[-1])
         if not health_payload.get("ok"):
-            raise SystemExit(f"matrixark_record_log returned failure: {payload}; health={health_payload}")
+            raise SystemExit(f"matrixark_rust_proxy returned failure: {payload}; health={health_payload}")
         return {
             "rust_cli_smoke": True,
             "rust_cli_root": str(root),

@@ -458,21 +458,29 @@ fn escape_label(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
+fn matrixark_rust_sdk_mode_is_direct() -> bool {
+    matches!(
+        std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref(),
+        Some("direct_sdk" | "direct-sdk" | "native-gateway" | "native-binding" | "rust-direct")
+    ) || std::env::args()
+        .next()
+        .map(|arg| arg.contains("matrixark_rust_direct_sdk"))
+        .unwrap_or(false)
+}
+
 fn matrixark_rust_storage_mode() -> &'static str {
-    match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => {
-            "rust-direct-sdk-bridge"
-        }
-        _ => "rust-proxy",
+    if matrixark_rust_sdk_mode_is_direct() {
+        "rust-direct-sdk-bridge"
+    } else {
+        "rust-proxy"
     }
 }
 
 fn matrixark_rust_service_mode() -> &'static str {
-    match std::env::var("MATRIXARK_RUST_SDK_MODE").ok().as_deref() {
-        Some("direct_sdk" | "native-gateway" | "native-binding" | "rust-direct") => {
-            "long_lived_rust_direct_sdk_bridge"
-        }
-        _ => "rust_proxy_stdio",
+    if matrixark_rust_sdk_mode_is_direct() {
+        "long_lived_rust_direct_sdk_bridge"
+    } else {
+        "rust_proxy_stdio"
     }
 }
 
