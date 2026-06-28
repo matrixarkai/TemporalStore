@@ -623,14 +623,31 @@ def vector_preview(record: Json) -> Json:
     }
 
 
-def embedding_model_ref(record: Json) -> str:
-    """Display compact embedding model metadata without expanding hot records."""
+def model_registry_map(records: list[Json]) -> dict[str, str]:
+    registry: dict[str, str] = {}
+    for record in records:
+        if str(record.get("record_type") or "") != "context_model_registry":
+            continue
+        model_ref = str(record.get("model_ref") or "")
+        model_name = str(record.get("model_name") or "")
+        if model_ref and model_name:
+            registry[model_ref] = model_name
+    return registry
+
+
+def embedding_model_name_for_display(record: Json, registry: dict[str, str]) -> str:
+    """Display readable model names while hot records keep compact model_ref."""
     model = str(record.get("model") or "")
     if model:
         return model
+    model_ref = str(record.get("model_ref") or "")
+    if model_ref and registry.get(model_ref):
+        return registry[model_ref]
+    if model_ref:
+        return model_ref
     model_hash = record.get("model_hash")
     if model_hash is not None:
-        return f"model_hash:{model_hash}"
+        return f"legacy_model_hash:{model_hash}"
     return ""
 
 
@@ -1004,6 +1021,12 @@ def write_outputs(
         "## Node L0/L1 Generation Policy",
         "",
         markdown_table(summary_policy_rows, ["node", "types", "l1", "reason", "tokens", "events", "child_summaries"], limit=80),
+        "",
+        "## Embedding Model Registry",
+        "",
+        "Embedding records carry compact `model_ref`; this latest-state registry stores each readable model name once for debug and audit compatibility.",
+        "",
+        markdown_table(by_type["context_model_registry"], ["model_ref", "model_name", "provider", "execution_mode", "updated_at_ms"], limit=20),
         "",
         "## Embeddings",
         "",

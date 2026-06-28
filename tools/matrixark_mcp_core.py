@@ -611,6 +611,54 @@ def node_id_ref(node_hash: int) -> Json:
     return {"node_hash": node_hash, "node_id": node_hash}
 
 
+def compact_model_slug(model_name: str) -> str:
+    cleaned = str(model_name or "").replace("\\", "/").strip().strip("/")
+    if not cleaned:
+        return "model"
+    parts = [part for part in cleaned.split("/") if part]
+    tail = "/".join(parts[-2:]) if len(parts) >= 2 else parts[0]
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", tail).strip("_").lower()
+    return (slug or "model")[:40]
+
+
+def embedding_model_ref_for_name(model_name: str) -> str:
+    slug = compact_model_slug(model_name)
+    suffix = stable_hash(f"embedding_model:{model_name}") % 10000
+    return f"emb:{slug}:{suffix:04d}"
+
+
+def context_model_registry_record(model_name: str, *, model_kind: str = "embedding", updated_at_ms: int | None = None) -> Json:
+    model_name = str(model_name or "").strip()
+    model_hash = stable_hash(f"{model_kind}_model:{model_name}")
+    return {
+        "record_type": "context_model_registry",
+        "model_kind": model_kind,
+        "model_ref": embedding_model_ref_for_name(model_name) if model_kind == "embedding" else f"{model_kind}:{compact_model_slug(model_name)}:{model_hash % 10000:04d}",
+        "model_name": model_name,
+        "model_hash": model_hash,
+        "provider": os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "deterministic") if model_kind == "embedding" else "",
+        "execution_mode": embedding_execution_mode_name() if model_kind == "embedding" else "",
+        "updated_at_ms": int(updated_at_ms or now_ms()),
+    }
+
+
+def context_model_registry_records(records: list[Json]) -> list[Json]:
+    models: dict[str, int] = {}
+    for record in records:
+        if str(record.get("record_type") or "") != "context_embedding":
+            continue
+        model_name = str(record.get("model") or "").strip()
+        if not model_name:
+            continue
+        updated_at_ms = record.get("updated_at_ms") or record.get("created_at_ms") or now_ms()
+        try:
+            timestamp = int(updated_at_ms)
+        except (TypeError, ValueError):
+            timestamp = now_ms()
+        models[model_name] = max(models.get(model_name, 0), timestamp)
+    return [context_model_registry_record(model_name, updated_at_ms=timestamp) for model_name, timestamp in sorted(models.items())]
+
+
 HOT_SERVING_RECORD_TYPES = {
     "context_event",
     "context_entity",
@@ -795,7 +843,8 @@ def compact_record_lifecycle_fields(record: Json) -> Json:
                 compacted.pop("dim", None)
         model_name = str(compacted.get("model") or "")
         if model_name:
-            compacted.setdefault("model_hash", stable_hash(f"embedding_model:{model_name}"))
+            compacted.setdefault("model_ref", embedding_model_ref_for_name(model_name))
+            compacted.pop("model_hash", None)
             compacted.pop("model", None)
     if compacted.get("created_at_ms") is not None and compacted.get("updated_at_ms") is not None:
         try:
@@ -1035,6 +1084,12 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
         summary_hash = record.get("summary_hash") or record.get("node_hash")
         if summary_type and summary_hash is not None:
             return ("context_summary", summary_type, summary_hash)
+    if record_type == "context_model_registry":
+        model_kind = str(record.get("model_kind") or "embedding")
+        model_ref = str(record.get("model_ref") or "")
+        model_hash = record.get("model_hash")
+        if model_ref or model_hash is not None:
+            return ("context_model_registry", model_kind, model_ref or model_hash)
     if record_type == "context_embedding":
         embedding_type = str(record.get("embedding_type") or "")
         ref_type = str(record.get("ref_type") or "")
