@@ -1613,6 +1613,30 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
             "context_workflow_corpus.openviking_replay_ready"
         }
         "context_workflow" => "context_workflow_policy.production_policy_ready",
+        "raft_replication" if capability.contains("stale_leader_lease_rejection_missing") => {
+            "raft_admin_report.stale_leader_lease_rejected"
+        }
+        "raft_replication" if capability.contains("lagging_follower_read_rejection_missing") => {
+            "raft_admin_report.lagging_follower_read_rejected"
+        }
+        "raft_replication" if capability.contains("bounded_stale_read_acceptance_missing") => {
+            "raft_admin_report.bounded_stale_read_accepted"
+        }
+        "raft_replication" if capability.contains("bounded_stale_read_rejection_missing") => {
+            "raft_admin_report.bounded_stale_read_rejected"
+        }
+        "raft_replication" if capability.contains("minority_partition_read_rejection_missing") => {
+            "raft_admin_report.minority_partition_rejected_reads"
+        }
+        "raft_replication" if capability.contains("minority_partition_write_rejection_missing") => {
+            "raft_admin_report.minority_partition_rejected_writes"
+        }
+        "raft_replication" if capability.contains("stale_follower_write_rejection_missing") => {
+            "raft_admin_report.stale_follower_write_rejected"
+        }
+        "raft_replication" if capability.contains("healed_follower_catchup_missing") => {
+            "raft_admin_report.healed_follower_caught_up"
+        }
         _ => "readiness_evidence.unspecified",
     }
 }

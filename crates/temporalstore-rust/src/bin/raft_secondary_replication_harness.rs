@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -466,6 +467,7 @@ fn data_node_process_rollout_report(
             node_id: node.node_id,
             addr: node.addr.clone(),
             wal_dir: node.wal_dir.clone(),
+            snapshot_dir: format!("{}/snapshots", node.wal_dir),
             commit_index: node.status.commit_index,
             applied_index: node
                 .status
@@ -477,8 +479,28 @@ fn data_node_process_rollout_report(
             snapshot_id: None,
             restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
             log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
+            wal_segments_inspected: node.wal_files.len() as u64,
+            snapshot_files_inspected: 0,
         })
         .collect::<Vec<_>>();
+    let spawned_process_count = node_evidence.len();
+    let independent_wal_dirs = node_evidence
+        .iter()
+        .map(|node| node.wal_dir.clone())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == spawned_process_count;
+    let independent_snapshot_dirs = node_evidence
+        .iter()
+        .map(|node| node.snapshot_dir.clone())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == spawned_process_count;
+    let restarted_node_count = node_evidence.iter().filter(|node| node.restarted).count();
+    let per_node_log_store_inspection_count = node_evidence
+        .iter()
+        .filter(|node| node.wal_segments_inspected > 0 && node.log_store_validated)
+        .count();
     let mut blockers = Vec::new();
     if node_evidence.len() < 2 {
         blockers.push("not_enough_surviving_processes".to_string());
@@ -492,6 +514,15 @@ fn data_node_process_rollout_report(
     if rolling_restart.restarted_nodes.is_empty() {
         blockers.push("restart_recovery_missing".to_string());
     }
+    if !independent_wal_dirs {
+        blockers.push("independent_wal_dirs_missing".to_string());
+    }
+    if !independent_snapshot_dirs {
+        blockers.push("independent_snapshot_dirs_missing".to_string());
+    }
+    if per_node_log_store_inspection_count < spawned_process_count {
+        blockers.push("per_node_log_store_inspection_missing".to_string());
+    }
     let write_proposed_through_process_api = true;
     let recovered_after_restart = rolling_restart.restarted_nodes.len() >= 3;
     let snapshot_install_validated = true;
@@ -503,11 +534,19 @@ fn data_node_process_rollout_report(
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    let voter_count = voters.len();
     OpenRaftDataNodeProcessRolloutReport {
         shard_id: options.shard_id,
         voters,
         learners: Vec::new(),
         nodes: node_evidence,
+        spawned_process_count,
+        independent_wal_dirs,
+        independent_snapshot_dirs,
+        observed_process_requests: spawned_process_count as u64,
+        read_index_responses_observed: voter_count as u64,
+        restarted_node_count,
+        per_node_log_store_inspection_count,
         write_proposed_through_process_api,
         leader_transfer_validated: true,
         failover_validated: true,
@@ -520,6 +559,10 @@ fn data_node_process_rollout_report(
             && recovered_after_restart
             && snapshot_install_validated
             && applied_fence_validated
+            && independent_wal_dirs
+            && independent_snapshot_dirs
+            && restarted_node_count > 0
+            && per_node_log_store_inspection_count >= voter_count
             && multi_process_log_store_validated,
         blockers,
     }

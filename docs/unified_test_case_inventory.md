@@ -261,15 +261,15 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove and secondary-read visibility as an explicit shared harness case. |
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
-| `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and OpenRaft process-rollout/log-store evidence. |
+| `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection plus OpenRaft spawned-process counts, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery, and per-node log-store inspection. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
-| `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
+| `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, stale lease, lagging follower rejection, bounded-stale accept/reject, stale follower write rejection, minority rejection, and healed-follower eligibility behavior. |
 | `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus capability matrix, peer pipeline, apply health, read-index, leader-transfer request/accept/reject/complete/elapsed/timeout counters, snapshot send elapsed/timeout counters, offline timeout state/rejection counters, and `/raft/control/byteraft_runtime_admin` evidence. |
 | `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin report, including capability matrix rows, on both standalone `raft_node` and raft-enabled `server`. |
 | `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, sender timeout/retry, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
 | `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
 | `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
-| `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
+| `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues, minority rejects stale reads/writes, and healed followers catch up before read eligibility. |
 | `raft_byteraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
 | `raft_byteraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
 | `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |

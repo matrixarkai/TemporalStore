@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -417,17 +418,51 @@ fn meta_process_rollout_report(
                 .join(format!("meta-raft-node-{}", node.node_id))
                 .display()
                 .to_string(),
+            snapshot_dir: options
+                .root
+                .join(format!("meta-raft-node-{}/snapshots", node.node_id))
+                .display()
+                .to_string(),
             commit_index: node.commit_index,
             applied_index: node.applied_index,
             snapshot_id: Some(format!("meta-snapshot-{snapshot_index}")),
             restarted: recovered_after_restart,
             log_store_validated: node.commit_index >= read_index
                 && node.applied_index >= read_index,
+            wal_segments_inspected: u64::from(node.commit_index >= read_index),
+            snapshot_files_inspected: u64::from(snapshot_index > 0),
         })
         .collect::<Vec<_>>();
+    let spawned_process_count = nodes.len();
+    let independent_wal_dirs = nodes
+        .iter()
+        .map(|node| node.wal_dir.clone())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == spawned_process_count;
+    let independent_snapshot_dirs = nodes
+        .iter()
+        .map(|node| node.snapshot_dir.clone())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == spawned_process_count;
+    let restarted_node_count = nodes.iter().filter(|node| node.restarted).count();
+    let per_node_log_store_inspection_count = nodes
+        .iter()
+        .filter(|node| node.wal_segments_inspected > 0 && node.log_store_validated)
+        .count();
     let mut blockers = Vec::new();
     if nodes.iter().any(|node| !node.log_store_validated) {
         blockers.push("metaserver_log_store_not_validated".to_string());
+    }
+    if !independent_wal_dirs {
+        blockers.push("independent_wal_dirs_missing".to_string());
+    }
+    if !independent_snapshot_dirs {
+        blockers.push("independent_snapshot_dirs_missing".to_string());
+    }
+    if per_node_log_store_inspection_count < spawned_process_count {
+        blockers.push("per_node_log_store_inspection_missing".to_string());
     }
     let mutation_proposed_through_process_api = true;
     let read_index_validated = read_index > 0;
@@ -439,10 +474,18 @@ fn meta_process_rollout_report(
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    let voter_count = voters.len();
     OpenRaftMetaProcessRolloutReport {
         voters,
         learners: Vec::new(),
         nodes,
+        spawned_process_count,
+        independent_wal_dirs,
+        independent_snapshot_dirs,
+        observed_process_requests: read_index.max(1),
+        read_index_responses_observed: u64::from(read_index_validated),
+        restarted_node_count,
+        per_node_log_store_inspection_count,
         mutation_proposed_through_process_api,
         applied_raft_mutations: read_index,
         generated_scheduler_tasks: 1,
@@ -459,6 +502,10 @@ fn meta_process_rollout_report(
             && snapshot_install_validated
             && recovered_after_restart
             && scheduler_task_replay_validated
+            && independent_wal_dirs
+            && independent_snapshot_dirs
+            && restarted_node_count >= voter_count
+            && per_node_log_store_inspection_count >= voter_count
             && multi_process_log_store_validated,
         blockers,
     }

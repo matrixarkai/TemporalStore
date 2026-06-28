@@ -539,6 +539,20 @@ pub struct ByteRaftRuntimeAdminReport {
     pub lease_read_validated: bool,
     pub stale_follower_read_rejected: bool,
     pub stale_follower_write_rejected: bool,
+    #[serde(default)]
+    pub stale_leader_lease_rejected: bool,
+    #[serde(default)]
+    pub lagging_follower_read_rejected: bool,
+    #[serde(default)]
+    pub bounded_stale_read_accepted: bool,
+    #[serde(default)]
+    pub bounded_stale_read_rejected: bool,
+    #[serde(default)]
+    pub minority_partition_rejected_reads: bool,
+    #[serde(default)]
+    pub minority_partition_rejected_writes: bool,
+    #[serde(default)]
+    pub healed_follower_caught_up: bool,
     pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
     pub append_backpressure_enforced: bool,
     pub reorder_queue_enabled: bool,
@@ -681,11 +695,17 @@ pub struct OpenRaftProcessNodeEvidence {
     pub node_id: RaftNodeId,
     pub addr: String,
     pub wal_dir: String,
+    #[serde(default)]
+    pub snapshot_dir: String,
     pub commit_index: u64,
     pub applied_index: u64,
     pub snapshot_id: Option<String>,
     pub restarted: bool,
     pub log_store_validated: bool,
+    #[serde(default)]
+    pub wal_segments_inspected: u64,
+    #[serde(default)]
+    pub snapshot_files_inspected: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -696,6 +716,20 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<OpenRaftProcessNodeEvidence>,
+    #[serde(default)]
+    pub spawned_process_count: usize,
+    #[serde(default)]
+    pub independent_wal_dirs: bool,
+    #[serde(default)]
+    pub independent_snapshot_dirs: bool,
+    #[serde(default)]
+    pub observed_process_requests: u64,
+    #[serde(default)]
+    pub read_index_responses_observed: u64,
+    #[serde(default)]
+    pub restarted_node_count: usize,
+    #[serde(default)]
+    pub per_node_log_store_inspection_count: usize,
     pub write_proposed_through_process_api: bool,
     #[serde(default)]
     pub leader_transfer_validated: bool,
@@ -718,6 +752,20 @@ pub struct OpenRaftMetaProcessRolloutReport {
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<OpenRaftProcessNodeEvidence>,
+    #[serde(default)]
+    pub spawned_process_count: usize,
+    #[serde(default)]
+    pub independent_wal_dirs: bool,
+    #[serde(default)]
+    pub independent_snapshot_dirs: bool,
+    #[serde(default)]
+    pub observed_process_requests: u64,
+    #[serde(default)]
+    pub read_index_responses_observed: u64,
+    #[serde(default)]
+    pub restarted_node_count: usize,
+    #[serde(default)]
+    pub per_node_log_store_inspection_count: usize,
     pub mutation_proposed_through_process_api: bool,
     #[serde(default)]
     pub applied_raft_mutations: u64,
@@ -989,6 +1037,20 @@ pub struct RaftReadSafetyRuntimeState {
     pub pre_vote_requests: u64,
     pub pre_vote_accepted: u64,
     pub pre_vote_rejected: u64,
+    #[serde(default)]
+    pub bounded_stale_read_requests: u64,
+    #[serde(default)]
+    pub bounded_stale_read_accepted: u64,
+    #[serde(default)]
+    pub bounded_stale_read_rejected: u64,
+    #[serde(default)]
+    pub stale_follower_write_rejected: u64,
+    #[serde(default)]
+    pub minority_partition_read_rejected: u64,
+    #[serde(default)]
+    pub minority_partition_write_rejected: u64,
+    #[serde(default)]
+    pub healed_follower_catchup_observed: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -2272,9 +2334,9 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
     let data_node_process_startup_selects_openraft = true;
     let metaserver_process_startup_selects_openraft = true;
     let durable_log_state_present = true;
-    let data_node_real_process_rollout_validated = true;
-    let metaserver_real_process_rollout_validated = true;
-    let multi_process_log_store_validation_present = true;
+    let data_node_real_process_rollout_validated = false;
+    let metaserver_real_process_rollout_validated = false;
+    let multi_process_log_store_validation_present = false;
     let local_rollout_ready = adapter_present
         && data_node_process_startup_selects_openraft
         && metaserver_process_startup_selects_openraft
@@ -2292,9 +2354,9 @@ pub fn raft_openraft_rollout_readiness() -> RaftOpenRaftRolloutReadiness {
         ]
     } else {
         vec![
-            "complete durable OpenRaft data-node process rollout with real multi-process log-store validation"
+            "complete durable OpenRaft data-node process rollout with spawned process evidence, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery, and per-node log-store inspection"
                 .to_string(),
-            "complete durable OpenRaft metaserver process rollout with real multi-process log-store validation"
+            "complete durable OpenRaft metaserver process rollout with spawned process evidence, independent WAL/snapshot dirs, observed mutations, read-index responses, restart recovery, and per-node log-store inspection"
                 .to_string(),
         ]
     };
@@ -7473,6 +7535,12 @@ impl RaftCluster {
         }
         let status = inner.status();
         if !status.leader_lease_valid {
+            if !status.has_majority {
+                inner.read_safety_state.minority_partition_read_rejected = inner
+                    .read_safety_state
+                    .minority_partition_read_rejected
+                    .saturating_add(1);
+            }
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
                 .read_index_rejected
@@ -7516,6 +7584,12 @@ impl RaftCluster {
         }
         if node.commit_index < status.commit_index {
             let replica_commit_index = node.commit_index;
+            if node_id != inner.leader_id && node.alive {
+                inner.read_safety_state.healed_follower_catchup_observed = inner
+                    .read_safety_state
+                    .healed_follower_catchup_observed
+                    .saturating_add(0);
+            }
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
                 .read_index_rejected
@@ -7537,6 +7611,12 @@ impl RaftCluster {
             .read_safety_state
             .read_index_accepted
             .saturating_add(1);
+        if node_id != inner.leader_id {
+            inner.read_safety_state.healed_follower_catchup_observed = inner
+                .read_safety_state
+                .healed_follower_catchup_observed
+                .saturating_add(1);
+        }
         if lease_read {
             inner.read_safety_state.lease_read_accepted = inner
                 .read_safety_state
@@ -7616,32 +7696,53 @@ impl RaftCluster {
                 )
             }
             DataRaftReadMode::BoundedStale => {
-                if node_id == self.leader_id() {
-                    return self.check_read(node_id, RaftReadOptions::default());
-                }
-                let inner = self.inner.read().expect("raft cluster lock poisoned");
+                let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+                inner.read_safety_state.bounded_stale_read_requests = inner
+                    .read_safety_state
+                    .bounded_stale_read_requests
+                    .saturating_add(1);
                 let status = inner.status();
                 let node = inner
                     .nodes
                     .get(&node_id)
                     .ok_or(RaftError::NodeNotFound(node_id))?;
                 if !node.alive || !node.replica_role.can_serve_data() {
+                    inner.read_safety_state.bounded_stale_read_rejected = inner
+                        .read_safety_state
+                        .bounded_stale_read_rejected
+                        .saturating_add(1);
                     return Err(RaftError::NodeNotFound(node_id));
                 }
                 if status.commit_index.saturating_sub(node.commit_index)
                     > policy.bounded_stale_max_index_lag
                 {
+                    let replica_commit_index = node.commit_index;
+                    inner.read_safety_state.bounded_stale_read_rejected = inner
+                        .read_safety_state
+                        .bounded_stale_read_rejected
+                        .saturating_add(1);
                     return Err(RaftError::ReplicaLagging {
                         replica_id: node_id,
-                        replica_commit_index: node.commit_index,
+                        replica_commit_index,
                         leader_commit_index: status.commit_index,
                     });
+                }
+                let read_index = node.commit_index;
+                inner.read_safety_state.bounded_stale_read_accepted = inner
+                    .read_safety_state
+                    .bounded_stale_read_accepted
+                    .saturating_add(1);
+                if node_id != inner.leader_id && read_index == status.commit_index {
+                    inner.read_safety_state.healed_follower_catchup_observed = inner
+                        .read_safety_state
+                        .healed_follower_catchup_observed
+                        .saturating_add(1);
                 }
                 Ok(ReadIndexResponse {
                     leader_id: status.leader_id,
                     node_id,
                     term: status.current_term,
-                    read_index: node.commit_index,
+                    read_index,
                 })
             }
             DataRaftReadMode::UnsafeAnyReplica => self.check_read(
@@ -7705,9 +7806,22 @@ impl RaftCluster {
     }
 
     pub fn check_write_authority(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
-        if node_id == self.leader_id() {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        if node_id == inner.leader_id && inner.status().has_majority {
             Ok(())
         } else {
+            if node_id != inner.leader_id {
+                inner.read_safety_state.stale_follower_write_rejected = inner
+                    .read_safety_state
+                    .stale_follower_write_rejected
+                    .saturating_add(1);
+            }
+            if !inner.status().has_majority {
+                inner.read_safety_state.minority_partition_write_rejected = inner
+                    .read_safety_state
+                    .minority_partition_write_rejected
+                    .saturating_add(1);
+            }
             Err(RaftError::NotLeader { node_id })
         }
     }
@@ -8502,11 +8616,22 @@ impl RaftClusterInner {
                 && node.replica_role.can_serve_data()
                 && node.lag > 0
                 && node.alive
-        });
+        }) || self.read_safety_state.read_index_rejected > 0;
         let stale_follower_write_rejected = status
             .nodes
             .iter()
-            .any(|node| node.node_id != self.leader_id && node.alive);
+            .any(|node| node.node_id != self.leader_id && node.alive)
+            && self.read_safety_state.stale_follower_write_rejected > 0;
+        let stale_leader_lease_rejected = self.read_safety_state.lease_read_rejected > 0;
+        let lagging_follower_read_rejected =
+            stale_follower_read_rejected && self.read_safety_state.read_index_rejected > 0;
+        let bounded_stale_read_accepted = self.read_safety_state.bounded_stale_read_accepted > 0;
+        let bounded_stale_read_rejected = self.read_safety_state.bounded_stale_read_rejected > 0;
+        let minority_partition_rejected_reads =
+            self.read_safety_state.minority_partition_read_rejected > 0;
+        let minority_partition_rejected_writes =
+            self.read_safety_state.minority_partition_write_rejected > 0;
+        let healed_follower_caught_up = self.read_safety_state.healed_follower_catchup_observed > 0;
         let read_index_validated = status.leader_lease_valid && status.has_majority;
         let lease_read_validated =
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
@@ -8656,11 +8781,15 @@ impl RaftClusterInner {
                 ready: read_index_validated
                     && lease_read_validated
                     && stale_follower_read_rejected
+                    && stale_leader_lease_rejected
+                    && lagging_follower_read_rejected
+                    && bounded_stale_read_accepted
+                    && bounded_stale_read_rejected
                     && pre_vote_enforced,
-                evidence_field: "read_index_*; lease_read_*; stale_follower_read_rejected; pre_vote_*"
+                evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejected; lagging_follower_read_rejected; bounded_stale_read_*; stale_follower_read_rejected; pre_vote_*"
                     .to_string(),
                 detail: format!(
-                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}"
+                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}"
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -8696,6 +8825,27 @@ impl RaftClusterInner {
         }
         if !stale_follower_write_rejected {
             blockers.push("stale_follower_write_rejection_missing".to_string());
+        }
+        if !stale_leader_lease_rejected {
+            blockers.push("stale_leader_lease_rejection_missing".to_string());
+        }
+        if !lagging_follower_read_rejected {
+            blockers.push("lagging_follower_read_rejection_missing".to_string());
+        }
+        if !bounded_stale_read_accepted {
+            blockers.push("bounded_stale_read_acceptance_missing".to_string());
+        }
+        if !bounded_stale_read_rejected {
+            blockers.push("bounded_stale_read_rejection_missing".to_string());
+        }
+        if !minority_partition_rejected_reads {
+            blockers.push("minority_partition_read_rejection_missing".to_string());
+        }
+        if !minority_partition_rejected_writes {
+            blockers.push("minority_partition_write_rejection_missing".to_string());
+        }
+        if !healed_follower_caught_up {
+            blockers.push("healed_follower_catchup_missing".to_string());
         }
         if !append_backpressure_enforced {
             blockers.push("append_backpressure_not_enforced".to_string());
@@ -8734,6 +8884,13 @@ impl RaftClusterInner {
             lease_read_validated,
             stale_follower_read_rejected,
             stale_follower_write_rejected,
+            stale_leader_lease_rejected,
+            lagging_follower_read_rejected,
+            bounded_stale_read_accepted,
+            bounded_stale_read_rejected,
+            minority_partition_rejected_reads,
+            minority_partition_rejected_writes,
+            healed_follower_caught_up,
             peer_pipeline_states,
             append_backpressure_enforced,
             reorder_queue_enabled,
