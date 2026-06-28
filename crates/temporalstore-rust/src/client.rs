@@ -16,6 +16,7 @@ use crate::meta::{
     GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionReport,
     TopologyVersionRequest,
 };
+use crate::partition_id::PartitionId;
 mod commands;
 mod retry;
 mod routing;
@@ -121,11 +122,14 @@ impl Default for RequestOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TableOptions {
+    pub table_id: u64,
     pub io_timeout_ms: u64,
     pub connect_timeout_ms: u64,
     pub continuous_failed_time_ms: u64,
     pub first_shard_id: ShardId,
     pub shard_count: u64,
+    pub use_cpp_partition_ids: bool,
+    pub partition_version: u32,
     pub pin_primary: bool,
     pub replica_read_policy: ReplicaReadPolicy,
     pub preferred_location: String,
@@ -138,11 +142,14 @@ pub struct TableOptions {
 impl Default for TableOptions {
     fn default() -> Self {
         Self {
+            table_id: 0,
             io_timeout_ms: 200,
             connect_timeout_ms: 200,
             continuous_failed_time_ms: 10_000,
             first_shard_id: 1,
             shard_count: 1,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
             pin_primary: true,
             replica_read_policy: ReplicaReadPolicy::PinPrimary,
             preferred_location: String::new(),
@@ -259,6 +266,7 @@ pub struct ClientProductionReplacementContract {
     pub compatibility_decision: String,
     pub legacy_cplusplus_wire_protocols_in_scope: Vec<String>,
     pub production_protocols: Vec<String>,
+    pub supported_command_families: Vec<String>,
     pub typed_table_client_preserved: bool,
     pub topology_sync_preserved: bool,
     pub retry_budget_preserved: bool,
@@ -292,6 +300,19 @@ impl Default for ClientProductionReplacementContract {
                 "HTTP/JSON".to_string(),
                 "RESP".to_string(),
                 "tonic".to_string(),
+            ],
+            supported_command_families: vec![
+                "common".to_string(),
+                "string".to_string(),
+                "hash".to_string(),
+                "set".to_string(),
+                "feature".to_string(),
+                "sequence".to_string(),
+                "ips".to_string(),
+                "risk".to_string(),
+                "redis".to_string(),
+                "admin".to_string(),
+                "context".to_string(),
             ],
             typed_table_client_preserved: true,
             topology_sync_preserved: true,
@@ -348,11 +369,14 @@ pub struct ClientPreflightReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCppPartitionSetReport {
+    pub table_id: u64,
     pub namespace: String,
     pub table_name: String,
     pub combine_name: String,
     pub first_shard_id: ShardId,
     pub shard_count: u64,
+    pub use_cpp_partition_ids: bool,
+    pub partition_version: u32,
     pub topology_version: u64,
     pub partition_count: usize,
     pub missing_route_count: usize,
@@ -363,6 +387,8 @@ pub struct ClientCppPartitionSetReport {
 pub struct ClientCppPartitionMemberReport {
     pub partition_id: ShardId,
     pub shard_id: ShardId,
+    pub start_slot: u64,
+    pub end_slot: u64,
     pub primary_addr: Option<String>,
     pub replica_addrs: Vec<String>,
     pub replica_count: usize,
@@ -454,6 +480,12 @@ pub struct ClientTopologyCacheReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientRouteCacheEntryReport {
     pub shard_id: ShardId,
+    pub table: String,
+    pub partition_id: ShardId,
+    pub start_slot: u64,
+    pub end_slot: u64,
+    pub use_cpp_partition_ids: bool,
+    pub partition_version: u32,
     pub primary_addr: String,
     pub replica_count: usize,
     pub topology_version: u64,
@@ -544,6 +576,12 @@ struct ClientMetaSyncTableState {
 
 #[derive(Debug, Clone)]
 struct CachedRoute {
+    table_key: String,
+    partition_id: ShardId,
+    start_slot: u64,
+    end_slot: u64,
+    use_cpp_partition_ids: bool,
+    partition_version: u32,
     primary_addr: String,
     replica_addrs: Vec<String>,
     replica_endpoints: Vec<ServerEndpoint>,
@@ -551,6 +589,26 @@ struct CachedRoute {
     fetched_at: Instant,
     topology_version: u64,
     refresh_reason: String,
+}
+
+impl CachedRoute {
+    fn for_shard(shard_id: ShardId, primary_addr: impl Into<String>, refresh_reason: &str) -> Self {
+        Self {
+            table_key: String::new(),
+            partition_id: shard_id,
+            start_slot: 0,
+            end_slot: 0,
+            use_cpp_partition_ids: false,
+            partition_version: 0,
+            primary_addr: primary_addr.into(),
+            replica_addrs: Vec::new(),
+            replica_endpoints: Vec::new(),
+            next_replica_index: 0,
+            fetched_at: Instant::now(),
+            topology_version: 0,
+            refresh_reason: refresh_reason.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -715,6 +773,7 @@ impl TemporalStoreClient {
         let serving_options = table.serving_options.clone();
         let default_serving_options = crate::meta::TableServingOptions::default();
         let options = TableOptions {
+            table_id: table.table_id,
             io_timeout_ms: if serving_options.io_timeout_ms == default_serving_options.io_timeout_ms
             {
                 self.inner.options.io_timeout_ms
@@ -737,6 +796,8 @@ impl TemporalStoreClient {
             },
             first_shard_id: table.first_shard_id,
             shard_count: table.shard_count,
+            use_cpp_partition_ids: table.use_cpp_partition_ids,
+            partition_version: table.partition_version,
             pin_primary: serving_options.pin_primary,
             replica_read_policy: replica_read_policy_from_meta(
                 &serving_options.replica_read_policy,
@@ -774,6 +835,7 @@ impl TemporalStoreClient {
             },
             ..TableOptions::default()
         };
+        let table_key = table_combine_name(&namespace, &table_name);
         let routes = topology
             .partitions
             .iter()
@@ -782,6 +844,12 @@ impl TemporalStoreClient {
                     (
                         partition.shard_id,
                         CachedRoute {
+                            table_key: table_key.clone(),
+                            partition_id: partition.shard_id,
+                            start_slot: partition.start_slot,
+                            end_slot: partition.end_slot,
+                            use_cpp_partition_ids: table.use_cpp_partition_ids,
+                            partition_version: table.partition_version,
                             primary_addr: primary.clone(),
                             replica_addrs: partition
                                 .replicas
@@ -808,7 +876,7 @@ impl TemporalStoreClient {
             .tables
             .lock()
             .expect("client table cache lock poisoned")
-            .insert(table_combine_name(&namespace, &table_name), options.clone());
+            .insert(table_key.clone(), options.clone());
         let mut route_cache = self
             .inner
             .routes
@@ -817,8 +885,12 @@ impl TemporalStoreClient {
         let last_shard_id = table
             .first_shard_id
             .saturating_add(table.shard_count.saturating_sub(1));
-        route_cache
-            .retain(|shard_id, _| *shard_id < table.first_shard_id || *shard_id > last_shard_id);
+        route_cache.retain(|shard_id, route| {
+            if route.table_key == table_key {
+                return false;
+            }
+            *shard_id < table.first_shard_id || *shard_id > last_shard_id
+        });
         for (shard_id, route) in routes {
             route_cache.insert(shard_id, route);
         }
@@ -1221,11 +1293,18 @@ impl TemporalStoreClient {
                 let (namespace, table_name) = combine_name.split_once('/')?;
                 let mut members = (0..options.shard_count)
                     .map(|offset| {
-                        let shard_id = options.first_shard_id.saturating_add(offset);
+                        let partition_id = client_partition_id_for_offset(&options, offset);
+                        let shard_id = partition_id;
                         let route = routes.get(&shard_id);
                         ClientCppPartitionMemberReport {
-                            partition_id: shard_id,
+                            partition_id,
                             shard_id,
+                            start_slot: route.map(|route| route.start_slot).unwrap_or_else(|| {
+                                partition_start_slot(offset, options.shard_count)
+                            }),
+                            end_slot: route
+                                .map(|route| route.end_slot)
+                                .unwrap_or_else(|| partition_end_slot(offset, options.shard_count)),
                             primary_addr: route.map(|route| route.primary_addr.clone()),
                             replica_addrs: route
                                 .map(|route| route.replica_addrs.clone())
@@ -1254,11 +1333,14 @@ impl TemporalStoreClient {
                 let missing_route_count =
                     members.iter().filter(|member| !member.route_ready).count();
                 Some(ClientCppPartitionSetReport {
+                    table_id: options.table_id,
                     namespace: namespace.to_string(),
                     table_name: table_name.to_string(),
                     combine_name,
                     first_shard_id: options.first_shard_id,
                     shard_count: options.shard_count,
+                    use_cpp_partition_ids: options.use_cpp_partition_ids,
+                    partition_version: options.partition_version,
                     topology_version,
                     partition_count: members.len(),
                     missing_route_count,
@@ -1289,6 +1371,12 @@ impl TemporalStoreClient {
                 let fetched_age_ms = duration_ms_u64(route.fetched_at.elapsed());
                 ClientRouteCacheEntryReport {
                     shard_id: *shard_id,
+                    table: route.table_key.clone(),
+                    partition_id: route.partition_id,
+                    start_slot: route.start_slot,
+                    end_slot: route.end_slot,
+                    use_cpp_partition_ids: route.use_cpp_partition_ids,
+                    partition_version: route.partition_version,
                     primary_addr: route.primary_addr.clone(),
                     replica_count: route.replica_addrs.len().max(route.replica_endpoints.len()),
                     topology_version: route.topology_version,
@@ -1385,15 +1473,7 @@ impl TemporalStoreClient {
             .expect("client route cache lock poisoned")
             .insert(
                 shard_id,
-                CachedRoute {
-                    primary_addr: primary_addr.into(),
-                    replica_addrs: Vec::new(),
-                    replica_endpoints: Vec::new(),
-                    next_replica_index: 0,
-                    fetched_at: Instant::now(),
-                    topology_version: 0,
-                    refresh_reason: "test_insert".to_string(),
-                },
+                CachedRoute::for_shard(shard_id, primary_addr, "test_insert"),
             );
     }
 
@@ -1796,15 +1876,7 @@ impl TemporalStoreClient {
             .expect("client route cache lock poisoned")
             .insert(
                 shard_id,
-                CachedRoute {
-                    primary_addr: server_addr.clone(),
-                    replica_addrs: Vec::new(),
-                    replica_endpoints: Vec::new(),
-                    next_replica_index: 0,
-                    fetched_at: Instant::now(),
-                    topology_version: 0,
-                    refresh_reason: "shard_lookup".to_string(),
-                },
+                CachedRoute::for_shard(shard_id, server_addr.clone(), "shard_lookup"),
             );
         self.inner
             .stats
@@ -3515,6 +3587,36 @@ impl TemporalStorePipeline {
 
 fn table_combine_name(namespace: &str, table_name: &str) -> String {
     format!("{namespace}/{table_name}")
+}
+
+fn client_partition_id_for_offset(options: &TableOptions, offset: u64) -> ShardId {
+    if options.use_cpp_partition_ids {
+        if let Ok(partition) = PartitionId::new(
+            options.table_id,
+            offset,
+            0,
+            options.partition_version as u64,
+        ) {
+            return partition.id();
+        }
+    }
+    options.first_shard_id.saturating_add(offset)
+}
+
+fn partition_start_slot(offset: u64, shard_count: u64) -> u64 {
+    let slot_count = 1_u64 << 30;
+    if shard_count == 0 {
+        return 0;
+    }
+    slot_count.saturating_mul(offset) / shard_count
+}
+
+fn partition_end_slot(offset: u64, shard_count: u64) -> u64 {
+    let slot_count = 1_u64 << 30;
+    if shard_count == 0 {
+        return 0;
+    }
+    (slot_count.saturating_mul(offset.saturating_add(1)) / shard_count).saturating_sub(1)
 }
 
 fn topology_event_affects_routes(event: &crate::meta::TopologyChangeEvent) -> bool {

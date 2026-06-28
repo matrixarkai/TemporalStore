@@ -13,6 +13,11 @@ contract while preserving typed table clients, topology sync, retry budgets, Nep
 deployment placement hooks, proxy admission, route quarantine, topology-version invalidation, and
 heartbeat/config application behavior.
 
+The Rust client route cache models the C++ partition-set hierarchy as Rust-native data: table id,
+combine name, C++ partition-id mode, partition version, member partition ids, slot ranges,
+primary/replica endpoints, topology version, refresh reason, and missing-route counts are exposed
+through client preflight and route-cache reports.
+
 The versioned schema lives at:
 
 ```text
@@ -91,7 +96,8 @@ tests or validators:
   tests that route common, Feature, Sequence, IPS, Risk, and Context commands through the same
   logical contract.
 - topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
-  stale-route invalidation, proxy route refresh, and route-quarantine tests.
+  stale-route invalidation, C++ partition-set/member/version route-cache tests, proxy route
+  refresh, and route-quarantine tests.
 - retry budgets are covered by separate read/write retry-budget tests, including the no-duplicate
   unsafe write retry path.
 - admission policy is covered by readonly, write-disabled, not-serving, drop-percent, and degraded
@@ -113,6 +119,11 @@ readiness work:
 - IPS timeline add/query
 - Risk counter/window query
 - Context node upsert/get
+- Redis-compatible aliases and admin-facing migration commands
+
+For every supported command family above, the C++ caller migration contract is HTTP/JSON, RESP, or
+tonic replacement. The client compatibility report exposes the supported command families so
+readiness tests can reject accidental undocumented C++-only command paths.
 
 New production command families must update all of these in the same change:
 
@@ -132,6 +143,6 @@ as ready when the compatibility-result evidence is present. Broader global produ
 still be blocked by deployment-scale or closed-scope gates outside the client/proxy slice.
 
 Legacy C++ wire-compatible migration for existing C++ client callers remains explicitly out of
-scope for the Rust-native schema. If a deployment later requires the full C++ partition-set
-hierarchy or legacy wire protocols, that must be reopened as a separate compatibility target rather
-than silently weakening this contract.
+scope for the Rust-native schema. The C++ partition-set hierarchy is covered behaviorally by the
+Rust route-cache/preflight model; legacy wire protocols remain a separate compatibility target if a
+deployment later reopens them.
