@@ -5756,7 +5756,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior.",
+            "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, node-context query behavior, timestamp-keyed context_event storage under node/segment parents, compact embedding model_hash metadata, and compact scope hot-record parity.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [

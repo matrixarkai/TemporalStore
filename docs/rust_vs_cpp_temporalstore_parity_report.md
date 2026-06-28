@@ -51,6 +51,13 @@ contract:
   `WRITE_EXTRACTED_EVENT` debug tests: Rust writes the event and fans out default internal
   `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` indexes, while disabled
   indexes do not return query refs.
+- Recent C++ Context optimization changes are now represented in Rust behavior:
+  timestamp-keyed `ContextEvent` records carry `event_time_key` and parent-aware
+  `context_event_key` for node and segment parents; `ContextEmbedding` carries compact
+  `model_hash` metadata; Rust context nodes/child refs stay compact by storing tenant scope in
+  command/object keys rather than a bulky `scope` payload. Covered by
+  `context_events_segments_entities_child_refs` and
+  `context_cpp_wire_model_descriptor_roundtrip`.
 - `context_resource_skill_parser_openviking_parity` covers the OpenViking/C++ resource parser
   gap: Rust parses markdown/text resources and `SKILL.md` front matter into stable source-ref
   chunks with embedding refs, persists chunk embeddings, then feeds those chunks through Rust
@@ -59,8 +66,8 @@ contract:
   titles. The harness compacts node metadata to C++/Rust Context validation limits while preserving
   full segment text and source refs for retrieval scoring.
 
-The newer C++ Context code at `<cpp-temporalstore-checkout>` goes further than the
-current Rust implementation:
+The newer C++ Context code at `<cpp-temporalstore-checkout>` is tracked against these
+Rust behavior-parity surfaces:
 
 | C++ Context surface | C++ model/function evidence | Rust status |
 | --- | --- | --- |
@@ -71,6 +78,8 @@ current Rust implementation:
 | `ContextEntityModel` | model id `18`, `UPSERT_ENTITY`, `GET_ENTITY`, `QUERY_ENTITIES` | Implemented as Rust `ContextEntity` plus `ContextUpsertEntity`, `ContextGetEntity`, and `ContextQueryEntities`; covered by translated C++ round-trip and validation tests. |
 | Integrated node context | `QUERY_NODE_CONTEXT` returns node, latest summary, and cold-window compression summaries | Implemented as `ContextQueryNodeContext`. |
 | Extracted event fanout | `WRITE_EXTRACTED_EVENT` writes events plus internal indexes for entity/status/source/time bucket | Implemented as Rust `ContextWriteExtractedEvent` with default `event_kind`, `entity`, `status`, `source`, and `event_time_bucket` fanout plus disabled-index support. |
+| Timestamp-keyed event storage | recent C++ changesets `dbab966b`/`e86e26eb` add parent-aware `context_event_key` and `event_time_key` | Implemented in Rust `ContextEvent` and normalized on `ContextWriteEvent` / `ContextWriteExtractedEvent`; node-parent and segment-parent cases are asserted in `context_models_match_cpp_keys_timeline_pages_and_filters`. |
+| Compact embedding metadata | C++ changeset `df54f71d` replaces repeated embedding model strings with `model_hash` when possible | Implemented in Rust `ContextEmbedding` and resource/context embedding producers; C++ wire round-trip preserves `model_hash`. |
 
 So the honest current state is: Rust is benchmark-compatible for recent Context ingestion/retrieval
 evidence and shared corpus validation, and the newest C++ Context storage/debug models now have

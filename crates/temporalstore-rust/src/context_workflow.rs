@@ -1584,21 +1584,30 @@ pub fn extract_context(
         l1_ref: l1.clone(),
         raw_metadata_ref: l2_ref.clone(),
     };
-    let event = ContextEvent {
-        event_id_hash,
-        event_time_ms: timestamp_ms,
-        kind: source_kind_code(request.source_kind),
-        event_type: 1,
-        actor_hash: stable_hash64(&request.source_id),
-        status: 1,
-        valid_until_ms: 0,
-        confidence: 1.0,
-        importance: context_importance(&request.body),
-        text: request.body.clone(),
-        source_ref: request.source_id.clone(),
-        related_node_hashes: vec![node_hash],
-        compact_attrs: l1.as_bytes().to_vec(),
-    };
+    let event = context_event_with_storage_keys(
+        node_hash,
+        ContextEvent {
+            event_id_hash,
+            event_time_ms: timestamp_ms,
+            parent_segment_hash: 0,
+            parent_segment_hashes: Vec::new(),
+            context_event_parent_type: String::new(),
+            context_event_parent_hash: 0,
+            event_time_key: String::new(),
+            context_event_key: String::new(),
+            kind: source_kind_code(request.source_kind),
+            event_type: 1,
+            actor_hash: stable_hash64(&request.source_id),
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 1.0,
+            importance: context_importance(&request.body),
+            text: request.body.clone(),
+            source_ref: request.source_id.clone(),
+            related_node_hashes: vec![node_hash],
+            compact_attrs: l1.as_bytes().to_vec(),
+        },
+    );
     let index_ref = ContextIndexRef {
         primary_node_hash: node_hash,
         primary_event_time_ms: timestamp_ms,
@@ -1665,18 +1674,21 @@ pub fn extract_context(
     let embedding_l0 = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l0"),
         level: 1,
+        model_hash: context_embedding_model_hash(&provider.model),
         vector: embedding_vectors[0].clone(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_l1 = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, node_hash, "node_l1"),
         level: 2,
+        model_hash: context_embedding_model_hash(&provider.model),
         vector: embedding_vectors[1].clone(),
         updated_at_ms: timestamp_ms,
     };
     let embedding_event = ContextEmbedding {
         ref_hash: context_embedding_ref_hash(request.tenant_hash, event_id_hash, "event_text"),
         level: 3,
+        model_hash: context_embedding_model_hash(&provider.model),
         vector: embedding_vectors[2].clone(),
         updated_at_ms: timestamp_ms,
     };
@@ -2721,6 +2733,7 @@ pub fn context_resource_chunk_embedding(
     ContextEmbedding {
         ref_hash: chunk.embedding_ref_hash,
         level: 2,
+        model_hash: context_embedding_model_hash(model),
         vector: deterministic_context_embedding(model, &chunk.text),
         updated_at_ms,
     }
@@ -5967,6 +5980,54 @@ fn stable_hash64(value: &str) -> u64 {
     hash
 }
 
+fn context_event_time_key(event_time_ms: u64, event_hash: u64) -> String {
+    format!("{:020}:{event_hash}", event_time_ms.max(1))
+}
+
+fn context_event_with_storage_keys(node_hash: u64, mut event: ContextEvent) -> ContextEvent {
+    if event.event_time_ms == 0 {
+        event.event_time_ms = now_ms().max(1);
+    }
+    if event.event_id_hash == 0 {
+        event.event_id_hash = stable_hash64(&format!(
+            "context_event:{}:{}:{}",
+            node_hash, event.event_time_ms, event.text
+        ));
+    }
+    if event.parent_segment_hash == 0 {
+        if let Some(parent_segment_hash) = event
+            .parent_segment_hashes
+            .iter()
+            .copied()
+            .find(|hash| *hash != 0)
+        {
+            event.parent_segment_hash = parent_segment_hash;
+        }
+    }
+    let (parent_type, parent_hash) = if event.parent_segment_hash != 0 {
+        ("context_segment", event.parent_segment_hash)
+    } else {
+        ("context_node", node_hash)
+    };
+    event.context_event_parent_type = parent_type.to_string();
+    event.context_event_parent_hash = parent_hash;
+    event.event_time_key = context_event_time_key(event.event_time_ms, event.event_id_hash);
+    event.context_event_key = format!(
+        "context_event:{}:{}:{}",
+        event.context_event_parent_type, event.context_event_parent_hash, event.event_time_key
+    );
+    event
+}
+
+fn context_embedding_model_hash(model: &str) -> u64 {
+    let model = model.trim();
+    if model.is_empty() {
+        0
+    } else {
+        stable_hash64(&format!("embedding_model:{model}"))
+    }
+}
+
 fn context_embedding_ref_hash(tenant_hash: u64, ref_hash: u64, level: &str) -> u64 {
     stable_hash64(&format!("ctx-embedding:{tenant_hash}:{ref_hash}:{level}"))
 }
@@ -6051,6 +6112,12 @@ fn empty_event() -> ContextEvent {
     ContextEvent {
         event_id_hash: 0,
         event_time_ms: 0,
+        parent_segment_hash: 0,
+        parent_segment_hashes: Vec::new(),
+        context_event_parent_type: String::new(),
+        context_event_parent_hash: 0,
+        event_time_key: String::new(),
+        context_event_key: String::new(),
         kind: 0,
         event_type: 0,
         actor_hash: 0,
