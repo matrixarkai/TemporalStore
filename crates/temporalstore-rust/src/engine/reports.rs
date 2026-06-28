@@ -12,11 +12,17 @@ pub struct ShardCompactionReport {
     pub previous_page_segment_id: u64,
     pub compacted_page_segment_id: u64,
     pub rewritten_page_refs: usize,
+    #[serde(default)]
+    pub cold_page_rewrite_refs: usize,
+    #[serde(default)]
+    pub object_page_pack_group_count: usize,
     pub stale_page_segment_ids: Vec<u64>,
     #[serde(default)]
     pub before: ShardCompactionUtilityReport,
     #[serde(default)]
     pub after: ShardCompactionUtilityReport,
+    #[serde(default)]
+    pub model_rewrite_policies: Vec<ModelCompactionRewriteReport>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +46,25 @@ pub struct ModelCompactionPolicyReport {
     pub stale_page_estimate: u64,
     pub stale_density_basis_points: u64,
     pub tombstone_density_basis_points: u64,
+    #[serde(default)]
+    pub object_page_packing_enabled: bool,
+    #[serde(default)]
+    pub object_page_pack_group_count: u64,
+    #[serde(default)]
+    pub cold_page_rewrite_eligible_refs: u64,
+    #[serde(default)]
+    pub compaction_action: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCompactionRewriteReport {
+    pub model_id: String,
+    pub layout_policy: String,
+    pub rewritten_page_refs: usize,
+    pub cold_page_rewrite_refs: usize,
+    pub object_page_pack_group_count: usize,
+    pub tombstone_density_basis_points: u64,
+    pub stale_density_basis_points: u64,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
