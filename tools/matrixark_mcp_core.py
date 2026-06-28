@@ -89,6 +89,8 @@ MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METAD
 MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
 MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
 MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION", "128"))
+MAX_SECONDARY_INDEX_REFS_PER_POSTING = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING", "512"))
+SECONDARY_INDEX_TIME_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_TIME_BUCKET_MS", "60000"))
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 SECONDARY_INDEX_PRIORITY_PREFIXES = (
@@ -1101,12 +1103,13 @@ def latest_context_state_key(record: Json) -> tuple[Any, ...] | None:
 
 
 def compact_latest_context_state_records(records: list[Json]) -> list[Json]:
-    """Collapse append-log summary state into one latest serving record per key.
+    """Collapse append-log state into compact serving records.
 
     The physical log can retain older writes for durability/debug, but serving,
-    retrieval, and normal debug tables should see ContextSummary L0/L1 as state:
-    one logical row per summary key, updated in place by latest timestamp/order.
+    retrieval, and normal debug tables should see ContextSummary L0/L1 as state
+    and ContextIndex as Feature-style timestamped posting rows.
     """
+    records = compact_context_index_postings(records)
     latest: dict[tuple[Any, ...], tuple[int, Json]] = {}
     passthrough: list[tuple[int, Json]] = []
     for index, record in enumerate(records):
@@ -3193,6 +3196,154 @@ def context_index_record_ref_hashes(record: Json) -> list[Any]:
         return [ref for ref in refs if ref is not None]
     legacy = record.get("ref_hash")
     return [legacy] if legacy is not None else []
+
+
+def context_index_record_node_hashes(record: Json) -> list[Any]:
+    node_hashes = record.get("node_hashes")
+    if isinstance(node_hashes, list) and node_hashes:
+        return [node_hash for node_hash in node_hashes if node_hash is not None]
+    node_hash = record.get("node_hash")
+    return [node_hash] if node_hash is not None else []
+
+
+def ordered_unique_any(values: list[Any]) -> list[Any]:
+    output: list[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        if value is None:
+            continue
+        key = str(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        output.append(value)
+    return output
+
+
+def context_index_time_bucket(timestamp_ms: Any) -> int:
+    try:
+        timestamp = int(timestamp_ms)
+    except (TypeError, ValueError):
+        timestamp = now_ms()
+    bucket_ms = max(1, int(SECONDARY_INDEX_TIME_BUCKET_MS))
+    return (timestamp // bucket_ms) * bucket_ms
+
+
+def _chunked_refs(refs: list[Any], *, limit: int) -> list[list[Any]]:
+    cap = max(1, int(limit))
+    return [refs[index:index + cap] for index in range(0, len(refs), cap)] or [[]]
+
+
+def compact_context_index_postings(records: list[Json]) -> list[Json]:
+    """Group ContextIndex writes into Feature-style timestamped posting rows.
+
+    ContextIndex is an index data model. It should not produce one row per
+    indexed object when many objects share the same term, model, scope, node, and
+    timestamp bucket. Grouping keeps index rows bounded by terms and buckets,
+    while ref_hashes carries the posting list.
+    """
+    grouped: dict[tuple[Any, ...], Json] = {}
+    passthrough: list[Json] = []
+    order: list[tuple[Any, ...]] = []
+    for record in records:
+        if str(record.get("record_type") or "") != "context_index":
+            passthrough.append(record)
+            continue
+        index_name = str(record.get("index_name") or "")
+        data_model = str(record.get("data_model") or "")
+        if not index_name or not data_model:
+            passthrough.append(record)
+            continue
+        bucket_ms = context_index_time_bucket(record.get("timestamp_key_ms") or record.get("updated_at_ms"))
+        key = (
+            str(record.get("scope_key") or ""),
+            data_model,
+            index_name,
+            str(record.get("ref_type") or ""),
+            bucket_ms,
+        )
+        if key not in grouped:
+            grouped[key] = {
+                "record_type": "context_index",
+                "index_name": index_name,
+                "data_model": data_model,
+                "timestamp_key_ms": bucket_ms,
+                "updated_at_ms": bucket_ms,
+                "ref_hashes": [],
+                "node_hashes": [],
+                "batch_id_hashes": [],
+                "posting_count": 0,
+                "posting_policy": "bucketed_by_scope_data_model_index_time",
+            }
+            for field in ("scope_key", "ref_type", "storage_route"):
+                value = record.get(field)
+                if value not in (None, "", [], {}):
+                    grouped[key][field] = value
+            order.append(key)
+        posting = grouped[key]
+        node_hash = record.get("node_hash")
+        if node_hash is not None and str(node_hash) not in {str(item) for item in posting.get("node_hashes", [])}:
+            posting["node_hashes"].append(node_hash)
+        batch_id_hash = record.get("batch_id_hash")
+        if batch_id_hash is not None and str(batch_id_hash) not in {str(item) for item in posting.get("batch_id_hashes", [])}:
+            posting["batch_id_hashes"].append(batch_id_hash)
+        existing = {str(ref) for ref in posting.get("ref_hashes", [])}
+        for ref in context_index_record_ref_hashes(record):
+            if ref is None or str(ref) in existing:
+                continue
+            posting["ref_hashes"].append(ref)
+            existing.add(str(ref))
+        if record.get("source_ref") and not posting.get("sample_source_ref"):
+            posting["sample_source_ref"] = record.get("source_ref")
+        try:
+            posting["posting_count"] += max(1, int(record.get("posting_count") or len(context_index_record_ref_hashes(record)) or 1))
+        except (TypeError, ValueError):
+            posting["posting_count"] += 1
+    compacted_indexes: list[Json] = []
+    for key in order:
+        base = grouped[key]
+        refs = []
+        seen_ref_keys: set[str] = set()
+        for ref in base.get("ref_hashes", []):
+            ref_key = str(ref)
+            if ref_key in seen_ref_keys:
+                continue
+            seen_ref_keys.add(ref_key)
+            refs.append(ref)
+        for part, ref_chunk in enumerate(_chunked_refs(refs, limit=MAX_SECONDARY_INDEX_REFS_PER_POSTING)):
+            record = dict(base)
+            record["ref_hashes"] = ref_chunk
+            record["posting_part"] = part
+            if len(ref_chunk) == 1:
+                record["ref_hash"] = ref_chunk[0]
+            else:
+                record.pop("ref_hash", None)
+            if len(record.get("node_hashes", [])) == 1:
+                record["node_hash"] = record["node_hashes"][0]
+            else:
+                record.pop("node_hash", None)
+            if len(record.get("batch_id_hashes", [])) == 1:
+                record["batch_id_hash"] = record["batch_id_hashes"][0]
+            else:
+                record.pop("batch_id_hash", None)
+            if not record.get("node_hashes"):
+                record.pop("node_hashes", None)
+            if not record.get("batch_id_hashes"):
+                record.pop("batch_id_hashes", None)
+            identity = {
+                "scope_key": record.get("scope_key"),
+                "index_name": record.get("index_name"),
+                "data_model": record.get("data_model"),
+                "timestamp_key_ms": record.get("timestamp_key_ms"),
+                "node_hashes": record.get("node_hashes") or ([record.get("node_hash")] if record.get("node_hash") is not None else []),
+                "batch_id_hashes": record.get("batch_id_hashes") or ([record.get("batch_id_hash")] if record.get("batch_id_hash") is not None else []),
+                "ref_type": record.get("ref_type"),
+                "posting_part": part,
+                "ref_hashes": ref_chunk,
+            }
+            record["index_hash"] = stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":")))
+            compacted_indexes.append(record)
+    return passthrough + compacted_indexes
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(

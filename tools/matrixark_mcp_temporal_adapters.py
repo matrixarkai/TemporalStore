@@ -1869,16 +1869,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     legacy_value = record.get(legacy_field)
                     if legacy_value is not None:
                         ref_hashes.append(legacy_value)
-                ref_hashes = ordered_unique(ref_hashes)
+                ref_hashes = ordered_unique_any(ref_hashes)
+                node_hashes_for_index = context_index_record_node_hashes(record)
+                for node_hash_for_index in node_hashes_for_index:
+                    try:
+                        node_hash_int = int(node_hash_for_index)
+                    except (TypeError, ValueError):
+                        continue
+                    index_terms_by_node_for_prefilter.setdefault(node_hash_int, []).append(index_name)
+                    index_terms_by_node.setdefault(node_hash_int, []).append(index_name)
                 if ref_hashes:
                     for ref_hash in ref_hashes:
                         index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
-                else:
+                elif not node_hashes_for_index:
                     index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
-                try:
-                    index_terms_by_node_for_prefilter.setdefault(int(record.get("node_hash")), []).append(index_name)
-                except (TypeError, ValueError):
-                    pass
             matched_node_hashes = {
                 node_hash
                 for node_hash, terms in index_terms_by_node_for_prefilter.items()
