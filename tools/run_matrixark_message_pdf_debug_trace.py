@@ -575,6 +575,17 @@ def vector_preview(record: Json) -> Json:
     }
 
 
+def embedding_model_ref(record: Json) -> str:
+    """Display compact embedding model metadata without expanding hot records."""
+    model = str(record.get("model") or "")
+    if model:
+        return model
+    model_hash = record.get("model_hash")
+    if model_hash is not None:
+        return f"model_hash:{model_hash}"
+    return ""
+
+
 def read_records(path: Path) -> list[Json]:
     records: list[Json] = []
     if not path.exists():
