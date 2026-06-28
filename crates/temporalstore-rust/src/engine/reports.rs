@@ -46,6 +46,39 @@ pub struct ModelCompactionPolicyReport {
 pub struct ShardExpirySweepReport {
     pub shard_id: ShardId,
     pub expired_records_removed: usize,
+    #[serde(default)]
+    pub hot_slots_scanned: usize,
+    #[serde(default)]
+    pub cold_slots_scanned: usize,
+    #[serde(default)]
+    pub scanned_records: usize,
+    #[serde(default)]
+    pub skipped_records: usize,
+    #[serde(default)]
+    pub loaded_for_expire: usize,
+    #[serde(default)]
+    pub next_hot_cursor: Option<String>,
+    #[serde(default)]
+    pub next_cold_cursor: Option<String>,
+    #[serde(default)]
+    pub round_limit: usize,
+    #[serde(default)]
+    pub load_on_expire_only_when_needed: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShardExpirySweepRequest {
+    pub shard_id: ShardId,
+    #[serde(default)]
+    pub hot_cursor: Option<String>,
+    #[serde(default)]
+    pub cold_cursor: Option<String>,
+    #[serde(default)]
+    pub max_hot_slots_per_round: usize,
+    #[serde(default)]
+    pub max_cold_slots_per_round: usize,
+    #[serde(default)]
+    pub load_cold_slots: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -714,6 +747,16 @@ pub struct StorageManagerCycleRequest {
     #[serde(default)]
     pub warm_cache: bool,
     #[serde(default)]
+    pub max_expire_hot_slots_per_round: usize,
+    #[serde(default)]
+    pub max_expire_cold_slots_per_round: usize,
+    #[serde(default)]
+    pub expire_hot_cursor: Option<String>,
+    #[serde(default)]
+    pub expire_cold_cursor: Option<String>,
+    #[serde(default)]
+    pub load_cold_slots_for_expire: bool,
+    #[serde(default)]
     pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
     #[serde(default)]
     pub raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
@@ -734,6 +777,11 @@ impl Default for StorageManagerCycleRequest {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             warm_cache: false,
+            max_expire_hot_slots_per_round: 0,
+            max_expire_cold_slots_per_round: 0,
+            expire_hot_cursor: None,
+            expire_cold_cursor: None,
+            load_cold_slots_for_expire: false,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
         }

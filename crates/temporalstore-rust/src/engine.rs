@@ -2327,7 +2327,14 @@ impl TemporalEngine {
 
         let mut expiry_report = None;
         if request.enable_expire && !request.dry_run {
-            match self.sweep_expired_records(request.shard_id) {
+            match self.sweep_expired_records_with_request(ShardExpirySweepRequest {
+                shard_id: request.shard_id,
+                hot_cursor: request.expire_hot_cursor.clone(),
+                cold_cursor: request.expire_cold_cursor.clone(),
+                max_hot_slots_per_round: request.max_expire_hot_slots_per_round,
+                max_cold_slots_per_round: request.max_expire_cold_slots_per_round,
+                load_cold_slots: request.load_cold_slots_for_expire,
+            }) {
                 Ok(report) => expiry_report = Some(report),
                 Err(err) => errors.push(format!("expire: {}", err.message)),
             }
@@ -2470,7 +2477,8 @@ impl TemporalEngine {
             } else {
                 "expire disabled".to_string()
             },
-            pressure_signal: "expired_slot_object_scan_debt".to_string(),
+            pressure_signal: "expired_hot_slots+cold_slots+scan_cursors+load_on_expire_debt"
+                .to_string(),
             pressure_score: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed as u64)
@@ -2486,6 +2494,14 @@ impl TemporalEngine {
             expired_records_removed: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed)
+                .unwrap_or_default(),
+            candidate_count: expiry_report
+                .as_ref()
+                .map(|report| report.scanned_records)
+                .unwrap_or(pressure_signals.expired_slot_object_scan_debt),
+            skipped_count: expiry_report
+                .as_ref()
+                .map(|report| report.skipped_records)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -4153,33 +4169,94 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Result<ShardExpirySweepReport, Status> {
+        self.sweep_expired_records_with_request(ShardExpirySweepRequest {
+            shard_id,
+            load_cold_slots: true,
+            ..ShardExpirySweepRequest::default()
+        })
+    }
+
+    pub fn sweep_expired_records_with_request(
+        &self,
+        request: ShardExpirySweepRequest,
+    ) -> Result<ShardExpirySweepReport, Status> {
         let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
+        let Some(shard) = shards.get_mut(&request.shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
         let now = now_ms();
-        let expired_keys = shard
+        let mut hot_keys = shard
             .expires_at_ms
             .iter()
-            .filter_map(|(key, expires_at)| (*expires_at <= now).then(|| key.clone()))
+            .filter(|(key, _)| record_exists(shard, key))
+            .map(|(key, expires_at)| (key.clone(), *expires_at))
             .collect::<Vec<_>>();
+        hot_keys.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut cold_keys = shard
+            .expires_at_ms
+            .iter()
+            .filter(|(key, _)| !record_exists(shard, key))
+            .map(|(key, expires_at)| (key.clone(), *expires_at))
+            .collect::<Vec<_>>();
+        cold_keys.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let hot_limit = request.max_hot_slots_per_round;
+        let cold_limit = request.max_cold_slots_per_round;
+        let (hot_selected, next_hot_cursor) =
+            select_expiry_cursor_window(hot_keys, request.hot_cursor.as_deref(), hot_limit);
+        let (cold_selected, next_cold_cursor) =
+            select_expiry_cursor_window(cold_keys, request.cold_cursor.as_deref(), cold_limit);
         let mut expired_records_removed = 0;
-        for key in expired_keys {
-            if delete_record(shard, &key) {
-                invalidate_record_all(&self.cache, shard_id, &key);
-                expired_records_removed += 1;
+        let mut skipped_records = 0usize;
+        let mut loaded_for_expire = 0usize;
+        for (key, expires_at) in hot_selected.iter() {
+            if *expires_at <= now {
+                if delete_record(shard, key) {
+                    invalidate_record_all(&self.cache, request.shard_id, key);
+                    expired_records_removed += 1;
+                }
+            } else {
+                skipped_records = skipped_records.saturating_add(1);
+            }
+        }
+        for (key, expires_at) in cold_selected.iter() {
+            if *expires_at <= now {
+                if request.load_cold_slots {
+                    loaded_for_expire = loaded_for_expire.saturating_add(1);
+                    if delete_record(shard, key) {
+                        invalidate_record_all(&self.cache, request.shard_id, key);
+                        expired_records_removed += 1;
+                    } else {
+                        shard.expires_at_ms.remove(key);
+                    }
+                } else {
+                    skipped_records = skipped_records.saturating_add(1);
+                }
+            } else {
+                skipped_records = skipped_records.saturating_add(1);
             }
         }
         if expired_records_removed > 0 {
             let index_bytes = serde_json::to_vec_pretty(shard)
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
-            self.persist_index_bytes(shard_id, &index_bytes)
+            self.persist_index_bytes(request.shard_id, &index_bytes)
                 .map_err(|err| Status::error("expire_sweep_failed", err.to_string()))?;
-            let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+            let _ = self
+                .index_log_store
+                .append_json(request.shard_id, &index_bytes);
         }
         Ok(ShardExpirySweepReport {
-            shard_id,
+            shard_id: request.shard_id,
             expired_records_removed,
+            hot_slots_scanned: hot_selected.len(),
+            cold_slots_scanned: cold_selected.len(),
+            scanned_records: hot_selected.len().saturating_add(cold_selected.len()),
+            skipped_records,
+            loaded_for_expire,
+            next_hot_cursor,
+            next_cold_cursor,
+            round_limit: hot_limit.saturating_add(cold_limit),
+            load_on_expire_only_when_needed: true,
         })
     }
 
@@ -7698,6 +7775,23 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
         .map(|expires_at| expires_at.saturating_sub(now_ms()) as i64)
         .min()
         .unwrap_or(-1)
+}
+
+fn select_expiry_cursor_window(
+    keys: Vec<(String, u64)>,
+    cursor: Option<&str>,
+    limit: usize,
+) -> (Vec<(String, u64)>, Option<String>) {
+    let start = cursor
+        .and_then(|cursor| keys.iter().position(|(key, _)| key.as_str() > cursor))
+        .unwrap_or_default();
+    let remaining = keys.into_iter().skip(start).collect::<Vec<_>>();
+    if limit == 0 || remaining.len() <= limit {
+        return (remaining, None);
+    }
+    let mut selected = remaining.into_iter().take(limit).collect::<Vec<_>>();
+    let next_cursor = selected.last().map(|(key, _)| key.clone());
+    (std::mem::take(&mut selected), next_cursor)
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
@@ -13000,6 +13094,69 @@ mod tests {
                 .expired_records_removed,
             0
         );
+    }
+
+    // shared-corpus: storage_manager_expire_cursor_scan_limits
+    #[test]
+    fn expiry_sweep_uses_hot_cursors_limits_and_cold_load_policy() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        for key in ["expire-hot-a", "expire-hot-b", "expire-hot-c"] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSetEx {
+                            key: key.to_string(),
+                            value: key.as_bytes().to_vec(),
+                            ttl_ms: 1,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        {
+            let mut shards = engine.shards.write().expect("shards lock poisoned");
+            let shard = shards.get_mut(&1).unwrap();
+            shard
+                .expires_at_ms
+                .insert("expire-cold-a".to_string(), now_ms().saturating_sub(1));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        let first = engine
+            .sweep_expired_records_with_request(ShardExpirySweepRequest {
+                shard_id: 1,
+                max_hot_slots_per_round: 2,
+                max_cold_slots_per_round: 1,
+                load_cold_slots: false,
+                ..ShardExpirySweepRequest::default()
+            })
+            .unwrap();
+        assert_eq!(first.hot_slots_scanned, 2);
+        assert_eq!(first.cold_slots_scanned, 1);
+        assert_eq!(first.scanned_records, 3);
+        assert_eq!(first.expired_records_removed, 2);
+        assert_eq!(first.loaded_for_expire, 0);
+        assert_eq!(first.skipped_records, 1);
+        assert_eq!(first.next_hot_cursor.as_deref(), Some("expire-hot-b"));
+        assert!(first.load_on_expire_only_when_needed);
+
+        let second = engine
+            .sweep_expired_records_with_request(ShardExpirySweepRequest {
+                shard_id: 1,
+                hot_cursor: first.next_hot_cursor,
+                cold_cursor: first.next_cold_cursor,
+                max_hot_slots_per_round: 2,
+                max_cold_slots_per_round: 1,
+                load_cold_slots: true,
+            })
+            .unwrap();
+        assert_eq!(second.hot_slots_scanned, 1);
+        assert_eq!(second.cold_slots_scanned, 1);
+        assert_eq!(second.expired_records_removed, 2);
+        assert_eq!(second.loaded_for_expire, 1);
     }
 
     #[test]
@@ -19689,6 +19846,9 @@ mod tests {
             shard_id: 1,
             max_dump_slots_per_round: 16,
             warm_cache: true,
+            max_expire_hot_slots_per_round: 8,
+            max_expire_cold_slots_per_round: 8,
+            load_cold_slots_for_expire: true,
             ..StorageManagerCycleRequest::default()
         });
 
@@ -19759,8 +19919,16 @@ mod tests {
             .find(|stage| stage.stage == "expire")
             .expect("expire stage");
         assert_eq!(expire.expired_records_removed, 1, "{report:#?}");
-        assert_eq!(expire.pressure_signal, "expired_slot_object_scan_debt");
+        assert_eq!(
+            expire.pressure_signal,
+            "expired_hot_slots+cold_slots+scan_cursors+load_on_expire_debt"
+        );
+        assert!(expire.candidate_count >= 1, "{report:#?}");
         assert!(expire.pressure_triggered, "{report:#?}");
+        let expiry_report = report.expiry_report.as_ref().expect("expiry report");
+        assert!(expiry_report.hot_slots_scanned >= 1);
+        assert!(expiry_report.scanned_records >= 1);
+        assert!(expiry_report.load_on_expire_only_when_needed);
         let evict = report
             .stages
             .iter()
