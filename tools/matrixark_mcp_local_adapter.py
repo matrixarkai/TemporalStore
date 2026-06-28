@@ -2790,17 +2790,16 @@ class MatrixArkLocalAdapter:
             for index_name in resource_indexes:
                 index_write_count += 1
                 self.append(
-                    {
-                        "record_type": "context_index",
-                        "index_name": index_name,
-                        "index_hash": stable_hash(f"{index_name}:{resource_summary_hash}"),
-                        "summary_hash": resource_summary_hash,
-                        "node_hash": node_hash,
-                        "node_path": node_path,
-                        "scope": resource_record_scope,
-                        "storage_options": envelope.get("storage_options", {}),
-                        "updated_at_ms": envelope["ingestion_time_ms"],
-                    }
+                    context_index_posting_record(
+                        index_name=index_name,
+                        data_model=f"{resource_kind}_summary",
+                        ref_type="summary",
+                        ref_hashes=[resource_summary_hash],
+                        node_hash=node_hash,
+                        scope=resource_record_scope,
+                        updated_at_ms=envelope["ingestion_time_ms"],
+                        storage_options=envelope.get("storage_options", {}),
+                    )
                 )
             resource_manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
             raw_uri_hash = stable_hash(raw_uri)
@@ -3104,34 +3103,9 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
                     )
-                    raw_fact_index_terms = [
-                        context_index_name("source_type", "resource_fact"),
-                        context_index_name("event_type", fact_event_type),
-                        context_index_name("entity_type", fact_entity_type),
-                        context_index_name("entity_type", "resource_fact"),
-                        context_index_name("resource_type", chunk_metadata.get("resource_type") or resource_type),
-                    ] + metadata_index_terms(chunk.metadata)
-                    index_candidate_count += len([term for term in raw_fact_index_terms if term])
-                    fact_index_terms = limited_index_terms(raw_fact_index_terms, limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT)
-                    index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_fact_index_terms if term])) - len(fact_index_terms))
-                    fact_index_terms = take_secondary_index_terms(fact_index_terms, secondary_index_budget)
-                    for index_name in fact_index_terms:
-                        index_write_count += 1
-                        resource_fact_records.append(
-                            {
-                                "record_type": "context_index",
-                                "index_name": index_name,
-                                "index_hash": stable_hash(f"{index_name}:{fact_event_hash}"),
-                                "batch_id_hash": resource_import_task_hash,
-                                "ref_type": "resource_fact",
-                                "ref_hash": fact_event_hash,
-                                "chunk_hash": chunk.chunk_hash,
-                                "node_hash": node_hash,
-                                "node_path": node_path,
-                                "scope": resource_record_scope,
-                                "updated_at_ms": envelope["ingestion_time_ms"],
-                            }
-                        )
+                    # Resource facts are ContextEvent/ContextEntity records with
+                    # source_chunk refs. The resource chunk/index rows already provide
+                    # secondary filtering, so avoid per-fact event index fanout here.
             if resource_fact_records:
                 self.append_many(resource_fact_records)
             resource_import_metrics = {
@@ -3681,16 +3655,14 @@ class MatrixArkLocalAdapter:
         batch_index_terms = take_secondary_index_terms(list(extraction["indexes"]), secondary_index_budget)
         for index_name in batch_index_terms:
             records_to_append.append(
-                {
-                    "record_type": "context_index",
-                    "index_name": index_name,
-                    "index_hash": stable_hash(f"{index_name}:{batch_id_hash}"),
-                    "batch_id_hash": batch_id_hash,
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "scope": envelope["scope"],
-                    "updated_at_ms": envelope["ingestion_time_ms"],
-                }
+                context_index_posting_record(
+                    index_name=index_name,
+                    data_model="context_batch_commit",
+                    batch_id_hash=batch_id_hash,
+                    node_hash=node_hash,
+                    scope=envelope["scope"],
+                    updated_at_ms=envelope["ingestion_time_ms"],
+                )
             )
         records_to_append.append(
             {

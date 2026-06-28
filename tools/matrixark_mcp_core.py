@@ -2807,6 +2807,79 @@ def secondary_index_budget_summary(budget: Json) -> Json:
     }
 
 
+def context_index_posting_record(
+    *,
+    index_name: str,
+    data_model: str,
+    ref_type: str | None = None,
+    ref_hashes: list[Any] | None = None,
+    batch_id_hash: Any = None,
+    node_hash: Any = None,
+    scope: Json | None = None,
+    updated_at_ms: Any = None,
+    source_ref: str | None = None,
+    storage_options: Json | None = None,
+) -> Json:
+    """Build a compact TemporalStore-style secondary-index posting row.
+
+    ContextIndex is an index data model, not an event/chunk/entity clone. New
+    writes store the indexed data model and a timestamp key plus a compact
+    posting list of referenced hashes. Readers still accept older ref_hash rows.
+    """
+    refs: list[Any] = []
+    seen_refs: set[str] = set()
+    for ref in ref_hashes or []:
+        if ref is None:
+            continue
+        key = str(ref)
+        if key in seen_refs:
+            continue
+        seen_refs.add(key)
+        refs.append(ref)
+    timestamp_key_ms = int(updated_at_ms or now_ms())
+    identity = {
+        "index_name": index_name,
+        "data_model": data_model,
+        "timestamp_key_ms": timestamp_key_ms,
+        "batch_id_hash": batch_id_hash,
+        "node_hash": node_hash,
+        "ref_hashes": refs,
+    }
+    record: Json = {
+        "record_type": "context_index",
+        "index_name": index_name,
+        "index_hash": stable_hash(json.dumps(identity, sort_keys=True, separators=(",", ":"))),
+        "data_model": data_model,
+        "timestamp_key_ms": timestamp_key_ms,
+        "ref_hashes": refs,
+        "updated_at_ms": timestamp_key_ms,
+    }
+    if len(refs) == 1:
+        # Compatibility for native readers that still consume single-ref postings.
+        record["ref_hash"] = refs[0]
+    if ref_type:
+        record["ref_type"] = ref_type
+    if batch_id_hash is not None:
+        record["batch_id_hash"] = batch_id_hash
+    if node_hash is not None:
+        record["node_hash"] = node_hash
+    if scope:
+        record["scope"] = scope
+    if source_ref:
+        record["source_ref"] = source_ref
+    if storage_options:
+        record["storage_options"] = storage_options
+    return record
+
+
+def context_index_record_ref_hashes(record: Json) -> list[Any]:
+    refs = record.get("ref_hashes")
+    if isinstance(refs, list):
+        return [ref for ref in refs if ref is not None]
+    legacy = record.get("ref_hash")
+    return [legacy] if legacy is not None else []
+
+
 RESOURCE_FACT_KEYWORDS = re.compile(
     r"\b(decision|decided|owner|owns|deadline|due|cost|budget|approval|approved|risk|policy|must|should|required|requires|api|endpoint|contract|runbook|rollback|incident|troubleshoot|alert|sla|p95|p99|procedure|checklist)\b",
     flags=re.IGNORECASE,

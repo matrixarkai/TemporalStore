@@ -62,7 +62,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |ResourceChunk|Cited serving chunk from PDF/MD/etc. Full raw_uri lives on ResourceManifest; chunks carry resource_hash plus source_l...|chunk_hash, resource_hash, source_locator, text, token_estimate, unit_kind, page_number, heading_slug|
 |ContextSummary|L0/L1 node/resource summary used for preview and tree traversal.|summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes|
 |ContextEmbedding|Vector stored separately for summaries, chunks, events, entities, and resources.|embedding_type, ref_type, ref_hash, model, dim, vector|
-|ContextIndex|Bounded secondary filters before similarity scoring.|index_name, index_value, ref_type, ref_hash, node_hash, chunk_hash|
+|ContextIndex|TemporalStore-style posting rows for bounded secondary filters before similarity scoring.|data_model, index_name, timestamp_key_ms, ref_type, ref_hashes, node_hash|
 |ContextPackAudit|Explains selected/dropped refs, scores, token costs, warnings, and replay path.|context_pack_id, selected_refs, dropped_refs, used_context_tokens, quality_warnings|
 
 ## Record Counts

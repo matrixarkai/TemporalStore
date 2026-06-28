@@ -1157,10 +1157,12 @@ def main() -> int:
         "resource_count": args.resource_count,
         "calls": [],
         "resources": [],
+        "messages": [],
     }
 
     messages = generated_codex_messages(args.message_count)
     resources = expanded_resource_fixtures(args.resource_count)
+    trace["messages"] = messages
 
     call_tool(server, "matrixark_backend_ready", {"scope": scope, "reason": "message_pdf_debug_trace"})
     for index, message in enumerate(messages, start=1):
