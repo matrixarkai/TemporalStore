@@ -4960,8 +4960,6 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     compact = dict(pack)
     serving_aliases = {
         "context_pack_id": "pack_id",
-        "context_pack_assembly": "assembly",
-        "context_pack_cache_hit": "cache_hit",
     }
     for source, target in serving_aliases.items():
         if compact.get(source) not in (None, "", [], {}):
@@ -4986,6 +4984,19 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
         "remote_context_budget_tokens",
         "request_deadline_ms",
         "request_elapsed_ms",
+        "context_pack_cache_hit",
+        "cache_hit",
+        "cache_hit_used",
+        "context_pack_assembly",
+        "assembly",
+        "native_pack_assembly",
+        "raw_records_returned",
+        "python_hot_path_records",
+        "scan_count",
+        "selected_ref_count",
+        "dropped_ref_count",
+        "backend",
+        "storage_mode",
     ]:
         compact.pop(field, None)
     if compact.get("used_remote_context_tokens") == compact.get("used_context_tokens"):
