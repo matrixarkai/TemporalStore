@@ -2128,6 +2128,163 @@ impl TemporalEngine {
         }
     }
 
+    pub fn apply_storage_eviction(
+        &self,
+        shard_id: ShardId,
+        memory_pressure_threshold: u64,
+        batch_limit: usize,
+        dump_before_evict: bool,
+        delete_drop: bool,
+    ) -> StorageEvictionReport {
+        let before_cache = self.storage_cache_inspection_report(shard_id);
+        let pressure_before = before_cache
+            .stats
+            .memory_bytes
+            .saturating_add(before_cache.stats.disk_bytes)
+            .saturating_add(before_cache.stats.async_writeback_queue_bytes)
+            .saturating_add(before_cache.stats.async_writeback_queue_depth);
+        if pressure_before < memory_pressure_threshold {
+            return StorageEvictionReport {
+                shard_id,
+                mode: if delete_drop {
+                    "delete_drop"
+                } else {
+                    "evict_cache"
+                }
+                .to_string(),
+                pressure_before,
+                pressure_after: pressure_before,
+                memory_pressure_threshold,
+                batch_limit,
+                dump_before_evict,
+                skipped_reason: "memory_pressure_below_threshold".to_string(),
+                ..StorageEvictionReport::default()
+            };
+        }
+        let cache_by_slot = before_cache
+            .slot_summaries
+            .iter()
+            .map(|summary| (summary.routing_slot, summary.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let mut victims = self
+            .slot_storage_summaries(shard_id)
+            .into_iter()
+            .map(|summary| {
+                let cache = cache_by_slot.get(&summary.routing_slot);
+                let cache_memory_bytes = cache.map(|cache| cache.memory_bytes).unwrap_or_default();
+                let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
+                StorageEvictionVictim {
+                    routing_slot: summary.routing_slot,
+                    object_count: summary.object_count,
+                    logical_bytes: summary.logical_bytes,
+                    physical_bytes: summary.physical_bytes,
+                    cache_memory_bytes,
+                    cache_disk_bytes,
+                    dirty_object_count: summary.dirty_object_count,
+                    weight: cache_memory_bytes
+                        .saturating_mul(4)
+                        .saturating_add(cache_disk_bytes.saturating_mul(2))
+                        .saturating_add(summary.physical_bytes)
+                        .saturating_add(summary.dirty_object_count.saturating_mul(1024)),
+                }
+            })
+            .filter(|victim| victim.weight > 0)
+            .collect::<Vec<_>>();
+        victims.sort_by(|left, right| {
+            right
+                .weight
+                .cmp(&left.weight)
+                .then_with(|| left.routing_slot.cmp(&right.routing_slot))
+        });
+        if batch_limit > 0 && victims.len() > batch_limit {
+            victims.truncate(batch_limit);
+        }
+        let mut dump_manifest_ids = Vec::new();
+        if dump_before_evict {
+            let dirty_slots = victims
+                .iter()
+                .filter(|victim| victim.dirty_object_count > 0)
+                .map(|victim| victim.routing_slot)
+                .collect::<Vec<_>>();
+            if !dirty_slots.is_empty() {
+                if let Ok(manifest) = self.create_slot_dump_manifest(shard_id, dirty_slots) {
+                    dump_manifest_ids.push(manifest.manifest_id);
+                }
+            }
+        }
+        let mut cache_entries_removed = 0usize;
+        let mut cache_disk_bytes_removed = 0u64;
+        for victim in &victims {
+            if let Ok(report) = self.cache.invalidate_slot(shard_id, victim.routing_slot) {
+                cache_entries_removed =
+                    cache_entries_removed.saturating_add(report.memory_entries_removed);
+                cache_disk_bytes_removed =
+                    cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
+            }
+        }
+        let mut dropped_object_count = 0usize;
+        if delete_drop && !victims.is_empty() {
+            let victim_slots = victims
+                .iter()
+                .map(|victim| victim.routing_slot)
+                .collect::<BTreeSet<_>>();
+            let mut shards = self.shards.write().expect("shards lock poisoned");
+            if let Some(shard) = shards.get_mut(&shard_id) {
+                let object_keys = collect_live_page_entries(shard)
+                    .into_iter()
+                    .filter_map(|entry| {
+                        let slot = entry
+                            .address
+                            .routing_slot
+                            .unwrap_or_else(|| slot_for_object(&entry.object_key, 0, u32::MAX));
+                        victim_slots.contains(&slot).then_some(entry.object_key)
+                    })
+                    .collect::<BTreeSet<_>>();
+                for key in object_keys {
+                    if delete_record(shard, &key) {
+                        dropped_object_count = dropped_object_count.saturating_add(1);
+                        invalidate_record_all(&self.cache, shard_id, &key);
+                    }
+                }
+                if dropped_object_count > 0 {
+                    if let Ok(index_bytes) = serde_json::to_vec_pretty(shard) {
+                        let _ = self.persist_index_bytes(shard_id, &index_bytes);
+                        let _ = self.index_log_store.append_json(shard_id, &index_bytes);
+                    }
+                }
+            }
+        }
+        let after_cache = self.storage_cache_inspection_report(shard_id);
+        let pressure_after = after_cache
+            .stats
+            .memory_bytes
+            .saturating_add(after_cache.stats.disk_bytes)
+            .saturating_add(after_cache.stats.async_writeback_queue_bytes)
+            .saturating_add(after_cache.stats.async_writeback_queue_depth);
+        StorageEvictionReport {
+            shard_id,
+            mode: if delete_drop {
+                "delete_drop"
+            } else {
+                "evict_cache"
+            }
+            .to_string(),
+            pressure_before,
+            pressure_after,
+            memory_pressure_threshold,
+            pressure_gate_open: true,
+            batch_limit,
+            dump_before_evict,
+            dump_manifest_ids,
+            selected_victims: victims,
+            cache_entries_removed,
+            cache_disk_bytes_removed,
+            dropped_object_count,
+            cooldown: pressure_after >= pressure_before,
+            skipped_reason: String::new(),
+        }
+    }
+
     pub fn run_storage_manager_cycle(
         &self,
         request: StorageManagerCycleRequest,
@@ -2158,7 +2315,7 @@ impl TemporalEngine {
             prune_slot_dump_manifests: request.enable_index_gc,
             roll_forward_slot_dump_installs: request.enable_index_gc,
             follower_replay_cursors: request.follower_replay_cursors.clone(),
-            invalidate_cache: request.enable_evict,
+            invalidate_cache: false,
             warm_cache: request.warm_cache,
         };
         let plan = self.storage_lifecycle_plan(plan_request.clone());
@@ -2363,6 +2520,40 @@ impl TemporalEngine {
         } else {
             Some(self.apply_storage_lifecycle(plan_request))
         };
+        let eviction_report = if request.enable_evict {
+            Some(if request.dry_run {
+                StorageEvictionReport {
+                    shard_id: request.shard_id,
+                    mode: if request.eviction_delete_drop {
+                        "delete_drop"
+                    } else {
+                        "evict_cache"
+                    }
+                    .to_string(),
+                    pressure_before: pressure_signals
+                        .memory_cache_pressure_score
+                        .saturating_add(pressure_signals.disk_cache_bytes),
+                    pressure_after: pressure_signals
+                        .memory_cache_pressure_score
+                        .saturating_add(pressure_signals.disk_cache_bytes),
+                    memory_pressure_threshold: request.eviction_memory_pressure_threshold,
+                    batch_limit: request.eviction_batch_limit,
+                    dump_before_evict: request.eviction_dump_before_evict,
+                    skipped_reason: "dry_run".to_string(),
+                    ..StorageEvictionReport::default()
+                }
+            } else {
+                self.apply_storage_eviction(
+                    request.shard_id,
+                    request.eviction_memory_pressure_threshold,
+                    request.eviction_batch_limit,
+                    request.eviction_dump_before_evict,
+                    request.eviction_delete_drop,
+                )
+            })
+        } else {
+            None
+        };
         let wal_reclaim_plan = self.storage_wal_reclaim_plan(
             request.shard_id,
             request.follower_replay_cursors.clone(),
@@ -2509,54 +2700,103 @@ impl TemporalEngine {
         stages.push(StorageManagerStageReport {
             stage: "evict".to_string(),
             enabled: request.enable_evict,
-            applied: request.enable_evict
-                && !request.dry_run
-                && lifecycle_report
+            applied: eviction_report
+                .as_ref()
+                .map(|report| {
+                    report.cache_entries_removed > 0
+                        || report.cache_disk_bytes_removed > 0
+                        || report.dropped_object_count > 0
+                })
+                .unwrap_or(false),
+            skipped: !request.enable_evict
+                || eviction_report
                     .as_ref()
-                    .map(|report| {
-                        report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
-                    })
-                    .unwrap_or(false),
-            skipped: !request.enable_evict,
-            reason: if request.enable_evict {
-                "invalidated shard cache entries under lifecycle pressure".to_string()
-            } else {
+                    .map(|report| !report.pressure_gate_open)
+                    .unwrap_or(true),
+            reason: if !request.enable_evict {
                 "evict disabled".to_string()
+            } else if eviction_report
+                .as_ref()
+                .map(|report| !report.pressure_gate_open)
+                .unwrap_or(false)
+            {
+                "eviction skipped because memory/cache pressure is below threshold".to_string()
+            } else if eviction_report
+                .as_ref()
+                .map(|report| report.cooldown)
+                .unwrap_or(false)
+            {
+                "eviction entered cooldown because pressure did not decrease".to_string()
+            } else {
+                "evicted weighted slot/object victims under memory/cache pressure".to_string()
             },
-            pressure_signal: "memory_cache_pressure+disk_cache_bytes+async_writeback_backlog"
+            pressure_signal: "weighted_slot_object_eviction+memory_pressure_gate+batch_limit"
                 .to_string(),
             pressure_score: pressure_signals
                 .memory_cache_pressure_score
                 .saturating_add(pressure_signals.disk_cache_bytes)
                 .saturating_add(
-                    lifecycle_report
+                    eviction_report
                         .as_ref()
                         .map(|report| {
                             report.cache_entries_removed as u64 + report.cache_disk_bytes_removed
                         })
                         .unwrap_or_default(),
                 ),
-            pressure_threshold: 1,
+            pressure_threshold: request.eviction_memory_pressure_threshold,
             pressure_triggered: pressure_signals.memory_cache_pressure_score > 0
                 || pressure_signals.disk_cache_bytes > 0
-                || lifecycle_report
+                || eviction_report
                     .as_ref()
                     .map(|report| {
                         report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
                     })
                     .unwrap_or(false),
-            before_bytes: lifecycle_report
+            before_bytes: eviction_report
                 .as_ref()
-                .map(|report| report.cache_disk_bytes_removed)
+                .map(|report| report.pressure_before)
                 .unwrap_or_default(),
-            after_bytes: 0,
-            cache_entries_removed: lifecycle_report
+            after_bytes: eviction_report
+                .as_ref()
+                .map(|report| report.pressure_after)
+                .unwrap_or_default(),
+            cache_entries_removed: eviction_report
                 .as_ref()
                 .map(|report| report.cache_entries_removed)
                 .unwrap_or_default(),
-            cache_disk_bytes_removed: lifecycle_report
+            cache_disk_bytes_removed: eviction_report
                 .as_ref()
                 .map(|report| report.cache_disk_bytes_removed)
+                .unwrap_or_default(),
+            selected_slots: eviction_report
+                .as_ref()
+                .map(|report| {
+                    report
+                        .selected_victims
+                        .iter()
+                        .map(|victim| victim.routing_slot)
+                        .collect()
+                })
+                .unwrap_or_default(),
+            candidate_count: eviction_report
+                .as_ref()
+                .map(|report| report.selected_victims.len())
+                .unwrap_or_default(),
+            eviction_pressure_before: eviction_report
+                .as_ref()
+                .map(|report| report.pressure_before)
+                .unwrap_or_default(),
+            eviction_pressure_after: eviction_report
+                .as_ref()
+                .map(|report| report.pressure_after)
+                .unwrap_or_default(),
+            eviction_cooldown: eviction_report
+                .as_ref()
+                .map(|report| report.cooldown)
+                .unwrap_or(false),
+            dropped_object_count: eviction_report
+                .as_ref()
+                .map(|report| report.dropped_object_count)
                 .unwrap_or_default(),
             ..StorageManagerStageReport::default()
         });
@@ -2813,6 +3053,7 @@ impl TemporalEngine {
             expiry_report,
             compaction_report,
             wal_reclaim_report,
+            eviction_report,
             errors,
         }
     }
@@ -19937,9 +20178,15 @@ mod tests {
         assert!(evict.cache_entries_removed >= 1, "{report:#?}");
         assert_eq!(
             evict.pressure_signal,
-            "memory_cache_pressure+disk_cache_bytes+async_writeback_backlog"
+            "weighted_slot_object_eviction+memory_pressure_gate+batch_limit"
         );
         assert!(evict.pressure_triggered, "{report:#?}");
+        assert!(report.eviction_report.is_some(), "{report:#?}");
+        let eviction_report = report.eviction_report.as_ref().unwrap();
+        assert!(eviction_report.pressure_gate_open, "{report:#?}");
+        assert!(eviction_report.pressure_after < eviction_report.pressure_before);
+        assert!(!eviction_report.selected_victims.is_empty());
+        assert!(!eviction_report.cooldown);
         let reclaim_page = report
             .stages
             .iter()
@@ -20004,6 +20251,79 @@ mod tests {
             CommandResponse::Bytes { value: None },
             "expired record should stay removed after StorageManager eviction and GC"
         );
+    }
+
+    // shared-corpus: storage_manager_active_eviction_runtime
+    #[test]
+    fn storage_manager_active_eviction_supports_weighted_dump_drop_batch_and_cooldown() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            256,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        for idx in 0..4 {
+            let key = format!("evict-runtime-{idx}");
+            engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: vec![idx as u8; 96],
+                },
+            });
+            let _ = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key },
+            });
+        }
+        let before = engine.storage_cache_inspection_report(1);
+        assert!(before.stats.memory_bytes > 0 || before.stats.disk_bytes > 0);
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            enable_expire: false,
+            enable_oplog_reclaim: false,
+            enable_page_reclaim: false,
+            enable_page_compaction: false,
+            enable_index_gc: false,
+            eviction_memory_pressure_threshold: 1,
+            eviction_batch_limit: 1,
+            eviction_dump_before_evict: true,
+            ..StorageManagerCycleRequest::default()
+        });
+        let eviction = report.eviction_report.as_ref().expect("eviction report");
+        assert!(eviction.pressure_gate_open, "{report:#?}");
+        assert_eq!(eviction.batch_limit, 1);
+        assert_eq!(eviction.selected_victims.len(), 1);
+        assert_eq!(eviction.mode, "evict_cache");
+        assert!(!eviction.dump_manifest_ids.is_empty(), "{report:#?}");
+        assert!(eviction.cache_entries_removed > 0 || eviction.cache_disk_bytes_removed > 0);
+        assert!(
+            eviction.pressure_after < eviction.pressure_before,
+            "{report:#?}"
+        );
+
+        let drop_report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            enable_expire: false,
+            enable_oplog_reclaim: false,
+            enable_page_reclaim: false,
+            enable_page_compaction: false,
+            enable_index_gc: false,
+            eviction_memory_pressure_threshold: 1,
+            eviction_batch_limit: 1,
+            eviction_delete_drop: true,
+            ..StorageManagerCycleRequest::default()
+        });
+        let drop_eviction = drop_report.eviction_report.as_ref().unwrap();
+        assert_eq!(drop_eviction.mode, "delete_drop");
+        assert!(drop_eviction.dropped_object_count >= 1, "{drop_report:#?}");
+
+        let cooldown = engine.apply_storage_eviction(1, u64::MAX, 1, false, false);
+        assert!(!cooldown.pressure_gate_open);
+        assert_eq!(cooldown.skipped_reason, "memory_pressure_below_threshold");
     }
 
     #[test]
