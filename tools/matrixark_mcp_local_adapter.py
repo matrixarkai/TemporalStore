@@ -5055,9 +5055,12 @@ class MatrixArkLocalAdapter:
             "signals": [
                 "weighted_recall_score",
                 "question_type_ref_boost",
+                "cross_session_rerank_boost",
                 "token_efficiency",
                 "multi_hop_node_diversity",
             ],
+            "cross_session_rerank_enabled": True,
+            "cross_session_signals": ["entity_state", "resource_fact_citation", "answer_event", "compression", "summary_demotion"],
             "fallback": "weighted_recall",
             "heavy_rerank_enabled": False,
             "min_similarity_score": min_similarity_score,

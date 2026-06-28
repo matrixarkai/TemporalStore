@@ -3731,16 +3731,18 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
     )
     s_busi = business_score_for_candidate(candidate, type_weights)
     continuity_boost = session_continuity_boost(candidate, str(candidate.get("question_type") or candidate.get("packing_policy") or "fact"))
-    final_score = clamp01(final_recall_score(origin_score, s_time, s_busi, weights) + continuity_boost)
+    cross_session_rerank_boost = cross_session_rerank_adjustment(candidate, str(candidate.get("question_type") or candidate.get("packing_policy") or "fact"))
+    final_score = clamp01(final_recall_score(origin_score, s_time, s_busi, weights) + continuity_boost + cross_session_rerank_boost)
     return {
         **candidate,
         "origin_score": origin_score,
         "time_score": s_time,
         "business_score": s_busi,
         "continuity_boost": round(continuity_boost, 6),
+        "cross_session_rerank_boost": round(cross_session_rerank_boost, 6),
         "final_score": final_score,
         "score": final_score,
-        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
+        "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi+continuity_boost+cross_session_rerank_boost",
     }
 
 
@@ -3871,7 +3873,12 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
     score = float(candidate.get("score", 0.0))
-    boosted = clamp01(score + question_type_ref_boost(candidate, question_type) + session_continuity_boost(candidate, question_type))
+    boosted = clamp01(
+        score
+        + question_type_ref_boost(candidate, question_type)
+        + session_continuity_boost(candidate, question_type)
+        + cross_session_rerank_adjustment(candidate, question_type)
+    )
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
     if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
@@ -4886,4 +4893,25 @@ def session_continuity_boost(candidate: Json, question_type: str) -> float:
             return 0.11
         if question_type in {"multi_hop", "current_state"} and ref_type in {"event", "segment", "compression"}:
             return 0.06
+    return 0.0
+
+
+def cross_session_rerank_adjustment(candidate: Json, question_type: str) -> float:
+    if str(candidate.get("session_continuity") or "") != "cross_session":
+        return 0.0
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or ref_type)
+    has_citation = bool(candidate.get("source_ref") or candidate.get("citation") or candidate.get("source_chunk_hash"))
+    if ref_type == "entity":
+        return 0.08 if question_type in {"current_state", "latest", "multi_hop"} else 0.04
+    if context_class in {"resource_fact", "resource_entity_fact"}:
+        return 0.06 if has_citation else 0.04
+    if ref_type == "resource_chunk" and has_citation:
+        return 0.04
+    if ref_type in {"event", "segment"} and question_type in {"multi_hop", "why_emotion", "fact"}:
+        return 0.03
+    if ref_type == "compression":
+        return 0.02
+    if ref_type == "summary" and question_type != "broad_exploration":
+        return -0.04
     return 0.0

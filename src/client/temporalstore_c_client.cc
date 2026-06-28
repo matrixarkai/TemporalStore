@@ -347,6 +347,35 @@ double ContinuityBoost(const std::string& record_type, const std::string& contex
     return 0.0;
 }
 
+double CrossSessionRerankBoost(const rapidjson::Value& record, const std::string& record_type,
+                               const std::string& context_class, const std::string& status,
+                               const std::string& question_type) {
+    if (status != "cross_session") {
+        return 0.0;
+    }
+    bool has_citation = record.HasMember("source_ref") || record.HasMember("citation") || record.HasMember("source_chunk_hash");
+    if (record_type == "context_entity") {
+        return (question_type == "current_state" || question_type == "latest" || question_type == "multi_hop") ? 0.08 : 0.04;
+    }
+    if (record_type == "resource_chunk" && has_citation) {
+        return 0.04;
+    }
+    if ((record_type == "context_event" || record_type == "context_segment") &&
+        (question_type == "multi_hop" || question_type == "why_emotion" || question_type == "fact")) {
+        return 0.03;
+    }
+    if (record_type == "context_compression_event") {
+        return 0.02;
+    }
+    if (record_type == "context_summary" && question_type != "broad_exploration") {
+        return -0.04;
+    }
+    if (context_class == "resource_fact" || context_class == "resource_entity_fact") {
+        return has_citation ? 0.06 : 0.04;
+    }
+    return 0.0;
+}
+
 double TypePriorityBoost(const std::string& record_type, const std::string& context_class,
                          const std::string& question_type) {
     if (record_type == "skill_section") {
@@ -898,7 +927,14 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
             budget_fill_policy = "quality_first";
         }
     }
-    struct ScoredRecord { double score; uint64_t tokens; std::string json; std::string session_continuity; double continuity_boost; };
+    struct ScoredRecord {
+        double score;
+        uint64_t tokens;
+        std::string json;
+        std::string session_continuity;
+        double continuity_boost;
+        double cross_session_rerank_boost;
+    };
     std::vector<ScoredRecord> scored;
     uint64_t secondary_dropped = 0;
     uint64_t secondary_matched = 0;
@@ -945,9 +981,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         std::string context_class = ContextClassName(record);
         double continuity_boost = ContinuityBoost(record_type, context_class, continuity);
         score += continuity_boost;
+        double cross_session_rerank_boost = CrossSessionRerankBoost(record, record_type, context_class, continuity, question_type);
+        score += cross_session_rerank_boost;
         score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
         if (score >= min_similarity_score) {
-            scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost});
+            scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost, cross_session_rerank_boost});
         }
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
@@ -1034,6 +1072,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         ref.AddMember("score", item.score, alloc);
         ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
         ref.AddMember("continuity_boost", item.continuity_boost, alloc);
+        ref.AddMember("cross_session_rerank_boost", item.cross_session_rerank_boost, alloc);
         const char* continuity_reason = item.session_continuity == "same_session" ? "same-session continuity" : (item.session_continuity == "cross_session" ? "cross-session memory bridge" : "session-neutral context");
         ref.AddMember("continuity_reason", rapidjson::Value(continuity_reason, alloc), alloc);
         ref.AddMember("selection_reason", "native_cpp_score_pack", alloc);
@@ -1105,6 +1144,19 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
+    rapidjson::Value rerank(rapidjson::kObjectType);
+    rerank.AddMember("enabled", true, alloc);
+    rerank.AddMember("mode", "native_weighted_recall_plus_cross_session_rerank", alloc);
+    rerank.AddMember("cross_session_rerank_enabled", true, alloc);
+    rapidjson::Value cross_signals(rapidjson::kArrayType);
+    cross_signals.PushBack("entity_state", alloc);
+    cross_signals.PushBack("resource_fact_citation", alloc);
+    cross_signals.PushBack("answer_event", alloc);
+    cross_signals.PushBack("compression", alloc);
+    cross_signals.PushBack("summary_demotion", alloc);
+    rerank.AddMember("cross_session_signals", cross_signals, alloc);
+    rerank.AddMember("heavy_rerank_enabled", false, alloc);
+    recall.AddMember("rerank", rerank, alloc);
     rapidjson::Value ranking_policy(rapidjson::kObjectType);
     ranking_policy.AddMember("min_similarity_score", min_similarity_score, alloc);
     ranking_policy.AddMember("max_global_candidates", max_global_candidates, alloc);
