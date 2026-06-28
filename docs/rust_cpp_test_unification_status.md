@@ -5,11 +5,11 @@
 Date: 2026-06-18
 
 Rust attributed tests counted with `#[test]` and `#[tokio::test]` under
-`crates/temporalstore-rust`: **540**.
+`crates/temporalstore-rust`: **585**.
 
-Current grandfathered migration baseline: **540 Rust test functions**.
+Current grandfathered migration baseline: **519 Rust test functions**.
 
-Product behavior still to move into shared corpus: **533 Rust test functions**.
+Product behavior still to move into shared corpus: **512 Rust test functions**.
 
 Rust-only internals that can remain local: **7 Rust test functions**.
 
@@ -185,22 +185,28 @@ surfaces. The next same-test step is native C++ execution of those ingestion wor
 ## Rust-Specific Tests Remaining
 
 These counts are a migration backlog, not the desired end state. The detailed split and new-test
-guard are documented in `docs/rust_product_test_reduction_guard.md`. The current split is 533
+guard are documented in `docs/rust_product_test_reduction_guard.md`. The current split is 512
 product-behavior tests to move into shared corpus coverage and 7 Rust-only internal tests that can
 remain local.
 
 | Bucket | Rust-specific tests | Main files |
 | --- | ---: | --- |
-| Storage/cache/local durability | 163 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs`, storage crash/migration tests |
-| Control plane/service behavior | 174 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs`, `e2e.rs` |
+| Storage/cache/local durability | 174 | `engine.rs`, `page_store.rs`, `cache.rs`, `shared_store.rs`, `oplog.rs`, `index_log.rs`, storage crash/migration tests |
 | Raft/distributed behavior | 140 | `raft.rs`, `bin/raft_node.rs` |
-| API/model/ingestion/context/SDK | 36 | `temporalstore_compat.rs`, `redis.rs`, `context_workflow.rs`, `ingestion.rs`, `sdk.rs` |
-| Readiness/ops/fault behavior | 20 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
+| Control plane/service behavior | 91 | `client.rs`, `proxy.rs`, `data_node.rs`, `meta.rs`, `rebalance.rs`, `bin/server.rs`, `bin/metaserver.rs`, `e2e.rs` |
+| Redis/admin/API behavior | 36 | `engine.rs`, `redis.rs`, `sdk.rs`, server/admin alias tests |
+| Ops/scale/fault behavior | 22 | `readiness.rs`, `bin/readiness_gate.rs`, `bin/external_chaos_gate.rs`, `replica_replay.rs` |
+| Feature model behavior | 13 | `engine.rs`, `temporalstore_compat.rs` |
+| Ingestion behavior | 10 | `ingestion.rs`, server ingestion routes |
+| Risk model behavior | 9 | `engine.rs`, `temporalstore_compat.rs` |
+| Context model and pipeline behavior | 7 | `context_workflow.rs`, Context model tests |
+| Sequence model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
+| IPS model behavior | 5 | `engine.rs`, `temporalstore_compat.rs` |
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
-The duplicate-test validator currently reports `rust_attributed_tests=536`,
-`rust_test_guard_shared_corpus_marked_tests=25`, `shared_corpus_cases=128`,
-`shared_corpus_steps=227`, and `cpp_existing_test_surfaces=170`.
+The duplicate-test validator currently reports `rust_attributed_tests=585`,
+`rust_test_guard_shared_corpus_marked_tests=88`, `shared_corpus_cases=179`,
+`shared_corpus_steps=341`, and `cpp_existing_test_surfaces=194`.
 It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
 `shared-corpus: <case>` or `rust-internal: <reason>`.
 
@@ -263,14 +269,14 @@ every executable corpus command and compares every expected response.
 
 Until that exists, the honest status is:
 
-- Rust executes all 227 executable shared behavior steps.
-- C++ validates the 128-case corpus shape, current context subset, exact C++ Raft case names,
+- Rust executes all 341 executable shared behavior steps.
+- C++ validates the 179-case corpus shape, current context subset, exact C++ Raft case names,
   C++ storage/Raft required surfaces, the shared `raft_production_gate` metadata points at both
   `run_storage_raft_production_readiness.sh` and `run_raft_distributed_parity.sh`, and C++
   client/proxy/metaserver/data-node control-plane required surfaces.
 - The control-plane and ingestion cases in the shared corpus are now Rust-executable
   `existing_test` gates and still static surface/evidence gates on the C++ side, not native C++
   workflow execution.
-- 540 Rust-attributed tests remain local or partially local. The product-behavior portion should be progressively
+- 519 grandfathered Rust tests remain local or partially local. The product-behavior portion should be progressively
   converted into Rust-owned shared corpus cases; only implementation-internal tests should remain
   Rust-specific.
