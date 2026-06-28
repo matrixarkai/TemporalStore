@@ -2332,6 +2332,45 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             policy_globals["MATRIXARK_MCP_PROFILE"] = old_core_profile
             policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"] = old_core_prefilter
 
+    def test_service_backpressure_fallback_does_not_read_all_for_native_backend(self) -> None:
+        class _NoReadAllNativeAdapter:
+            def __init__(self) -> None:
+                self.records_seen = None
+
+            def _backend_label(self) -> str:
+                return "temporalstore-direct"
+
+            def read_all(self):
+                raise AssertionError("native timeout fallback must not read all records")
+
+            def deadline_fallback_pack(self, **kwargs):
+                self.records_seen = len(kwargs["records"])
+                return {
+                    "context_pack_id": "timeout-partial",
+                    "quality_warnings": ["timeout_partial"],
+                    "records_seen": self.records_seen,
+                }
+
+        adapter = _NoReadAllNativeAdapter()
+        server = mcp.MatrixArkMcpServer(adapter)
+        old_limit = os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT")
+        os.environ["MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT"] = "5"
+        try:
+            pack = server._retrieve_timeout_fallback(
+                {"query": "What did Alice approve?", "scope": {"account_id": "acct"}},
+                deadline_ms=10,
+                elapsed_ms=12.3,
+                reason="service_backpressure",
+            )
+        finally:
+            if old_limit is None:
+                os.environ.pop("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", None)
+            else:
+                os.environ["MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT"] = old_limit
+
+        self.assertEqual(pack["records_seen"], 0)
+        self.assertEqual(adapter.records_seen, 0)
+
     def test_production_retrieve_dispatches_native_pack_before_query_embedding(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""

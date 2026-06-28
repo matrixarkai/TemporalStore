@@ -488,16 +488,17 @@ class MatrixArkMcpServer:
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             max_context_tokens = DEFAULT_MAX_CONTEXT_TOKENS
         record_limit = int(os.environ.get("MATRIXARK_BACKPRESSURE_FALLBACK_RECORD_LIMIT", "0"))
+        backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
+        native_pack_required = native_context_pack_required(backend_label)
         if reason == "service_backpressure":
-            if record_limit <= 0:
+            if native_pack_required or record_limit <= 0:
                 records = []
             elif hasattr(self.adapter, "recent_records"):
                 records = self.adapter.recent_records(record_limit)
             else:
                 records = self.adapter.read_all()[-record_limit:]
         else:
-            backend_label = str(getattr(self.adapter, "_backend_label", lambda: "local")())
-            if native_context_pack_required(backend_label):
+            if native_pack_required:
                 records = []
             else:
                 records = self.adapter.read_all()
