@@ -205,7 +205,7 @@ remain local.
 | Rust-only internals that can remain local | 7 | `tests/unified_temporalstore_corpus.rs`, `partition_id.rs`, `http.rs`, `types.rs` |
 
 The duplicate-test validator currently reports `rust_attributed_tests=585`,
-`rust_test_guard_shared_corpus_marked_tests=88`, `shared_corpus_cases=179`,
+`rust_test_guard_shared_corpus_marked_tests=89`, `shared_corpus_cases=179`,
 `shared_corpus_steps=341`, and `cpp_existing_test_surfaces=194`.
 It now also checks `tools/rust_product_test_baseline.json` so new Rust tests must declare either
 `shared-corpus: <case>` or `rust-internal: <reason>`.

@@ -7,7 +7,7 @@ The current guard output is:
 ```text
 rust_attributed_tests=585
 grandfathered_tests=519
-shared_corpus_marked_tests=88
+shared_corpus_marked_tests=89
 rust_internal_marked_tests=2
 ```
 
@@ -127,6 +127,6 @@ Current guard output includes both the grandfathered baseline and migration mark
 ```text
 rust_attributed_tests=585
 grandfathered_tests=519
-shared_corpus_marked_tests=88
+shared_corpus_marked_tests=89
 rust_internal_marked_tests=2
 ```

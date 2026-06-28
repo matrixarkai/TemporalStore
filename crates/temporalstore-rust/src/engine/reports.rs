@@ -634,6 +634,20 @@ pub struct StoragePageGcDependencyPlan {
     pub checkpoint_snapshot_floor: Option<u64>,
     pub raft_snapshot_install_floor: Option<u64>,
     pub delayed_destroy_grace_ms: u64,
+    #[serde(default)]
+    pub live_ref_block_count: usize,
+    #[serde(default)]
+    pub slot_dump_manifest_block_count: usize,
+    #[serde(default)]
+    pub shared_store_cursor_block_count: usize,
+    #[serde(default)]
+    pub raft_snapshot_ref_block_count: usize,
+    #[serde(default)]
+    pub checkpoint_snapshot_floor_block_count: usize,
+    #[serde(default)]
+    pub raft_snapshot_install_floor_block_count: usize,
+    #[serde(default)]
+    pub delayed_destroy_grace_block_count: usize,
     pub dependency_blocks: Vec<StoragePageGcDependencyBlock>,
     pub blocker_reasons: Vec<String>,
 }
