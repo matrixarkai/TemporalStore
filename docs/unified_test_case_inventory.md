@@ -120,8 +120,8 @@ dump/load, and restart. `storage_model_layout_compaction_policies` covers
 model-layout-aware compaction policy evidence for string, hash, set, timestamped, and
 context model families, including stale-page and tombstone-density fields.
 `storage_merged_dump_load_lifecycle` covers the merged dump/load policy evidence:
-multi-slot source manifests, rollback marker evidence, load-version handoff, and stale
-object/page conflict preflight reports. The storage family also now includes focused
+validated multi-slot source manifests, source-slot coverage rejection, rollback marker evidence,
+load-version handoff, and stale object/page conflict preflight reports. The storage family also now includes focused
 C++/Rust shared cases for object-manager cold/hot reload, PageAddress disk/cache
 fallback, tombstone compaction, stale-page density compaction, merged dump/load restart
 interruption, GC plus eviction under cold reads, continuous StorageManager background
@@ -203,7 +203,7 @@ C++ execution should progressively cover every executable case.
 | `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
 | `storage_tombstone_compaction` | Rust verifies tombstoned object reporting and model-layout compaction policy evidence. |
 | `storage_stale_page_density_compaction` | Rust verifies stale page estimate and density evidence for compaction decisions. |
-| `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers and incomplete-commit roll-forward reporting. |
+| `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers, merged-installer roll-forward, load-version handoff after retry, and incomplete-commit reporting. |
 | `storage_gc_eviction_cold_reads` | Rust verifies StorageManager GC plus eviction preserves cold reads through page-store fallback. |
 | `storage_manager_continuous_background_runtime` | Rust verifies stoppable continuous StorageManager runtime with jitter, backoff, pause/resume, per-phase enable flags, and bounded work per round. |
 | `storage_manager_real_pressure_signals` | Rust verifies StorageManagerPressureSnapshot is captured and cycle pressure is driven by actual dirty slots, WAL/index-log bytes, stale page density, cache pressure, expiry scan debt, delayed-destroy backlog, follower retention blockers, and model-layout compaction debt. |
