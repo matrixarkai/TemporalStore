@@ -8,6 +8,11 @@ import unittest
 
 import matrixark_mcp_server as mcp
 
+try:
+    from tools import matrixark_mcp_core as mcp_core
+except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
+    import matrixark_mcp_core as mcp_core
+
 
 
 
@@ -64,11 +69,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self._old_profile = mcp.MATRIXARK_MCP_PROFILE
         self._old_allow_local = mcp.MATRIXARK_ALLOW_LOCAL_BACKEND
         self._old_require_ready = mcp.MATRIXARK_REQUIRE_BACKEND_READY
+        mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
 
     def tearDown(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = self._old_profile
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = self._old_allow_local
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = self._old_require_ready
+        mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
 
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
@@ -195,6 +202,49 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
         self.assertEqual(second["scan_stats"]["dropped_type"], 1)
         self.assertEqual(second["scan_stats"]["dropped_scope"], 1)
+
+    def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
+        records = [
+            {
+                "record_type": "context_event",
+                "event_id_hash": 1,
+                "tenant_id": "tenant_a",
+                "user_id": "user_a",
+                "scope": {"tenant_id": "tenant_a", "user_id": "user_a"},
+                "text": "approval happened",
+            }
+        ]
+        scope = {"tenant_id": "tenant_a", "user_id": "user_a"}
+
+        def make_adapter(client: _CandidateCacheClient) -> mcp.MatrixArkTemporalStoreDirectAdapter:
+            adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+            adapter._client = client
+            adapter._storage_prefix = "matrixark:test:candidate-cache-shared"
+            adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+            adapter._index_key = f"{adapter._storage_prefix}:record_index"
+            adapter._count_key = f"{adapter._storage_prefix}:record_count"
+            adapter._shard_size = 1024
+            adapter._index_cache = None
+            adapter._records_cache = None
+            adapter._retrieval_candidate_cache = {}
+            adapter._retrieval_candidate_cache_lock = threading.RLock()
+            adapter._entry_count_cache = None
+            adapter._legacy_index_mode = False
+            adapter._records_lock = threading.RLock()
+            adapter._metrics_lock = threading.RLock()
+            return adapter
+
+        first_client = _CandidateCacheClient(records)
+        second_client = _CandidateCacheClient(records)
+        first = make_adapter(first_client).retrieval_records(scope=scope)
+        second = make_adapter(second_client).retrieval_records(scope=scope)
+
+        self.assertEqual(first_client.batch_hget_calls, 1)
+        self.assertEqual(second_client.batch_hget_calls, 0)
+        self.assertFalse(first["scan_stats"]["candidate_cache_hit"])
+        self.assertTrue(second["scan_stats"]["candidate_cache_hit"])
+        self.assertEqual(second["scan_stats"]["candidate_cache_scope"], "process_global")
+        self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")
