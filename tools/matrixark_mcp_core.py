@@ -2265,6 +2265,7 @@ def clean_patch_value(value: str) -> str:
 
 
 def canonical_entity_name(entity_type: str, value: str) -> str:
+    compact_value = " ".join(str(value or "").split()).strip(" ,;:-")
     if entity_type in {
         "preference",
         "location",
@@ -2275,7 +2276,24 @@ def canonical_entity_name(entity_type: str, value: str) -> str:
         "confirmation",
     }:
         return entity_type
-    return value[:80] if value else entity_type
+    if entity_type == "approval_state":
+        subject = compact_value
+        subject_patterns = [
+            r"^(?:the\s+)?(.+?)\s+(?:is|was|are|were|has been|have been)\s+(?:approved|required|missing|blocked|ready|done|complete|needed)\b",
+            r"^(?:the\s+)?(.+?)\s+as\s+(?:a\s+|an\s+|the\s+)?(?:blocker|requirement|approval|decision|status)\b",
+            r"^(?:the\s+)?(.+?)\s+after\b",
+            r"^(?:the\s+)?(.+?)\s+before\b",
+            r"^(?:the\s+)?(.+?)\s+because\b",
+            r"^(?:the\s+)?(.+?)\s+as\b",
+        ]
+        for pattern in subject_patterns:
+            match = re.search(pattern, subject, flags=re.IGNORECASE)
+            if match:
+                subject = match.group(1)
+                break
+        subject = re.sub(r"^(?:the|a|an)\s+", "", subject, flags=re.IGNORECASE).strip(" ,;:-")
+        return summarize_text(subject or compact_value, limit=80) if (subject or compact_value) else entity_type
+    return compact_value[:80] if compact_value else entity_type
 
 
 def dedupe_entities(entities: list[Json]) -> list[Json]:
