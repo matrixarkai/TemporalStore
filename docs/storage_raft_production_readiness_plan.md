@@ -200,6 +200,10 @@ harness evidence:
   `storage_manager.phase_loop_ready`,
   `storage_manager.gc_eviction_pressure_ready`, and
   `storage_cache_mtcache.cache_pressure_soak_restart_ready`.
+- GC/eviction evidence now exposes typed page-GC retention counters for live refs, slot dump
+  manifests, shared-store replay cursors, Raft snapshot refs, checkpoint floors, Raft install
+  floors, and delayed-destroy grace. WAL reclaim evidence covers durable slot-generation
+  frontiers, follower cursors, and Raft snapshot retain floors before truncation.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
 The local gate now writes one combined proof envelope:

@@ -2056,6 +2056,20 @@ impl TemporalEngine {
             .iter()
             .map(|block| block.page_segment_id)
             .collect::<BTreeSet<_>>();
+        let dependency_count = |dependency: &str| {
+            dependency_blocks
+                .iter()
+                .filter(|block| block.dependency == dependency)
+                .count()
+        };
+        let live_ref_block_count = dependency_count("live_page_ref");
+        let slot_dump_manifest_block_count = dependency_count("slot_dump_manifest");
+        let shared_store_cursor_block_count = dependency_count("shared_store_replay_cursor");
+        let raft_snapshot_ref_block_count = dependency_count("raft_snapshot_ref");
+        let checkpoint_snapshot_floor_block_count = dependency_count("checkpoint_snapshot_floor");
+        let raft_snapshot_install_floor_block_count =
+            dependency_count("raft_snapshot_install_floor");
+        let delayed_destroy_grace_block_count = dependency_count("delayed_destroy_grace_period");
         let reclaimable_page_segment_ids = candidate_page_segment_ids
             .iter()
             .copied()
@@ -2086,6 +2100,13 @@ impl TemporalEngine {
             checkpoint_snapshot_floor,
             raft_snapshot_install_floor,
             delayed_destroy_grace_ms,
+            live_ref_block_count,
+            slot_dump_manifest_block_count,
+            shared_store_cursor_block_count,
+            raft_snapshot_ref_block_count,
+            checkpoint_snapshot_floor_block_count,
+            raft_snapshot_install_floor_block_count,
+            delayed_destroy_grace_block_count,
             dependency_blocks,
             blocker_reasons,
         }
@@ -19937,6 +19958,82 @@ mod tests {
             .any(|reason| reason.contains("follower_cursor_retains_logs")));
     }
 
+    // shared-corpus: storage_manager_wal_reclaim_slot_generation_retention
+    #[test]
+    fn storage_manager_wal_reclaim_honors_raft_snapshot_frontier() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-snapshot".to_string(),
+                value: b"v1".to_vec(),
+            },
+        });
+        let first_manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "wal-snapshot".to_string(),
+                value: b"v2".to_vec(),
+            },
+        });
+        let _second_manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        let snapshot = SlotDumpRaftSnapshotRef {
+            snapshot_id: "wal-raft-snapshot-a".to_string(),
+            shard_id: 1,
+            oplog_sequence: first_manifest.oplog_sequence,
+            index_log_sequence: first_manifest.index_log_sequence,
+            last_included_index: 9,
+            last_included_term: 2,
+        };
+
+        let plan = engine.storage_wal_reclaim_plan(1, Vec::new(), vec![snapshot.clone()]);
+        assert!(plan.safe_to_reclaim, "{plan:#?}");
+        assert_eq!(plan.raft_snapshot_block_count, 1);
+        assert_eq!(plan.follower_cursor_block_count, 0);
+        assert_eq!(
+            plan.retain_from_oplog_sequence,
+            snapshot.oplog_sequence.saturating_add(1)
+        );
+        assert_eq!(
+            plan.retain_from_index_log_sequence,
+            snapshot.index_log_sequence.saturating_add(1)
+        );
+        assert!(plan
+            .blocker_reasons
+            .iter()
+            .any(|reason| reason.contains("raft_snapshot_retains_logs")));
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            raft_snapshot_refs: vec![snapshot],
+            max_dump_slots_per_round: 16,
+            enable_expire: false,
+            enable_evict: false,
+            enable_page_reclaim: false,
+            enable_page_compaction: false,
+            enable_index_gc: false,
+            ..StorageManagerCycleRequest::default()
+        });
+        let reclaim = report.wal_reclaim_report.as_ref().unwrap();
+        assert_eq!(reclaim.plan.raft_snapshot_block_count, 1);
+        assert_eq!(
+            reclaim.plan.retain_from_oplog_sequence,
+            plan.retain_from_oplog_sequence
+        );
+        assert!(
+            reclaim.plan.retain_from_oplog_sequence
+                <= first_manifest.oplog_sequence.saturating_add(1)
+        );
+    }
+
     #[test]
     fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
         let dir = tempfile::tempdir().unwrap();
@@ -21220,6 +21317,7 @@ mod tests {
             0,
         );
         assert!(!live_plan.safe_to_reclaim, "{live_plan:#?}");
+        assert_eq!(live_plan.live_ref_block_count, 1, "{live_plan:#?}");
         assert!(live_plan
             .dependency_blocks
             .iter()
@@ -21266,6 +21364,14 @@ mod tests {
                 retain_from_page_segment_id: live_segment,
                 reason: "shared replay cursor retained old page segment".to_string(),
             }],
+            raft_snapshot_refs: vec![SlotDumpRaftSnapshotRef {
+                snapshot_id: "page-gc-raft-snapshot-a".to_string(),
+                shard_id: 1,
+                oplog_sequence: 1,
+                index_log_sequence: live_segment,
+                last_included_index: 1,
+                last_included_term: 1,
+            }],
             page_gc_checkpoint_floor_segment_id: Some(live_segment),
             page_gc_raft_install_floor_segment_id: Some(live_segment),
             page_gc_delayed_destroy_grace_ms: 60_000,
@@ -21280,6 +21386,41 @@ mod tests {
         assert_eq!(
             report.page_gc_dependency_plan.blocked_page_segment_ids,
             vec![live_segment]
+        );
+        assert_eq!(report.page_gc_dependency_plan.live_ref_block_count, 0);
+        assert_eq!(
+            report
+                .page_gc_dependency_plan
+                .slot_dump_manifest_block_count,
+            1
+        );
+        assert_eq!(
+            report
+                .page_gc_dependency_plan
+                .shared_store_cursor_block_count,
+            1
+        );
+        assert_eq!(
+            report.page_gc_dependency_plan.raft_snapshot_ref_block_count,
+            1
+        );
+        assert_eq!(
+            report
+                .page_gc_dependency_plan
+                .checkpoint_snapshot_floor_block_count,
+            1
+        );
+        assert_eq!(
+            report
+                .page_gc_dependency_plan
+                .raft_snapshot_install_floor_block_count,
+            1
+        );
+        assert_eq!(
+            report
+                .page_gc_dependency_plan
+                .delayed_destroy_grace_block_count,
+            1
         );
         let dependencies = report
             .page_gc_dependency_plan
@@ -21296,6 +21437,7 @@ mod tests {
             dependencies.contains("checkpoint_snapshot_floor"),
             "{report:#?}"
         );
+        assert!(dependencies.contains("raft_snapshot_ref"), "{report:#?}");
         assert!(
             dependencies.contains("raft_snapshot_install_floor"),
             "{report:#?}"
