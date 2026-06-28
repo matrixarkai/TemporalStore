@@ -340,6 +340,77 @@ class _NativeAppendClient:
     def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
         self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
 
+
+
+class _HashStoreClient:
+    def __init__(self) -> None:
+        self.hashes: dict[str, dict[str, str]] = {}
+        self.strings: dict[str, str] = {}
+
+    def get_string(self, key: str) -> str:
+        return self.strings.get(key, "0")
+
+    def put_string(self, key: str, value: str) -> None:
+        self.strings[key] = value
+
+    def hset(self, key: str, field: str, value: str) -> None:
+        self.hashes.setdefault(key, {})[field] = value
+
+    def hget(self, key: str, field: str) -> str:
+        return self.hashes.get(key, {}).get(field, "")
+
+    def batch_hset(self, entries) -> None:
+        for entry in entries:
+            self.hset(str(entry["key"]), str(entry["field"]), str(entry["value"]))
+
+    def scan_hash(self, key: str):
+        return {
+            "records": [
+                {"field": field, "value": value}
+                for field, value in self.hashes.get(key, {}).items()
+            ]
+        }
+
+
+def _direct_adapter_for_hash_store(client: _HashStoreClient) -> mcp.MatrixArkTemporalStoreDirectAdapter:
+    adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        adapter.event_log = Path(tmpdir) / "unused.jsonl"
+        mcp.MatrixArkLocalAdapter._init_local_runtime_state(adapter)
+    adapter._client = client
+    adapter._metaserver = ""
+    adapter._namespace = "deploy_ns"
+    adapter._table = "deploy_table"
+    adapter._storage_prefix = "matrixark:test"
+    adapter._record_hash_key = "matrixark:test:records"
+    adapter._index_key = "matrixark:test:record_index"
+    adapter._count_key = "matrixark:test:record_count"
+    adapter._shard_size = mcp.DIRECT_RECORD_LOG_SHARD_SIZE
+    adapter._index_cache = None
+    adapter._records_cache = None
+    adapter._entry_count_cache = None
+    adapter._legacy_index_mode = False
+    adapter._records_lock = threading.RLock()
+    adapter._matrixark_proxy_mode = False
+    adapter._matrixark_native_batch_append_available = False
+    adapter._supported_storage_families = {"default", "local", "single_node", "shared_store"}
+    adapter._write_retries = 0
+    adapter._write_backoff_s = 0.0
+    adapter._write_throttle_s = 0.0
+    adapter._direct_write_queue_enabled = False
+    adapter._metrics_lock = threading.RLock()
+    adapter._metrics_started_at_ms = mcp.now_ms()
+    adapter._commands_total = 0
+    adapter._errors_total = 0
+    adapter._timeouts_total = 0
+    adapter._latency_sum_ms = 0.0
+    adapter._latency_max_ms = 0.0
+    adapter._latency_buckets = [0 for _ in mcp.MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
+    adapter._records_written_total = 0
+    adapter._records_read_total = 0
+    return adapter
+
+
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
         raise RuntimeError("Slot not found for deploy_ns/deploy_table")
@@ -1859,6 +1930,46 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertEqual(1, len(summaries))
             self.assertEqual("new session summary", summaries[0]["summary_text"])
             self.assertNotIn("summary_version_hash", summaries[0])
+
+    def test_temporalstore_direct_writes_context_summary_as_latest_state(self) -> None:
+        client = _HashStoreClient()
+        adapter = _direct_adapter_for_hash_store(client)
+
+        adapter.append_many(
+            [
+                {
+                    "record_type": "context_summary",
+                    "summary_type": "node_l0",
+                    "summary_hash": 44,
+                    "node_hash": 44,
+                    "summary_text": "old node summary",
+                    "summary_version_hash": 1,
+                    "updated_at_ms": 1000,
+                },
+                {
+                    "record_type": "context_summary",
+                    "summary_type": "node_l0",
+                    "summary_hash": 44,
+                    "node_hash": 44,
+                    "summary_text": "new node summary",
+                    "summary_version_hash": 2,
+                    "updated_at_ms": 2000,
+                },
+            ]
+        )
+
+        self.assertEqual("0", client.get_string("matrixark:test:record_count"))
+        latest_rows = client.scan_hash("matrixark:test:context_latest_state")["records"]
+        self.assertEqual(1, len(latest_rows))
+        latest_payload = json.loads(latest_rows[0]["value"])
+        self.assertEqual("new node summary", latest_payload["summary_text"])
+        self.assertNotIn("summary_version_hash", latest_payload)
+
+        records = adapter.read_all()
+        summaries = [record for record in records if record.get("record_type") == "context_summary"]
+        self.assertEqual(1, len(summaries))
+        self.assertEqual("new node summary", summaries[0]["summary_text"])
+
     def test_context_events_do_not_duplicate_summaries_or_embeddings(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")

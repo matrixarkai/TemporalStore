@@ -1129,6 +1129,88 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             )
         return entries
 
+    def _latest_context_state_key(self) -> str:
+        return f"{self._storage_prefix}:context_latest_state"
+
+    def _latest_context_state_field(self, record: Json) -> str | None:
+        key = latest_context_state_key(record)
+        if key is None:
+            return None
+        return ":".join(str(part) for part in key)
+
+    def _latest_context_state_entries(self, records: list[Json]) -> list[Json]:
+        entries: list[Json] = []
+        for record in compact_latest_context_state_records(records):
+            field = self._latest_context_state_field(record)
+            if not field:
+                continue
+            payload_record = dict(record)
+            payload_record.pop("summary_version_hash", None)
+            entries.append(
+                {
+                    "key": self._latest_context_state_key(),
+                    "field": field,
+                    "value": json.dumps(payload_record, sort_keys=True, separators=(",", ":")),
+                    "storage_route": record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {},
+                }
+            )
+        return entries
+
+    def _append_log_records(self, records: list[Json]) -> list[Json]:
+        return [record for record in records if latest_context_state_key(record) is None]
+
+    def _load_latest_context_state_records(self) -> list[Json]:
+        scanner = getattr(getattr(self, "_client", None), "scan_hash", None)
+        if not callable(scanner):
+            return []
+        try:
+            response = scanner(self._latest_context_state_key())
+        except Exception:
+            return []
+        rows = response.get("records") if isinstance(response, dict) else []
+        records: list[Json] = []
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("value")
+            if not isinstance(value, str) or not value:
+                continue
+            try:
+                decoded = json.loads(value)
+            except Exception:
+                continue
+            if isinstance(decoded, dict):
+                records.append(decoded)
+        return records
+
+    def _with_latest_context_state_records(self, records: list[Json]) -> list[Json]:
+        return compact_latest_context_state_records(list(records) + self._load_latest_context_state_records())
+
+    def _latest_context_state_records_for_candidate_scan(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str],
+        selected_node_hashes: set[int] | None,
+    ) -> list[Json]:
+        selected = {int(item) for item in (selected_node_hashes or set())}
+        filtered: list[Json] = []
+        for record in self._load_latest_context_state_records():
+            record_type = str(record.get("record_type") or "")
+            if record_type not in record_types:
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            if selected:
+                try:
+                    node_hash = int(record.get("node_hash") or 0)
+                except (TypeError, ValueError):
+                    node_hash = 0
+                if node_hash and node_hash not in selected:
+                    continue
+            filtered.append(record)
+        return filtered
+
     def _records_can_use_direct_write_queue(self, records: list[Json]) -> bool:
         self._ensure_direct_write_queue_fields()
         if not bool(getattr(self, "_direct_write_queue_enabled", False)):
@@ -1342,10 +1424,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
+        records = compact_latest_context_state_records(records)
+        latest_state_entries = self._latest_context_state_entries(records)
+        append_records_for_log = self._append_log_records(records)
         self._validate_storage_routes_available(records)
-        if self._queue_batched_records(records):
+        if latest_state_entries and not append_records_for_log:
+            self._hset_many_with_backoff(latest_state_entries)
+            self._materialize_appended_records_locked(
+                prior_entry_count=getattr(self, "_entry_count_cache", None) or self._get_count(),
+                new_entry_count=getattr(self, "_entry_count_cache", None) or self._get_count(),
+                records=records,
+            )
             return
-        if allow_queue and self._records_can_use_direct_write_queue(records):
+        records_to_append = append_records_for_log
+        if allow_queue and self._records_can_use_direct_write_queue(records_to_append):
             self._enqueue_direct_write(records)
             return
         started_perf = time.perf_counter()
@@ -1355,12 +1447,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if count <= 0 and self._index_cache is None:
                 self._index_cache = self._get_index()
                 self._legacy_index_mode = bool(self._index_cache)
-            event_time_entries = self._context_event_time_index_entries(records)
+            event_time_entries = self._context_event_time_index_entries(records_to_append)
             if self._legacy_index_mode:
                 if self._index_cache is None:
                     self._index_cache = self._get_index()
                 entries: list[Json] = []
-                for record in records:
+                for record in records_to_append:
                     payload = json.dumps(record, sort_keys=True, separators=(",", ":"))
                     record_id = (
                         f"{len(self._index_cache):020d}:"
@@ -1370,7 +1462,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
                     entries.append({"key": self._record_hash_key, "field": record_id, "value": payload, "storage_route": route})
                     self._index_cache.append(record_id)
-                self._hset_many_with_backoff(event_time_entries + entries)
+                self._hset_many_with_backoff(latest_state_entries + event_time_entries + entries)
                 self._put_string_with_backoff(self._index_key, json.dumps(self._index_cache, separators=(",", ":")))
                 if self._records_cache is not None:
                     self._records_cache.extend(records)
@@ -1672,7 +1764,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         with self._records_lock:
             hot_cache_enabled = self.python_hot_cache_enabled()
             if hot_cache_enabled and self._records_cache is not None:
-                self._records_cache = compact_latest_context_state_records(self._records_cache)
+                self._records_cache = self._with_latest_context_state_records(self._records_cache)
                 return list(self._records_cache)
             count = self._get_count()
             if count > 0:
@@ -1681,24 +1773,24 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 if not hot_cache_enabled:
                     self._records_cache = None
                     self._drop_direct_record_cache()
-                    return compact_latest_context_state_records(self._load_records_by_count(count))
+                    return self._with_latest_context_state_records(self._load_records_by_count(count))
                 cached = self._get_direct_record_cache(count)
                 if cached is not None:
-                    self._records_cache = compact_latest_context_state_records(cached)
+                    self._records_cache = self._with_latest_context_state_records(cached)
                     return list(self._records_cache)
                 with self._direct_record_load_lock():
                     cached = self._get_direct_record_cache(count)
                     if cached is not None:
-                        self._records_cache = compact_latest_context_state_records(cached)
+                        self._records_cache = self._with_latest_context_state_records(cached)
                         return list(self._records_cache)
-                    self._records_cache = compact_latest_context_state_records(self._load_records_by_count(count))
+                    self._records_cache = self._with_latest_context_state_records(self._load_records_by_count(count))
                     self._put_direct_record_cache(count, self._records_cache)
                     return list(self._records_cache)
             index = self._get_index()
             self._index_cache = index
             self._legacy_index_mode = bool(index)
             self._entry_count_cache = None
-            records = compact_latest_context_state_records(self._load_records(index))
+            records = self._with_latest_context_state_records(self._load_records(index))
             if hot_cache_enabled:
                 self._records_cache = records
             else:
@@ -1949,8 +2041,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scan_stats.setdefault("record_types", sorted(record_types))
         scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
         scan_stats.setdefault("pack_assembly_location", "python_reference_packer")
+        latest_state_records = self._latest_context_state_records_for_candidate_scan(
+            scope=scope,
+            record_types=record_types,
+            selected_node_hashes=selected_node_hashes,
+        )
+        if latest_state_records:
+            records = list(records) + latest_state_records
         records = compact_latest_context_state_records(records)
         scan_stats["latest_summary_state_compaction"] = True
+        scan_stats["latest_state_records_loaded"] = len(latest_state_records)
         return {"records": records, "scan_stats": scan_stats}
 
     def _direct_record_load_lock(self) -> threading.RLock:
@@ -4218,8 +4318,16 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
         scan_stats.setdefault("pack_assembly_location", "native_backend_candidate_scan")
         scan_stats.setdefault("rust_proxy_dedicated_retrieve_lane", True)
+        latest_state_records = self._latest_context_state_records_for_candidate_scan(
+            scope=scope,
+            record_types=record_types,
+            selected_node_hashes=selected_node_hashes,
+        )
+        if latest_state_records:
+            records = list(records) + latest_state_records
         records = compact_latest_context_state_records(records)
         scan_stats["latest_summary_state_compaction"] = True
+        scan_stats["latest_state_records_loaded"] = len(latest_state_records)
         return {"records": records, "scan_stats": scan_stats}
 
     def _backend_metaserver(self) -> str:
