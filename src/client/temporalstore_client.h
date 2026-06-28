@@ -134,6 +134,12 @@ struct RiskWindow {
     RiskWindowUnit unit = RiskWindowUnit::kHour;
 };
 
+struct HashEntry {
+    std::string key;
+    std::string field;
+    std::string value;
+};
+
 class TemporalStoreClient {
  public:
     static Status Connect(const TemporalStoreClientOptions& options,
@@ -158,6 +164,9 @@ class TemporalStoreClient {
     Status HSet(const std::string& key, const std::string& field, const std::string& value);
     Status HGet(const std::string& key, const std::string& field, std::string* value);
     Status HDel(const std::string& key, const std::string& field);
+    Status MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
+                                       const std::string& count_key = "",
+                                       const std::string& count_value = "");
 
     Status SAdd(const std::string& key, const std::string& member);
     Status SMembers(const std::string& key, std::vector<std::string>* members);

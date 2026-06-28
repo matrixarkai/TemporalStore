@@ -26,9 +26,11 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
 
 try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+    from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
+    from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
 
 
@@ -113,6 +115,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
+        self._retrieval_candidate_cache: dict[str, Json] = {}
+        self._retrieval_candidate_cache_lock = threading.RLock()
         self._entry_count_cache: int | None = None
         self._legacy_index_mode = False
         self._records_lock = threading.RLock()
@@ -193,6 +197,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._backend_ready = False
         if not hasattr(self, "_records_cache"):
             self._records_cache = []
+        if not hasattr(self, "_retrieval_candidate_cache"):
+            self._retrieval_candidate_cache = {}
+        if not hasattr(self, "_retrieval_candidate_cache_lock"):
+            self._retrieval_candidate_cache_lock = threading.RLock()
         if not hasattr(self, "_audit_buffer"):
             self._audit_buffer = []
         if not hasattr(self, "_audit_flush_failures"):
@@ -810,6 +818,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if self._records_cache is not None:
                 self._records_cache.extend(records)
                 self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
+            self._prune_retrieval_candidate_cache(sequence)
             self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
 
     def append_audit(self, record: Json) -> None:
@@ -1112,6 +1121,127 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 oldest = next(iter(_DIRECT_RECORD_CACHE))
                 _DIRECT_RECORD_CACHE.pop(oldest, None)
             _DIRECT_RECORD_CACHE[self._storage_prefix] = (count, list(records))
+
+    def _retrieval_candidate_cache_key(
+        self,
+        *,
+        count: int,
+        scope: Json,
+        record_types: set[str] | None,
+        secondary_index_groups: list[set[str]] | None,
+        selected_node_hashes: set[int] | None,
+    ) -> str:
+        return json.dumps(
+            {
+                "count": count,
+                "scope": scope or {},
+                "record_types": sorted(record_types or RETRIEVAL_HOT_RECORD_TYPES),
+                "secondary_index_groups": [
+                    sorted(group)
+                    for group in (secondary_index_groups or [])
+                ],
+                "selected_node_hashes": sorted(selected_node_hashes or []),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _prune_retrieval_candidate_cache(self, current_count: int) -> None:
+        if not hasattr(self, "_retrieval_candidate_cache"):
+            return
+        with self._retrieval_candidate_cache_lock:
+            stale_keys = [
+                key
+                for key, cached in self._retrieval_candidate_cache.items()
+                if int(cached.get("count") or -1) != int(current_count)
+            ]
+            for key in stale_keys:
+                self._retrieval_candidate_cache.pop(key, None)
+            if len(self._retrieval_candidate_cache) > 32:
+                for key in list(self._retrieval_candidate_cache)[: len(self._retrieval_candidate_cache) - 32]:
+                    self._retrieval_candidate_cache.pop(key, None)
+
+    def retrieval_records(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str] | None = None,
+        secondary_index_groups: list[set[str]] | None = None,
+        selected_node_hashes: set[int] | None = None,
+    ) -> Json:
+        count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+        cache_key = self._retrieval_candidate_cache_key(
+            count=count,
+            scope=scope,
+            record_types=record_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_node_hashes,
+        )
+        self._ensure_backend_metric_fields()
+        with self._retrieval_candidate_cache_lock:
+            cached = self._retrieval_candidate_cache.get(cache_key)
+            if cached is not None:
+                result = dict(cached)
+                result["records"] = list(cached.get("records", []))
+                stats = dict(result.get("scan_stats", {}))
+                stats["candidate_cache_hit"] = True
+                result["scan_stats"] = stats
+                return result
+
+        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        raw_records = self.read_all()
+        filtered: list[Json] = []
+        scanned = 0
+        dropped_type = 0
+        dropped_scope = 0
+        dropped_node = 0
+        selected_nodes = selected_node_hashes or set()
+        for record in raw_records:
+            scanned += 1
+            record_type = str(record.get("record_type") or "")
+            if record_type not in allowed_types:
+                dropped_type += 1
+                continue
+            if selected_nodes:
+                try:
+                    record_node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    record_node_hash = None
+                if record_node_hash is not None and record_node_hash not in selected_nodes:
+                    dropped_node += 1
+                    continue
+            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
+                if not scope_matches(candidate_access_scope(record), scope):
+                    dropped_scope += 1
+                    continue
+            elif not access_scope_matches_before_scoring(record, scope):
+                dropped_scope += 1
+                continue
+            filtered.append(record)
+        result = {
+            "records": filtered,
+            "count": count,
+            "scan_stats": {
+                "backend": self._backend_label(),
+                "execution_mode": "temporalstore_candidate_cache",
+                "native_pushdown": True,
+                "candidate_cache_hit": False,
+                "watermark_count": count,
+                "scanned": scanned,
+                "returned": len(filtered),
+                "dropped_type": dropped_type,
+                "dropped_scope": dropped_scope,
+                "dropped_node": dropped_node,
+                "record_types": sorted(allowed_types),
+            },
+        }
+        with self._retrieval_candidate_cache_lock:
+            self._retrieval_candidate_cache[cache_key] = {
+                **result,
+                "records": list(filtered),
+            }
+            self._prune_retrieval_candidate_cache(count)
+        return result
 
     def _load_records_by_count(self, count: int) -> list[Json]:
         records = []
