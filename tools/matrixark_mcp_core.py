@@ -633,7 +633,7 @@ NODE_PATH_HEAVY_RECORD_TYPES = {
     "skill_section",
     "context_index",
 }
-EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options", "summary_embedding"}
+EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options"}
 ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
 CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 

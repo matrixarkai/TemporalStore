@@ -1444,6 +1444,49 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "compacted scope_key should still satisfy scoped retrieval",
             )
 
+    def test_context_events_do_not_duplicate_summaries_or_embeddings(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            result = adapter.ingest(
+                {
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Alice approved the Project Aurora GPU request after finance review.",
+                        }
+                    ],
+                    "scope": {
+                        "account_id": "acct_local",
+                        "tenant_id": "tenant_codex",
+                        "user_id": "codex_user",
+                        "session_id": "summary-split-test",
+                    },
+                }
+            )
+            self.assertEqual("accepted", result["status"])
+            records = adapter.read_all()
+            events = [record for record in records if record.get("record_type") == "context_event"]
+            summaries = [record for record in records if record.get("record_type") == "context_summary"]
+            embeddings = [record for record in records if record.get("record_type") == "context_embedding"]
+
+            self.assertTrue(events)
+            self.assertTrue(summaries)
+            self.assertTrue(embeddings)
+            self.assertTrue(any(record.get("summary_type") == "session_l0" for record in summaries))
+            self.assertTrue(any(record.get("embedding_type") == "session_l0" for record in embeddings))
+            self.assertTrue(any(record.get("embedding_type") == "event_text" for record in embeddings))
+            for event in events:
+                self.assertNotIn("summary_text", event)
+                self.assertNotIn("summary_embedding", event)
+                self.assertNotIn("vector", event)
+                self.assertNotIn("embedding", event)
+            for summary in summaries:
+                self.assertIn("summary_text", summary)
+                self.assertNotIn("vector", summary)
+            for embedding in embeddings:
+                self.assertIn("vector", embedding)
+                self.assertNotIn("summary_text", embedding)
+
     def test_context_node_topology_records_store_compact_scope_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
