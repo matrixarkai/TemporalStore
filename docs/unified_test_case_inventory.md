@@ -76,13 +76,13 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 163
-total steps: 325
-executable shared behavior cases: 163
-executable shared behavior steps: 325
-C++ existing-test/static parity surfaces: 185
+total cases: 164
+total steps: 326
+executable shared behavior cases: 164
+executable shared behavior steps: 326
+C++ existing-test/static parity surfaces: 186
 C++ adapter coverage families: 9
-C++ required source/test/harness paths: 184 unique paths
+C++ required source/test/harness paths: 190 unique paths
 required command kinds: 64
 required response kinds: 20
 ```
@@ -269,6 +269,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_topology_version_change` | Rust-executable/C++-static gate for the shared client/proxy/meta topology-version change workflow. |
 | `control_stale_route_invalidation` | Rust-executable/C++-static gate for stale route invalidation and one-refresh retry behavior. |
 | `control_proxy_admission_policy` | Rust-executable/C++-static gate for proxy admission, drop-percent, and degraded preflight behavior. |
+| `control_proxy_operational_surface_aliases` | Rust-executable/C++-static gate for C++ proxy admin/config/heartbeat/status operational aliases over Rust-native routes. |
 | `control_readonly_write_disabled_tables` | Rust-executable/C++-static gate for readonly/write-disabled/not-serving table policy behavior. |
 | `control_route_quarantine_recovery` | Rust-executable/C++-static gate for backend quarantine, recovery probing, and degraded preflight behavior. |
 | `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |

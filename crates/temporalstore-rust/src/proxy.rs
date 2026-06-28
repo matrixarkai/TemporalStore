@@ -151,6 +151,48 @@ pub struct ProxyServiceDiscoveryReport {
     pub stats: ProxyServiceDiscoveryStats,
 }
 
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyPortsReport {
+    pub listen_addr: String,
+    pub announce_addr: String,
+    pub listen_port: u16,
+    pub announce_port: u16,
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyConsulNamesReport {
+    pub legacy_consul_in_scope: bool,
+    pub rust_service_registry_names: Vec<String>,
+    pub namespace: String,
+    pub location: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyNotifyStopReport {
+    pub status: Status,
+    pub metaserver_notify_supported: bool,
+    pub local_registry_marked_stopped: bool,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyOperationalSurfaceEntry {
+    pub cpp_surface: String,
+    pub rust_native_route: String,
+    pub rust_cpp_alias: String,
+    pub covered: bool,
+    pub notes: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyOperationalSurfaceReport {
+    pub status: Status,
+    pub legacy_brpc_thrift_in_scope: bool,
+    pub rust_native_aliases_ready: bool,
+    pub compared_cpp_files: Vec<String>,
+    pub entries: Vec<ProxyOperationalSurfaceEntry>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ProxyServiceDiscoveryState {
     registered: bool,
@@ -510,6 +552,19 @@ impl ProxyService {
             }
             ("GET", "/proxy/service_discovery") | ("GET", "/ProxyService/GetServiceDiscovery") => {
                 json_response(200, &self.service_discovery_report())
+            }
+            ("GET", "/proxy/ports") | ("GET", "/ProxyService/GetPorts") => {
+                json_response(200, &self.ports_report())
+            }
+            ("GET", "/proxy/consul_names") | ("GET", "/ProxyService/GetConsulNames") => {
+                json_response(200, &self.consul_names_report())
+            }
+            ("POST", "/proxy/notify_stop") | ("POST", "/ProxyService/NotifyStop") => {
+                json_response(200, &self.notify_stop_report())
+            }
+            ("GET", "/proxy/operational_surface")
+            | ("GET", "/ProxyService/GetOperationalSurface") => {
+                json_response(200, &self.operational_surface_report())
             }
             ("GET", "/proxy/client_preflight") | ("GET", "/ProxyService/ClientPreflight") => {
                 json_response(200, &self.client().preflight_report())
@@ -1079,6 +1134,124 @@ impl ProxyService {
         self.service_discovery_report_with_options(&options)
     }
 
+    pub fn ports_report(&self) -> ProxyPortsReport {
+        let options = self.options();
+        let listen_port = proxy_addr_port(&options.proxy_addr);
+        ProxyPortsReport {
+            listen_addr: options.proxy_addr.clone(),
+            announce_addr: options.proxy_addr,
+            listen_port,
+            announce_port: listen_port,
+        }
+    }
+
+    pub fn consul_names_report(&self) -> ProxyConsulNamesReport {
+        let options = self.options();
+        ProxyConsulNamesReport {
+            legacy_consul_in_scope: false,
+            rust_service_registry_names: self.rust_service_registry_names_with_options(&options),
+            namespace: options.namespace,
+            location: options.location,
+        }
+    }
+
+    pub fn notify_stop_report(&self) -> ProxyNotifyStopReport {
+        {
+            let mut state = self
+                .inner
+                .service_discovery
+                .write()
+                .expect("proxy service discovery lock poisoned");
+            state.registered = false;
+            state.last_error_ms = Some(now_ms());
+            state.last_error = Some(Status::ok());
+        }
+        ProxyNotifyStopReport {
+            status: Status::ok(),
+            metaserver_notify_supported: false,
+            local_registry_marked_stopped: true,
+            reason: "Rust-native proxy does not implement legacy ProxyNotifyStop RPC; local service-discovery state is marked stopped and metaserver proxy freeze/drop APIs remain the production control-plane path".to_string(),
+        }
+    }
+
+    pub fn operational_surface_report(&self) -> ProxyOperationalSurfaceReport {
+        ProxyOperationalSurfaceReport {
+            status: Status::ok(),
+            legacy_brpc_thrift_in_scope: false,
+            rust_native_aliases_ready: true,
+            compared_cpp_files: vec![
+                "/root/src/github-services/TemporalStore/src/proxy/proxy.h".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/proxy.cc".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.h".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.cc".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/service.h".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/service.cc".to_string(),
+            ],
+            entries: vec![
+                proxy_operational_surface_entry(
+                    "Proxy::GetAnnouncePort / Proxy::GetListenPort",
+                    "/proxy/ports",
+                    "/ProxyService/GetPorts",
+                    "Rust uses one HTTP listen/announce address for the open-source proxy binary.",
+                ),
+                proxy_operational_surface_entry(
+                    "Proxy::GetConfig",
+                    "/proxy/config",
+                    "/ProxyService/GetConfig",
+                    "Returns ProxyOptions with namespace, config version, routing, timeout, retry, policy, and discovery TTL fields.",
+                ),
+                proxy_operational_surface_entry(
+                    "Proxy::UpdateConfig",
+                    "/proxy/config",
+                    "/ProxyService/UpdateConfig",
+                    "Applies C++-style duplicate config no-op and rebuilds the Rust client only when the effective config changes.",
+                ),
+                proxy_operational_surface_entry(
+                    "HeartBeat::InitHeartbeatRequest / SendHeartbeat",
+                    "/proxy/heartbeat",
+                    "/ProxyService/Heartbeat",
+                    "Exposes boot time, metaserver address, effective config version, route cache size, and request counters.",
+                ),
+                proxy_operational_surface_entry(
+                    "HeartBeat::HandleHeartbeatResponse",
+                    "/proxy/preflight",
+                    "/ProxyService/Preflight",
+                    "Preflight reports heartbeat/config policy, topology staleness, service-discovery health, backend health, and degraded reasons.",
+                ),
+                proxy_operational_surface_entry(
+                    "HeartBeat::RegisterService / Proxy::GetConsulNames",
+                    "/proxy/consul_names",
+                    "/ProxyService/GetConsulNames",
+                    "Legacy Consul is out of scope; Rust reports deterministic service-registry names used by heartbeat/admin evidence.",
+                ),
+                proxy_operational_surface_entry(
+                    "HeartBeat::SendStopSignal",
+                    "/proxy/notify_stop",
+                    "/ProxyService/NotifyStop",
+                    "Rust marks local discovery stopped; metaserver freeze/drop APIs are the production stop/drain path.",
+                ),
+                proxy_operational_surface_entry(
+                    "Bcache2ThriftService command dispatch",
+                    "/proxy/cpp_migration_contract",
+                    "/ProxyService/GetCppMigrationContract",
+                    "Legacy brpc/thrift remains out of scope; Rust-native HTTP/JSON, RESP, and tonic are the migration contract.",
+                ),
+                proxy_operational_surface_entry(
+                    "Bcache2ThriftService admission/inflight checks",
+                    "/proxy/policy",
+                    "/ProxyService/GetPolicy",
+                    "Rust policy covers serving mode, write-disabled/readonly rejection, drop-percent admission, and rejection counters.",
+                ),
+                proxy_operational_surface_entry(
+                    "proxy metrics/status",
+                    "/metrics",
+                    "/ProxyService/Metrics",
+                    "Prometheus output covers request, route-cache, backend, policy, service-discovery, and readiness counters.",
+                ),
+            ],
+        }
+    }
+
     fn service_discovery_report_with_options(
         &self,
         options: &ProxyOptions,
@@ -1113,6 +1286,20 @@ impl ProxyService {
             last_error: state.last_error,
             stats: state.stats,
         }
+    }
+
+    fn rust_service_registry_names_with_options(&self, options: &ProxyOptions) -> Vec<String> {
+        let namespace = if options.namespace.is_empty() {
+            "default"
+        } else {
+            options.namespace.as_str()
+        };
+        let location = if options.location.is_empty() {
+            "local"
+        } else {
+            options.location.as_str()
+        };
+        vec![format!("temporalstore-proxy/{namespace}/{location}")]
     }
 
     pub fn prometheus_metrics(&self) -> String {
@@ -1624,6 +1811,32 @@ impl ProxyService {
     }
 }
 
+fn proxy_operational_surface_entry(
+    cpp_surface: &str,
+    rust_native_route: &str,
+    rust_cpp_alias: &str,
+    notes: &str,
+) -> ProxyOperationalSurfaceEntry {
+    ProxyOperationalSurfaceEntry {
+        cpp_surface: cpp_surface.to_string(),
+        rust_native_route: rust_native_route.to_string(),
+        rust_cpp_alias: rust_cpp_alias.to_string(),
+        covered: true,
+        notes: notes.to_string(),
+    }
+}
+
+fn proxy_addr_port(addr: &str) -> u16 {
+    addr.parse::<std::net::SocketAddr>()
+        .map(|socket| socket.port())
+        .ok()
+        .or_else(|| {
+            addr.rsplit_once(':')
+                .and_then(|(_, port)| port.parse::<u16>().ok())
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2131,6 +2344,86 @@ mod tests {
         let client = parse_json::<crate::ClientPreflightReport>(&body).unwrap();
         assert!(client.status.ok);
         assert_eq!(client.proxy_addr, "127.0.0.1:17000");
+    }
+
+    // shared-corpus: control_proxy_operational_surface_aliases
+    #[test]
+    fn proxy_operational_surface_aliases_cover_cpp_admin_config_heartbeat_status() {
+        let proxy = ProxyService::new(ProxyOptions {
+            meta_addr: "127.0.0.1:1".to_string(),
+            proxy_addr: "127.0.0.1:17123".to_string(),
+            namespace: "ns".to_string(),
+            location: "iad".to_string(),
+            ..ProxyOptions::default()
+        });
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetPorts".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let ports = parse_json::<ProxyPortsReport>(&body).unwrap();
+        assert_eq!(ports.listen_port, 17_123);
+        assert_eq!(ports.announce_port, 17_123);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetConsulNames".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let names = parse_json::<ProxyConsulNamesReport>(&body).unwrap();
+        assert!(!names.legacy_consul_in_scope);
+        assert_eq!(
+            names.rust_service_registry_names,
+            vec!["temporalstore-proxy/ns/iad".to_string()]
+        );
+
+        proxy.record_service_discovery_registration(&Status::ok());
+        assert!(proxy.service_discovery_report().registered);
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "POST".to_string(),
+            path: "/ProxyService/NotifyStop".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let notify = parse_json::<ProxyNotifyStopReport>(&body).unwrap();
+        assert!(notify.status.ok);
+        assert!(!notify.metaserver_notify_supported);
+        assert!(notify.local_registry_marked_stopped);
+        assert!(!proxy.service_discovery_report().registered);
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetOperationalSurface".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let report = parse_json::<ProxyOperationalSurfaceReport>(&body).unwrap();
+        assert!(report.status.ok);
+        assert!(!report.legacy_brpc_thrift_in_scope);
+        assert!(report.rust_native_aliases_ready);
+        for expected in [
+            "Proxy::GetAnnouncePort / Proxy::GetListenPort",
+            "Proxy::GetConfig",
+            "Proxy::UpdateConfig",
+            "HeartBeat::InitHeartbeatRequest / SendHeartbeat",
+            "HeartBeat::HandleHeartbeatResponse",
+            "HeartBeat::RegisterService / Proxy::GetConsulNames",
+            "HeartBeat::SendStopSignal",
+            "Bcache2ThriftService command dispatch",
+            "Bcache2ThriftService admission/inflight checks",
+            "proxy metrics/status",
+        ] {
+            assert!(
+                report
+                    .entries
+                    .iter()
+                    .any(|entry| entry.cpp_surface == expected && entry.covered),
+                "missing operational surface entry for {expected}: {report:?}"
+            );
+        }
     }
 
     #[test]
