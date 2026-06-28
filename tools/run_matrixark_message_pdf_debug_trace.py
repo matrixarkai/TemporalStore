@@ -713,6 +713,35 @@ def records_table(records: list[Json], fields: list[str]) -> str:
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+def event_display_rows(records: list[Json]) -> tuple[list[Json], list[Json]]:
+    raw_events: list[Json] = []
+    fact_events: list[Json] = []
+    for record in records:
+        event_type = str(record.get("event_type") or record.get("entity_type") or "")
+        classification = str(record.get("classification") or "")
+        is_resource_fact = bool(record.get("source_ref")) or classification == "RESOURCE_FACT" or event_type.startswith("resource_")
+        context_event_key = record.get("event_time_key") or ""
+        if not context_event_key:
+            timestamp = record.get("timestamp_key_ms") or record.get("ingestion_time_ms") or record.get("updated_at_ms") or record.get("created_at_ms")
+            event_hash = record.get("event_id_hash") or ""
+            if timestamp:
+                context_event_key = f"{int(timestamp):020d}:{event_hash}"
+        row = {
+            "event_id_hash": record.get("event_id_hash"),
+            "context_event_key": context_event_key,
+            "classification": classification,
+            "event_type": event_type,
+            "summary_text": record.get("summary_text") or record.get("text"),
+            "text": record.get("text") or record.get("summary_text"),
+            "source_ref": record.get("source_ref"),
+        }
+        if is_resource_fact:
+            fact_events.append(row)
+        else:
+            raw_events.append(row)
+    return raw_events, fact_events
+
+
 def latest_records_by_key(records: list[Json], key_fields: list[str]) -> list[Json]:
     latest: dict[tuple[str, ...], Json] = {}
     for record in records:
@@ -953,15 +982,19 @@ def write_outputs(
         "",
         markdown_table(placement_routes, ["record_type", "node", "placement", "placement_hash", "example_shard_16", "records"], limit=120),
         "",
-        "## Extracted Events",
+        "## Raw Conversation Events",
         "",
         markdown_table(compact_records_by_type["context_event"], ["event", "node", "type", "entity", "source", "text"], limit=80),
         "",
-        "## Extracted Entities",
+        "## Extracted Resource/Fact Events",
+        "",
+        markdown_table(extracted_resource_fact_events, ["event_type", "summary_text", "source_ref", "event_id_hash", "context_event_key"], limit=120),
+        "",
+        "## ContextEntities",
         "",
         markdown_table(compact_records_by_type["context_entity"], ["entity", "node", "type", "name", "op", "state", "source"], limit=80),
         "",
-        "## Summaries",
+        "## ContextSummaries",
         "",
         markdown_table(compact_records_by_type["context_summary"], ["type", "summary", "node", "sources", "text"], limit=80),
         "",
