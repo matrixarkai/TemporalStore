@@ -4128,9 +4128,9 @@ class MatrixArkLocalAdapter:
             return native_pack
         if self.native_context_pack_required():
             raise MatrixArkError(
-                "backend-native ContextPack assembly is required for this profile, "
+                "backend-native ContextPack assembly is required for TemporalStore serving, "
                 "but this backend did not return matrixark_retrieve_context_pack. "
-                "Python reference packing is disabled for production/benchmark serving."
+                "Python reference packing is disabled unless explicitly overridden for local debug."
             )
         embedding_started_perf = time.perf_counter()
         query_embedding = embedding_for_text(query)
