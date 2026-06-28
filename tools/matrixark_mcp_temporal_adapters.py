@@ -1697,12 +1697,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     ) -> Json:
         """Return retrieval candidates with native scan/cache prefiltering.
 
-        C++ direct and Rust proxy/direct SDK should expose a native hash/prefix
-        scan so MatrixArk can fetch appended record shards in one storage call
-        per shard. The adapter keeps a small hot cache only as a read-through
-        fallback; correctness should come from TemporalStore records, not from
-        Python-owned cache state. Python still owns reference scoring and
-        ContextPack assembly until the native score/pack API lands.
+        C++ direct and Rust proxy/direct SDK expose native hash/prefix scan for
+        debug candidate inspection. Normal TemporalStore retrieval should use
+        matrixark_retrieve_context_pack so Python receives a finished ContextPack
+        instead of materializing candidates or assembling the hot-path pack.
         """
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
@@ -1849,14 +1847,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if self.native_context_pack_required():
                 raise MatrixArkError(
                     f"backend-native ContextPack assembly failed for {self._backend_label()}: {exc}. "
-                    "Python reference packing is disabled for production/benchmark serving."
+                    "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
                 ) from exc
             return None
         if not isinstance(response, dict) or not response.get("native_pack_assembly"):
             if self.native_context_pack_required():
                 raise MatrixArkError(
                     f"backend-native ContextPack assembly returned an invalid response for {self._backend_label()}. "
-                    "Python reference packing is disabled for production/benchmark serving."
+                    "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
                 )
             return None
         if isinstance(response.get("records"), list):
@@ -1903,7 +1901,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if native_candidate_prefilter_required(backend_label=self._backend_label()):
                 raise MatrixArkError(
                     f"backend-native candidate prefilter failed for {self._backend_label()}: {exc}. "
-                    "Python read_all scan/prefilter is disabled for production/benchmark serving."
+                    "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
                 ) from exc
             return None
         records = response.get("records") if isinstance(response, dict) else None
@@ -1911,7 +1909,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             if native_candidate_prefilter_required(backend_label=self._backend_label()):
                 raise MatrixArkError(
                     f"backend-native candidate prefilter returned an invalid response for {self._backend_label()}. "
-                    "Python read_all scan/prefilter is disabled for production/benchmark serving."
+                    "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
                 )
             return None
         scan_stats = dict(response.get("scan_stats") or {})
