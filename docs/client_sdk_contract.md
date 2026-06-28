@@ -98,6 +98,8 @@ tests or validators:
 - topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
   stale-route invalidation, C++ partition-set/member/version route-cache tests, proxy route
   refresh, and route-quarantine tests.
+- deployment placement and routing hooks are covered by executable shared tests for deployment
+  placement policy, location-affine secondary reads, and primary-only write routing.
 - MetaSyncer production behavior is covered by deadline-limited topology calls, exponential backoff with deterministic jitter, metaserver outage survival, and topology-version route churn refresh tests.
 - retry budgets are covered by separate read/write retry-budget tests, including the no-duplicate
   unsafe write retry path.
