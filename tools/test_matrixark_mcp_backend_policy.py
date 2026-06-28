@@ -1539,6 +1539,119 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     self.assertNotIn("child_path", record)
                     self.assertNotIn("child_name", record)
 
+    def test_parent_summary_uses_child_summaries_and_state_not_recursive_raw_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
+            scope = mcp.enrich_scope_with_identity(
+                {"session_id": "parent-summary-session"},
+                {
+                    "account_id": "acct_local",
+                    "tenant_id": "tenant_codex",
+                    "user_id": "codex_user",
+                    "session_id": "",
+                    "agent_name": "codex",
+                    "mode": "dev",
+                },
+            )
+            parent_path = ["tenant:tenant_codex", "user:codex_user"]
+            child_path = [*parent_path, "session:parent-summary-session"]
+            parent_hash = mcp.stable_hash("/".join(parent_path))
+            child_hash = mcp.stable_hash("/".join(child_path))
+            child_summary_hash = mcp.stable_hash("child-summary")
+            entity_hash = mcp.stable_hash("gpu-approval-entity")
+            compression_hash = mcp.stable_hash("old-approval-compression")
+            dirty_hash = mcp.stable_hash("parent-summary-dirty")
+
+            adapter.ensure_context_node_path(
+                node_path=child_path,
+                scope=scope,
+                updated_at_ms=1780000000000,
+            )
+            adapter.append_many(
+                [
+                    {
+                        "record_type": "context_summary",
+                        "summary_type": "session_l0",
+                        "summary_hash": child_summary_hash,
+                        "node_hash": child_hash,
+                        "node_path": child_path,
+                        "summary_text": "Child summary says finance approved the GPU budget.",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000100,
+                    },
+                    {
+                        "record_type": "context_entity",
+                        "entity_hash": entity_hash,
+                        "node_hash": child_hash,
+                        "node_path": child_path,
+                        "entity_type": "approval_state",
+                        "entity_name": "gpu_purchase",
+                        "state": "Alice approved the GPU purchase after finance review.",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000200,
+                    },
+                    {
+                        "record_type": "context_compression_event",
+                        "compression_id_hash": compression_hash,
+                        "node_hash": child_hash,
+                        "node_path": child_path,
+                        "operator": "TIME_COMPRESS",
+                        "summary_text": "Older compressed context covers earlier GPU review notes.",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000300,
+                    },
+                    {
+                        "record_type": "context_event",
+                        "event_id_hash": mcp.stable_hash("raw-leaf-event"),
+                        "node_hash": child_hash,
+                        "node_path": child_path,
+                        "text": "RAW_LEAF_SHOULD_NOT_APPEAR_IN_PARENT_SUMMARY",
+                        "scope": scope,
+                        "updated_at_ms": 1780000000400,
+                    },
+                    {
+                        "record_type": "context_summary_dirty",
+                        "dirty_hash": dirty_hash,
+                        "node_hash": parent_hash,
+                        "node_path": parent_path,
+                        "dirty_reason": "child_update",
+                        "source_ref_type": "summary",
+                        "source_summary_hash": child_summary_hash,
+                        "scope": scope,
+                        "status": "pending",
+                        "updated_at_ms": 1780000000500,
+                    },
+                ]
+            )
+
+            result = adapter.refresh_dirty_node_summaries(scope=scope, limit=4, refreshed_at_ms=1780000000600)
+            self.assertEqual("ok", result["status"])
+            self.assertEqual(1, result["refreshed_count"])
+
+            records = adapter.read_all()
+            parent_summaries = [
+                record
+                for record in records
+                if record.get("record_type") == "context_summary"
+                and record.get("node_hash") == parent_hash
+                and record.get("dirty_hash") == dirty_hash
+            ]
+            self.assertTrue(parent_summaries)
+            combined_summary_text = " ".join(str(record.get("summary_text", "")) for record in parent_summaries)
+            self.assertIn("Child summary says finance approved the GPU budget", combined_summary_text)
+            self.assertIn("Alice approved the GPU purchase", combined_summary_text)
+            self.assertIn("Older compressed context", combined_summary_text)
+            self.assertNotIn("RAW_LEAF_SHOULD_NOT_APPEAR", combined_summary_text)
+
+            for summary in parent_summaries:
+                policy = summary["summary_generation_policy"]
+                self.assertEqual("child_summaries_plus_state", policy["source_policy"])
+                self.assertFalse(policy["raw_recursive_leaf_event_scan"])
+                self.assertEqual([], summary["source_event_ids"])
+                self.assertIn(child_summary_hash, summary["source_summary_hashes"])
+                self.assertIn(entity_hash, summary["source_entity_hashes"])
+                self.assertIn(compression_hash, summary["source_operator_hashes"])
+
     def test_production_profile_rejects_local_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = False

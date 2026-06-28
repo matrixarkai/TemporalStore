@@ -915,39 +915,106 @@ class MatrixArkLocalAdapter:
         node_hash: int | None = None,
         max_events: int = 8,
         max_child_summaries: int = 8,
-    ) -> tuple[list[Json], list[Json]]:
+        max_entity_states: int = 6,
+        max_operator_states: int = 4,
+    ) -> tuple[list[Json], list[Json], list[Json], list[Json], Json]:
         prefix = node_path_tuple(node_path)
         target_node_hash = int(node_hash) if node_hash is not None else stable_hash("/".join(node_path))
+        direct_child_hashes: set[int] = set()
+        for record in records:
+            if record.get("record_type") != "context_child_ref":
+                continue
+            if not scope_matches(candidate_access_scope(record), scope):
+                continue
+            try:
+                parent_hash = int(record.get("parent_hash") or 0)
+                child_hash = int(record.get("child_hash") or 0)
+            except (TypeError, ValueError):
+                continue
+            if parent_hash == target_node_hash and child_hash:
+                direct_child_hashes.add(child_hash)
+
         child_summaries: list[Json] = []
-        events: list[Json] = []
+        entity_states: list[Json] = []
+        operator_states: list[Json] = []
+        same_node_events: list[Json] = []
         seen_summary_keys: set[tuple[int, str]] = set()
+        seen_entity_hashes: set[int] = set()
+        seen_operator_hashes: set[int] = set()
+        summary_types = {"node_l0", "node_l1", "batch_l0", "session_l0", "resource_l0", "skill_l0"}
+        operator_record_types = {"context_compression_event"}
         for record in reversed(records):
             if not scope_matches(candidate_access_scope(record), scope):
                 continue
+            record_type = str(record.get("record_type") or "")
+            try:
+                record_node_hash = int(record.get("node_hash") or 0)
+            except (TypeError, ValueError):
+                record_node_hash = 0
             record_path = node_path_tuple(record.get("node_path", []))
-            path_matches = bool(record_path and starts_with_path(record_path, prefix))
-            node_matches = record.get("node_hash") == target_node_hash
-            if not path_matches and not node_matches:
-                continue
-            if record.get("record_type") == "context_summary" and record.get("summary_type") in {"node_l0", "node_l1", "batch_l0", "session_l0", "resource_l0", "skill_l0"}:
-                if len(child_summaries) >= max_child_summaries:
+            is_same_node = record_node_hash == target_node_hash or (bool(record_path) and record_path == prefix)
+            is_direct_child = record_node_hash in direct_child_hashes or (
+                bool(record_path) and starts_with_path(record_path, prefix) and len(record_path) == len(prefix) + 1
+            )
+            if record_type == "context_summary" and record.get("summary_type") in summary_types:
+                if len(child_summaries) >= max_child_summaries or not is_direct_child:
                     continue
-                try:
-                    node_hash = int(record.get("node_hash"))
-                except (TypeError, ValueError):
-                    continue
-                key = (node_hash, str(record.get("summary_type", "")))
+                key = (record_node_hash, str(record.get("summary_type", "")))
                 if key in seen_summary_keys:
-                    continue
-                if node_path_tuple(record.get("node_path", [])) == prefix:
                     continue
                 seen_summary_keys.add(key)
                 child_summaries.append(record)
-            elif record.get("record_type") == "context_event":
-                if len(events) >= max_events:
+                continue
+            if record_type == "context_entity" and (is_same_node or is_direct_child):
+                if len(entity_states) >= max_entity_states:
                     continue
-                events.append(record)
-        return list(reversed(events[:max_events])), list(reversed(child_summaries[:max_child_summaries]))
+                try:
+                    entity_hash = int(record.get("entity_hash") or 0)
+                except (TypeError, ValueError):
+                    entity_hash = 0
+                if entity_hash and entity_hash in seen_entity_hashes:
+                    continue
+                if entity_hash:
+                    seen_entity_hashes.add(entity_hash)
+                entity_states.append(record)
+                continue
+            if record_type in operator_record_types and (is_same_node or is_direct_child):
+                if len(operator_states) >= max_operator_states:
+                    continue
+                try:
+                    operator_hash = int(record.get("compression_id_hash") or record.get("ref_hash") or 0)
+                except (TypeError, ValueError):
+                    operator_hash = 0
+                if operator_hash and operator_hash in seen_operator_hashes:
+                    continue
+                if operator_hash:
+                    seen_operator_hashes.add(operator_hash)
+                operator_states.append(record)
+                continue
+            if record_type == "context_event" and is_same_node and len(same_node_events) < max_events:
+                same_node_events.append(record)
+
+        # Parent nodes summarize direct child summaries plus compact state. They
+        # do not recursively scan raw leaf events. Leaf or summary-missing nodes
+        # can still use their own direct recent events as a fallback source.
+        use_direct_events = not child_summaries
+        events = same_node_events if use_direct_events else []
+        policy = {
+            "source_policy": "child_summaries_plus_state" if child_summaries else "direct_events_fallback",
+            "raw_recursive_leaf_event_scan": False,
+            "direct_child_count": len(direct_child_hashes),
+            "used_direct_event_count": len(events),
+            "used_child_summary_count": len(child_summaries),
+            "used_entity_state_count": len(entity_states),
+            "used_operator_state_count": len(operator_states),
+        }
+        return (
+            list(reversed(events[:max_events])),
+            list(reversed(child_summaries[:max_child_summaries])),
+            list(reversed(entity_states[:max_entity_states])),
+            list(reversed(operator_states[:max_operator_states])),
+            policy,
+        )
 
     def context_event_ingestion_time_ms(self, record: Json, debug_by_ref: dict[Any, Json] | None = None) -> int:
         event_hash = record.get("event_id_hash")
@@ -1403,7 +1470,7 @@ class MatrixArkLocalAdapter:
             if not node_path:
                 continue
             node_hash = int(dirty["node_hash"])
-            events, child_summaries = self.node_summary_source_records(
+            events, child_summaries, entity_states, operator_states, summary_source_policy = self.node_summary_source_records(
                 records=records,
                 node_path=node_path,
                 scope=dirty.get("scope", scope),
@@ -1415,7 +1482,23 @@ class MatrixArkLocalAdapter:
                 for record in child_summaries
                 if record.get("summary_text")
             ]
-            source_text = " ".join(child_summary_texts + event_texts)
+            entity_state_texts = [
+                summarize_text(
+                    f"{record.get('entity_type', 'entity')} {record.get('entity_name', '')}: {record.get('state', '')}",
+                    limit=240,
+                )
+                for record in entity_states
+                if record.get("state")
+            ]
+            operator_state_texts = [
+                summarize_text(
+                    f"{record.get('operator', 'operator')}: {record.get('summary_text') or record.get('text') or ''}",
+                    limit=260,
+                )
+                for record in operator_states
+                if record.get("summary_text") or record.get("text")
+            ]
+            source_text = " ".join(child_summary_texts + entity_state_texts + operator_state_texts + event_texts)
             if not source_text:
                 source_text = " ".join(node_path)
             prefix_label = " / ".join(node_path)
@@ -1426,11 +1509,22 @@ class MatrixArkLocalAdapter:
                 for record in child_summaries
                 if record.get("summary_hash") is not None or record.get("node_hash") is not None
             ]
+            source_entity_hashes = [
+                int(record.get("entity_hash"))
+                for record in entity_states
+                if record.get("entity_hash") is not None
+            ]
+            source_operator_hashes = [
+                int(record.get("compression_id_hash") or record.get("ref_hash"))
+                for record in operator_states
+                if record.get("compression_id_hash") is not None or record.get("ref_hash") is not None
+            ]
             l1_policy = node_l1_generation_policy(
                 source_text=source_text,
                 event_count=len(source_event_ids),
                 child_summary_count=len(source_summary_hashes),
             )
+            l1_policy = {**l1_policy, **summary_source_policy}
             summary_specs = [("node_l0", l0_summary, "node_l0")]
             if l1_policy["generate_l1"]:
                 l1_summary = summarize_text(
@@ -1455,6 +1549,8 @@ class MatrixArkLocalAdapter:
                         "summary_text": summary_text,
                         "source_event_ids": source_event_ids,
                         "source_summary_hashes": source_summary_hashes,
+                        "source_entity_hashes": source_entity_hashes,
+                        "source_operator_hashes": source_operator_hashes,
                         "summary_generation_policy": l1_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),
@@ -1541,6 +1637,8 @@ class MatrixArkLocalAdapter:
                     "summary_version_hash": version_hash,
                     "source_event_count": len(source_event_ids),
                     "source_summary_count": len(source_summary_hashes),
+                    "source_entity_count": len(source_entity_hashes),
+                    "source_operator_count": len(source_operator_hashes),
                     "generated_summary_types": [spec[0] for spec in summary_specs],
                     "summary_generation_policy": l1_policy,
                     "time_compression": compression_refresh,
