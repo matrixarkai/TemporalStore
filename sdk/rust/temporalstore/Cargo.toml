@@ -6,6 +6,7 @@ edition = "2021"
 [lib]
 name = "temporalstore"
 path = "src/lib.rs"
+crate-type = ["rlib", "cdylib"]
 
 [features]
 default = ["direct"]

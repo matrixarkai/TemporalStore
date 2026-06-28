@@ -3201,6 +3201,32 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("--rust-direct-sdk", server)
         self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK", server)
 
+    def test_rust_cdylib_direct_binding_exposes_native_matrixark_api(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        cargo = (repo / "sdk/rust/temporalstore/Cargo.toml").read_text()
+        rust_lib = (repo / "sdk/rust/temporalstore/src/lib.rs").read_text()
+        adapter = (repo / "tools/matrixark_mcp_temporal_adapters.py").read_text()
+        server = (repo / "tools/matrixark_mcp_server.py").read_text()
+
+        self.assertIn('crate-type = ["rlib", "cdylib"]', cargo)
+        for symbol in [
+            "temporalstore_rust_connect_json",
+            "temporalstore_rust_close",
+            "temporalstore_rust_hset",
+            "temporalstore_rust_hget",
+            "temporalstore_rust_hgetall_json",
+            "temporalstore_rust_matrixark_batch_append_records_json",
+            "temporalstore_rust_matrixark_scan_candidates_json",
+            "temporalstore_rust_matrixark_retrieve_context_pack_json",
+        ]:
+            self.assertIn(symbol, rust_lib)
+        self.assertIn("class MatrixArkRustCdylibClient", adapter)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", adapter)
+        self.assertIn("rust_direct_cdylib_matrixark_batch_append_records", adapter)
+        self.assertIn("rust_direct_cdylib_matrixark_retrieve_context_pack", adapter)
+        self.assertIn("--rust-direct-lib", server)
+        self.assertIn("MATRIXARK_TEMPORALSTORE_RUST_DIRECT_LIB", server)
+
     def test_cpp_python_sdk_exposes_native_hash_scan(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/python/temporalstore/client.py").read_text()
