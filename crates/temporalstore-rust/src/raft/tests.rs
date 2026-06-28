@@ -3994,6 +3994,7 @@ fn scale_up_adds_caught_up_replica() {
     );
 }
 
+// shared-corpus: raft_byteraft_membership_roles
 #[test]
 fn learner_and_witness_roles_match_cpp_membership_shape() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -4003,10 +4004,11 @@ fn learner_and_witness_roles_match_cpp_membership_shape() {
     cluster
         .add_node_with_role(5, RaftReplicaRole::Witness)
         .unwrap();
+    cluster.add_learner_with_auto_promote(6, true).unwrap();
 
     let status = cluster.status();
     assert_eq!(status.majority, 3);
-    assert_eq!(status.live_voters, 4);
+    assert_eq!(status.live_voters, 5);
     assert_eq!(
         cluster.local_status(4).unwrap().replica_role,
         RaftReplicaRole::Learner
@@ -4015,7 +4017,26 @@ fn learner_and_witness_roles_match_cpp_membership_shape() {
         cluster.local_status(5).unwrap().replica_role,
         RaftReplicaRole::Witness
     );
-    assert_eq!(cluster.membership().voters, vec![1, 2, 3, 5]);
+    assert_eq!(
+        cluster.local_status(6).unwrap().replica_role,
+        RaftReplicaRole::Voter
+    );
+    assert_eq!(cluster.membership().voters, vec![1, 2, 3, 5, 6]);
+    let local_status = cluster.byteraft_local_status_report();
+    assert!(local_status.witness_membership_present);
+    assert!(local_status.learner_membership_present);
+    assert!(local_status.learner_auto_promote_present);
+    assert!(local_status.peers.iter().any(|peer| {
+        peer.status.node_id == 5 && peer.participates_in_quorum && !peer.can_serve_data
+    }));
+    assert!(local_status.peers.iter().any(|peer| {
+        peer.status.node_id == 6
+            && peer.can_be_leader
+            && peer.pipeline_state.auto_promoted_from_learner
+    }));
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.witness_membership_present);
+    assert!(admin.learner_auto_promote_present);
 
     cluster
         .propose(Command::StringSet {
@@ -4116,6 +4137,44 @@ fn replica_roles_survive_wal_restore() {
         RaftReplicaRole::Witness
     );
     assert_eq!(restored.membership().voters, vec![1, 2, 3, 5]);
+}
+
+// shared-corpus: raft_byteraft_rolling_restart_joint_consensus_fault_harness
+#[test]
+fn pending_joint_consensus_survives_rolling_restore_and_completes() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
+    let pending = cluster.byteraft_local_status_report();
+    assert!(pending.pending_joint_consensus.is_some());
+    assert!(pending
+        .peers
+        .iter()
+        .any(|peer| peer.status.node_id == 4 && peer.can_be_leader));
+
+    let restored = RaftCluster::restore_single_shard_from_wal(
+        dir.path(),
+        1,
+        [1, 2, 3, 4],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    let restored_pending = restored.byteraft_local_status_report();
+    assert!(restored_pending.pending_joint_consensus.is_some());
+    assert!(restored_pending
+        .pending_joint_consensus
+        .as_ref()
+        .unwrap()
+        .new_voters
+        .contains(&4));
+    restored.commit_joint_consensus().unwrap();
+    assert!(restored
+        .byteraft_local_status_report()
+        .pending_joint_consensus
+        .is_none());
+    assert_eq!(restored.membership().voters, vec![1, 2, 3, 4]);
 }
 
 #[test]

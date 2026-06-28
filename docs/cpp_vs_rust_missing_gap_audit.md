@@ -930,6 +930,12 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
   local WAL records, so the process-path evidence survives restart instead of being only a
   report-time derivation.
+- Rust now exposes ByteRaft-style membership-role evidence in the same admin/status family:
+  witnesses count toward quorum but cannot serve data or lead, learners can serve caught-up reads
+  without counting toward quorum, `add_learner_with_auto_promote` catches up and promotes a learner
+  to voter, and `/raft/control/byteraft_local_status` joins local status with per-peer pipeline
+  state. Pending joint consensus is visible in local-status reports and survives WAL-backed rolling
+  restore before safe commit.
 - data-node and metaserver Raft election paths now reject stale candidates whose logs are not up-to-date with a voting majority before leadership can move.
 - data-node Raft `RequestVote` receive path now follows Raft term monotonicity more closely: higher terms update local hard state and clear old votes before grant/reject decisions, including the candidate-log-behind rejection path.
 - data-node Raft now exposes a safe membership-change unit for add/remove/replace voter plans: it validates target quorum, opens joint consensus, catches up live followers, commits the new voter set, aborts on failure, and returns a scheduler-friendly report with old/new voters and deltas.

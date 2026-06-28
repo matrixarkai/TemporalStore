@@ -5109,6 +5109,25 @@
       ]
     },
     {
+      "name": "raft_byteraft_membership_roles",
+      "shard_id": 40,
+      "steps": [
+        {
+          "command": {
+            "description": "ByteRaft-derived membership role case: witness participates in quorum without serving data or leadership, learner serves caught-up reads without quorum, auto-promote learner transitions to voter after catch-up, local-status/admin reports expose role semantics, and pending joint consensus survives rolling restart before safe commit.",
+            "kind": "existing_test",
+            "mode": "runtime",
+            "runner": "BUILD_TYPE=Release MEMBERSHIP_OPS=200 bash tools/run_data_raft_scale_up_down_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust learner_and_witness_roles_match_cpp_membership_shape pending_joint_consensus_survives_rolling_restore_and_completes --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-membership-roles.json>",
+            "suite": "cpp_data_raft_parity",
+            "timeout_s": 1200
+          },
+          "name": "witness_learner_auto_promote_and_pending_joint_restart"
+        }
+      ]
+    },
+    {
       "name": "raft_byteraft_metrics_admin_pipeline_status",
       "shard_id": 41,
       "steps": [
@@ -5148,7 +5167,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "suite": "cpp_data_raft_parity",
-          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin plus Prometheus metrics with a capability matrix and durable per-peer pipeline, active replication/apply backpressure, memory byte limits, oversized-log rejection, out-of-order append handling, reorder, snapshot progress/retry/rate-limit/rollback/membership/rejoin, WAL, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
+          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin and /raft/control/byteraft_local_status plus Prometheus metrics with a capability matrix and durable per-peer pipeline, active replication/apply backpressure, memory byte limits, oversized-log rejection, out-of-order append handling, reorder, snapshot progress/retry/rate-limit/rollback/membership/rejoin, WAL, witness/learner/auto-promote role evidence, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_consensus.h",
@@ -5176,6 +5195,9 @@
               "temporalstore_raft_byteraft_pre_vote_rejected",
               "temporalstore_raft_byteraft_stale_follower_read_rejected",
               "temporalstore_raft_byteraft_stale_follower_write_rejected",
+              "temporalstore_raft_byteraft_witness_membership_present",
+              "temporalstore_raft_byteraft_learner_auto_promote_present",
+              "temporalstore_raft_byteraft_pending_joint_consensus_present",
               "temporalstore_raft_byteraft_apply_backpressure_enforced",
               "temporalstore_raft_byteraft_memory_replicate_bytes_enforced",
               "temporalstore_raft_byteraft_oversized_log_rejection_present",
@@ -5215,6 +5237,7 @@
               "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
               "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
               "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
+              "temporalstore_raft_byteraft_peer_auto_promoted_from_learner",
               "temporalstore_raft_byteraft_peer_transfer_leader_requests",
               "temporalstore_raft_byteraft_peer_transfer_leader_accepted",
               "temporalstore_raft_byteraft_peer_transfer_leader_rejected",
@@ -5234,6 +5257,9 @@
                 "lease_read_validated",
                 "stale_follower_read_rejected",
                 "stale_follower_write_rejected",
+                "witness_membership_present",
+                "learner_auto_promote_present",
+                "pending_joint_consensus_present",
                 "peer_pipeline_states",
                 "append_backpressure_enforced",
                 "apply_backpressure_enforced",
@@ -5321,7 +5347,8 @@
                 "transfer_leader_rejected",
                 "transfer_leader_completed",
                 "pre_vote_rejections",
-                "election_rejections"
+                "election_rejections",
+                "auto_promoted_from_learner"
               ]
             },
             "timeout_s": 1200

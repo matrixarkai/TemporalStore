@@ -144,6 +144,13 @@ The Rust code currently has:
   maintained as runtime state and persisted through the local WAL restore path, instead of being only
   reconstructed at report time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
   C++ ByteRaft FFI.
+- ByteRaft-style membership-role evidence is explicit: witnesses participate in quorum but cannot
+  serve data or become leader, learners can serve caught-up reads but do not count for quorum, and
+  `add_learner_with_auto_promote` catches up and promotes a learner to voter while preserving
+  `auto_promoted_from_learner` evidence in admin/local-status reports. The
+  `/raft/control/byteraft_local_status` route exposes per-node local status joined with peer
+  pipeline state, including pending joint-consensus state that survives WAL-backed rolling restart
+  before safe commit.
 - strict shared-store WAL gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
