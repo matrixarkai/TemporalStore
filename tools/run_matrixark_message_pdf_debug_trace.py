@@ -132,6 +132,50 @@ MD_FIXTURES = [
 ]
 
 
+def generated_codex_messages(count: int) -> list[Json]:
+    if count <= len(MESSAGES):
+        return MESSAGES[:count]
+    facts = [
+        "Alice from finance approved Project Aurora GPU procurement after Q3 budget review.",
+        "Bob owns procurement and vendor coordination for the Project Aurora GPU purchase.",
+        "The active GPU budget cap is 45000 dollars after Alice approved the backup quote.",
+        "The purchase order deadline is July 15, 2026.",
+        "Finance approval must be attached before vendor selection can proceed.",
+        "The backup GPU quote should be compared against the primary quote before PO creation.",
+        "If the approval attachment is missing, vendor selection must stop and Alice should be notified.",
+        "The final vendor selection evidence must be stored with the purchase order.",
+        "The historical 42000 dollar cap is stale and must not be used for current-state answers.",
+        "The current answer should cite the resource packet or policy when available.",
+    ]
+    messages: list[Json] = []
+    for index in range(count):
+        role = "user" if index % 2 == 0 else "assistant"
+        prefix = "Codex note" if role == "user" else "Codex assistant recorded"
+        messages.append({
+            "role": role,
+            "content": f"{prefix} [codex_hook_seq={index + 1:03d}]: {facts[index % len(facts)]}",
+        })
+    return messages
+
+
+def expanded_resource_fixtures(count: int) -> list[Json]:
+    seed: list[Json] = [{**fixture, "resource_type": "pdf"} for fixture in PDF_FIXTURES]
+    seed.extend({**fixture, "resource_type": "md"} for fixture in MD_FIXTURES)
+    expanded: list[Json] = []
+    for index, fixture in enumerate(seed[: max(0, count)], start=1):
+        base_lines = list(fixture["lines"])
+        lines: list[str] = []
+        for section in range(1, 7):
+            lines.append(f"Section {section}: {fixture['title']} detail block {section}.")
+            lines.extend(base_lines)
+            lines.append(
+                f"Evidence {section}: Project Aurora GPU approval, Bob owner, 45000 dollar cap, "
+                "July 15 deadline, and finance approval attachment blocker."
+            )
+        expanded.append({**fixture, "title": f"{fixture['title']} - multi chunk {index}", "lines": lines})
+    return expanded
+
+
 QUERY = "What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?"
 
 
@@ -158,7 +202,11 @@ def write_pdf(path: Path, title: str, lines: list[str]) -> None:
     canvas_obj.setFont("Helvetica", 10)
     y = height - 102
     for line in lines:
-        canvas_obj.drawString(72, y, line)
+        if y < 72:
+            canvas_obj.showPage()
+            canvas_obj.setFont("Helvetica", 10)
+            y = height - 72
+        canvas_obj.drawString(72, y, line[:110])
         y -= 18
     canvas_obj.save()
 
@@ -1105,12 +1153,17 @@ def main() -> int:
             "boundary_refresh_tool": "matrixark_refresh_summaries",
             "node_l1_policy": "generate when child summaries, >=3 source events, or >=180 estimated source tokens",
         },
+        "message_count": args.message_count,
+        "resource_count": args.resource_count,
         "calls": [],
         "resources": [],
     }
 
+    messages = generated_codex_messages(args.message_count)
+    resources = expanded_resource_fixtures(args.resource_count)
+
     call_tool(server, "matrixark_backend_ready", {"scope": scope, "reason": "message_pdf_debug_trace"})
-    for index, message in enumerate(MESSAGES, start=1):
+    for index, message in enumerate(messages, start=1):
         result = call_tool(
             server,
             "matrixark_ingest",
@@ -1147,8 +1200,8 @@ def main() -> int:
         write_pdf(pdf_path, str(fixture["title"]), list(fixture["lines"]))
         trace["resources"].append(
             {
-                "raw_uri": str(pdf_path),
-                "resource_type": "pdf",
+                "raw_uri": str(resource_path),
+                "resource_type": resource_type,
                 "title": fixture["title"],
                 "line_count": len(fixture["lines"]),
             }
@@ -1158,9 +1211,9 @@ def main() -> int:
             "matrixark_ingest",
             {
                 "kind": "resource",
-                "raw_uri": str(pdf_path),
-                "resource_type": "pdf",
-                "messages": [{"role": "tool", "content": "Import PDF resource for MatrixArk parsing: " + str(fixture["title"])}],
+                "raw_uri": str(resource_path),
+                "resource_type": resource_type,
+                "messages": [{"role": "tool", "content": import_message}],
                 "scope": scope,
                 "metadata": {
                     "node_path": resource_node_path,
