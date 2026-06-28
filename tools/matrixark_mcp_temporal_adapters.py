@@ -1349,10 +1349,15 @@ class MatrixArkRustCliClient:
                     self._records_written_total += 1
                     self._count_context_record(kwargs.get("value"))
                 elif op in {"batch_hset", "matrixark_append_records", "matrixark_batch_append_records"}:
-                    self._records_written_total += count or len(kwargs.get("entries") or [])
-                    for entry in kwargs.get("entries") or []:
+                    compact_entries = kwargs.get("entries_compact") or []
+                    entries = kwargs.get("entries") or []
+                    self._records_written_total += count or len(compact_entries) or len(entries)
+                    for entry in entries:
                         if isinstance(entry, dict):
                             self._count_context_record(entry.get("value"))
+                    for entry in compact_entries:
+                        if isinstance(entry, (list, tuple)) and len(entry) >= 3:
+                            self._count_context_record(entry[2])
                 elif op in {"get_string", "hget"}:
                     self._records_read_total += 1
                 elif op in {"batch_hget", "hgetall", "scan_hash"}:
@@ -1415,6 +1420,7 @@ class MatrixArkRustCliClient:
                 "supports_prefix_scan": True,
                 "supports_graceful_shutdown": True,
                 "structured_errors": True,
+                "matrixark_batch_append_wire_format": "entries_compact",
             }
 
     def _call(self, op: str, **kwargs: Any) -> str:
@@ -1441,7 +1447,17 @@ class MatrixArkRustCliClient:
     def matrixark_batch_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
         if not entries and not count_key:
             return
-        self._call_json("matrixark_batch_append_records", entries=entries, key=count_key or "", value=count_value or "")
+        compact_entries = [
+            [str(entry.get("key") or ""), str(entry.get("field") or ""), str(entry.get("value") or "")]
+            for entry in entries
+            if isinstance(entry, dict)
+        ]
+        self._call_json(
+            "matrixark_batch_append_records",
+            entries_compact=compact_entries,
+            key=count_key or "",
+            value=count_value or "",
+        )
 
     def matrixark_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
         self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)

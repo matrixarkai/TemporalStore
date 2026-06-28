@@ -13,6 +13,7 @@ struct Command {
     field: Option<String>,
     value: Option<String>,
     entries: Option<Vec<HashEntry>>,
+    entries_compact: Option<Vec<[String; 3]>>,
     record: Option<Value>,
     records: Option<Vec<Value>>,
     record_type: Option<String>,
@@ -31,6 +32,13 @@ struct HashEntry {
     key: String,
     field: String,
     value: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct HashEntryRef<'a> {
+    key: &'a str,
+    field: &'a str,
+    value: &'a str,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -320,13 +328,9 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             stats.bytes_written = command.value.as_ref().map(|v| v.len() as u64).unwrap_or(0);
         }
         "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
-            if let Some(entries) = &command.entries {
-                stats.records_written = entries.len() as u64;
-                stats.bytes_written = entries
-                    .iter()
-                    .map(|entry| entry.value.as_ref().map(|value| value.len() as u64).unwrap_or(0))
-                    .sum();
-            }
+            let (entry_count, entry_bytes) = command_entry_stats(command);
+            stats.records_written = entry_count;
+            stats.bytes_written = entry_bytes;
             if command.key.as_ref().filter(|value| !value.is_empty()).is_some()
                 && command.value.as_ref().filter(|value| !value.is_empty()).is_some()
             {
@@ -338,7 +342,7 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             stats.records_read = result
                 .get("read")
                 .and_then(Value::as_u64)
-                .or_else(|| command.entries.as_ref().map(|entries| entries.len() as u64))
+                .or_else(|| Some(command_entry_count(command)))
                 .unwrap_or(0);
             stats.bytes_read = result.to_string().len() as u64;
         }
@@ -382,6 +386,62 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
         _ => {}
     }
     stats
+}
+
+fn command_entry_count(command: &Command) -> u64 {
+    command
+        .entries_compact
+        .as_ref()
+        .map(|entries| entries.len() as u64)
+        .or_else(|| command.entries.as_ref().map(|entries| entries.len() as u64))
+        .unwrap_or(0)
+}
+
+fn command_entry_stats(command: &Command) -> (u64, u64) {
+    if let Some(entries) = &command.entries_compact {
+        let bytes = entries
+            .iter()
+            .map(|entry| entry[2].len() as u64)
+            .sum();
+        return (entries.len() as u64, bytes);
+    }
+    if let Some(entries) = &command.entries {
+        let bytes = entries
+            .iter()
+            .map(|entry| entry.value.as_ref().map(|value| value.len() as u64).unwrap_or(0))
+            .sum();
+        return (entries.len() as u64, bytes);
+    }
+    (0, 0)
+}
+
+fn command_entries(command: &Command) -> Result<Vec<HashEntryRef<'_>>, String> {
+    if let Some(entries) = &command.entries_compact {
+        return Ok(entries
+            .iter()
+            .map(|entry| HashEntryRef {
+                key: entry[0].as_str(),
+                field: entry[1].as_str(),
+                value: entry[2].as_str(),
+            })
+            .collect());
+    }
+    if let Some(entries) = &command.entries {
+        return entries
+            .iter()
+            .map(|entry| {
+                Ok(HashEntryRef {
+                    key: entry.key.as_str(),
+                    field: entry.field.as_str(),
+                    value: entry
+                        .value
+                        .as_deref()
+                        .ok_or_else(|| "matrixark batch append entry missing value".to_string())?,
+                })
+            })
+            .collect();
+    }
+    Ok(Vec::new())
 }
 
 fn required(value: Option<String>, name: &str) -> Result<String, String> {
@@ -583,21 +643,18 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             Ok(json!({"ok": true}))
         }
         "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
-            let entries = command.entries.as_ref().map(Vec::as_slice).unwrap_or(&[]);
+            let entries = command_entries(&command)?;
             if entries.is_empty()
                 && command.key.as_ref().filter(|value| !value.is_empty()).is_none()
             {
                 return Err("missing entries".to_string());
             }
-            for entry in entries {
+            for entry in &entries {
                 client
                     .hset(
-                        &entry.key,
-                        &entry.field,
-                        entry
-                            .value
-                            .as_deref()
-                            .ok_or_else(|| "matrixark batch append entry missing value".to_string())?,
+                        entry.key,
+                        entry.field,
+                        entry.value,
                     )
                     .map_err(|err| err.to_string())?;
             }
@@ -612,16 +669,16 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             Ok(json!({"ok": true, "written": written, "append_api": command.op}))
         }
         "batch_hget" => {
-            let entries = command
-                .entries
-                .as_ref()
-                .ok_or_else(|| "missing entries".to_string())?;
+            let entries = command_entries(&command)?;
+            if entries.is_empty() {
+                return Err("missing entries".to_string());
+            }
             let mut reads = Vec::with_capacity(entries.len());
-            for entry in entries {
+            for entry in &entries {
                 let value = client
-                    .hget(&entry.key, &entry.field)
+                    .hget(entry.key, entry.field)
                     .map_err(|err| err.to_string())?;
-                reads.push(json!({"key": &entry.key, "field": &entry.field, "value": value}));
+                reads.push(json!({"key": entry.key, "field": entry.field, "value": value}));
             }
             Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
         }
