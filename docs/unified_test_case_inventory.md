@@ -76,15 +76,15 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 146
-total steps: 308
-executable shared behavior cases: 146
-executable shared behavior steps: 308
-C++ existing-test parity surface cases: 96
-C++ existing-test parity surface steps: 103
+total cases: 163
+total steps: 325
+executable shared behavior cases: 163
+executable shared behavior steps: 325
+C++ existing-test/static parity surfaces: 185
+C++ adapter coverage families: 9
 C++ required source/test/harness paths: 184 unique paths
-required command kinds: 66
-required response kinds: 19
+required command kinds: 64
+required response kinds: 20
 ```
 
 The target is no duplicated Rust-only and C++-only tests for product behavior. Product behavior
@@ -101,7 +101,7 @@ Current grandfathered Rust test dispositions:
 
 | Disposition | Count |
 | --- | ---: |
-| `move_to_shared` | 533 |
+| `move_to_shared` | 512 |
 | `rust_internal` | 7 |
 | `cpp_out_of_scope` | 0 |
 | `duplicate/remove` | 0 |
@@ -119,7 +119,11 @@ model-layout-aware compaction policy evidence for string, hash, set, timestamped
 context model families, including stale-page and tombstone-density fields.
 `storage_merged_dump_load_lifecycle` covers the merged dump/load policy evidence:
 multi-slot source manifests, rollback marker evidence, load-version handoff, and stale
-object/page conflict preflight reports.
+object/page conflict preflight reports. The storage family also now includes focused
+C++/Rust shared cases for object-manager cold/hot reload, PageAddress disk/cache
+fallback, tombstone compaction, stale-page density compaction, merged dump/load restart
+interruption, GC plus eviction under cold reads, and Risk/Context page-backed restart
+parity.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
@@ -191,6 +195,13 @@ C++ execution should progressively cover every executable case.
 | `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, and latency samples are recorded. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
+| `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after memory eviction and restart. |
+| `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
+| `storage_tombstone_compaction` | Rust verifies tombstoned object reporting and model-layout compaction policy evidence. |
+| `storage_stale_page_density_compaction` | Rust verifies stale page estimate and density evidence for compaction decisions. |
+| `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers and incomplete-commit roll-forward reporting. |
+| `storage_gc_eviction_cold_reads` | Rust verifies StorageManager GC plus eviction preserves cold reads through page-store fallback. |
+| `storage_risk_context_page_backed_parity` | Rust verifies Risk and Context writes are page-backed in the slot-first index and survive restart. |
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
 | `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
