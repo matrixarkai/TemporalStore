@@ -15,15 +15,11 @@ if [[ -n "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
   RUST_CLI="$MATRIXARK_TEMPORALSTORE_RUST_CLI"
 else
   RUST_CLI=""
-  for candidate in \
-    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
-    "${ROOT}/target/release/matrixark_rust_proxy" \
-    "${ROOT}/target/debug/matrixark_rust_proxy" \
-    "${ROOT}/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy" \
-    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log" \
-    "${ROOT}/target/release/matrixark_record_log" \
-    "${ROOT}/target/debug/matrixark_record_log" \
-    "${ROOT}/sdk/rust/temporalstore/target/debug/matrixark_record_log"; do
+	  for candidate in \
+	    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
+	    "${ROOT}/target/release/matrixark_rust_proxy" \
+	    "${ROOT}/target/debug/matrixark_rust_proxy" \
+	    "${ROOT}/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy"; do
     if [[ -x "$candidate" ]]; then
       RUST_CLI="$candidate"
       break

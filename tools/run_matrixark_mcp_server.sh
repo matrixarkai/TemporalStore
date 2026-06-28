@@ -6,7 +6,8 @@ CPP_REPO="${MATRIXARK_CPP_TEMPORALSTORE_REPO:-}"
 SERVER="${MATRIXARK_MCP_SERVER:-${CPP_REPO:+$CPP_REPO/tools/matrixark_mcp_server.py}}"
 BACKEND="${MATRIXARK_MCP_BACKEND:-temporalstore-rust}"
 TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/temporalstore-matrixark-mcp-target}"
-RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$TARGET_DIR/debug/matrixark_rust_proxy}"
+RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$TARGET_DIR/debug/matrixark_rust_proxy}"
+RUST_DIRECT_SDK="${MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK:-$TARGET_DIR/debug/matrixark_rust_direct_sdk}"
 
 # Supported shared-server backends: local, temporalstore-direct, temporalstore-rust,
 # temporalstore-rust-direct.
@@ -18,12 +19,19 @@ if [[ -z "$SERVER" || ! -f "$SERVER" ]]; then
 fi
 
 cd "$ROOT"
-if [[ "$BACKEND" == "temporalstore-rust" || "$BACKEND" == "temporalstore-rust-direct" ]] && [[ ! -x "$RUST_CLI" ]]; then
+if [[ "$BACKEND" == "temporalstore-rust" ]] && [[ ! -x "$RUST_PROXY" ]]; then
   CARGO_TARGET_DIR="$TARGET_DIR" cargo build -p temporalstore-rust --bin matrixark_rust_proxy
 fi
+if [[ "$BACKEND" == "temporalstore-rust-direct" ]] && [[ ! -x "$RUST_DIRECT_SDK" ]]; then
+  CARGO_TARGET_DIR="$TARGET_DIR" cargo build -p temporalstore-rust --bin matrixark_rust_direct_sdk
+fi
 
-if [[ "$BACKEND" == "temporalstore-rust" || "$BACKEND" == "temporalstore-rust-direct" ]]; then
-  export MATRIXARK_TEMPORALSTORE_RUST_CLI="$RUST_CLI"
+if [[ "$BACKEND" == "temporalstore-rust" ]]; then
+  export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$RUST_PROXY"
+  export MATRIXARK_TEMPORALSTORE_RUST_CLI="$RUST_PROXY"
+elif [[ "$BACKEND" == "temporalstore-rust-direct" ]]; then
+  export MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK="$RUST_DIRECT_SDK"
+  export MATRIXARK_TEMPORALSTORE_RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$RUST_PROXY}"
 fi
 
 exec python3 "$SERVER" --backend "$BACKEND" "$@"

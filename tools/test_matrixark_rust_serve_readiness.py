@@ -22,7 +22,7 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
     def test_single_shot_mode_is_debug_only(self) -> None:
         cli_path = self._compat_cli_path()
         if not cli_path.exists():
-            self.skipTest(f"Rust matrixark_record_log binary is not built: {cli_path}")
+            self.skipTest(f"Rust matrixark_rust_proxy binary is not built: {cli_path}")
         completed = subprocess.run(
             [str(cli_path)],
             input='{"op":"health","namespace":"deploy_ns","table":"deploy_table"}\n',
@@ -31,12 +31,12 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
             timeout=5,
         )
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("unsupported op health", completed.stdout + completed.stderr)
+        self.assertIn("single-shot mode is debug-only", completed.stdout + completed.stderr)
 
     def test_rust_serve_mode_round_trips_readiness_hset_and_hget(self) -> None:
         cli_path = self._cli_path()
         if not cli_path.exists():
-            self.skipTest(f"Rust matrixark_record_log binary is not built: {cli_path}")
+            self.skipTest(f"Rust matrixark_rust_proxy binary is not built: {cli_path}")
 
         with tempfile.TemporaryDirectory(prefix="matrixark-rust-serve-readiness-") as tmpdir:
             old_root = os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT")

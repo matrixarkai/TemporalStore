@@ -15,15 +15,11 @@ export MATRIXARK_HOOK_FAIL_OPEN="${MATRIXARK_HOOK_FAIL_OPEN:-1}"
 export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
-  for candidate in \
-    "$ROOT/target/release/matrixark_rust_proxy" \
-    "$ROOT/target/debug/matrixark_rust_proxy" \
-    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
-    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy" \
-    "$ROOT/target/release/matrixark_record_log" \
-    "$ROOT/target/debug/matrixark_record_log" \
-    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
-    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_record_log"; do
+	  for candidate in \
+	    "$ROOT/target/release/matrixark_rust_proxy" \
+	    "$ROOT/target/debug/matrixark_rust_proxy" \
+	    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
+	    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy"; do
     if [[ -x "$candidate" ]]; then
       export MATRIXARK_TEMPORALSTORE_RUST_CLI="$candidate"
       break

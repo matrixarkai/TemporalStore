@@ -21,6 +21,8 @@ RUST_SOURCES = [
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "server.rs",
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "metaserver.rs",
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "ops_scale_readiness_harness.rs",
+    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_proxy.rs",
+    ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_rust_direct_sdk.rs",
     ROOT / "crates" / "temporalstore-rust" / "src" / "bin" / "matrixark_record_log.rs",
 ]
 

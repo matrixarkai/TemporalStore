@@ -19,7 +19,8 @@ Latest AWS/test state:
 
 - Add Rust direct SDK parity as an embedded/local optimization after the Rust proxy path is stable.
   - Current production decision: use the long-lived Rust proxy, now exposed as `matrixark_rust_proxy --serve`, for MCP, benchmark, and production MatrixArk paths.
-  - New configuration should use `MATRIXARK_TEMPORALSTORE_RUST_PROXY` / `--rust-proxy` and point at `matrixark_rust_proxy`; `matrixark_record_log`, `MATRIXARK_TEMPORALSTORE_RUST_CLI`, and `--rust-cli` stay as compatibility aliases and debug wording only.
+  - Rust direct SDK parity is exposed as `matrixark_rust_direct_sdk --serve` and `MATRIXARK_TEMPORALSTORE_RUST_DIRECT_SDK` / `--rust-direct-sdk` for C++ direct SDK comparison.
+  - New proxy configuration should use `MATRIXARK_TEMPORALSTORE_RUST_PROXY` / `--rust-proxy` and point at `matrixark_rust_proxy`; `matrixark_record_log`, `MATRIXARK_TEMPORALSTORE_RUST_CLI`, and `--rust-cli` stay as compatibility aliases and debug wording only.
   - Direct SDK parity target: expose an in-process Rust SDK/binding with the same contract as C++ direct SDK for local embedded deployments, while keeping proxy/client mode as the operational default for isolation, health/readiness, metrics, backpressure, graceful restart, and deployment consistency.
   - Shared tests must prove proxy path first, then direct SDK path as an additional mode, not a replacement for production proxy mode.
 
