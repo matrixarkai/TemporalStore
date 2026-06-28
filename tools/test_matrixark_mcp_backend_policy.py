@@ -3148,6 +3148,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         repo = Path(__file__).resolve().parents[1]
         source = (repo / "sdk/rust/temporalstore/src/bin/matrixark_rust_proxy.rs").read_text()
         implementation = (repo / "sdk/rust/temporalstore/src/bin/matrixark_record_log.rs").read_text()
+        crate_implementation = (repo / "crates/temporalstore-rust/src/bin/matrixark_record_log.rs").read_text()
 
         self.assertIn("Production-facing alias for the MatrixArk Rust proxy", source)
         self.assertIn('"batch_hset" =>', implementation)
@@ -3155,9 +3156,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn('"batch_hset" | "matrixark_append_records"', implementation)
         self.assertIn("client\n                .matrixark_batch_append_records", implementation)
         self.assertIn('"native_append": true', implementation)
+        self.assertIn("entries_compact", implementation)
+        self.assertIn("expanded_hash_entries", implementation)
 
         self.assertIn('"scan_hash" =>', implementation)
         self.assertIn("client.hgetall", implementation)
+
+        execute_start = crate_implementation.index("fn execute_record_log_request")
+        crate_start = crate_implementation.index(
+            '"matrixark_append_records" | "matrixark_batch_append_records" =>',
+            execute_start,
+        )
+        crate_end = crate_implementation.index('"batch_hget" =>', crate_start)
+        crate_append_body = crate_implementation[crate_start:crate_end]
+        self.assertIn("execute_empty_batch_runtime", crate_append_body)
+        self.assertIn("BatchExecuteRequest", crate_implementation)
+        self.assertIn("rust_proxy_matrixark_batch_runtime_default", crate_append_body)
+        self.assertIn("matrixark_batch_uses_forced_sync_durable_writes", crate_append_body)
+        self.assertNotIn("execute_empty(&engine", crate_append_body)
 
     def test_rust_direct_sdk_bridge_has_production_binary(self) -> None:
         repo = Path(__file__).resolve().parents[1]
@@ -3298,6 +3314,7 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
 
         self.assertEqual(metrics["gateway_mode"], "rust_proxy")
         self.assertEqual(metrics["proxy_mode"], "rust_proxy_stdio")
+        self.assertTrue(metrics["multiplexed_proxy_process"])
         self.assertEqual(metrics["sdk_mode"], "proxy")
         self.assertFalse(metrics["process_per_operation_enabled"])
         self.assertEqual(metrics["single_shot_mode"], "debug_only")
@@ -3309,7 +3326,8 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertTrue(metrics["supports_native_pack_assembly"])
         self.assertEqual(metrics["native_pack_assembly_path"], "rust_proxy_matrixark_retrieve_context_pack")
         self.assertFalse(metrics["requires_c_sdk_hgetall_for_prefix_scan"])
-        self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_append_records")
+        self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_runtime_default")
+        self.assertFalse(metrics["matrixark_batch_uses_forced_sync_durable_writes"])
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
         self.assertFalse(metrics["matrixark_append_uses_per_record_hset"])
         self.assertFalse(metrics["matrixark_append_uses_generic_batch_hset_fallback"])
