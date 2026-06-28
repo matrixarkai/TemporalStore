@@ -951,7 +951,7 @@ fn parse_cross_session_policy(
     let mut max_candidates = config
         .and_then(|cfg| cfg.get("max_candidates"))
         .and_then(Value::as_u64)
-        .unwrap_or(256);
+        .unwrap_or(64);
     let mut min_entity_bridge_refs = config
         .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
         .and_then(Value::as_u64)
@@ -1379,8 +1379,21 @@ fn retrieve_context_pack_native(
         .to_string();
     let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
         .and_then(Value::as_u64)
-        .unwrap_or(48)
+        .unwrap_or(24)
         .max(1);
+    let max_global_candidates = json_field(&request, &["ranking", "max_global_candidates"])
+        .and_then(Value::as_u64)
+        .unwrap_or(512)
+        .max(1);
+    let min_similarity_score = json_field(&request, &["ranking", "min_similarity_score"])
+        .and_then(Value::as_f64)
+        .unwrap_or(0.20)
+        .clamp(0.0, 1.0);
+    let budget_fill_policy = json_field(&request, &["ranking", "budget_fill_policy"])
+        .and_then(Value::as_str)
+        .filter(|policy| *policy == "quality_first" || *policy == "force_fill")
+        .unwrap_or("quality_first")
+        .to_string();
     let mut scan_command = command.clone();
     scan_command.scope = request
         .get("scope")
@@ -1478,6 +1491,7 @@ fn retrieve_context_pack_native(
             score += type_priority_boost(&record, &context_class, &question_type);
             (score, record, session_continuity, continuity_boost_value)
         })
+        .filter(|(score, _, _, _)| *score >= min_similarity_score)
         .collect();
     scored.sort_by(|left, right| {
         right
@@ -1485,6 +1499,9 @@ fn retrieve_context_pack_native(
             .partial_cmp(&left.0)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    if scored.len() > max_global_candidates as usize {
+        scored.truncate(max_global_candidates as usize);
+    }
     let mut selected = Vec::new();
     let mut selected_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_nodes: HashSet<u64> = HashSet::new();
@@ -1613,6 +1630,13 @@ fn retrieve_context_pack_native(
                 "backend_role": "scan_filter_score_pack"
             },
             "scan_stats": scan_stats,
+            "ranking": {
+                "min_similarity_score": min_similarity_score,
+                "max_global_candidates": max_global_candidates,
+                "max_selected_refs": max_refs,
+                "budget_fill_policy": budget_fill_policy,
+                "quality_first_budget_underfill_allowed": budget_fill_policy == "quality_first"
+            },
             "session_continuity": {
                 "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("prefer"),
                 "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",

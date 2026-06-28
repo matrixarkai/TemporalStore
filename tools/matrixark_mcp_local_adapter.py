@@ -4356,7 +4356,7 @@ class MatrixArkLocalAdapter:
                 budget_source=budget_source,
             )
 
-        top_k_per_layer = integer_arg(ranking, "top_k_per_layer", 8, minimum=1)
+        top_k_per_layer = integer_arg(ranking, "top_k_per_layer", DEFAULT_TOP_K_PER_LAYER, minimum=1)
         max_children_scored_per_parent = bounded_max_children_scored_per_parent(
             integer_arg(
                 ranking,
@@ -4366,8 +4366,13 @@ class MatrixArkLocalAdapter:
             )
         )
         hard_max_children_scored_per_parent = max(1, HARD_MAX_CHILDREN_SCORED_PER_PARENT)
-        max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", 256, minimum=1)
-        max_selected_refs = integer_arg(ranking, "max_selected_refs", max(8, min(256, max_context_tokens)), minimum=1)
+        max_candidates_per_node = integer_arg(ranking, "max_candidates_per_node", DEFAULT_MAX_CANDIDATES_PER_NODE, minimum=1)
+        max_selected_refs = integer_arg(ranking, "max_selected_refs", DEFAULT_MAX_SELECTED_REFS, minimum=1)
+        max_global_candidates = integer_arg(ranking, "max_global_candidates", DEFAULT_MAX_GLOBAL_CANDIDATES, minimum=1)
+        min_similarity_score = float_arg(ranking, "min_similarity_score", DEFAULT_RETRIEVAL_MIN_SCORE, minimum=0.0, maximum=1.0)
+        budget_fill_policy = str(ranking.get("budget_fill_policy", DEFAULT_BUDGET_FILL_POLICY) or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
+        if budget_fill_policy not in {"quality_first", "force_fill"}:
+            raise MatrixArkError("budget_fill_policy must be quality_first or force_fill")
         max_raw_events_per_node = integer_arg(ranking, "max_raw_events_per_node", TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE, minimum=1)
         traversal = tree_first_traversal(
             node_scores,
@@ -5036,8 +5041,8 @@ class MatrixArkLocalAdapter:
         stage_started_perf = time.perf_counter()
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
-        selected_ref_cap = max(1, int(max_selected_refs or max(8, min(256, max_context_tokens))))
-        rerank_candidate_limit = max(selected_ref_cap, max(8, min(256, max_context_tokens)))
+        selected_ref_cap = max(1, int(max_selected_refs or DEFAULT_MAX_SELECTED_REFS))
+        rerank_candidate_limit = max(selected_ref_cap, max_global_candidates)
         first_stage_candidate_count = len(primary_matches) + len(auxiliary_matches)
         rerank_policy = {
             "enabled": True,
@@ -5055,6 +5060,8 @@ class MatrixArkLocalAdapter:
             ],
             "fallback": "weighted_recall",
             "heavy_rerank_enabled": False,
+            "min_similarity_score": min_similarity_score,
+            "budget_fill_policy": budget_fill_policy,
         }
         selected, used_context_tokens, dropped_over_budget = select_token_budgeted_refs(
             primary_matches,
@@ -5064,6 +5071,9 @@ class MatrixArkLocalAdapter:
             question_type=question_type,
             reserved_tokens=0,
             max_selected_refs=max_selected_refs,
+            min_score=min_similarity_score,
+            max_global_candidates=max_global_candidates,
+            budget_fill_policy=budget_fill_policy,
             duplicate_text_hashes=local_budget["text_hashes"],
             deadline_exceeded=deadline_exceeded,
             deadline_reason="deadline_during_context_pack",
@@ -5148,6 +5158,13 @@ class MatrixArkLocalAdapter:
                 },
                 "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
+                "ranking": {
+                    "min_similarity_score": min_similarity_score,
+                    "max_global_candidates": max_global_candidates,
+                    "max_selected_refs": max_selected_refs,
+                    "budget_fill_policy": budget_fill_policy,
+                    "quality_first_budget_underfill_allowed": budget_fill_policy == "quality_first",
+                },
                 "tree_traversal": {
                     "enabled": True,
                     "summary_embeddings": ["node_l0", "node_l1"],

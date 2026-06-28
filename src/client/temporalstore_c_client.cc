@@ -392,7 +392,7 @@ struct CrossSessionPolicy {
     uint64_t budget_tokens = 0;
     uint64_t max_budget_tokens = 4096;
     uint64_t max_sessions = 8;
-    uint64_t max_candidates = 256;
+    uint64_t max_candidates = 64;
     uint64_t min_entity_bridge_refs = 3;
     uint64_t parallelism = 4;
 };
@@ -881,9 +881,22 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         remote_budget = JsonUintMember(*local_budget, "remote_budget_tokens", remote_budget);
     }
     CrossSessionPolicy cross_policy = ParseCrossSessionPolicy(request, scope, remote_budget, question_type);
-    uint64_t max_refs = 48;
+    uint64_t max_refs = 24;
+    uint64_t max_global_candidates = 512;
+    double min_similarity_score = 0.20;
+    std::string budget_fill_policy = "quality_first";
     if (const rapidjson::Value* ranking = JsonObjectMember(request, "ranking")) {
         max_refs = std::max<uint64_t>(1, JsonUintMember(*ranking, "max_selected_refs", max_refs));
+        max_global_candidates = std::max<uint64_t>(1, JsonUintMember(*ranking, "max_global_candidates", max_global_candidates));
+        min_similarity_score = std::max(0.0, std::min(1.0, JsonDoubleMember(*ranking, "min_similarity_score", min_similarity_score)));
+        if (const rapidjson::Value* policy = JsonObjectMember(*ranking, "budget_fill_policy")) {
+            if (policy->IsString()) {
+                budget_fill_policy = policy->GetString();
+            }
+        }
+        if (budget_fill_policy != "quality_first" && budget_fill_policy != "force_fill") {
+            budget_fill_policy = "quality_first";
+        }
     }
     struct ScoredRecord { double score; uint64_t tokens; std::string json; std::string session_continuity; double continuity_boost; };
     std::vector<ScoredRecord> scored;
@@ -933,9 +946,14 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         double continuity_boost = ContinuityBoost(record_type, context_class, continuity);
         score += continuity_boost;
         score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
-        scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost});
+        if (score >= min_similarity_score) {
+            scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost});
+        }
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
+    if (scored.size() > max_global_candidates) {
+        scored.resize(max_global_candidates);
+    }
 
     rapidjson::Document out;
     out.SetObject();
@@ -1087,6 +1105,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
+    rapidjson::Value ranking_policy(rapidjson::kObjectType);
+    ranking_policy.AddMember("min_similarity_score", min_similarity_score, alloc);
+    ranking_policy.AddMember("max_global_candidates", max_global_candidates, alloc);
+    ranking_policy.AddMember("max_selected_refs", max_refs, alloc);
+    ranking_policy.AddMember("budget_fill_policy", rapidjson::Value(budget_fill_policy.c_str(), alloc), alloc);
+    ranking_policy.AddMember("quality_first_budget_underfill_allowed", budget_fill_policy == "quality_first", alloc);
+    recall.AddMember("ranking", ranking_policy, alloc);
     rapidjson::Value session_policy(rapidjson::kObjectType);
     session_policy.AddMember("mode", scope == nullptr ? rapidjson::Value("unscoped", alloc) : rapidjson::Value(SessionScopeMode(*scope).c_str(), alloc), alloc);
     session_policy.AddMember("policy", "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope", alloc);

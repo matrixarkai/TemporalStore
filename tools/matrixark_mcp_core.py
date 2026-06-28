@@ -116,6 +116,12 @@ DEFAULT_TIME_DECAY_TOLERANCE_MS = 24 * 60 * 60 * 1000
 DEFAULT_TIME_DECAY_HALFLIFE_MS = 7 * 24 * 60 * 60 * 1000
 DEFAULT_TIME_WEIGHT = 0.18
 DEFAULT_BUSINESS_WEIGHT = 0.22
+DEFAULT_RETRIEVAL_MIN_SCORE = float(os.environ.get("MATRIXARK_RETRIEVAL_MIN_SCORE", "0.20"))
+DEFAULT_TOP_K_PER_LAYER = int(os.environ.get("MATRIXARK_TOP_K_PER_LAYER", "8"))
+DEFAULT_MAX_CANDIDATES_PER_NODE = int(os.environ.get("MATRIXARK_MAX_CANDIDATES_PER_NODE", "64"))
+DEFAULT_MAX_GLOBAL_CANDIDATES = int(os.environ.get("MATRIXARK_MAX_GLOBAL_CANDIDATES", "512"))
+DEFAULT_MAX_SELECTED_REFS = int(os.environ.get("MATRIXARK_MAX_SELECTED_REFS", "24"))
+DEFAULT_BUDGET_FILL_POLICY = os.environ.get("MATRIXARK_BUDGET_FILL_POLICY", "quality_first").strip().lower()
 TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MAX_RAW_EVENTS_PER_NODE", "256"))
 TIME_COMPRESSION_WINDOW_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_WINDOW_EVENTS", "64"))
 TIME_COMPRESSION_MIN_EVENTS = int(os.environ.get("MATRIXARK_TIME_COMPRESSION_MIN_EVENTS", "8"))
@@ -3670,7 +3676,7 @@ def build_cross_session_policy(args: Json, ranking: Json, *, question_type: str,
     budget_tokens = integer_arg(config, "budget_tokens", computed_budget, minimum=0) if "budget_tokens" in config else computed_budget
     budget_tokens = min(remote_budget_tokens, budget_tokens, max_budget_tokens if max_budget_tokens > 0 else remote_budget_tokens)
     max_sessions = integer_arg(config, "max_sessions", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_SESSIONS", "8")), minimum=0)
-    max_candidates = integer_arg(config, "max_candidates", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "256")), minimum=0)
+    max_candidates = integer_arg(config, "max_candidates", int(os.environ.get("MATRIXARK_CROSS_SESSION_MAX_CANDIDATES", "64")), minimum=0)
     min_entity_bridge_refs = integer_arg(config, "min_entity_bridge_refs", 3, minimum=0)
     parallelism = integer_arg(config, "parallelism", int(os.environ.get("MATRIXARK_CROSS_SESSION_PARALLELISM", "4")), minimum=1)
     return {
@@ -4222,6 +4228,9 @@ def select_token_budgeted_refs(
     question_type: str = "fact",
     reserved_tokens: int = 0,
     max_selected_refs: int | None = None,
+    min_score: float = DEFAULT_RETRIEVAL_MIN_SCORE,
+    max_global_candidates: int | None = None,
+    budget_fill_policy: str = DEFAULT_BUDGET_FILL_POLICY,
     duplicate_text_hashes: set[int] | None = None,
     deadline_exceeded: Callable[[], bool] | None = None,
     deadline_reason: str = "deadline_during_pack",
@@ -4229,8 +4238,13 @@ def select_token_budgeted_refs(
 ) -> tuple[list[Json], int, Json]:
     duplicate_text_hashes = duplicate_text_hashes or set()
     remote_budget = max(0, max_context_tokens - max(0, reserved_tokens))
-    selected_ref_cap = max(1, int(max_selected_refs or max(8, min(256, max_context_tokens))))
-    candidate_pool_limit = max(selected_ref_cap, max(8, min(256, max_context_tokens)))
+    selected_ref_cap = max(1, int(max_selected_refs or DEFAULT_MAX_SELECTED_REFS))
+    candidate_pool_limit = max(
+        selected_ref_cap,
+        max(1, int(max_global_candidates or DEFAULT_MAX_GLOBAL_CANDIDATES)),
+    )
+    min_score = max(0.0, min(1.0, float(min_score)))
+    budget_fill_policy = (budget_fill_policy or DEFAULT_BUDGET_FILL_POLICY).strip().lower()
     candidates = merge_ranked_paths(
         primary,
         auxiliary,
@@ -4301,6 +4315,8 @@ def select_token_budgeted_refs(
         "refs": [],
         "deadline_exceeded": False,
         "deadline_reason": "",
+        "min_score": min_score,
+        "budget_fill_policy": budget_fill_policy,
     }
     seen_text_hashes: set[int] = set()
     for index, candidate in enumerate(candidates):
@@ -4335,7 +4351,7 @@ def select_token_budgeted_refs(
             dropped["estimated_tokens"]["duplicate"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="duplicate", token_estimate=ref_tokens)
             continue
-        if float(candidate.get("score", 0.0)) < 0.04:
+        if float(candidate.get("score", 0.0)) < min_score:
             dropped["low_score"] += 1
             dropped["estimated_tokens"]["low_score"] += ref_tokens
             record_dropped_candidate(dropped, candidate, reason="low_score", token_estimate=ref_tokens)
@@ -4393,7 +4409,7 @@ def select_token_budgeted_refs(
         "selected_session_count": len(selected_cross_sessions),
         "entity_bridge_selected_ref_count": entity_bridge_selected_ref_count,
     }
-    if not selected and candidates and remote_budget > 0:
+    if not selected and candidates and remote_budget > 0 and budget_fill_policy != "quality_first":
         first = next(
             (
                 candidate
