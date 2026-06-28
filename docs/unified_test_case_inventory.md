@@ -113,10 +113,12 @@ storage/cache recovery cases and Context pipeline model cases. The storage famil
 including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` packed-size
 evidence while keeping C++ execution as a shared-corpus adapter target. The
 `storage_object_manager_slotstore_runtime_authority` case now verifies the named
-ObjectManager/SlotStore runtime authority modules against the same physical index. It also includes
+ObjectManager/SlotStore runtime authority modules against the same physical index, including
+per-object and per-slot dirty/deleted/loading/in-memory flags, object IDs, page refs,
+dirty generations, TTL metadata, and runtime rows. It also includes
 `storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
-across single-page object, multi-object, multi-page object, delete, compaction, slot
-dump/load, and restart. `storage_model_layout_compaction_policies` covers
+across single-page object, multi-object, single-object delete metadata, multi-page object,
+compaction, slot dump/load, and restart. `storage_model_layout_compaction_policies` covers
 model-layout-aware compaction policy evidence for string, hash, set, timestamped,
 context, and Risk model families, including object-page packing, cold-page rewrite,
 stale-page density, tombstone-density, and index rewrite fields.
@@ -200,7 +202,8 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after memory eviction and restart. |
-| `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index. |
+| `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index, including live/dirty/deleted/loading/in-memory rows, object IDs, page refs, dirty generations, and TTL metadata. |
+| `storage_slot_layout_transitions` | Rust verifies C++-style SlotStore layout transitions for single-object, single-page-object, multi-object, multi-page-object, compaction, dump/load, and restart. |
 | `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
 | `storage_tombstone_compaction` | Rust verifies tombstoned object reporting plus model-layout tombstone-density and rewrite-action evidence. |
 | `storage_stale_page_density_compaction` | Rust verifies stale page estimate, density evidence, cold-page rewrite, object-page packing, and rewritten index refs for compaction decisions. |
