@@ -805,9 +805,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
         serving["scope_key"] = scope_key
     serving.pop("scope", None)
 
-    node_hash = serving.get("node_hash")
-    if node_hash is not None:
-        serving.setdefault("node_id", node_hash)
+    serving.pop("node_id", None)
     if record_type in NODE_PATH_HEAVY_RECORD_TYPES:
         serving.pop("node_path", None)
     serving = attach_context_placement(serving, scope_key=scope_key, node_hash=node_hash)
@@ -850,7 +848,6 @@ def materialize_serving_records(record: Json) -> list[Json]:
         "ref_type": ref_type,
         "ref_hash": ref_hash,
         "node_hash": record.get("node_hash"),
-        "node_id": record.get("node_hash"),
         "node_path": record.get("node_path", []),
         "scope_key": scope_key,
         "debug_payload": debug_payload,
@@ -4875,6 +4872,7 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
     rerank = recall_policy.get("rerank") if isinstance(recall_policy.get("rerank"), dict) else {}
     hard_deadline = recall_policy.get("hard_deadline") if isinstance(recall_policy.get("hard_deadline"), dict) else {}
     session = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
+    storage_options = recall_policy.get("storage_options") if isinstance(recall_policy.get("storage_options"), dict) else {}
     compact: Json = {}
     query_plan = recall_policy.get("query_plan")
     if isinstance(query_plan, dict):
@@ -4914,6 +4912,12 @@ def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
             field: session.get(field)
             for field in ["mode", "same_session_selected_ref_count", "cross_session_selected_ref_count", "entity_bridge_selected_ref_count"]
             if session.get(field) not in (None, "", [], {})
+        }
+    if storage_options:
+        compact["storage_route"] = {
+            field: storage_options.get(field)
+            for field in ["route", "storage_family", "write_mode", "durability_result", "background_write"]
+            if storage_options.get(field) not in (None, "", [], {})
         }
     if hard_deadline:
         compact["deadline"] = {
