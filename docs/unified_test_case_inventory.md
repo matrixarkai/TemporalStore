@@ -76,10 +76,10 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 171
-total steps: 333
-executable shared behavior cases: 171
-executable shared behavior steps: 333
+total cases: 172
+total steps: 334
+executable shared behavior cases: 172
+executable shared behavior steps: 334
 C++ existing-test/static parity surfaces: 194
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
@@ -124,8 +124,9 @@ multi-slot source manifests, rollback marker evidence, load-version handoff, and
 object/page conflict preflight reports. The storage family also now includes focused
 C++/Rust shared cases for object-manager cold/hot reload, PageAddress disk/cache
 fallback, tombstone compaction, stale-page density compaction, merged dump/load restart
-interruption, GC plus eviction under cold reads, and Risk/Context page-backed restart
-parity.
+interruption, GC plus eviction under cold reads, continuous StorageManager background
+runtime with jitter/backoff/pause/resume/per-phase flags/bounded work, and Risk/Context
+page-backed restart parity.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
@@ -204,6 +205,7 @@ C++ execution should progressively cover every executable case.
 | `storage_stale_page_density_compaction` | Rust verifies stale page estimate and density evidence for compaction decisions. |
 | `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers and incomplete-commit roll-forward reporting. |
 | `storage_gc_eviction_cold_reads` | Rust verifies StorageManager GC plus eviction preserves cold reads through page-store fallback. |
+| `storage_manager_continuous_background_runtime` | Rust verifies stoppable continuous StorageManager runtime with jitter, backoff, pause/resume, per-phase enable flags, and bounded work per round. |
 | `storage_risk_context_page_backed_parity` | Rust verifies Risk and Context writes are page-backed in the slot-first index and survive restart. |
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
 | `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |

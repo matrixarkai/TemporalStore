@@ -2005,6 +2005,154 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
     assert_eq!(runtime.stats().rejected_background_total, 0);
 }
 
+// shared-corpus: storage_manager_continuous_background_runtime
+#[test]
+fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags() {
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        256,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let runtime = DataNodeRuntime::new(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 1,
+            max_queue_depth: 8,
+            max_background_queue_depth: 2,
+        },
+    );
+    assert!(
+        runtime
+            .load_shard_with(crate::control::LoadShardRequest {
+                shard_id: 8,
+                table_name: "storage-manager-runtime".to_string(),
+                shard_uri: "local://storage-manager-runtime/8".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 16_383,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            })
+            .status
+            .ok
+    );
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringSet {
+            key: "runtime-live".to_string(),
+            value: b"value".to_vec(),
+        },
+    });
+
+    let manager = runtime.start_storage_manager_runtime(StorageManagerRuntimeOptions {
+        interval_ms: 5,
+        jitter_percent: 50,
+        initial_backoff_ms: 3,
+        max_backoff_ms: 40,
+        request: StorageManagerCycleRequest {
+            shard_id: 8,
+            max_dump_slots_per_round: 3,
+            enable_prepare: true,
+            enable_oplog_reclaim: true,
+            enable_expire: false,
+            enable_evict: true,
+            enable_page_reclaim: true,
+            enable_page_compaction: false,
+            enable_index_gc: true,
+            warm_cache: true,
+            ..StorageManagerCycleRequest::default()
+        },
+        controller: RequestController { timeout_ms: 30_000 },
+    });
+
+    wait_until(Duration::from_secs(5), || {
+        manager.report().rounds_submitted >= 1 && runtime.stats().storage_manager_runs >= 1
+    });
+    let running = manager.report();
+    assert!(running.running);
+    assert!(!running.paused);
+    assert!(!running.stopped);
+    assert_eq!(running.interval_ms, 5);
+    assert_eq!(running.jitter_percent, 50);
+    assert!(running.last_delay_ms >= 5);
+    assert!(running.last_delay_ms <= 7);
+    assert_eq!(running.bounded_max_dump_slots_per_round, 3);
+    assert!(running.phase_prepare_enabled);
+    assert!(running.phase_wal_reclaim_enabled);
+    assert!(!running.phase_expire_enabled);
+    assert!(running.phase_evict_enabled);
+    assert!(running.phase_page_gc_enabled);
+    assert!(!running.phase_compaction_enabled);
+    assert!(running.phase_index_gc_enabled);
+    assert!(running.last_job_id.is_some());
+    assert!(running.last_status.as_ref().is_some_and(|status| status.ok));
+
+    manager.pause();
+    let paused_before = manager.report().rounds_submitted;
+    thread::sleep(Duration::from_millis(25));
+    let paused = manager.report();
+    assert!(paused.paused);
+    assert_eq!(paused.rounds_submitted, paused_before);
+    assert!(paused.rounds_skipped_paused >= 1);
+
+    manager.resume();
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringSet {
+            key: "runtime-live-2".to_string(),
+            value: b"value-2".to_vec(),
+        },
+    });
+    wait_until(Duration::from_secs(5), || {
+        manager.report().rounds_submitted > paused_before
+    });
+    assert!(!manager.report().paused);
+
+    let stopped = manager.stop();
+    assert!(!stopped.running);
+    assert!(stopped.stopped);
+    assert!(stopped.rounds_submitted >= 2);
+    assert_eq!(stopped.submit_failures, 0);
+}
+
+// shared-corpus: storage_manager_continuous_background_runtime
+#[test]
+fn storage_manager_runtime_jitter_and_backoff_are_bounded() {
+    let options = StorageManagerRuntimeOptions {
+        interval_ms: 10,
+        jitter_percent: 50,
+        initial_backoff_ms: 4,
+        max_backoff_ms: 16,
+        request: StorageManagerCycleRequest {
+            shard_id: 404,
+            max_dump_slots_per_round: 1,
+            ..StorageManagerCycleRequest::default()
+        },
+        controller: RequestController { timeout_ms: 10 },
+    };
+
+    let first_delay = storage_manager_runtime_delay_ms(&options, 1, 4);
+    assert!((10..=15).contains(&first_delay));
+    assert_eq!(storage_manager_runtime_next_backoff_ms(0, 4, 16), 4);
+    assert_eq!(storage_manager_runtime_next_backoff_ms(4, 4, 16), 8);
+    assert_eq!(storage_manager_runtime_next_backoff_ms(8, 4, 16), 16);
+    assert_eq!(storage_manager_runtime_next_backoff_ms(16, 4, 16), 16);
+
+    let report = storage_manager_runtime_initial_report(&options);
+    assert!(report.running);
+    assert_eq!(report.current_backoff_ms, 4);
+    assert_eq!(report.bounded_max_dump_slots_per_round, 1);
+    assert!(report.phase_prepare_enabled);
+    assert!(report.phase_wal_reclaim_enabled);
+    assert!(report.phase_expire_enabled);
+    assert!(report.phase_evict_enabled);
+    assert!(report.phase_page_gc_enabled);
+    assert!(report.phase_compaction_enabled);
+    assert!(report.phase_index_gc_enabled);
+}
+
 fn queued_string_set(job_id: u64, shard_id: ShardId, key: &str) -> QueuedTask {
     QueuedTask {
         job_id,
