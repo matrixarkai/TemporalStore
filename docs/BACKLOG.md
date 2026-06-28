@@ -30,6 +30,8 @@ Latest AWS/test state:
   - Hot-path rule: write once to TemporalStore; an async archiver tails the TemporalStore oplog or scans cold candidates, writes MatrixKV idempotently, optionally mirrors analytics rows to MatrixDB, verifies checksums, then writes compact `context_archive_marker` / `context_cold_ref` pointers.
   - Avoid default synchronous dual-write. Allow it only as an explicit compliance mode because it increases latency and creates cross-store partial-failure risk.
   - Retention safety: raw events/chunks become TTL eligible only after cold archive verification plus compression safety gates; recalled old records can be pinned or reinforced back to hot state.
+  - Resource chunk body storage: resource chunks can be much larger than event/entity records, so TemporalStore should not keep every full chunk body in hot memory. Store chunk metadata, hashes, citations, summaries, indexes, and embeddings in the hot serving path; move full `ResourceChunk.text` bodies to durable storage such as MatrixKV/S3/object storage with `chunk_body_uri` / `cold_ref` pointers, bounded hot cache, no-promote cold reads, and explicit prefetch only when a chunk is selected for evidence or replay.
+  - Acceptance: large PDF/CSV/repo imports should prove hot memory grows with chunk metadata/indexes, not total chunk text bytes; retrieval should score summaries/indexes/embeddings first and fetch full chunk bodies only for selected refs under token budget.
   - Backend work: add shared C++/Rust tests for archive markers, cold refs, archive watermarks, retention policies, replay fetches, checksum verification, TTL blocking, and recovery after worker restart.
 
 - Add async `ContextNode` L0/L1 summary refresh as a first-class production pipeline.
