@@ -1398,6 +1398,22 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("content_hash", compact.get("metadata", {}))
         self.assertEqual(compact["metadata"], {"unit_kind": "pdf_page", "relative_path": "docs/gpu.pdf", "page": 2})
 
+    def test_context_pack_serving_top_level_uses_compact_aliases(self) -> None:
+        compact = mcp.compact_context_pack_for_serving({
+            "context_pack_id": "pack-123",
+            "context_pack_assembly": "native_cpp_direct",
+            "context_pack_cache_hit": False,
+            "selected_refs": [],
+            "remote_context_refs": [],
+        })
+
+        self.assertEqual(compact["pack_id"], "pack-123")
+        self.assertEqual(compact["assembly"], "native_cpp_direct")
+        self.assertFalse(compact["cache_hit"])
+        self.assertNotIn("context_pack_id", compact)
+        self.assertNotIn("context_pack_assembly", compact)
+        self.assertNotIn("context_pack_cache_hit", compact)
+
     def test_replay_returns_compact_context_pack_scope_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
@@ -1427,7 +1443,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 {"record_type": "context_event", "context_pack_id": "unrelated", "event_id_hash": 7, "text": "not replayed"},
             ])
 
-            replay = adapter.replay({"context_pack_id": "pack-1"})
+            replay = adapter.replay({"pack_id": "pack-1"})
             self.assertEqual(replay["replay_payload_policy"], "compact_context_pack_scope")
             self.assertTrue(replay["events"])
             self.assertTrue(all(row.get("context_pack_id") == "pack-1" for row in replay["events"]))
@@ -2983,7 +2999,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "audit_mode": "off",
         })
 
-        self.assertEqual(pack["context_pack_id"], "native-pack-1")
+        self.assertEqual(pack["pack_id"], "native-pack-1")
+        self.assertNotIn("context_pack_id", pack)
         self.assertEqual(len(client.calls), 1)
         self.assertNotIn("query_embedding", client.calls[0]["request"])
         self.assertEqual(client.calls[0]["request"]["query"], "What did Alice approve?")
