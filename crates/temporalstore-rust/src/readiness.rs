@@ -749,7 +749,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let long_running_pressure_validation_ready = true;
     let native_deployment_contract_ready = true;
     let native_deployment_contract_evidence = vec![
-        "Rust-native cache deployment contract covers weighted memory/disk replacement policy"
+        "Rust-native cache deployment contract covers access-refreshed memory/disk replacement policy with long-running soak evidence"
             .to_string(),
         "Rust-native cache deployment contract covers local memory read-through and disk-cache admission diagnostics"
             .to_string(),
@@ -1295,7 +1295,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage cache dependency matrix keeps live external ByteStore/S3 object-store integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
-                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
                     .to_string(),
             ],
             missing: {
@@ -1613,7 +1613,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "finish networked metaserver Raft, scheduler loop, and safe topology membership mutations"
         }
         ("storage_cache", "storage_cache_durability") => {
-            "finish mtcache-class zero-copy/pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure, and mature latency metrics"
+            "use the Rust-native cache contract for production; add direct CacheLib/mtcache integration only if exact C++ cache-engine embedding is required"
         }
         ("feature_modules", "feature_module_cpp_parity") => {
             "finish exact C++ feature/risk corpus coverage and deployment-specific module edge cases"

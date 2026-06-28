@@ -2973,6 +2973,23 @@
       ]
     },
     {
+      "name": "storage_cache_replacement_policy_soak",
+      "shard_id": 7,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust-native cache replacement-policy soak proves hot and pinned blocks survive capacity churn while cold blocks churn through disk refill with latency samples.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "replacement_policy_soak_retains_hot_and_pinned_blocks"
+          },
+          "name": "rust_storage_cache_replacement_policy_soak",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_shared_store_sync_replay",
       "shard_id": 11,
       "steps": [

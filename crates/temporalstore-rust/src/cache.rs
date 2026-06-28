@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::fs::{self, File};
 use std::hash::{Hash, Hasher};
 use std::io::Write;
@@ -368,6 +368,23 @@ pub struct CachePressureValidationReport {
     pub reasons: Vec<String>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheReplacementPolicySoakReport {
+    pub iterations: usize,
+    pub hot_key_count: usize,
+    pub cold_key_count: usize,
+    pub hot_memory_survivors: usize,
+    pub cold_memory_survivors: usize,
+    pub pinned_memory_survived: bool,
+    pub observed_evictions: u64,
+    pub observed_pinned_skips: u64,
+    pub observed_disk_refills: u64,
+    pub get_latency_samples: u64,
+    pub put_latency_samples: u64,
+    pub passed: bool,
+    pub reasons: Vec<String>,
+}
+
 pub fn validate_cache_pressure_policy(
     policy: CacheTieringPolicy,
     requests: &[CacheAdmissionRequest],
@@ -543,6 +560,7 @@ impl MultiLayerCache {
             let mut inner = self.inner.write().expect("cache lock poisoned");
             if let Some(value) = inner.memory.get(key).cloned() {
                 inner.stats.memory_hits += 1;
+                inner.touch_key(key);
                 inner.record_get_latency(started);
                 return Ok(Some(value.to_vec()));
             }
@@ -581,6 +599,7 @@ impl MultiLayerCache {
         let value = inner.memory.get(key).cloned();
         if value.is_some() {
             inner.stats.memory_hits += 1;
+            inner.touch_key(key);
         } else {
             inner.stats.misses += 1;
         }
@@ -597,6 +616,7 @@ impl MultiLayerCache {
             inner.pinned.insert(key.clone());
             inner.stats.zero_copy_handle_hits = inner.stats.zero_copy_handle_hits.saturating_add(1);
             inner.stats.pin_operations = inner.stats.pin_operations.saturating_add(1);
+            inner.touch_key(key);
             inner.refresh_pin_stats();
             inner.record_get_latency(started);
             return Ok(Some(CachePinnedHandle {
@@ -926,6 +946,91 @@ impl MultiLayerCache {
         inner.stats.memory_bytes = 0;
         inner.refresh_pin_stats();
     }
+
+    pub fn replacement_policy_soak(&self, iterations: usize) -> CacheReplacementPolicySoakReport {
+        let hot_keys = (0..4)
+            .map(|idx| CacheKey::page_with_slot(7, 1, idx * 8, 8, Some(3)))
+            .collect::<Vec<_>>();
+        let pinned_key = hot_keys[0].clone();
+        for (idx, key) in hot_keys.iter().enumerate() {
+            let _ = self.put(key.clone(), vec![b'h' + idx as u8; 8]);
+        }
+        self.pin(pinned_key.clone());
+
+        let mut cold_keys = Vec::new();
+        for idx in 0..iterations {
+            for hot in &hot_keys[1..] {
+                let _ = self.get(hot);
+            }
+            let cold = CacheKey::page_with_slot(7, 2 + idx as u64, idx as u64 * 16, 8, Some(4));
+            let _ = self.put(cold.clone(), vec![b'c'; 8]);
+            cold_keys.push(cold);
+        }
+
+        let _ = self.get(&cold_keys[0]);
+        let hot_memory_survivors = hot_keys
+            .iter()
+            .filter(|key| self.get_memory(key).is_some())
+            .count();
+        let recent_cold = cold_keys
+            .iter()
+            .rev()
+            .take(hot_keys.len())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let cold_memory_survivors = cold_keys
+            .iter()
+            .filter(|key| recent_cold.contains(*key) && self.get_memory(key).is_some())
+            .count();
+        let stats = self.stats();
+        let mut report = CacheReplacementPolicySoakReport {
+            iterations,
+            hot_key_count: hot_keys.len(),
+            cold_key_count: cold_keys.len(),
+            hot_memory_survivors,
+            cold_memory_survivors,
+            pinned_memory_survived: self.get_memory(&pinned_key).is_some(),
+            observed_evictions: stats.memory_evictions,
+            observed_pinned_skips: stats.eviction_pinned_skips,
+            observed_disk_refills: stats.disk_hits,
+            get_latency_samples: stats.get_latency_samples,
+            put_latency_samples: stats.put_latency_samples,
+            ..CacheReplacementPolicySoakReport::default()
+        };
+        if report.iterations < 64 {
+            report
+                .reasons
+                .push("insufficient_soak_iterations".to_string());
+        }
+        if report.observed_evictions == 0 {
+            report
+                .reasons
+                .push("missing_eviction_observation".to_string());
+        }
+        if !report.pinned_memory_survived || report.observed_pinned_skips == 0 {
+            report.reasons.push("missing_pinned_survival".to_string());
+        }
+        if report.hot_memory_survivors < report.hot_key_count {
+            report
+                .reasons
+                .push("hot_working_set_not_retained".to_string());
+        }
+        if report.cold_memory_survivors >= report.hot_memory_survivors {
+            report
+                .reasons
+                .push("cold_set_retained_like_hot_set".to_string());
+        }
+        if report.observed_disk_refills == 0 {
+            report
+                .reasons
+                .push("missing_disk_refill_observation".to_string());
+        }
+        if report.get_latency_samples == 0 || report.put_latency_samples == 0 {
+            report.reasons.push("missing_latency_samples".to_string());
+        }
+        report.passed = report.reasons.is_empty();
+        report
+    }
 }
 
 impl Default for MultiLayerCache {
@@ -1062,6 +1167,7 @@ impl CacheInner {
         let value = Arc::<[u8]>::from(value);
         if let Some(old) = self.memory.insert(key.clone(), Arc::clone(&value)) {
             self.memory_bytes = self.memory_bytes.saturating_sub(old.len());
+            self.touch_key(&key);
         } else {
             self.order.push_back(key);
         }
@@ -1096,6 +1202,13 @@ impl CacheInner {
         self.stats.memory_bytes = self.memory_bytes as u64;
         self.refresh_pin_stats();
         true
+    }
+
+    fn touch_key(&mut self, key: &CacheKey) {
+        self.order.retain(|candidate| candidate != key);
+        if self.memory.contains_key(key) {
+            self.order.push_back(key.clone());
+        }
     }
 
     fn pinned_memory_bytes(&self) -> u64 {
@@ -1417,6 +1530,25 @@ mod tests {
         assert!(failing
             .reasons
             .contains(&"missing_eviction_observation".to_string()));
+    }
+
+    // shared-corpus: storage_cache_replacement_policy_soak
+    #[test]
+    fn replacement_policy_soak_retains_hot_and_pinned_blocks() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = MultiLayerCache::new(48, dir.path());
+
+        let report = cache.replacement_policy_soak(128);
+
+        assert!(report.passed, "{report:?}");
+        assert_eq!(report.hot_memory_survivors, report.hot_key_count);
+        assert!(report.cold_memory_survivors < report.hot_memory_survivors);
+        assert!(report.pinned_memory_survived);
+        assert!(report.observed_evictions > 0);
+        assert!(report.observed_pinned_skips > 0);
+        assert!(report.observed_disk_refills > 0);
+        assert!(report.get_latency_samples > 0);
+        assert!(report.put_latency_samples > 0);
     }
 
     #[test]

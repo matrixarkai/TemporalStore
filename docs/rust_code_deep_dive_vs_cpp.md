@@ -153,7 +153,7 @@ response/page disk hit -> decode block envelope -> promote to memory -> return
 cache miss -> engine reads page file by PageAddress -> cache page bytes and response -> return
 ```
 
-This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. The Rust-native cache also has tier-placement policy evidence for DRAM/PMEM/SSD decisions, pinned `Arc` block handles, eviction-skip accounting, bounded async writeback with queue-depth/byte backpressure counters, warmup, admission/eviction counters, and bucketed get/put latency metrics. It is still not the C++ CacheLib/mtcache implementation or a proof of long-running mtcache production soak history.
+This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. The Rust-native cache also has tier-placement policy evidence for DRAM/PMEM/SSD decisions, pinned `Arc` block handles, eviction-skip accounting, bounded async writeback with queue-depth/byte backpressure counters, warmup, admission/eviction counters, bucketed get/put latency metrics, and `storage_cache_replacement_policy_soak` evidence that access-refreshed hot blocks and pinned blocks survive sustained capacity churn while colder blocks refill from disk. It is still not the C++ CacheLib/mtcache implementation; exact engine parity would require direct CacheLib/mtcache integration.
 
 ## Page Store Deep Dive
 

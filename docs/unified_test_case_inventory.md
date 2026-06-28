@@ -188,6 +188,7 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
+| `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, and latency samples are recorded. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
@@ -410,10 +411,10 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 564
-shared-corpus marked Rust tests: 68
-shared corpus cases: 155
-shared corpus steps: 317
+Rust attributed tests: 565
+shared-corpus marked Rust tests: 69
+shared corpus cases: 156
+shared corpus steps: 318
 C++ existing-test surfaces: 185
 ```
 
