@@ -375,6 +375,11 @@ class MatrixArkLocalAdapter:
         rerank = recall_policy.get("rerank", {}) if isinstance(recall_policy.get("rerank"), dict) else {}
         time_weighted = recall_policy.get("time_weighted_recall", {}) if isinstance(recall_policy.get("time_weighted_recall"), dict) else {}
         dropped_refs = pack.get("dropped_refs", {}) if isinstance(pack.get("dropped_refs"), dict) else {}
+        dropped_ref_count = int(dropped_refs.get("dropped_ref_count") or 0)
+        if not dropped_ref_count and isinstance(dropped_refs.get("refs"), list):
+            dropped_ref_count = len(dropped_refs.get("refs") or [])
+        if not dropped_ref_count:
+            dropped_ref_count = sum(value for key, value in dropped_refs.items() if isinstance(value, int) and key not in {"deadline_exceeded"})
         return {
             "record_type": "context_pack_telemetry",
             "context_pack_id": pack.get("context_pack_id", ""),
@@ -385,7 +390,7 @@ class MatrixArkLocalAdapter:
             "query_plan": recall_policy.get("query_plan", {}),
             "selected_ref_count": len(pack.get("selected_refs", []) or []),
             "selected_ref_counts": pack.get("selected_ref_counts", {}),
-            "dropped_ref_count": len(dropped_refs.get("refs", []) or []),
+            "dropped_ref_count": dropped_ref_count,
             "dropped_ref_bucket_counts": {k: v for k, v in dropped_refs.items() if isinstance(v, int)},
             "used_local_context_tokens": pack.get("used_local_context_tokens", 0),
             "used_remote_context_tokens": pack.get("used_remote_context_tokens", 0),
@@ -452,7 +457,7 @@ class MatrixArkLocalAdapter:
             self.append_audit(telemetry)
         if rich_audit_sampled:
             audit_record["operational_visibility_policy"] = visibility_decision
-            self.append_audit(audit_record)
+            self.append_audit(compact_context_pack_audit_record(audit_record))
         return visibility_decision
 
     def flush_audits(self) -> None:
@@ -3944,7 +3949,7 @@ class MatrixArkLocalAdapter:
         }
         if reason != "service_backpressure":
             self.append_audit(
-                {
+                compact_context_pack_audit_record({
                     "record_type": "context_pack_audit",
                     "context_pack_id": context_pack_id,
                     "query": query,
@@ -3967,7 +3972,7 @@ class MatrixArkLocalAdapter:
                     "primary_candidate_count": 0,
                     "auxiliary_candidate_count": 0,
                     "created_at_ms": now_ms(),
-                }
+                })
             )
         else:
             pack["operational_visibility_policy"] = {
@@ -4211,7 +4216,7 @@ class MatrixArkLocalAdapter:
             debug_refs = bool(args.get("include_debug_refs") or ranking.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS)
             if audit_mode == "full" and audit_sample_rate > 0 and (audit_sample_rate >= 1.0 or stable_hash(context_pack_id_text) % 10000 < int(audit_sample_rate * 10000)):
                 self.append_audit(
-                    {
+                    compact_context_pack_audit_record({
                         "record_type": "context_pack_audit",
                         "context_pack_id": context_pack_id_text,
                         "query": query,
@@ -4232,7 +4237,7 @@ class MatrixArkLocalAdapter:
                         "remote_context_budget_tokens": native_pack.get("remote_context_budget_tokens", max_context_tokens),
                         "requested_max_context_tokens": native_pack.get("requested_max_context_tokens", max_context_tokens),
                         "created_at_ms": now_ms(),
-                    }
+                    })
                 )
             serving_selected_refs = compact_context_pack_refs(selected_refs, include_debug=debug_refs)
             native_pack["selected_refs"] = serving_selected_refs
@@ -5477,8 +5482,60 @@ class MatrixArkLocalAdapter:
         if not (ENABLE_CONTEXT_REPLAY or bool(args.get("enable_replay"))):
             raise MatrixArkError("context replay is disabled; set MATRIXARK_ENABLE_REPLAY=1 or pass enable_replay=true for explicit debug runs")
         context_pack_id = require_string(args, "context_pack_id")
+        include_debug = bool(args.get("include_debug_records") or args.get("include_debug_refs") or CONTEXT_PACK_DEBUG_REFS or AUDIT_DEBUG_PAYLOAD)
         self.flush_audits()
+        records = self.read_all()
+        if include_debug:
+            return {
+                "context_pack_id": context_pack_id,
+                "events": records,
+                "replay_payload_policy": "debug_full_store_scan",
+            }
+        replay_records: list[Json] = []
+        for record in records:
+            if str(record.get("context_pack_id") or "") != context_pack_id:
+                continue
+            record_type = str(record.get("record_type") or "")
+            if record_type == "context_pack_audit":
+                replay_records.append(compact_context_pack_audit_record(record))
+            elif record_type == "context_pack_telemetry":
+                replay_records.append(
+                    {
+                        key: record.get(key)
+                        for key in [
+                            "record_type",
+                            "context_pack_id",
+                            "query_hash",
+                            "question_type",
+                            "selected_ref_count",
+                            "selected_ref_counts",
+                            "dropped_ref_count",
+                            "dropped_ref_bucket_counts",
+                            "used_local_context_tokens",
+                            "used_remote_context_tokens",
+                            "total_prompt_context_tokens",
+                            "remote_context_budget_tokens",
+                            "partial_context_pack",
+                            "insufficient_context",
+                            "quality_warning_count",
+                            "primary_candidate_count",
+                            "auxiliary_candidate_count",
+                            "created_at_ms",
+                        ]
+                        if record.get(key) not in (None, "", [], {})
+                    }
+                )
+            else:
+                replay_records.append(
+                    {
+                        key: record.get(key)
+                        for key in ["record_type", "context_pack_id", "source_ref_type", "source_ref_hash", "event_id_hash", "node_hash", "reinforced_at_ms", "protected_until_ms", "reason"]
+                        if record.get(key) not in (None, "", [], {})
+                    }
+                )
         return {
             "context_pack_id": context_pack_id,
-            "events": self.read_all(),
+            "events": replay_records,
+            "replay_payload_policy": "compact_context_pack_scope",
+            "debug_records_available_with": "include_debug_records=true",
         }

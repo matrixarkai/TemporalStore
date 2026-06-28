@@ -81,6 +81,7 @@ BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_REA
 
 DEFAULT_MAX_CONTEXT_TOKENS = int(os.environ.get("MATRIXARK_DEFAULT_MAX_CONTEXT_TOKENS", "32000"))
 CONTEXT_PACK_DEBUG_REFS = os.environ.get("MATRIXARK_CONTEXT_PACK_DEBUG_REFS", "0").strip().lower() in {"1", "true", "yes"}
+AUDIT_DEBUG_PAYLOAD = os.environ.get("MATRIXARK_AUDIT_DEBUG_PAYLOAD", "0").strip().lower() in {"1", "true", "yes"}
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
 SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
@@ -4775,6 +4776,7 @@ def compact_context_pack_ref(ref: Json) -> Json:
     for field in [
         "ref_type",
         "text",
+        "text_preview",
         "citation",
         "source_ref",
         "raw_uri",
@@ -4863,6 +4865,115 @@ def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool 
         compact["dropped_ref_detail_available_in_audit"] = True
         compact["dropped_ref_count"] = len(dropped.get("refs") or [])
     return compact
+
+
+def compact_recall_policy_for_audit(recall_policy: Json) -> Json:
+    if not isinstance(recall_policy, dict):
+        return {}
+    tree = recall_policy.get("tree_traversal") if isinstance(recall_policy.get("tree_traversal"), dict) else {}
+    secondary = recall_policy.get("secondary_index_filter") if isinstance(recall_policy.get("secondary_index_filter"), dict) else {}
+    rerank = recall_policy.get("rerank") if isinstance(recall_policy.get("rerank"), dict) else {}
+    hard_deadline = recall_policy.get("hard_deadline") if isinstance(recall_policy.get("hard_deadline"), dict) else {}
+    session = recall_policy.get("session_continuity") if isinstance(recall_policy.get("session_continuity"), dict) else {}
+    compact: Json = {}
+    query_plan = recall_policy.get("query_plan")
+    if isinstance(query_plan, dict):
+        compact["query_plan"] = {
+            field: query_plan[field]
+            for field in ["query_type", "temporal_window", "secondary_filters"]
+            if query_plan.get(field) not in (None, "", [], {})
+        }
+    if tree:
+        compact["tree"] = {
+            field: tree.get(field)
+            for field in [
+                "enabled",
+                "fallback_to_flat",
+                "selected_node_count",
+                "selected_leaf_count",
+                "candidate_records_after_tree",
+                "records_dropped_by_tree",
+                "max_candidates_per_node",
+            ]
+            if tree.get(field) not in (None, "", [], {})
+        }
+    if secondary:
+        compact["secondary_index"] = {
+            field: secondary.get(field)
+            for field in ["enabled", "matched_candidate_count", "dropped_candidate_count", "effective_mode"]
+            if secondary.get(field) not in (None, "", [], {})
+        }
+    if rerank:
+        compact["rerank"] = {
+            field: rerank.get(field)
+            for field in ["enabled", "mode", "reranked_candidate_count", "min_similarity_score", "budget_fill_policy"]
+            if rerank.get(field) not in (None, "", [], {})
+        }
+    if session:
+        compact["session_continuity"] = {
+            field: session.get(field)
+            for field in ["mode", "same_session_selected_ref_count", "cross_session_selected_ref_count", "entity_bridge_selected_ref_count"]
+            if session.get(field) not in (None, "", [], {})
+        }
+    if hard_deadline:
+        compact["deadline"] = {
+            field: hard_deadline.get(field)
+            for field in ["deadline_ms", "elapsed_ms", "partial_context_pack", "fallback_reason"]
+            if hard_deadline.get(field) not in (None, "", [], {})
+        }
+    return compact
+
+
+def compact_context_pack_audit_record(record: Json, *, include_debug: bool = False) -> Json:
+    if include_debug or AUDIT_DEBUG_PAYLOAD:
+        return record
+    compact: Json = {
+        "record_type": record.get("record_type", "context_pack_audit"),
+        "context_pack_id": record.get("context_pack_id", ""),
+        "query": record.get("query", ""),
+        "summary_text": record.get("summary_text", ""),
+        "selected_refs": compact_context_pack_refs(record.get("selected_refs", []), include_debug=False),
+        "selected_ref_counts": record.get("selected_ref_counts", {}),
+        "dropped_refs": compact_dropped_refs_for_context_pack(record.get("dropped_refs", {}), include_debug=False),
+        "quality_warnings": record.get("quality_warnings", []),
+        "partial_context_pack": bool(record.get("partial_context_pack", False)),
+        "question_type": record.get("question_type", ""),
+        "packing_policy": record.get("packing_policy", ""),
+        "used_local_context_tokens": record.get("used_local_context_tokens", 0),
+        "used_remote_context_tokens": record.get("used_remote_context_tokens", 0),
+        "total_prompt_context_tokens": record.get("total_prompt_context_tokens", 0),
+        "remote_context_budget_tokens": record.get("remote_context_budget_tokens", 0),
+        "requested_max_context_tokens": record.get("requested_max_context_tokens", 0),
+        "primary_candidate_count": record.get("primary_candidate_count", 0),
+        "auxiliary_candidate_count": record.get("auxiliary_candidate_count", 0),
+        "tree_prefilter_dropped_count": record.get("tree_prefilter_dropped_count", 0),
+        "fanout_dropped_count": record.get("fanout_dropped_count", 0),
+        "max_candidates_per_node": record.get("max_candidates_per_node", 0),
+        "max_selected_refs": record.get("max_selected_refs", 0),
+        "created_at_ms": record.get("created_at_ms"),
+        "payload_policy": {
+            "mode": "compact_audit",
+            "verbose_with": "MATRIXARK_AUDIT_DEBUG_PAYLOAD=1 or replay include_debug_records=true",
+        },
+    }
+    recall_summary = compact_recall_policy_for_audit(record.get("recall_policy", {}))
+    if recall_summary:
+        compact["recall_policy_summary"] = recall_summary
+    local_policy = record.get("local_context_policy")
+    if isinstance(local_policy, dict):
+        compact["local_context_policy"] = {
+            field: local_policy.get(field)
+            for field in ["local_context_count", "local_context_tokens", "safety_margin_tokens", "remote_is_additive_only_within_remaining_budget"]
+            if local_policy.get(field) not in (None, "", [], {})
+        }
+    visibility = record.get("operational_visibility_policy")
+    if isinstance(visibility, dict):
+        compact["operational_visibility_policy"] = {
+            field: visibility.get(field)
+            for field in ["audit_mode", "audit_sample_rate", "rich_replay_audit", "telemetry_record"]
+            if visibility.get(field) not in (None, "", [], {})
+        }
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
 def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> list[Json]:
