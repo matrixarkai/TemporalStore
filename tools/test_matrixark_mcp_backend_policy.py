@@ -1414,6 +1414,37 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("context_pack_assembly", compact)
         self.assertNotIn("context_pack_cache_hit", compact)
 
+    def test_context_pack_serving_dropped_policy_omits_numeric_knobs(self) -> None:
+        compact = mcp.compact_dropped_refs_for_context_pack({
+            "cross_session_budget": 2,
+            "cross_session_policy": {
+                "enabled": True,
+                "mode": "prefer",
+                "decision": "always_consider_same_user_cross_session_when_session_scope_prefer",
+                "budget_ratio": 0.2,
+                "budget_tokens": 1536,
+                "max_budget_tokens": 1536,
+                "max_candidates": 24,
+                "max_sessions": 3,
+                "parallelism": 4,
+                "selected_ref_count": 0,
+                "selected_tokens": 0,
+            },
+        })
+
+        policy = compact["cross_session_policy"]
+        self.assertTrue(policy["enabled"])
+        self.assertEqual(policy["mode"], "prefer")
+        self.assertIn("decision", policy)
+        self.assertNotIn("budget_ratio", policy)
+        self.assertNotIn("budget_tokens", policy)
+        self.assertNotIn("max_budget_tokens", policy)
+        self.assertNotIn("max_candidates", policy)
+        self.assertNotIn("max_sessions", policy)
+        self.assertNotIn("parallelism", policy)
+        self.assertNotIn("selected_ref_count", policy)
+        self.assertNotIn("selected_tokens", policy)
+
     def test_replay_returns_compact_context_pack_scope_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")
