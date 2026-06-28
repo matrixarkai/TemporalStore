@@ -260,6 +260,14 @@ Latest AWS/test state:
     - write compressed summaries as first-class context records with source ids;
     - never hide answer-bearing facts in benchmark runs; keep `compression_answer_hidden_count == 0` as a release gate;
     - physical TTL/pruning of raw events is optional and must be policy-controlled.
+  - Cold scan/cache isolation for temporal compression:
+    - cold compression scans must use a separate low-priority scan path, not the serving retrieval scan lane;
+    - cold scan reads should be `no_cache_fill` / `no_promote` by default so old raw pages are not admitted into hot serving cache;
+    - cold scan reads must not update hot LRU admission or recency state unless a user retrieval/replay explicitly reinforces the source refs;
+    - cold scan buffers must be bounded and separate from the serving cache to avoid evicting hot events/entities/resource chunks;
+    - cold scan workers should run with lower IO and CPU priority than serving retrieval and agent-facing ingestion;
+    - cold scan metrics must be separate from serving scan metrics: bytes/pages scanned, no-promote reads, summary writes, skipped windows, cache-pollution prevention, IO throttling, and worker lag;
+    - a cold scan may write a warm `ContextCompressionEvent` / `TIME_COMPRESS` summary, but it must not warm all raw source pages unless the query or replay explicitly requests raw evidence.
   - Tests:
     - statistical operators return exact arithmetic without LLM calls;
     - latest/current-state queries prefer entity/operator state over stale raw events;
