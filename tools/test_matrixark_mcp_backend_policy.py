@@ -2769,6 +2769,14 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
         self.assertFalse(metrics["matrixark_append_uses_per_record_hset"])
         self.assertFalse(metrics["matrixark_append_uses_generic_batch_hset_fallback"])
+        self.assertTrue(metrics["separate_proxy_lanes"])
+        self.assertGreater(metrics["max_inflight"], 1)
+        self.assertGreaterEqual(metrics["write_lane_workers"], 1)
+        self.assertGreaterEqual(metrics["read_lane_workers"], 1)
+        self.assertGreaterEqual(metrics["retrieve_lane_workers"], 1)
+        self.assertIn("write", metrics["lane_worker_counts"])
+        self.assertIn("read", metrics["lane_worker_counts"])
+        self.assertIn("retrieve", metrics["lane_worker_counts"])
 
     def test_rust_server_exposes_rust_proxy_argument(self) -> None:
         repo = Path(__file__).resolve().parents[1]

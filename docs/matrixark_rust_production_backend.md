@@ -35,6 +35,24 @@ Rust owns:
 - health/readiness/metrics commands
 - graceful shutdown
 
+## Proxy Lane Pool
+
+MatrixArk no longer serializes all Rust proxy calls through one stdio client.
+The MCP adapter keeps a small proxy/client pool with separate lanes so writes,
+reads, and native ContextPack retrieval cannot block each other behind one
+`BoundedSemaphore(1)`.
+
+Default lane widths:
+
+- `MATRIXARK_RUST_PROXY_WRITE_WORKERS=2`
+- `MATRIXARK_RUST_PROXY_READ_WORKERS=4`
+- `MATRIXARK_RUST_PROXY_RETRIEVE_WORKERS=4`
+- `MATRIXARK_RUST_PROXY_CONTROL_WORKERS=1`
+
+The metrics snapshot exposes `lane_worker_counts`, `lane_metrics`,
+`write_lane_workers`, `read_lane_workers`, and `retrieve_lane_workers` so scale
+reports can distinguish storage pressure from native retrieve-pack pressure.
+
 ## Proxy Commands
 
 The Rust proxy supports:

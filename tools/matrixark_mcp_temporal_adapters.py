@@ -3093,6 +3093,10 @@ class MatrixArkRustProxyClient:
         self._last_latency_ms = 0.0
         self._max_observed_latency_ms = 0.0
         self._latency_samples_ms: list[float] = []
+        self._lane_latency_samples_ms: dict[str, list[float]] = {lane: [] for lane in self._lane_worker_counts}
+        self._lane_commands_total: dict[str, int] = {lane: 0 for lane in self._lane_worker_counts}
+        self._lane_wait_ms_total: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
+        self._lane_wait_ms_max: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
         self._context_record_counts: dict[str, int] = {}
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
@@ -3225,11 +3229,13 @@ class MatrixArkRustProxyClient:
         acquired = semaphore.acquire(timeout=self._backpressure_timeout_s)
         if not acquired:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True)
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True, lane=lane, wait_ms=wait_ms)
             raise MatrixArkError(
-                f"Rust TemporalStore {op} rejected by proxy backpressure after "
-                f"{self._backpressure_timeout_s:.3f}s"
+                f"Rust TemporalStore {op} rejected by {lane} proxy lane backpressure after "
+                f"{self._backpressure_timeout_s:.3f}s with "
+                f"{self._lane_worker_counts.get(lane, 1)} workers"
             )
+        slot = self._next_slot(lane)
         try:
             lock: threading.Lock = lane["lock"]
             with lock:
@@ -3245,7 +3251,7 @@ class MatrixArkRustProxyClient:
                 response = self._read_json_line(proc, op)
         except Exception:
             elapsed_ms = (time.perf_counter() - started) * 1000.0
-            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True)
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, lane=lane, wait_ms=wait_ms)
             raise
         finally:
             semaphore.release()
@@ -3255,7 +3261,7 @@ class MatrixArkRustProxyClient:
             if not raise_on_error:
                 return response
             raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
-        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False)
+        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False, lane=lane, wait_ms=wait_ms)
         return response
 
     def _record_call_metrics(
@@ -3267,9 +3273,14 @@ class MatrixArkRustProxyClient:
         *,
         failed: bool,
         backpressure: bool = False,
+        lane: str = "control",
+        wait_ms: float = 0.0,
     ) -> None:
         with self._metrics_lock:
             self._commands_total += 1
+            self._lane_commands_total[lane] = self._lane_commands_total.get(lane, 0) + 1
+            self._lane_wait_ms_total[lane] = self._lane_wait_ms_total.get(lane, 0.0) + max(0.0, wait_ms)
+            self._lane_wait_ms_max[lane] = max(self._lane_wait_ms_max.get(lane, 0.0), max(0.0, wait_ms))
             if failed:
                 self._commands_failed_total += 1
                 if "timed out" in str(response or "").lower() or elapsed_ms >= self.request_timeout_ms:
@@ -3281,6 +3292,10 @@ class MatrixArkRustProxyClient:
             self._latency_samples_ms.append(elapsed_ms)
             if len(self._latency_samples_ms) > 2048:
                 del self._latency_samples_ms[: len(self._latency_samples_ms) - 2048]
+            lane_samples = self._lane_latency_samples_ms.setdefault(lane, [])
+            lane_samples.append(elapsed_ms)
+            if len(lane_samples) > 1024:
+                del lane_samples[: len(lane_samples) - 1024]
             if response and response.get("ok"):
                 count = int(response.get("count") or 0)
                 if op in {"put_string", "hset"}:
@@ -3357,6 +3372,18 @@ class MatrixArkRustProxyClient:
             elapsed_s = max(0.001, time.time() - self._started_at)
             samples = list(self._latency_samples_ms)
             context_counts = dict(sorted(self._context_record_counts.items()))
+            lane_samples = {lane: list(values) for lane, values in self._lane_latency_samples_ms.items()}
+            lane_metrics = {
+                lane: {
+                    "workers": self._lane_worker_counts.get(lane, 0),
+                    "commands_total": self._lane_commands_total.get(lane, 0),
+                    "wait_ms_total": round(self._lane_wait_ms_total.get(lane, 0.0), 3),
+                    "wait_ms_max": round(self._lane_wait_ms_max.get(lane, 0.0), 3),
+                    "p95_latency_ms": round(self._percentile(values, 0.95), 3),
+                    "p99_latency_ms": round(self._percentile(values, 0.99), 3),
+                }
+                for lane, values in lane_samples.items()
+            }
             return {
                 "gateway_mode": "rust_direct_sdk_bridge",
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",

@@ -61,6 +61,9 @@ Rust:
 - Health/readiness/metrics: `health`, `readiness`, `metrics_prometheus`.
 - Graceful shutdown clears cached engines.
 - Connection/client pooling: cached `TemporalEngine` instances by record-log root.
+- MCP-side Rust proxy lane pool: separate write/read/native-retrieve/control
+  proxy clients with tunable worker counts, so Python dispatch no longer
+  serializes all Rust backend calls through one `BoundedSemaphore(1)`.
 
 C++:
 
