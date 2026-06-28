@@ -3120,7 +3120,6 @@ class MatrixArkLocalAdapter:
         summary_text = summarize_text(text)
         embedding_started_perf = time.perf_counter()
         event_embedding = embedding_for_text(text)
-        summary_embedding = embedding_for_text(" ".join(node_path + [summary_text]))
         self._observe_model_latency("embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         with self.write_batch("message_ingest_hot_path"):
             session_key_parts = [str(part) for part in context_node_key(envelope)]
@@ -3182,8 +3181,6 @@ class MatrixArkLocalAdapter:
                 "node_hash": node_hash,
                 "node_path": node_path,
                 "text": text,
-                "summary_text": summary_text,
-                "summary_embedding": summary_embedding,
                 "envelope": envelope,
                 "internal_extraction": extraction,
                 "prior_context": prior_context,
