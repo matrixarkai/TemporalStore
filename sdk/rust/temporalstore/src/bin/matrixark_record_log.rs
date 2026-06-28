@@ -564,7 +564,8 @@ struct FilteredScanCacheEntry {
 }
 
 static SCAN_RECORD_CACHE: OnceLock<Mutex<HashMap<String, ScanRecordCacheEntry>>> = OnceLock::new();
-static FILTERED_SCAN_CACHE: OnceLock<Mutex<HashMap<String, FilteredScanCacheEntry>>> = OnceLock::new();
+static FILTERED_SCAN_CACHE: OnceLock<Mutex<HashMap<String, FilteredScanCacheEntry>>> =
+    OnceLock::new();
 
 fn scan_record_cache() -> &'static Mutex<HashMap<String, ScanRecordCacheEntry>> {
     SCAN_RECORD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
@@ -750,7 +751,10 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
         "matrixark_append_records" | "matrixark_batch_append_records" => {
             let expanded = expanded_hash_entries(command);
             stats.records_written = expanded.len() as u64;
-            stats.bytes_written = expanded.iter().map(|(_, _, value)| value.len() as u64).sum();
+            stats.bytes_written = expanded
+                .iter()
+                .map(|(_, _, value)| value.len() as u64)
+                .sum();
             if command
                 .key
                 .as_ref()
@@ -898,13 +902,9 @@ fn expanded_hash_entries(command: &Command) -> Vec<(String, String, String)> {
         }));
     }
     if let Some(entries) = &command.entries_compact {
-        expanded.extend(
-            entries
-                .iter()
-                .map(|CompactHashEntry(key, field, value)| {
-                    (key.clone(), field.clone(), value.clone())
-                }),
-        );
+        expanded.extend(entries.iter().map(|CompactHashEntry(key, field, value)| {
+            (key.clone(), field.clone(), value.clone())
+        }));
     }
     expanded
 }
@@ -1247,13 +1247,20 @@ fn cross_session_rerank_boost(
         }
         "resource_chunk" if has_citation => 0.04,
         "context_event" | "context_segment"
-            if matches!(question_type, "multi_hop" | "why_emotion" | "fact" | "evidence") =>
+            if matches!(
+                question_type,
+                "multi_hop" | "why_emotion" | "fact" | "evidence"
+            ) =>
         {
             0.01
         }
         "context_compression_event" => 0.05,
         "context_summary" => {
-            if question_type == "broad_exploration" { 0.05 } else { 0.02 }
+            if question_type == "broad_exploration" {
+                0.05
+            } else {
+                0.02
+            }
         }
         _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
             if has_citation {
@@ -1298,7 +1305,10 @@ fn parse_cross_session_policy(
     let config = request
         .get("cross_session")
         .filter(|value| value.is_object());
-    let mut budget_ratio = if matches!(question_type, "current_state" | "latest" | "multi_hop" | "date") {
+    let mut budget_ratio = if matches!(
+        question_type,
+        "current_state" | "latest" | "multi_hop" | "date"
+    ) {
         0.20
     } else if matches!(question_type, "broad_exploration" | "evidence") {
         0.15
@@ -1648,36 +1658,37 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         }));
     }
     let mut cache_hit = false;
-    let (records_source, scanned_records): (Arc<Vec<Value>>, u64) = if let Some(entry) = get_scan_record_cache(&cache_key) {
-        cache_hit = true;
-        (entry.records, entry.scanned_records)
-    } else {
-        let max_shard = if count == 0 {
-            0
+    let (records_source, scanned_records): (Arc<Vec<Value>>, u64) =
+        if let Some(entry) = get_scan_record_cache(&cache_key) {
+            cache_hit = true;
+            (entry.records, entry.scanned_records)
         } else {
-            (count - 1) / shard_size
-        };
-        let mut scanned_records = 0_u64;
-        let mut records = Vec::new();
-        for shard in 0..=max_shard {
-            let key = format!("{}:{:06}", record_hash_key, shard);
-            for (_field, value) in client.hgetall(&key).map_err(|err| err.to_string())? {
-                for record in decode_matrixark_payload(&value) {
-                    scanned_records += 1;
-                    records.push(record);
+            let max_shard = if count == 0 {
+                0
+            } else {
+                (count - 1) / shard_size
+            };
+            let mut scanned_records = 0_u64;
+            let mut records = Vec::new();
+            for shard in 0..=max_shard {
+                let key = format!("{}:{:06}", record_hash_key, shard);
+                for (_field, value) in client.hgetall(&key).map_err(|err| err.to_string())? {
+                    for record in decode_matrixark_payload(&value) {
+                        scanned_records += 1;
+                        records.push(record);
+                    }
                 }
             }
-        }
-        let records_source = Arc::new(records);
-        put_scan_record_cache(
-            cache_key,
-            ScanRecordCacheEntry {
-                records: Arc::clone(&records_source),
-                scanned_records,
-            },
-        );
-        (records_source, scanned_records)
-    };
+            let records_source = Arc::new(records);
+            put_scan_record_cache(
+                cache_key,
+                ScanRecordCacheEntry {
+                    records: Arc::clone(&records_source),
+                    scanned_records,
+                },
+            );
+            (records_source, scanned_records)
+        };
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
     let mut selected_node_dropped = 0_u64;
@@ -1705,35 +1716,35 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
     let records = records_source
         .iter()
         .filter_map(|record| {
-        let record_type = record
-            .get("record_type")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
-            dropped_by_type += 1;
-            return None;
-        }
-        if !scope_matches_record(record, command.scope.as_ref()) {
-            dropped_by_scope += 1;
-            return None;
-        }
-        if !node_path_matches_filters(record, &node_path_filters, &node_paths_by_hash) {
-            dropped_by_scope += 1;
-            return None;
-        }
-        if !selected_nodes.is_empty() {
-            let keep_index = matches!(record_type, "context_index" | "context_embedding");
-            let keep_node = record_node_hash(record)
-                .map(|node| selected_nodes.contains(&node))
-                .unwrap_or(false);
-            if !keep_index && !keep_node {
-                selected_node_dropped += 1;
+            let record_type = record
+                .get("record_type")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
+                dropped_by_type += 1;
                 return None;
             }
-        }
-        Some(record.clone())
-    })
-    .collect::<Vec<_>>();
+            if !scope_matches_record(record, command.scope.as_ref()) {
+                dropped_by_scope += 1;
+                return None;
+            }
+            if !node_path_matches_filters(record, &node_path_filters, &node_paths_by_hash) {
+                dropped_by_scope += 1;
+                return None;
+            }
+            if !selected_nodes.is_empty() {
+                let keep_index = matches!(record_type, "context_index" | "context_embedding");
+                let keep_node = record_node_hash(record)
+                    .map(|node| selected_nodes.contains(&node))
+                    .unwrap_or(false);
+                if !keep_index && !keep_node {
+                    selected_node_dropped += 1;
+                    return None;
+                }
+            }
+            Some(record.clone())
+        })
+        .collect::<Vec<_>>();
 
     let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
     let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
@@ -2133,8 +2144,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             .and_then(Value::as_str)
             .unwrap_or("");
         let is_entity_bridge = is_cross_session && context_class == "entity";
-        let is_cross_session_raw_evidence = is_cross_session
-            && matches!(record_type, "context_event" | "context_segment");
+        let is_cross_session_raw_evidence =
+            is_cross_session && matches!(record_type, "context_event" | "context_segment");
         let cross_key = if is_cross_session {
             cross_session_key(&record)
         } else {
