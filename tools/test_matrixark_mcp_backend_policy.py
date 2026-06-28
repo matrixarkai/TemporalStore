@@ -1279,6 +1279,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                         "node_hash": 10,
                         "summary_text": "summary",
                         "scope": scope,
+                        "created_at_ms": 1780000000000,
+                        "updated_at_ms": 1780000000000,
                     },
                     {
                         "record_type": "context_embedding",
@@ -1315,6 +1317,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 self.assertEqual(scope["scope_key"], record.get("scope_key"))
                 self.assertNotIn("scope", record)
                 self.assertNotIn("_explicit_scope_keys", str(record))
+                if record.get("record_type") == "context_summary":
+                    self.assertNotIn("created_at_ms", record)
+                    self.assertEqual(1780000000000, record.get("updated_at_ms"))
             self.assertTrue(
                 mcp.scope_matches(mcp.candidate_access_scope(compacted[0]), scope),
                 "compacted scope_key should still satisfy scoped retrieval",
@@ -1349,6 +1354,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             self.assertTrue(topology_records)
             for record in topology_records:
                 self.assertEqual(scope["scope_key"], record.get("scope_key"))
+                self.assertEqual(1780000000000, record.get("updated_at_ms"))
+                self.assertNotIn("created_at_ms", record)
                 self.assertNotIn("scope", record)
                 for duplicate_field in (
                     "account_id",
@@ -1360,6 +1367,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "session_hash",
                 ):
                     self.assertNotIn(duplicate_field, record)
+                if record.get("record_type") == "context_child_ref":
+                    self.assertNotIn("parent_path", record)
+                    self.assertNotIn("child_path", record)
 
     def test_production_profile_rejects_local_storage(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = "production"
