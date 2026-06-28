@@ -1287,6 +1287,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             },
         )
 
+    def test_approval_state_entity_name_uses_stable_subject_not_full_state(self) -> None:
+        self.assertEqual(
+            mcp.canonical_entity_name("approval_state", "Project Aurora GPU procurement after Q3 budget review"),
+            "Project Aurora GPU procurement",
+        )
+        self.assertEqual(
+            mcp.canonical_entity_name("approval_state", "the Project Aurora GPU procurement after finance review"),
+            "Project Aurora GPU procurement",
+        )
+        self.assertEqual(
+            mcp.canonical_entity_name("approval_state", "attachment is required before vendor selection"),
+            "attachment",
+        )
+        self.assertEqual(
+            mcp.canonical_entity_name("approval_state", "attachment as a blocker before vendor selection"),
+            "attachment",
+        )
+
     def test_context_pack_serving_refs_drop_debug_index_and_hash_fields(self) -> None:
         ref = {
             "ref_type": "resource_chunk",
