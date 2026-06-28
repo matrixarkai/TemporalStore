@@ -1,0 +1,28 @@
+{
+  "attempt_log": [],
+  "attempts": 1,
+  "backend": "temporalstore-direct",
+  "checks": {
+    "mcp_process_started": true,
+    "metaserver_reachable": {
+      "address": "127.0.0.1:18000",
+      "ok": true
+    },
+    "namespace_table_opened": true,
+    "slot_coverage_verified_by_warmup_hset_hget": true
+  },
+  "metaserver": "127.0.0.1:18000",
+  "probe": true,
+  "reason": "codex_100_message_trace_probe",
+  "status": "ready",
+  "storage_prefix": "matrixark:codex_cpp_probe:1782632787",
+  "topology": {
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "storage_prefix": "matrixark:codex_cpp_probe:1782632787",
+    "table": "deploy_table",
+    "warmup_field": "1391363:1782632787347:8113295398980492858",
+    "warmup_key": "matrixark:codex_cpp_probe:1782632787:readiness"
+  },
+  "warmup_key": "matrixark:codex_cpp_probe:1782632787:readiness"
+}
