@@ -541,6 +541,8 @@ pub struct ByteRaftPeerPipelineState {
     pub offline_elapsed_ms: u64,
     pub offline_timeout_reached: bool,
     pub offline_timeout_rejections: u64,
+    #[serde(default)]
+    pub auto_promoted_from_learner: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -575,6 +577,12 @@ pub struct ByteRaftRuntimeAdminReport {
     pub minority_partition_rejected_writes: bool,
     #[serde(default)]
     pub healed_follower_caught_up: bool,
+    #[serde(default)]
+    pub witness_membership_present: bool,
+    #[serde(default)]
+    pub learner_auto_promote_present: bool,
+    #[serde(default)]
+    pub pending_joint_consensus_present: bool,
     pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
     pub append_backpressure_enforced: bool,
     #[serde(default)]
@@ -625,6 +633,30 @@ pub struct ByteRaftRuntimeAdminReport {
     pub capability_matrix: Vec<ByteRaftCapabilityEvidence>,
     pub ready: bool,
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftLocalPeerStatus {
+    pub status: RaftNodeStatus,
+    pub pipeline_state: ByteRaftPeerPipelineState,
+    pub participates_in_quorum: bool,
+    pub can_serve_data: bool,
+    pub can_be_leader: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftLocalStatusReport {
+    pub shard_id: ShardId,
+    pub leader_id: RaftNodeId,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub has_majority: bool,
+    pub leader_lease_valid: bool,
+    pub pending_joint_consensus: Option<JointConsensusMembership>,
+    pub witness_membership_present: bool,
+    pub learner_membership_present: bool,
+    pub learner_auto_promote_present: bool,
+    pub peers: Vec<ByteRaftLocalPeerStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1086,6 +1118,8 @@ pub struct RaftPeerPipelineRuntimeState {
     pub offline_elapsed_ms: u64,
     pub offline_timeout_reached: bool,
     pub offline_timeout_rejections: u64,
+    #[serde(default)]
+    pub auto_promoted_from_learner: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -5907,6 +5941,19 @@ impl RaftCluster {
         Ok(())
     }
 
+    pub fn add_learner_with_auto_promote(
+        &self,
+        node_id: RaftNodeId,
+        auto_promote: bool,
+    ) -> Result<(), RaftError> {
+        self.add_node_with_role(node_id, RaftReplicaRole::Learner)?;
+        if auto_promote {
+            self.catch_up(node_id)?;
+            self.promote_learner_to_voter(node_id)?;
+        }
+        Ok(())
+    }
+
     pub fn add_node_safely(&self, node_id: RaftNodeId) -> Result<RaftScaleChangeReport, RaftError> {
         self.add_node(node_id)?;
         self.catch_up_live_followers()?;
@@ -5921,6 +5968,7 @@ impl RaftCluster {
             .ok_or(RaftError::NodeNotFound(node_id))?;
         match node.replica_role {
             RaftReplicaRole::Learner => {
+                node.pipeline_state.auto_promoted_from_learner = true;
                 node.replica_role = RaftReplicaRole::Voter;
                 inner.persist_configured_wal()
             }
@@ -8011,6 +8059,49 @@ impl RaftCluster {
         inner.byteraft_runtime_admin_report()
     }
 
+    pub fn byteraft_local_status_report(&self) -> ByteRaftLocalStatusReport {
+        let status = self.status();
+        let admin = self.byteraft_runtime_admin_report();
+        let pipeline_by_peer = admin
+            .peer_pipeline_states
+            .iter()
+            .cloned()
+            .map(|peer| (peer.peer_id, peer))
+            .collect::<BTreeMap<_, _>>();
+        let peers = status
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                pipeline_by_peer
+                    .get(&node.node_id)
+                    .cloned()
+                    .map(|pipeline_state| ByteRaftLocalPeerStatus {
+                        status: node.clone(),
+                        pipeline_state,
+                        participates_in_quorum: node.replica_role.participates_in_quorum(),
+                        can_serve_data: node.replica_role.can_serve_data(),
+                        can_be_leader: node.replica_role.can_be_leader(),
+                    })
+            })
+            .collect::<Vec<_>>();
+        ByteRaftLocalStatusReport {
+            shard_id: self.shard_id(),
+            leader_id: status.leader_id,
+            current_term: status.current_term,
+            commit_index: status.commit_index,
+            has_majority: status.has_majority,
+            leader_lease_valid: status.leader_lease_valid,
+            pending_joint_consensus: self.joint_membership(),
+            witness_membership_present: admin.witness_membership_present,
+            learner_membership_present: status
+                .nodes
+                .iter()
+                .any(|node| matches!(node.replica_role, RaftReplicaRole::Learner)),
+            learner_auto_promote_present: admin.learner_auto_promote_present,
+            peers,
+        }
+    }
+
     pub fn prometheus_metrics(&self) -> String {
         let mut out = raft_status_prometheus("data", self.status());
         append_byteraft_runtime_admin_prometheus(
@@ -8800,6 +8891,7 @@ impl RaftClusterInner {
                     offline_elapsed_ms: pipeline.offline_elapsed_ms,
                     offline_timeout_reached: pipeline.offline_timeout_reached,
                     offline_timeout_rejections: pipeline.offline_timeout_rejections,
+                    auto_promoted_from_learner: pipeline.auto_promoted_from_learner,
                 }
             })
             .collect::<Vec<_>>();
@@ -8825,6 +8917,15 @@ impl RaftClusterInner {
         let minority_partition_rejected_writes =
             self.read_safety_state.minority_partition_write_rejected > 0;
         let healed_follower_caught_up = self.read_safety_state.healed_follower_catchup_observed > 0;
+        let witness_membership_present = self
+            .nodes
+            .values()
+            .any(|node| matches!(node.replica_role, RaftReplicaRole::Witness));
+        let learner_auto_promote_present = self
+            .nodes
+            .values()
+            .any(|node| node.pipeline_state.auto_promoted_from_learner);
+        let pending_joint_consensus_present = self.joint_membership.is_some();
         let read_index_validated = status.leader_lease_valid && status.has_majority;
         let lease_read_validated =
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
@@ -9047,6 +9148,14 @@ impl RaftClusterInner {
                     peer_pipeline_states.len()
                 ),
             },
+            ByteRaftCapabilityEvidence {
+                capability: "membership_role_semantics".to_string(),
+                ready: witness_membership_present || learner_auto_promote_present,
+                evidence_field: "witness_membership_present; learner_auto_promote_present; peer_pipeline_states[*].auto_promoted_from_learner".to_string(),
+                detail: format!(
+                    "witness={witness_membership_present}; auto_promote={learner_auto_promote_present}; pending_joint_consensus={pending_joint_consensus_present}"
+                ),
+            },
         ];
 
         let mut blockers = Vec::new();
@@ -9154,6 +9263,9 @@ impl RaftClusterInner {
             minority_partition_rejected_reads,
             minority_partition_rejected_writes,
             healed_follower_caught_up,
+            witness_membership_present,
+            learner_auto_promote_present,
+            pending_joint_consensus_present,
             peer_pipeline_states,
             append_backpressure_enforced,
             apply_backpressure_enforced,
@@ -9969,6 +10081,10 @@ fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
             ("kind", kind.to_string()),
             ("node_id", node.node_id.to_string()),
             ("role", format!("{:?}", node.role).to_ascii_lowercase()),
+            (
+                "replica_role",
+                format!("{:?}", node.replica_role).to_ascii_lowercase(),
+            ),
         ];
         push_raft_metric(
             &mut out,
@@ -10057,6 +10173,24 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_stale_follower_write_rejected",
         &[("kind", kind.to_string())],
         u64::from(report.stale_follower_write_rejected),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_witness_membership_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.witness_membership_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_learner_auto_promote_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.learner_auto_promote_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_pending_joint_consensus_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.pending_joint_consensus_present),
     );
     out.push_str("# HELP temporalstore_raft_byteraft_append_backpressure_enforced Whether append pipeline backpressure evidence is present.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_append_backpressure_enforced gauge\n");
@@ -10595,6 +10729,12 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
             labels,
             u64::from(peer.snapshot_rejoin_after_compacted_log),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_auto_promoted_from_learner",
+            labels,
+            u64::from(peer.auto_promoted_from_learner),
         );
         push_raft_metric(
             out,

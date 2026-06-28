@@ -147,7 +147,9 @@ lifecycle fields include send attempt/complete/failure counters, send timeout, i
 start/complete/reject/rollback counters, received/total chunks, progress, retry count, chunk retry,
 rate limiting, membership-change snapshot evidence, compacted-log rejoin evidence, and backpressure
 rejection counters, including rejection of concurrent snapshot send attempts for the same peer.
-Read-safety fields include read-index, lease-read, and pre-vote request/accept/reject
+Membership-role fields include witness quorum participation without data service, learner read service
+without quorum participation, auto-promoted learner evidence, and pending joint-consensus state in
+local-status reports. Read-safety fields include read-index, lease-read, and pre-vote request/accept/reject
 counters. Rust now also validates that configured in-flight append entry/byte limits reject
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
@@ -266,8 +268,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection plus OpenRaft spawned-process counts, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery, and per-node log-store inspection. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, stale lease, lagging follower rejection, bounded-stale accept/reject, stale follower write rejection, minority rejection, and healed-follower eligibility behavior. |
+| `raft_byteraft_membership_roles` | ByteRaft-derived witness, learner, learner auto-promote, local-status role evidence, and pending joint-consensus restart behavior. |
 | `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus capability matrix, peer pipeline, active replicate/apply backpressure, memory-byte limits, oversized-log rejection, append queue depth/max-depth, out-of-order append handling, apply health, read-index, leader-transfer request/accept/reject/complete/elapsed/timeout counters, snapshot send elapsed/timeout/retry/rate-limit/progress/rollback/membership/rejoin counters, offline timeout state/rejection counters, and `/raft/control/byteraft_runtime_admin` evidence. |
-| `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin report, including capability matrix rows, on both standalone `raft_node` and raft-enabled `server`. |
+| `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin and local-status reports, including capability matrix rows and peer pipeline state, on both standalone `raft_node` and raft-enabled `server`. |
 | `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, sender timeout, chunk retry/backpressure, rate limiting, chunked install progress, stale/corrupt rejection, snapshot during membership change, rejoin after compacted logs, restart recovery, and rollback reporting. |
 | `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log rejection, active in-flight replicate/apply limits, max memory replicate bytes, append queue depth/max-depth accounting, backpressure counters, out-of-order append handling, reorder, and apply-batch behavior. |
 | `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |

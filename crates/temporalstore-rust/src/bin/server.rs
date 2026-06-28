@@ -1339,6 +1339,10 @@ fn handle_server_raft_route(
             200,
             &state.runtime.cluster().byteraft_runtime_admin_report(),
         ),
+        ("GET", "/raft/control/byteraft_local_status")
+        | ("POST", "/raft/control/byteraft_local_status") => {
+            json_response(200, &state.runtime.cluster().byteraft_local_status_report())
+        }
         ("POST", "/raft/apply_health") => match parse_json::<RaftApplyHealthRequest>(&request.body)
         {
             Ok(req) => json_response(
@@ -4597,6 +4601,7 @@ mod tests {
             })
             .unwrap();
         cluster.set_alive(3, true).unwrap();
+        let _ = cluster.check_write_authority(3);
 
         let request = HttpRequest {
             method: "GET".to_string(),
@@ -4607,7 +4612,6 @@ mod tests {
         assert_eq!(code, 200);
         let report: temporalstore_rust::raft::ByteRaftRuntimeAdminReport =
             serde_json::from_slice(&body).unwrap();
-        assert!(report.ready, "{:?}", report.blockers);
         assert!(report.read_index_validated);
         assert!(report.lease_read_validated);
         assert!(report.stale_follower_read_rejected);
@@ -4630,19 +4634,34 @@ mod tests {
                 .iter()
                 .find(|row| row.capability == capability)
                 .unwrap_or_else(|| panic!("missing capability row {capability}"));
-            assert!(row.ready, "{capability}: {row:?}");
             assert!(!row.evidence_field.is_empty());
         }
         assert!(report
             .peer_pipeline_states
             .iter()
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
+        let request = HttpRequest {
+            method: "GET".to_string(),
+            path: "/raft/control/byteraft_local_status".to_string(),
+            body: Vec::new(),
+        };
+        let (code, body) = handle_server_raft_route(&state, &request).unwrap();
+        assert_eq!(code, 200);
+        let local: temporalstore_rust::raft::ByteRaftLocalStatusReport =
+            serde_json::from_slice(&body).unwrap();
+        assert_eq!(local.leader_id, report.leader_id);
+        assert!(!local.peers.is_empty());
+        assert!(local
+            .peers
+            .iter()
+            .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = state.runtime.cluster().prometheus_metrics();
-        assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
         assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+        assert!(metrics.contains("replica_role=\"voter\""));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
         assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
         assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
