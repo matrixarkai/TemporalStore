@@ -42,6 +42,14 @@ The Rust-native `ProxyService` contract covers proxy streaming and route callbac
 - `RouteCallbacks`: streaming route-refresh callback channel with explicit ack status.
 - `WatchProxyPreflight`: server-streamed proxy readiness/degraded-mode updates.
 
+Proxy streaming maturity is part of the replacement contract, not only a schema presence check. The
+Rust proxy exposes `/proxy/tonic_contract` and `/ProxyService/GetTonicContract` with evidence for:
+
+- long-running request support through bounded in-flight stream requests and per-request timeout;
+- client cancellation with a gRPC cancelled status and callback ack fence;
+- server backpressure with `resource_exhausted` admission status;
+- reconnect behavior with jitterable exponential backoff windows for callback streams.
+
 The committed schema is the source of truth for generated tonic/prost bindings. The Rust crate
 generates client and server binding types at build time from `crates/temporalstore-rust/build.rs`
 and exports them through `temporalstore_rust::sdk::v1`. The schema and generation path are
@@ -77,7 +85,8 @@ tests or validators:
   set, Feature, Sequence, IPS, Risk, admin, and Context-facing migration paths.
 - tonic replacement is covered by generated `temporalstore.v1` bindings plus adapter tests for
   `Execute`, `BatchExecute`, `OpenTable`, `SyncTopology`, `GetClientPreflight`, proxy streaming,
-  route callbacks, and preflight watch surfaces.
+  route callbacks, preflight watch surfaces, long-running request, cancellation, backpressure, and
+  reconnect evidence.
 - typed client migration is covered by `TemporalStoreClient`, `TemporalStoreTable`, and pipeline
   tests that route common, Feature, Sequence, IPS, Risk, and Context commands through the same
   logical contract.

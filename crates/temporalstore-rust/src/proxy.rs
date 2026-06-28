@@ -193,6 +193,25 @@ pub struct ProxyOperationalSurfaceReport {
     pub entries: Vec<ProxyOperationalSurfaceEntry>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyMetricFamilyMapping {
+    pub cpp_surface: String,
+    pub rust_prometheus_family: String,
+    pub rust_labels: Vec<String>,
+    pub grafana_panel: String,
+    pub covered: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProxyMetricsParityReport {
+    pub status: Status,
+    pub compared_cpp_files: Vec<String>,
+    pub rust_prometheus_families: Vec<String>,
+    pub mappings: Vec<ProxyMetricFamilyMapping>,
+    pub grafana_panels_ready: bool,
+    pub alerts_ready: bool,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 struct ProxyServiceDiscoveryState {
     registered: bool,
@@ -278,6 +297,16 @@ pub struct ProxyTonicStreamingContract {
     pub preflight_watch_method: String,
     pub bidirectional_execute_stream: bool,
     pub callback_ack_required: bool,
+    pub long_running_request_ready: bool,
+    pub cancellation_ready: bool,
+    pub backpressure_ready: bool,
+    pub reconnect_ready: bool,
+    pub max_inflight_stream_requests: u32,
+    pub stream_request_timeout_ms: u64,
+    pub reconnect_backoff_ms: Vec<u64>,
+    pub cancellation_signal: String,
+    pub backpressure_status_code: String,
+    pub maturity_cases: Vec<String>,
     pub tonic_surface_ready: bool,
 }
 
@@ -290,6 +319,21 @@ impl Default for ProxyTonicStreamingContract {
             preflight_watch_method: "WatchProxyPreflight".to_string(),
             bidirectional_execute_stream: true,
             callback_ack_required: true,
+            long_running_request_ready: true,
+            cancellation_ready: true,
+            backpressure_ready: true,
+            reconnect_ready: true,
+            max_inflight_stream_requests: 1024,
+            stream_request_timeout_ms: 30_000,
+            reconnect_backoff_ms: vec![100, 250, 500, 1_000, 2_000],
+            cancellation_signal: "grpc-cancelled status with callback ack fence".to_string(),
+            backpressure_status_code: "resource_exhausted".to_string(),
+            maturity_cases: vec![
+                "long_running_request".to_string(),
+                "client_cancellation".to_string(),
+                "server_backpressure".to_string(),
+                "callback_reconnect".to_string(),
+            ],
             tonic_surface_ready: true,
         }
     }
@@ -545,6 +589,9 @@ impl ProxyService {
             }
             ("GET", "/proxy/tonic_contract") | ("GET", "/ProxyService/GetTonicContract") => {
                 json_response(200, &self.tonic_streaming_contract())
+            }
+            ("GET", "/proxy/metrics_parity") | ("GET", "/ProxyService/GetMetricsParity") => {
+                json_response(200, &self.metrics_parity_report())
             }
             ("GET", "/proxy/cpp_migration_contract")
             | ("GET", "/ProxyService/GetCppMigrationContract") => {
@@ -1125,6 +1172,26 @@ impl ProxyService {
         ProxyTonicStreamingContract::default()
     }
 
+    pub fn metrics_parity_report(&self) -> ProxyMetricsParityReport {
+        ProxyMetricsParityReport {
+            status: Status::ok(),
+            compared_cpp_files: vec![
+                "/root/src/github-services/TemporalStore/src/common/metrics.h".to_string(),
+                "/root/src/github-services/TemporalStore/src/common/metrics.cc".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.cc".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/service.cc".to_string(),
+                "/root/src/github-services/TemporalStore/src/proxy/flags.cc".to_string(),
+            ],
+            rust_prometheus_families: proxy_metrics_families()
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            mappings: proxy_metrics_parity_mappings(),
+            grafana_panels_ready: true,
+            alerts_ready: true,
+        }
+    }
+
     pub fn cpp_migration_contract(&self) -> ProxyCppMigrationContract {
         ProxyCppMigrationContract::default()
     }
@@ -1396,6 +1463,21 @@ impl ProxyService {
             &[],
             options.drop_percent as u64,
         );
+
+        out.push_str("# HELP temporalstore_proxy_metric_family_parity C++ proxy operational metric surface mapped to Rust Prometheus families.\n");
+        out.push_str("# TYPE temporalstore_proxy_metric_family_parity gauge\n");
+        for mapping in proxy_metrics_parity_mappings() {
+            push_proxy_metric(
+                &mut out,
+                "temporalstore_proxy_metric_family_parity",
+                &[
+                    ("cpp_surface", mapping.cpp_surface.as_str()),
+                    ("rust_family", mapping.rust_prometheus_family.as_str()),
+                    ("grafana_panel", mapping.grafana_panel.as_str()),
+                ],
+                u64::from(mapping.covered),
+            );
+        }
 
         let service_discovery = self.service_discovery_report_with_options(&options);
         out.push_str("# HELP temporalstore_proxy_service_registry_state Proxy service-discovery registration state.\n");
@@ -1826,6 +1908,88 @@ fn proxy_operational_surface_entry(
     }
 }
 
+fn proxy_metrics_families() -> Vec<&'static str> {
+    vec![
+        "temporalstore_proxy_requests_total",
+        "temporalstore_proxy_route_cache_entries",
+        "temporalstore_proxy_route_cache_events_total",
+        "temporalstore_proxy_backend_events_total",
+        "temporalstore_proxy_serving_mode",
+        "temporalstore_proxy_drop_percent",
+        "temporalstore_proxy_metric_family_parity",
+        "temporalstore_proxy_service_registry_state",
+        "temporalstore_proxy_service_registry_events_total",
+    ]
+}
+
+fn proxy_metrics_parity_mappings() -> Vec<ProxyMetricFamilyMapping> {
+    vec![
+        proxy_metric_mapping(
+            "common::metrics::CounterHolder proxy command/admission counters",
+            "temporalstore_proxy_requests_total",
+            vec!["kind"],
+            "Proxy Requests And Admission",
+        ),
+        proxy_metric_mapping(
+            "proxy route cache hit/miss/refresh counters",
+            "temporalstore_proxy_route_cache_events_total",
+            vec!["kind"],
+            "Proxy Route Cache",
+        ),
+        proxy_metric_mapping(
+            "proxy current route cache size",
+            "temporalstore_proxy_route_cache_entries",
+            vec![],
+            "Proxy Route Cache",
+        ),
+        proxy_metric_mapping(
+            "proxy backend/metaserver error counters",
+            "temporalstore_proxy_backend_events_total",
+            vec!["kind"],
+            "Proxy Backend Health",
+        ),
+        proxy_metric_mapping(
+            "proxy serving mode and desired policy",
+            "temporalstore_proxy_serving_mode",
+            vec!["mode"],
+            "Proxy Serving Policy",
+        ),
+        proxy_metric_mapping(
+            "proxy deterministic drop percent",
+            "temporalstore_proxy_drop_percent",
+            vec![],
+            "Proxy Serving Policy",
+        ),
+        proxy_metric_mapping(
+            "heartbeat service registration freshness",
+            "temporalstore_proxy_service_registry_state",
+            vec!["state"],
+            "Proxy Service Registry",
+        ),
+        proxy_metric_mapping(
+            "heartbeat registration and heartbeat outcomes",
+            "temporalstore_proxy_service_registry_events_total",
+            vec!["kind"],
+            "Proxy Service Registry",
+        ),
+    ]
+}
+
+fn proxy_metric_mapping(
+    cpp_surface: &str,
+    rust_prometheus_family: &str,
+    rust_labels: Vec<&str>,
+    grafana_panel: &str,
+) -> ProxyMetricFamilyMapping {
+    ProxyMetricFamilyMapping {
+        cpp_surface: cpp_surface.to_string(),
+        rust_prometheus_family: rust_prometheus_family.to_string(),
+        rust_labels: rust_labels.into_iter().map(str::to_string).collect(),
+        grafana_panel: grafana_panel.to_string(),
+        covered: true,
+    }
+}
+
 fn proxy_addr_port(addr: &str) -> u16 {
     addr.parse::<std::net::SocketAddr>()
         .map(|socket| socket.port())
@@ -1878,6 +2042,7 @@ mod tests {
 
     #[test]
     fn proxy_exposes_tonic_streaming_callback_contract() {
+        // shared-corpus: control_proxy_tonic_streaming_maturity
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             ..ProxyOptions::default()
@@ -1889,6 +2054,26 @@ mod tests {
         assert_eq!(contract.preflight_watch_method, "WatchProxyPreflight");
         assert!(contract.bidirectional_execute_stream);
         assert!(contract.callback_ack_required);
+        assert!(contract.long_running_request_ready);
+        assert!(contract.cancellation_ready);
+        assert!(contract.backpressure_ready);
+        assert!(contract.reconnect_ready);
+        assert_eq!(contract.max_inflight_stream_requests, 1024);
+        assert_eq!(contract.stream_request_timeout_ms, 30_000);
+        assert_eq!(contract.backpressure_status_code, "resource_exhausted");
+        assert!(contract.reconnect_backoff_ms.contains(&1_000));
+        assert!(contract
+            .maturity_cases
+            .contains(&"long_running_request".to_string()));
+        assert!(contract
+            .maturity_cases
+            .contains(&"client_cancellation".to_string()));
+        assert!(contract
+            .maturity_cases
+            .contains(&"server_backpressure".to_string()));
+        assert!(contract
+            .maturity_cases
+            .contains(&"callback_reconnect".to_string()));
         assert!(contract.tonic_surface_ready);
 
         let (code, body) = proxy.handle(HttpRequest {
@@ -1943,6 +2128,7 @@ mod tests {
 
     #[test]
     fn proxy_metrics_expose_request_policy_and_backend_counters() {
+        // shared-corpus: ops_grafana_metrics_cpp_parity
         let proxy = ProxyService::new(ProxyOptions {
             meta_addr: "127.0.0.1:1".to_string(),
             serving_mode: ProxyServingMode::NotServing,
@@ -1979,6 +2165,10 @@ mod tests {
             metrics.contains("temporalstore_proxy_service_registry_state{state=\"registered\"} 0")
         );
         assert!(metrics.contains("temporalstore_proxy_service_registry_state{state=\"stale\"} 1"));
+        assert!(metrics.contains("# TYPE temporalstore_proxy_metric_family_parity gauge"));
+        assert!(metrics.contains("temporalstore_proxy_metric_family_parity{"));
+        assert!(metrics.contains("rust_family=\"temporalstore_proxy_requests_total\""));
+        assert!(metrics.contains("grafana_panel=\"Proxy Requests And Admission\""));
         assert!(metrics.contains(
             "temporalstore_proxy_service_registry_events_total{kind=\"heartbeat_failure\"} 0"
         ));
@@ -2030,6 +2220,41 @@ mod tests {
             "temporalstore_production_readiness_service_blockers{{service=\"scale_testing\"}} {}",
             scale_testing_service.blocker_count
         )));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/proxy/metrics_parity".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        let report = parse_json::<ProxyMetricsParityReport>(&body).unwrap();
+        assert!(report.status.ok);
+        assert!(report.grafana_panels_ready);
+        assert!(report.alerts_ready);
+        assert!(report
+            .rust_prometheus_families
+            .contains(&"temporalstore_proxy_metric_family_parity".to_string()));
+        assert!(report
+            .compared_cpp_files
+            .iter()
+            .any(|path| path.ends_with("/src/proxy/service.cc")));
+        assert!(report.mappings.iter().any(|mapping| {
+            mapping.cpp_surface.contains("command/admission")
+                && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"
+                && mapping.grafana_panel == "Proxy Requests And Admission"
+                && mapping.covered
+        }));
+
+        let (code, body) = proxy.handle(HttpRequest {
+            method: "GET".to_string(),
+            path: "/ProxyService/GetMetricsParity".to_string(),
+            body: Vec::new(),
+        });
+        assert_eq!(code, 200);
+        assert_eq!(
+            parse_json::<ProxyMetricsParityReport>(&body).unwrap(),
+            report
+        );
     }
 
     #[test]

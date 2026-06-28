@@ -81,6 +81,9 @@
         },
         {
           "expr": "temporalstore_proxy_drop_percent"
+        },
+        {
+          "expr": "sum by (rust_family) (temporalstore_proxy_metric_family_parity)"
         }
       ]
     },
