@@ -3730,8 +3730,14 @@ pub fn retrieve_context(
         })
         .collect::<Vec<_>>();
     summary_scores.sort_by_key(|(node_hash, score, _)| (Reverse(*score), *node_hash));
+    let selected_node_limit = request
+        .max_events
+        .max(1)
+        .min(32)
+        .min(summary_scores.len().max(1));
     node_hashes = summary_scores
         .iter()
+        .take(selected_node_limit)
         .map(|(node_hash, _, _)| *node_hash)
         .collect();
     query_understanding_debug.tree_traversal_summary.enabled = true;
@@ -3760,6 +3766,7 @@ pub fn retrieve_context(
         .tree_traversal_summary
         .summary_embeddings = summary_scores
         .iter()
+        .take(32)
         .map(|(node_hash, score, found)| format!("node:{node_hash}:score:{score}:refs:{found}"))
         .collect();
 
