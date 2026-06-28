@@ -388,12 +388,12 @@ std::string CrossSessionKey(const rapidjson::Value& record) {
 
 struct CrossSessionPolicy {
     bool enabled = false;
-    double budget_ratio = 0.35;
+    double budget_ratio = 0.20;
     uint64_t budget_tokens = 0;
-    uint64_t max_budget_tokens = 4096;
-    uint64_t max_sessions = 8;
-    uint64_t max_candidates = 64;
-    uint64_t min_entity_bridge_refs = 3;
+    uint64_t max_budget_tokens = 2048;
+    uint64_t max_sessions = 4;
+    uint64_t max_candidates = 32;
+    uint64_t min_entity_bridge_refs = 2;
     uint64_t parallelism = 4;
 };
 
@@ -401,7 +401,7 @@ CrossSessionPolicy ParseCrossSessionPolicy(const rapidjson::Value& request, cons
                                            uint64_t remote_budget, const std::string& question_type) {
     CrossSessionPolicy policy;
     bool default_enabled = scope != nullptr && scope->IsObject() && SessionScopeMode(*scope) == "prefer" && remote_budget > 0;
-    policy.budget_ratio = (question_type == "current_state" || question_type == "latest") ? 0.45 : 0.35;
+    policy.budget_ratio = (question_type == "current_state" || question_type == "latest") ? 0.30 : 0.20;
     if (const rapidjson::Value* config = JsonObjectMember(request, "cross_session")) {
         policy.enabled = JsonBoolMember(*config, "enabled", default_enabled);
         policy.budget_ratio = std::max(0.0, std::min(1.0, JsonDoubleMember(*config, "budget_ratio", policy.budget_ratio)));
@@ -412,14 +412,14 @@ CrossSessionPolicy ParseCrossSessionPolicy(const rapidjson::Value& request, cons
         policy.parallelism = std::max<uint64_t>(1, JsonUintMember(*config, "parallelism", policy.parallelism));
         uint64_t computed = static_cast<uint64_t>(static_cast<double>(remote_budget) * policy.budget_ratio);
         if (remote_budget >= 1200 && computed > 0) {
-            computed = std::max<uint64_t>(512, computed);
+            computed = std::max<uint64_t>(256, computed);
         }
         policy.budget_tokens = JsonUintMember(*config, "budget_tokens", computed);
     } else {
         policy.enabled = default_enabled;
         policy.budget_tokens = static_cast<uint64_t>(static_cast<double>(remote_budget) * policy.budget_ratio);
         if (remote_budget >= 1200 && policy.budget_tokens > 0) {
-            policy.budget_tokens = std::max<uint64_t>(512, policy.budget_tokens);
+            policy.budget_tokens = std::max<uint64_t>(256, policy.budget_tokens);
         }
     }
     if (!default_enabled) {
@@ -1134,7 +1134,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     cross.AddMember("selected_session_count", static_cast<uint64_t>(selected_cross_sessions.size()), alloc);
     cross.AddMember("entity_bridge_selected_ref_count", entity_bridge_selected_refs, alloc);
     cross.AddMember("strategy", "same_session_first_entity_bridge_then_bounded_cross_session", alloc);
-    cross.AddMember("budget_guidance", "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens", alloc);
+    cross.AddMember("budget_guidance", "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest", alloc);
     recall.AddMember("cross_session", cross, alloc);
     rapidjson::Value tree(rapidjson::kObjectType);
     tree.AddMember("enabled", true, alloc);

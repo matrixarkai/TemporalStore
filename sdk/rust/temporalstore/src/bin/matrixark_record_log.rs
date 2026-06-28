@@ -987,9 +987,9 @@ fn parse_cross_session_policy(
         .get("cross_session")
         .filter(|value| value.is_object());
     let mut budget_ratio = if matches!(question_type, "current_state" | "latest") {
-        0.45
+        0.30
     } else {
-        0.35
+        0.20
     };
     if let Some(value) = config
         .and_then(|cfg| cfg.get("budget_ratio"))
@@ -1000,10 +1000,10 @@ fn parse_cross_session_policy(
     let max_budget_tokens = config
         .and_then(|cfg| cfg.get("max_budget_tokens"))
         .and_then(Value::as_u64)
-        .unwrap_or(4096);
+        .unwrap_or(2048);
     let mut computed = (remote_budget as f64 * budget_ratio) as u64;
     if remote_budget >= 1200 && computed > 0 {
-        computed = computed.max(512);
+        computed = computed.max(256);
     }
     let enabled = config
         .and_then(|cfg| cfg.get("enabled"))
@@ -1017,15 +1017,15 @@ fn parse_cross_session_policy(
     let mut max_sessions = config
         .and_then(|cfg| cfg.get("max_sessions"))
         .and_then(Value::as_u64)
-        .unwrap_or(8);
+        .unwrap_or(4);
     let mut max_candidates = config
         .and_then(|cfg| cfg.get("max_candidates"))
         .and_then(Value::as_u64)
-        .unwrap_or(64);
+        .unwrap_or(32);
     let mut min_entity_bridge_refs = config
         .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
         .and_then(Value::as_u64)
-        .unwrap_or(3);
+        .unwrap_or(2);
     let mut parallelism = config
         .and_then(|cfg| cfg.get("parallelism"))
         .and_then(Value::as_u64)
@@ -1701,7 +1701,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "selected_session_count": selected_cross_sessions.len() as u64,
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
                 "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-                "budget_guidance": "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens"
+                "budget_guidance": "default cross-session budget is conservative: 20% of MatrixArk remote budget, 30% for current-state/latest queries, capped by max_budget_tokens; same-session, resources, and skills keep the rest"
             },
             "tree_traversal": {
                 "enabled": true,
