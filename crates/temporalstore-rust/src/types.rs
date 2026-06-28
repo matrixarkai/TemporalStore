@@ -264,6 +264,18 @@ pub struct ContextEvent {
     pub event_id_hash: u64,
     pub event_time_ms: u64,
     #[serde(default)]
+    pub parent_segment_hash: u64,
+    #[serde(default)]
+    pub parent_segment_hashes: Vec<u64>,
+    #[serde(default)]
+    pub context_event_parent_type: String,
+    #[serde(default)]
+    pub context_event_parent_hash: u64,
+    #[serde(default)]
+    pub event_time_key: String,
+    #[serde(default)]
+    pub context_event_key: String,
+    #[serde(default)]
     pub kind: u32,
     #[serde(default, rename = "type", alias = "event_type")]
     pub event_type: u32,
@@ -386,6 +398,8 @@ pub struct ContextChildRef {
 pub struct ContextEmbedding {
     pub ref_hash: u64,
     pub level: u32,
+    #[serde(default)]
+    pub model_hash: u64,
     #[serde(default)]
     pub vector: Vec<f32>,
     pub updated_at_ms: u64,
@@ -587,6 +601,14 @@ impl ContextWire for ContextEvent {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.event_id_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
+        encode_varint_field(&mut out, 14, self.parent_segment_hash);
+        for related in &self.parent_segment_hashes {
+            encode_varint_field(&mut out, 15, *related);
+        }
+        encode_bytes_field(&mut out, 16, self.context_event_parent_type.as_bytes());
+        encode_varint_field(&mut out, 17, self.context_event_parent_hash);
+        encode_bytes_field(&mut out, 18, self.event_time_key.as_bytes());
+        encode_bytes_field(&mut out, 19, self.context_event_key.as_bytes());
         encode_varint_field(&mut out, 3, u64::from(self.kind));
         encode_varint_field(&mut out, 4, u64::from(self.event_type));
         encode_varint_field(&mut out, 5, self.actor_hash);
@@ -608,6 +630,12 @@ impl ContextWire for ContextEvent {
         let mut value = Self {
             event_id_hash: 0,
             event_time_ms: 0,
+            parent_segment_hash: 0,
+            parent_segment_hashes: Vec::new(),
+            context_event_parent_type: String::new(),
+            context_event_parent_hash: 0,
+            event_time_key: String::new(),
+            context_event_key: String::new(),
             kind: 0,
             event_type: 0,
             actor_hash: 0,
@@ -649,6 +677,23 @@ impl ContextWire for ContextEvent {
                     }
                 }
                 (13, 2) => value.compact_attrs = decode_bytes(bytes, &mut cursor)?,
+                (14, 0) => value.parent_segment_hash = decode_varint(bytes, &mut cursor)?,
+                (15, 0) => value
+                    .parent_segment_hashes
+                    .push(decode_varint(bytes, &mut cursor)?),
+                (15, 2) => {
+                    let packed = decode_bytes(bytes, &mut cursor)?;
+                    let mut packed_cursor = 0;
+                    while packed_cursor < packed.len() {
+                        value
+                            .parent_segment_hashes
+                            .push(decode_varint(&packed, &mut packed_cursor)?);
+                    }
+                }
+                (16, 2) => value.context_event_parent_type = decode_string(bytes, &mut cursor)?,
+                (17, 0) => value.context_event_parent_hash = decode_varint(bytes, &mut cursor)?,
+                (18, 2) => value.event_time_key = decode_string(bytes, &mut cursor)?,
+                (19, 2) => value.context_event_key = decode_string(bytes, &mut cursor)?,
                 (_, wire_type) => skip_proto_field(bytes, &mut cursor, wire_type)?,
             }
         }
@@ -909,6 +954,7 @@ impl ContextWire for ContextEmbedding {
         let mut out = Vec::new();
         encode_varint_field(&mut out, 1, self.ref_hash);
         encode_varint_field(&mut out, 2, u64::from(self.level));
+        encode_varint_field(&mut out, 3, self.model_hash);
         for value in &self.vector {
             encode_fixed32_field(&mut out, 4, value.to_bits());
         }
@@ -921,6 +967,7 @@ impl ContextWire for ContextEmbedding {
         let mut value = Self {
             ref_hash: 0,
             level: 0,
+            model_hash: 99,
             vector: Vec::new(),
             updated_at_ms: 0,
         };
@@ -929,6 +976,7 @@ impl ContextWire for ContextEmbedding {
             match (tag >> 3, tag & 0x7) {
                 (1, 0) => value.ref_hash = decode_varint(bytes, &mut cursor)?,
                 (2, 0) => value.level = u32::try_from(decode_varint(bytes, &mut cursor)?).ok()?,
+                (3, 0) => value.model_hash = decode_varint(bytes, &mut cursor)?,
                 (4, 5) => value
                     .vector
                     .push(f32::from_bits(decode_fixed32(bytes, &mut cursor)?)),
@@ -1809,6 +1857,7 @@ mod tests {
         let embedding = ContextEmbedding {
             ref_hash: 20,
             level: 1,
+            model_hash: 0,
             vector: vec![1.0, 0.0],
             updated_at_ms: 1_000,
         };

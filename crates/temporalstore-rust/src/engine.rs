@@ -7579,10 +7579,11 @@ fn execute_on_shard(
         Command::ContextWriteEvent {
             tenant_hash,
             node_hash,
-            event,
+            mut event,
             first_write_only,
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
+            normalize_context_event_storage_keys(node_hash, &mut event);
             let timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
@@ -7614,11 +7615,12 @@ fn execute_on_shard(
         Command::ContextWriteExtractedEvent {
             tenant_hash,
             node_hash,
-            event,
+            mut event,
             indexes,
             first_write_only,
         } => {
             let event_object_key = context_event_key(tenant_hash, node_hash);
+            normalize_context_event_storage_keys(node_hash, &mut event);
             let event_timeline_key = context_timeline_key(event.event_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events
@@ -10760,6 +10762,44 @@ fn context_event_key(tenant_hash: u64, node_hash: u64) -> String {
     format!("ctx:event:{tenant_hash}:{node_hash}")
 }
 
+fn context_event_time_key(event_time_ms: u64, event_hash: u64) -> String {
+    format!("{:020}:{event_hash}", event_time_ms.max(1))
+}
+
+fn normalize_context_event_storage_keys(node_hash: u64, event: &mut ContextEvent) {
+    if event.event_time_ms == 0 {
+        event.event_time_ms = now_ms().max(1);
+    }
+    if event.event_id_hash == 0 {
+        event.event_id_hash = stable_object_hash(&format!(
+            "context_event:{}:{}:{}",
+            node_hash, event.event_time_ms, event.text
+        ));
+    }
+    if event.parent_segment_hash == 0 {
+        if let Some(parent_segment_hash) = event
+            .parent_segment_hashes
+            .iter()
+            .copied()
+            .find(|hash| *hash != 0)
+        {
+            event.parent_segment_hash = parent_segment_hash;
+        }
+    }
+    let (parent_type, parent_hash) = if event.parent_segment_hash != 0 {
+        ("context_segment", event.parent_segment_hash)
+    } else {
+        ("context_node", node_hash)
+    };
+    event.context_event_parent_type = parent_type.to_string();
+    event.context_event_parent_hash = parent_hash;
+    event.event_time_key = context_event_time_key(event.event_time_ms, event.event_id_hash);
+    event.context_event_key = format!(
+        "context_event:{}:{}:{}",
+        event.context_event_parent_type, event.context_event_parent_hash, event.event_time_key
+    );
+}
+
 fn context_index_key(
     tenant_hash: u64,
     index_name: &str,
@@ -12420,6 +12460,12 @@ mod tests {
         let event_a = ContextEvent {
             event_id_hash: 5,
             event_time_ms: 1_000,
+            parent_segment_hash: 0,
+            parent_segment_hashes: Vec::new(),
+            context_event_parent_type: String::new(),
+            context_event_parent_hash: 0,
+            event_time_key: String::new(),
+            context_event_key: String::new(),
             kind: 9,
             event_type: 2,
             actor_hash: 77,
@@ -12489,6 +12535,11 @@ mod tests {
                 if object_key == "ctx:event:11:42"
                     && events.iter().map(|event| event.text.as_str()).collect::<Vec<_>>()
                         == vec!["first", "second"]
+                    && events[0].context_event_parent_type == "context_node"
+                    && events[0].context_event_parent_hash == 42
+                    && events[0].event_time_key == "00000000000000001000:5"
+                    && events[0].context_event_key
+                        == "context_event:context_node:42:00000000000000001000:5"
         ));
 
         let index_ref = ContextIndexRef {
@@ -12532,6 +12583,12 @@ mod tests {
         let extracted_event = ContextEvent {
             event_id_hash: 445,
             event_time_ms: 1_781_500_000_000,
+            parent_segment_hash: 9001,
+            parent_segment_hashes: vec![9001],
+            context_event_parent_type: String::new(),
+            context_event_parent_hash: 0,
+            event_time_key: String::new(),
+            context_event_key: String::new(),
             kind: 7,
             event_type: 7,
             actor_hash: 0,
@@ -12569,6 +12626,35 @@ mod tests {
                 ref index_object_keys,
             } if event_object_key == "ctx:event:11:42" && index_object_keys.len() == 6
         ));
+        let extracted_query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryEvents {
+                tenant_hash: 11,
+                node_hash: 42,
+                start_time_ms: extracted_event.event_time_ms,
+                end_time_ms: extracted_event.event_time_ms + 1,
+                limit: Some(1),
+                current_valid_only: true,
+                as_of_ms: 0,
+                kinds: vec![7],
+                statuses: vec![1],
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            },
+        });
+        match extracted_query.response {
+            CommandResponse::ContextEvents { events, .. } => {
+                assert_eq!(events.len(), 1, "events={events:?}");
+                assert_eq!(events[0].context_event_parent_type, "context_segment");
+                assert_eq!(events[0].context_event_parent_hash, 9001);
+                assert_eq!(events[0].event_time_key, "00000001781500000000:445");
+                assert_eq!(
+                    events[0].context_event_key,
+                    "context_event:context_segment:9001:00000001781500000000:445"
+                );
+            }
+            other => panic!("unexpected extracted event query response: {other:?}"),
+        }
         for (index_name, value_hash, start_time_ms, end_time_ms) in [
             ("event_kind", 7, 1_781_499_999_999, 1_781_500_000_001),
             ("entity", 501, 1_781_499_999_999, 1_781_500_000_001),
@@ -12612,6 +12698,12 @@ mod tests {
                 event: ContextEvent {
                     event_id_hash: 446,
                     event_time_ms: 1_781_500_000_010,
+                    parent_segment_hash: 0,
+                    parent_segment_hashes: Vec::new(),
+                    context_event_parent_type: String::new(),
+                    context_event_parent_hash: 0,
+                    event_time_key: String::new(),
+                    context_event_key: String::new(),
                     kind: 8,
                     event_type: 8,
                     actor_hash: 0,
@@ -12860,6 +12952,7 @@ mod tests {
                     embedding: ContextEmbedding {
                         ref_hash,
                         level: 1,
+                        model_hash: 0,
                         vector: vec![first, second],
                         updated_at_ms: EVENT_TIME,
                     },
@@ -13007,6 +13100,12 @@ mod tests {
                     event: ContextEvent {
                         event_id_hash: event_id,
                         event_time_ms: START + offset_ms,
+                        parent_segment_hash: 0,
+                        parent_segment_hashes: Vec::new(),
+                        context_event_parent_type: String::new(),
+                        context_event_parent_hash: 0,
+                        event_time_key: String::new(),
+                        context_event_key: String::new(),
                         kind: 7,
                         event_type: 7,
                         actor_hash: 0,
@@ -16860,6 +16959,12 @@ mod tests {
                         event: ContextEvent {
                             event_id_hash: 66,
                             event_time_ms: 4_000,
+                            parent_segment_hash: 0,
+                            parent_segment_hashes: Vec::new(),
+                            context_event_parent_type: String::new(),
+                            context_event_parent_hash: 0,
+                            event_time_key: String::new(),
+                            context_event_key: String::new(),
                             kind: 1,
                             event_type: 2,
                             actor_hash: 77,
@@ -18206,6 +18311,12 @@ mod tests {
                 event: ContextEvent {
                     event_id_hash: 9_400,
                     event_time_ms: 123,
+                    parent_segment_hash: 0,
+                    parent_segment_hashes: Vec::new(),
+                    context_event_parent_type: String::new(),
+                    context_event_parent_hash: 0,
+                    event_time_key: String::new(),
+                    context_event_key: String::new(),
                     kind: 1,
                     event_type: 2,
                     actor_hash: 3,
@@ -18438,6 +18549,12 @@ mod tests {
                 event: ContextEvent {
                     event_id_hash: 66,
                     event_time_ms: 4_000,
+                    parent_segment_hash: 0,
+                    parent_segment_hashes: Vec::new(),
+                    context_event_parent_type: String::new(),
+                    context_event_parent_hash: 0,
+                    event_time_key: String::new(),
+                    context_event_key: String::new(),
                     kind: 1,
                     event_type: 2,
                     actor_hash: 77,
@@ -18910,6 +19027,12 @@ mod tests {
                         event: ContextEvent {
                             event_id_hash: 707,
                             event_time_ms: 100,
+                            parent_segment_hash: 0,
+                            parent_segment_hashes: Vec::new(),
+                            context_event_parent_type: String::new(),
+                            context_event_parent_hash: 0,
+                            event_time_key: String::new(),
+                            context_event_key: String::new(),
                             kind: 2,
                             event_type: 3,
                             actor_hash: 4,
