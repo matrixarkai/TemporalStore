@@ -2853,6 +2853,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         time_entry = next(entry for entry in client.calls[0]["entries"] if "context_event_by_ingestion_time" in entry["key"])
         self.assertIn("context_event_by_ingestion_time:context_segment:777", time_entry["key"])
         self.assertEqual(time_entry["field"], f"{1780000000001:020d}:456")
+        time_payload = json.loads(time_entry["value"])
+        self.assertEqual(time_payload["record_type"], "context_event")
+        self.assertEqual(time_payload["event_id_hash"], 456)
+        self.assertEqual(time_payload["text"], "segmented event")
+        self.assertNotIn("event_time_key", time_payload)
+        self.assertNotIn("ingestion_time_ms", time_payload)
 
 
     def test_direct_retrieval_records_prefilters_scope_type_and_secondary_indexes(self) -> None:

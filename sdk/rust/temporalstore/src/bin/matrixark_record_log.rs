@@ -1055,6 +1055,15 @@ fn matrixark_context_event_time_field(record: &Value, record_id: &str) -> String
     )
 }
 
+fn matrixark_context_event_time_payload(record: &Value) -> Result<String, String> {
+    let mut payload = record.clone();
+    if let Some(object) = payload.as_object_mut() {
+        object.remove("event_time_key");
+        object.remove("ingestion_time_ms");
+    }
+    serde_json::to_string(&payload).map_err(|err| err.to_string())
+}
+
 fn write_matrixark_record(
     client: &Client,
     record: &Value,
@@ -1072,8 +1081,9 @@ fn write_matrixark_record(
     if record_type == "context_event" {
         let time_key = matrixark_context_event_time_key(tenant_hash);
         let time_field = matrixark_context_event_time_field(record, &record_id);
+        let time_payload = matrixark_context_event_time_payload(record)?;
         client
-            .hset(&time_key, &time_field, &payload)
+            .hset(&time_key, &time_field, &time_payload)
             .map_err(|err| err.to_string())?;
         time_index = Some(json!({"key": time_key, "field": time_field}));
     }
@@ -2824,6 +2834,22 @@ mod tests {
             ),
             "00000001782500000123:42"
         );
+        let indexed_payload: Value = serde_json::from_str(
+            &matrixark_context_event_time_payload(&json!({
+                "record_type": "context_event",
+                "tenant_hash": 77,
+                "event_id_hash": 42,
+                "ingestion_time_ms": 1782500000123_u64,
+                "event_time_key": "00000001782500000123:42",
+                "text": "timestamp keyed"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(indexed_payload["record_type"], "context_event");
+        assert_eq!(indexed_payload["text"], "timestamp keyed");
+        assert!(indexed_payload.get("ingestion_time_ms").is_none());
+        assert!(indexed_payload.get("event_time_key").is_none());
     }
 
     #[test]
