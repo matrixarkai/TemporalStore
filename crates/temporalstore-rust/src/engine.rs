@@ -1835,6 +1835,24 @@ impl TemporalEngine {
         if request.purge_delayed_destroy && !delayed_destroy_reports.is_empty() {
             reasons.push("delayed_destroy_purge".to_string());
         }
+        let page_gc_dependency_plan = self.storage_page_gc_dependency_plan(
+            request.shard_id,
+            reclaim_candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id),
+            request.page_gc_shared_store_cursors.clone(),
+            request.page_gc_raft_snapshot_refs.clone(),
+            request.page_gc_checkpoint_floor_segment_id,
+            request.page_gc_raft_install_floor_segment_id,
+            request.page_gc_delayed_destroy_grace_ms,
+        );
+        if !page_gc_dependency_plan
+            .candidate_page_segment_ids
+            .is_empty()
+            && !page_gc_dependency_plan.safe_to_reclaim
+        {
+            reasons.push("page_gc_dependency_blocked".to_string());
+        }
         let manifest_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
             request.follower_replay_cursors.clone(),
@@ -1872,6 +1890,204 @@ impl TemporalEngine {
                 .map(|report| report.physical_bytes)
                 .sum(),
             reasons,
+        }
+    }
+
+    pub fn storage_page_gc_dependency_plan(
+        &self,
+        shard_id: ShardId,
+        candidate_page_segment_ids: impl IntoIterator<Item = u64>,
+        shared_store_cursors: impl IntoIterator<Item = StoragePageGcReplayCursor>,
+        raft_snapshot_refs: impl IntoIterator<Item = SlotDumpRaftSnapshotRef>,
+        checkpoint_snapshot_floor: Option<u64>,
+        raft_snapshot_install_floor: Option<u64>,
+        delayed_destroy_grace_ms: u64,
+    ) -> StoragePageGcDependencyPlan {
+        let mut candidate_page_segment_ids = candidate_page_segment_ids
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        candidate_page_segment_ids.sort_unstable();
+        let candidate_set = candidate_page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let live_page_segment_ids = self.live_page_segment_ids(shard_id);
+        let live_set = live_page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let manifests = self.list_slot_dump_manifests(shard_id);
+        let mut manifest_page_segment_ids = manifests
+            .iter()
+            .flat_map(|manifest| manifest.page_segment_ids.iter().copied())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        manifest_page_segment_ids.sort_unstable();
+        let manifest_set = manifest_page_segment_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let shared_store_cursors = shared_store_cursors.into_iter().collect::<Vec<_>>();
+        let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
+        let delayed_destroy_reports = self
+            .page_store
+            .delayed_destroy_segment_reports()
+            .unwrap_or_default();
+        let delayed_destroy_modified = delayed_destroy_reports
+            .iter()
+            .map(|report| (report.page_segment_id, report.modified_unix_ms))
+            .collect::<BTreeMap<_, _>>();
+        let now = now_ms();
+        let mut dependency_blocks = Vec::new();
+        for page_segment_id in &candidate_page_segment_ids {
+            if live_set.contains(page_segment_id) {
+                dependency_blocks.push(StoragePageGcDependencyBlock {
+                    page_segment_id: *page_segment_id,
+                    dependency: "live_page_ref".to_string(),
+                    owner_id: format!("shard:{shard_id}"),
+                    reason: "indexed live page references still point at this page segment"
+                        .to_string(),
+                    ..StoragePageGcDependencyBlock::default()
+                });
+            }
+            if manifest_set.contains(page_segment_id) {
+                let owner_id = manifests
+                    .iter()
+                    .filter(|manifest| manifest.page_segment_ids.contains(page_segment_id))
+                    .map(|manifest| manifest.manifest_id.clone())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                dependency_blocks.push(StoragePageGcDependencyBlock {
+                    page_segment_id: *page_segment_id,
+                    dependency: "slot_dump_manifest".to_string(),
+                    owner_id,
+                    reason: "slot dump manifest still names this page segment".to_string(),
+                    ..StoragePageGcDependencyBlock::default()
+                });
+            }
+            for cursor in shared_store_cursors
+                .iter()
+                .filter(|cursor| cursor.shard_id == shard_id)
+            {
+                if *page_segment_id >= cursor.retain_from_page_segment_id {
+                    dependency_blocks.push(StoragePageGcDependencyBlock {
+                        page_segment_id: *page_segment_id,
+                        dependency: "shared_store_replay_cursor".to_string(),
+                        owner_id: cursor.cursor_id.clone(),
+                        retain_from_page_segment_id: Some(cursor.retain_from_page_segment_id),
+                        reason: if cursor.reason.is_empty() {
+                            "shared-store replay cursor has not advanced past this page segment"
+                                .to_string()
+                        } else {
+                            cursor.reason.clone()
+                        },
+                        ..StoragePageGcDependencyBlock::default()
+                    });
+                }
+            }
+            for snapshot in raft_snapshot_refs
+                .iter()
+                .filter(|snapshot| snapshot.shard_id == shard_id)
+            {
+                if *page_segment_id >= snapshot.index_log_sequence {
+                    dependency_blocks.push(StoragePageGcDependencyBlock {
+                        page_segment_id: *page_segment_id,
+                        dependency: "raft_snapshot_ref".to_string(),
+                        owner_id: snapshot.snapshot_id.clone(),
+                        retain_from_page_segment_id: Some(snapshot.index_log_sequence),
+                        reason: "Raft snapshot reference has not released this page segment floor"
+                            .to_string(),
+                        ..StoragePageGcDependencyBlock::default()
+                    });
+                }
+            }
+            if checkpoint_snapshot_floor
+                .map(|floor| *page_segment_id >= floor)
+                .unwrap_or(false)
+            {
+                dependency_blocks.push(StoragePageGcDependencyBlock {
+                    page_segment_id: *page_segment_id,
+                    dependency: "checkpoint_snapshot_floor".to_string(),
+                    owner_id: format!("checkpoint:{shard_id}"),
+                    retain_from_page_segment_id: checkpoint_snapshot_floor,
+                    reason: "checkpoint/snapshot floor still retains this page segment".to_string(),
+                    ..StoragePageGcDependencyBlock::default()
+                });
+            }
+            if raft_snapshot_install_floor
+                .map(|floor| *page_segment_id >= floor)
+                .unwrap_or(false)
+            {
+                dependency_blocks.push(StoragePageGcDependencyBlock {
+                    page_segment_id: *page_segment_id,
+                    dependency: "raft_snapshot_install_floor".to_string(),
+                    owner_id: format!("raft-install:{shard_id}"),
+                    retain_from_page_segment_id: raft_snapshot_install_floor,
+                    reason: "Raft snapshot install floor still retains this page segment"
+                        .to_string(),
+                    ..StoragePageGcDependencyBlock::default()
+                });
+            }
+            if delayed_destroy_grace_ms > 0 {
+                if let Some(modified_unix_ms) = delayed_destroy_modified
+                    .get(page_segment_id)
+                    .and_then(|modified| *modified)
+                {
+                    let retain_until = modified_unix_ms.saturating_add(delayed_destroy_grace_ms);
+                    if now < retain_until {
+                        dependency_blocks.push(StoragePageGcDependencyBlock {
+                            page_segment_id: *page_segment_id,
+                            dependency: "delayed_destroy_grace_period".to_string(),
+                            owner_id: format!("delayed-destroy:{page_segment_id}"),
+                            retain_until_unix_ms: Some(retain_until),
+                            reason:
+                                "delayed-destroy grace period has not elapsed for this page segment"
+                                    .to_string(),
+                            ..StoragePageGcDependencyBlock::default()
+                        });
+                    }
+                }
+            }
+        }
+        let blocked_page_segment_ids = dependency_blocks
+            .iter()
+            .map(|block| block.page_segment_id)
+            .collect::<BTreeSet<_>>();
+        let reclaimable_page_segment_ids = candidate_page_segment_ids
+            .iter()
+            .copied()
+            .filter(|id| !blocked_page_segment_ids.contains(id))
+            .collect::<Vec<_>>();
+        let blocked_page_segment_ids = blocked_page_segment_ids.into_iter().collect::<Vec<_>>();
+        let mut blocker_reasons = dependency_blocks
+            .iter()
+            .map(|block| block.dependency.clone())
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        if candidate_set.is_empty() {
+            blocker_reasons.clear();
+        }
+        StoragePageGcDependencyPlan {
+            shard_id,
+            safe_to_reclaim: !candidate_set.is_empty() && dependency_blocks.is_empty(),
+            candidate_page_segment_ids,
+            reclaimable_page_segment_ids,
+            blocked_page_segment_ids,
+            live_page_segment_ids,
+            manifest_page_segment_ids,
+            shared_store_cursor_count: shared_store_cursors
+                .iter()
+                .filter(|cursor| cursor.shard_id == shard_id)
+                .count(),
+            checkpoint_snapshot_floor,
+            raft_snapshot_install_floor,
+            delayed_destroy_grace_ms,
+            dependency_blocks,
+            blocker_reasons,
         }
     }
 
@@ -2315,10 +2531,26 @@ impl TemporalEngine {
             prune_slot_dump_manifests: request.enable_index_gc,
             roll_forward_slot_dump_installs: request.enable_index_gc,
             follower_replay_cursors: request.follower_replay_cursors.clone(),
+            page_gc_shared_store_cursors: request.page_gc_shared_store_cursors.clone(),
+            page_gc_raft_snapshot_refs: request.raft_snapshot_refs.clone(),
+            page_gc_checkpoint_floor_segment_id: request.page_gc_checkpoint_floor_segment_id,
+            page_gc_raft_install_floor_segment_id: request.page_gc_raft_install_floor_segment_id,
+            page_gc_delayed_destroy_grace_ms: request.page_gc_delayed_destroy_grace_ms,
             invalidate_cache: false,
             warm_cache: request.warm_cache,
         };
         let plan = self.storage_lifecycle_plan(plan_request.clone());
+        let page_gc_dependency_plan = self.storage_page_gc_dependency_plan(
+            request.shard_id,
+            plan.reclaim_candidates
+                .iter()
+                .map(|candidate| candidate.page_segment_id),
+            request.page_gc_shared_store_cursors.clone(),
+            request.raft_snapshot_refs.clone(),
+            request.page_gc_checkpoint_floor_segment_id,
+            request.page_gc_raft_install_floor_segment_id,
+            request.page_gc_delayed_destroy_grace_ms,
+        );
         let slot_logical_bytes = plan
             .slot_summaries
             .iter()
@@ -2497,7 +2729,11 @@ impl TemporalEngine {
             }
         }
 
-        if request.enable_page_reclaim && !request.dry_run && !plan.reclaim_candidates.is_empty() {
+        if request.enable_page_reclaim
+            && !request.dry_run
+            && !plan.reclaim_candidates.is_empty()
+            && page_gc_dependency_plan.safe_to_reclaim
+        {
             let retain_from_page_segment_id = plan
                 .reclaim_candidates
                 .iter()
@@ -2518,7 +2754,10 @@ impl TemporalEngine {
         let lifecycle_report = if request.dry_run {
             None
         } else {
-            Some(self.apply_storage_lifecycle(plan_request))
+            let mut lifecycle_request = plan_request;
+            lifecycle_request.purge_delayed_destroy =
+                lifecycle_request.purge_delayed_destroy && page_gc_dependency_plan.safe_to_reclaim;
+            Some(self.apply_storage_lifecycle(lifecycle_request))
         };
         let eviction_report = if request.enable_evict {
             Some(if request.dry_run {
@@ -2806,37 +3045,46 @@ impl TemporalEngine {
             enabled: request.enable_page_reclaim,
             applied: request.enable_page_reclaim
                 && !request.dry_run
+                && page_gc_dependency_plan.safe_to_reclaim
                 && lifecycle_report
                     .as_ref()
                     .map(|report| !report.delayed_destroy_purged_segments.is_empty())
                     .unwrap_or(false),
-            skipped: !request.enable_page_reclaim || plan.reclaim_candidates.is_empty(),
+            skipped: !request.enable_page_reclaim
+                || plan.reclaim_candidates.is_empty()
+                || !page_gc_dependency_plan.safe_to_reclaim,
             reason: if !request.enable_page_reclaim {
                 "page reclaim disabled".to_string()
             } else if plan.reclaim_candidates.is_empty() {
                 "no stale or delayed-destroy page segments are reclaimable".to_string()
+            } else if !page_gc_dependency_plan.safe_to_reclaim {
+                format!(
+                    "page GC refused because retained dependencies remain: {}",
+                    page_gc_dependency_plan.blocker_reasons.join(",")
+                )
             } else {
                 "reclaimed delayed-destroy page segments selected by stale-byte pressure"
                     .to_string()
             },
-            pressure_signal: "stale_page_bytes+delayed_destroy_backlog+stale_density".to_string(),
+            pressure_signal:
+                "stale_page_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
+                    .to_string(),
             pressure_score: pressure_signals
                 .stale_page_bytes
                 .saturating_add(pressure_signals.delayed_destroy_bytes)
                 .saturating_add(pressure_signals.page_segment_stale_density_basis_points),
             pressure_threshold: 1,
-            pressure_triggered: request.enable_page_reclaim && !plan.reclaim_candidates.is_empty(),
+            pressure_triggered: request.enable_page_reclaim
+                && !plan.reclaim_candidates.is_empty()
+                && page_gc_dependency_plan.safe_to_reclaim,
             candidate_count: reclaim_candidate_count,
-            skipped_count: reclaim_skipped_count,
+            skipped_count: reclaim_skipped_count
+                .saturating_add(page_gc_dependency_plan.blocked_page_segment_ids.len()),
             before_bytes: reclaim_live_bytes + reclaim_stale_bytes,
             after_bytes: reclaim_live_bytes,
             live_bytes: reclaim_live_bytes,
             stale_bytes: reclaim_stale_bytes,
-            selected_page_segment_ids: plan
-                .reclaim_candidates
-                .iter()
-                .map(|candidate| candidate.page_segment_id)
-                .collect(),
+            selected_page_segment_ids: page_gc_dependency_plan.reclaimable_page_segment_ids.clone(),
             page_segments_reclaimed: lifecycle_report
                 .as_ref()
                 .map(|report| report.delayed_destroy_purged_segments.len())
@@ -3054,6 +3302,7 @@ impl TemporalEngine {
             compaction_report,
             wal_reclaim_report,
             eviction_report,
+            page_gc_dependency_plan,
             errors,
         }
     }
@@ -3223,8 +3472,13 @@ impl TemporalEngine {
             min_undumped_oplog_records: 0,
             purge_delayed_destroy: false,
             prune_slot_dump_manifests: false,
-            follower_replay_cursors: Vec::new(),
             roll_forward_slot_dump_installs: false,
+            follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -18935,6 +19189,11 @@ mod tests {
             prune_slot_dump_manifests: true,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -19548,6 +19807,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -19573,7 +19837,12 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
-            invalidate_cache: true,
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
+            invalidate_cache: false,
             warm_cache: false,
         });
         assert!(report.dump_manifest.is_some());
@@ -19943,6 +20212,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -19955,6 +20229,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: true,
         });
@@ -20195,7 +20474,7 @@ mod tests {
         assert!(reclaim_page.page_segments_reclaimed >= 1, "{report:#?}");
         assert_eq!(
             reclaim_page.pressure_signal,
-            "stale_page_bytes+delayed_destroy_backlog+stale_density"
+            "stale_page_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
         );
         assert!(reclaim_page.candidate_count >= reclaim_page.page_segments_reclaimed);
         let index_gc = report
@@ -20250,6 +20529,154 @@ mod tests {
             expired.response,
             CommandResponse::Bytes { value: None },
             "expired record should stay removed after StorageManager eviction and GC"
+        );
+    }
+
+    // shared-corpus: storage_manager_page_gc_dependency_refusal
+    #[test]
+    fn storage_manager_page_gc_refuses_reclaim_with_retained_dependencies() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "page-gc-key".to_string(),
+                        value: b"v1".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let live_segment = engine.live_page_segment_ids(1)[0];
+        let live_plan = engine.storage_page_gc_dependency_plan(
+            1,
+            [live_segment],
+            Vec::<StoragePageGcReplayCursor>::new(),
+            Vec::<SlotDumpRaftSnapshotRef>::new(),
+            None,
+            None,
+            0,
+        );
+        assert!(!live_plan.safe_to_reclaim, "{live_plan:#?}");
+        assert!(live_plan
+            .dependency_blocks
+            .iter()
+            .any(|block| block.dependency == "live_page_ref"));
+
+        let manifest = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+        assert_eq!(manifest.page_segment_ids, vec![live_segment]);
+        engine.page_store().roll_segment().unwrap();
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "page-gc-key".to_string(),
+                        value: b"v2".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let current_live = engine.live_page_segment_ids(1);
+        assert_ne!(current_live, vec![live_segment]);
+        let delayed = engine
+            .page_store()
+            .gc_segments_before_with_live_refs_delayed_destroy(
+                live_segment.saturating_add(1),
+                current_live.clone(),
+            )
+            .unwrap();
+        assert_eq!(delayed.delayed_destroy_page_segment_ids, vec![live_segment]);
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            enable_prepare: true,
+            enable_oplog_reclaim: false,
+            enable_evict: false,
+            enable_expire: false,
+            enable_page_reclaim: true,
+            enable_page_compaction: false,
+            enable_index_gc: false,
+            page_gc_shared_store_cursors: vec![StoragePageGcReplayCursor {
+                cursor_id: "shared-follower-a".to_string(),
+                shard_id: 1,
+                retain_from_page_segment_id: live_segment,
+                reason: "shared replay cursor retained old page segment".to_string(),
+            }],
+            page_gc_checkpoint_floor_segment_id: Some(live_segment),
+            page_gc_raft_install_floor_segment_id: Some(live_segment),
+            page_gc_delayed_destroy_grace_ms: 60_000,
+            ..StorageManagerCycleRequest::default()
+        });
+
+        assert!(report.completed, "{report:#?}");
+        assert!(
+            !report.page_gc_dependency_plan.safe_to_reclaim,
+            "{report:#?}"
+        );
+        assert_eq!(
+            report.page_gc_dependency_plan.blocked_page_segment_ids,
+            vec![live_segment]
+        );
+        let dependencies = report
+            .page_gc_dependency_plan
+            .dependency_blocks
+            .iter()
+            .map(|block| block.dependency.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(dependencies.contains("slot_dump_manifest"), "{report:#?}");
+        assert!(
+            dependencies.contains("shared_store_replay_cursor"),
+            "{report:#?}"
+        );
+        assert!(
+            dependencies.contains("checkpoint_snapshot_floor"),
+            "{report:#?}"
+        );
+        assert!(
+            dependencies.contains("raft_snapshot_install_floor"),
+            "{report:#?}"
+        );
+        assert!(
+            dependencies.contains("delayed_destroy_grace_period"),
+            "{report:#?}"
+        );
+        assert!(report
+            .page_gc_dependency_plan
+            .manifest_page_segment_ids
+            .contains(&live_segment));
+        let reclaim_page = report
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "reclaim_page")
+            .expect("reclaim_page stage");
+        assert!(reclaim_page.skipped, "{report:#?}");
+        assert!(!reclaim_page.applied, "{report:#?}");
+        assert!(reclaim_page
+            .reason
+            .contains("page GC refused because retained dependencies remain"));
+        assert_eq!(reclaim_page.page_segments_reclaimed, 0);
+        assert!(engine
+            .page_store()
+            .delayed_destroy_segment_ids()
+            .unwrap()
+            .contains(&live_segment));
+        assert_eq!(
+            engine
+                .list_slot_dump_manifests(1)
+                .first()
+                .unwrap()
+                .page_segment_ids,
+            vec![live_segment]
         );
     }
 
@@ -20592,6 +21019,11 @@ mod tests {
                 prune_slot_dump_manifests: false,
                 roll_forward_slot_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -20609,6 +21041,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -20627,6 +21064,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });
@@ -20644,6 +21086,11 @@ mod tests {
             prune_slot_dump_manifests: false,
             roll_forward_slot_dump_installs: false,
             follower_replay_cursors: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_raft_snapshot_refs: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
             invalidate_cache: false,
             warm_cache: false,
         });

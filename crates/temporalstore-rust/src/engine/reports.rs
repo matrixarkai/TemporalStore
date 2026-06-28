@@ -599,6 +599,46 @@ pub struct StorageReclaimCandidate {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageGcReplayCursor {
+    pub cursor_id: String,
+    pub shard_id: ShardId,
+    pub retain_from_page_segment_id: u64,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageGcDependencyBlock {
+    pub page_segment_id: u64,
+    pub dependency: String,
+    #[serde(default)]
+    pub owner_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_from_page_segment_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retain_until_unix_ms: Option<u64>,
+    #[serde(default)]
+    pub reason: String,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoragePageGcDependencyPlan {
+    pub shard_id: ShardId,
+    pub safe_to_reclaim: bool,
+    pub candidate_page_segment_ids: Vec<u64>,
+    pub reclaimable_page_segment_ids: Vec<u64>,
+    pub blocked_page_segment_ids: Vec<u64>,
+    pub live_page_segment_ids: Vec<u64>,
+    pub manifest_page_segment_ids: Vec<u64>,
+    pub shared_store_cursor_count: usize,
+    pub checkpoint_snapshot_floor: Option<u64>,
+    pub raft_snapshot_install_floor: Option<u64>,
+    pub delayed_destroy_grace_ms: u64,
+    pub dependency_blocks: Vec<StoragePageGcDependencyBlock>,
+    pub blocker_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecycleReport {
     pub shard_id: ShardId,
     pub plan: StorageLifecyclePlan,
@@ -747,6 +787,16 @@ pub struct StorageLifecycleRequest {
     #[serde(default)]
     pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
     #[serde(default)]
+    pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
+    #[serde(default)]
+    pub page_gc_raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
+    #[serde(default)]
+    pub page_gc_checkpoint_floor_segment_id: Option<u64>,
+    #[serde(default)]
+    pub page_gc_raft_install_floor_segment_id: Option<u64>,
+    #[serde(default)]
+    pub page_gc_delayed_destroy_grace_ms: u64,
+    #[serde(default)]
     pub invalidate_cache: bool,
     #[serde(default)]
     pub warm_cache: bool,
@@ -799,6 +849,14 @@ pub struct StorageManagerCycleRequest {
     pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
     #[serde(default)]
     pub raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
+    #[serde(default)]
+    pub page_gc_shared_store_cursors: Vec<StoragePageGcReplayCursor>,
+    #[serde(default)]
+    pub page_gc_checkpoint_floor_segment_id: Option<u64>,
+    #[serde(default)]
+    pub page_gc_raft_install_floor_segment_id: Option<u64>,
+    #[serde(default)]
+    pub page_gc_delayed_destroy_grace_ms: u64,
 }
 
 impl Default for StorageManagerCycleRequest {
@@ -827,6 +885,10 @@ impl Default for StorageManagerCycleRequest {
             load_cold_slots_for_expire: false,
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
+            page_gc_shared_store_cursors: Vec::new(),
+            page_gc_checkpoint_floor_segment_id: None,
+            page_gc_raft_install_floor_segment_id: None,
+            page_gc_delayed_destroy_grace_ms: 0,
         }
     }
 }
@@ -961,6 +1023,8 @@ pub struct StorageManagerCycleReport {
     pub wal_reclaim_report: Option<StorageWalReclaimReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eviction_report: Option<StorageEvictionReport>,
+    #[serde(default)]
+    pub page_gc_dependency_plan: StoragePageGcDependencyPlan,
     #[serde(default)]
     pub errors: Vec<String>,
 }

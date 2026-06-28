@@ -3292,6 +3292,23 @@
       ]
     },
     {
+      "name": "storage_manager_page_gc_dependency_refusal",
+      "shard_id": 71,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust page GC refuses reclaim when live page refs, slot dump manifests, shared-store replay cursors, checkpoint/snapshot floors, Raft snapshot install floors, or delayed-destroy grace periods still retain a page segment.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_page_gc_refuses_reclaim_with_retained_dependencies"
+          },
+          "name": "rust_storage_manager_page_gc_dependency_refusal",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
