@@ -24,6 +24,7 @@
 #include "extension/modules.pb.h"
 #include "extension/risk/interface.pb.h"
 #include "extension/set/interface.pb.h"
+#include "extension/string/interface.pb.h"
 
 namespace bcache2 {
 namespace client {
@@ -847,6 +848,62 @@ struct TemporalStoreClient::Impl {
             }
             if (!response->ParseFromString(raw_response.output->response_bytes())) {
                 return Status::Internal("response parse failed");
+            }
+            return Status::OK();
+        });
+    }
+
+    struct RawBatchItem {
+        uint16_t module_id = 0;
+        uint16_t function_id = 0;
+        std::string partition_key;
+        std::string request_bytes;
+    };
+
+    Status ExecuteRawBatch(const std::vector<RawBatchItem>& items, bool write) {
+        if (items.empty()) {
+            return Status::OK();
+        }
+        return WithRetry(write, [&]() {
+            std::vector<std::unique_ptr<TableCore::Request>> request_storage;
+            std::vector<std::unique_ptr<TableCore::Response>> response_storage;
+            std::vector<TableCore::Request*> requests;
+            std::vector<TableCore::Response*> responses;
+            request_storage.reserve(items.size());
+            response_storage.reserve(items.size());
+            requests.reserve(items.size());
+            responses.reserve(items.size());
+
+            for (const auto& item : items) {
+                auto request = std::make_unique<TableCore::Request>();
+                auto response = std::make_unique<TableCore::Response>();
+                request->cmd_id = MakeCmdId(item.module_id, item.function_id);
+                request->key = item.partition_key;
+                request->input.set_module_id(item.module_id);
+                request->input.set_function_id(item.function_id);
+                request->input.set_request_bytes(item.request_bytes);
+                requests.emplace_back(request.get());
+                responses.emplace_back(response.get());
+                request_storage.emplace_back(std::move(request));
+                response_storage.emplace_back(std::move(response));
+            }
+
+            Controller ctrl;
+            CoSyncClosure sync;
+            ctrl.set_timeout_ms(options.request_timeout_ms);
+            table_core->BatchExecute(&ctrl, requests, responses, &sync, RequestOptions());
+            sync.Wait();
+            if (!ctrl.status().ok()) {
+                return ctrl.status();
+            }
+
+            for (const auto& response : response_storage) {
+                if (response->output->status().code() != Code::kOK) {
+                    return Status::FromRpcStatus(response->output->status());
+                }
+                if (response->output->response_status().code() != Code::kOK) {
+                    return Status::FromRpcStatus(response->output->response_status());
+                }
             }
             return Status::OK();
         });
