@@ -636,19 +636,9 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             }
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
-            if let Some(entries) = &command.entries {
-                stats.records_written = entries.len() as u64;
-                stats.bytes_written = entries
-                    .iter()
-                    .map(|entry| {
-                        entry
-                            .value
-                            .as_ref()
-                            .map(|value| value.len() as u64)
-                            .unwrap_or(0)
-                    })
-                    .sum();
-            }
+            let expanded = expanded_hash_entries(command);
+            stats.records_written = expanded.len() as u64;
+            stats.bytes_written = expanded.iter().map(|(_, _, value)| value.len() as u64).sum();
             if command
                 .key
                 .as_ref()
@@ -783,6 +773,28 @@ fn required(value: Option<String>, name: &str) -> Result<String, String> {
     value
         .filter(|item| !item.is_empty())
         .ok_or_else(|| format!("missing {name}"))
+}
+
+fn expanded_hash_entries(command: &Command) -> Vec<(String, String, String)> {
+    let mut expanded = Vec::new();
+    if let Some(entries) = &command.entries {
+        expanded.extend(entries.iter().filter_map(|entry| {
+            entry
+                .value
+                .as_ref()
+                .map(|value| (entry.key.clone(), entry.field.clone(), value.clone()))
+        }));
+    }
+    if let Some(entries) = &command.entries_compact {
+        expanded.extend(
+            entries
+                .iter()
+                .map(|CompactHashEntry(key, field, value)| {
+                    (key.clone(), field.clone(), value.clone())
+                }),
+        );
+    }
+    expanded
 }
 
 fn effective_config(command: &Command) -> (String, String, String, i32, i32) {

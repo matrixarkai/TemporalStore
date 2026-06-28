@@ -9,7 +9,8 @@ use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use temporalstore_rust::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+use temporalstore_rust::{Config, SetConfigRequest};
+use temporalstore_rust::{BatchExecuteRequest, Command, CommandResponse, ExecuteRequest, TemporalEngine};
 
 const DEFAULT_SHARD_ID: u64 = 1;
 const LATENCY_BUCKETS_MS: [u128; 9] = [1, 2, 5, 10, 25, 50, 100, 250, 1000];
@@ -479,6 +480,9 @@ fn render_prometheus_metrics(
             "# HELP matrixark_rust_record_log_cached_clients Cached TemporalEngine clients in the long-lived Rust gateway.\n",
             "# TYPE matrixark_rust_record_log_cached_clients gauge\n",
             "matrixark_rust_record_log_cached_clients {}\n",
+            "# HELP matrixark_rust_record_log_clients_created_total TemporalEngine clients created by the long-lived Rust proxy.\n",
+            "# TYPE matrixark_rust_record_log_clients_created_total counter\n",
+            "matrixark_rust_record_log_clients_created_total {}\n",
             "# HELP matrixark_backend_cached_clients Backend-normalized cached client/connection count.\n",
             "# TYPE matrixark_backend_cached_clients gauge\n",
             "matrixark_backend_cached_clients{{backend=\"rust\"}} {}\n",
@@ -1999,6 +2003,46 @@ fn execute_record_log_request(
                 ..empty_output(root)
             }
         }
+        "matrixark_append_records" | "matrixark_batch_append_records" => {
+            let mut count = request.entries.len() + request.entries_compact.len();
+            let mut grouped: BTreeMap<String, Vec<(String, Vec<u8>)>> = BTreeMap::new();
+            for entry in request.entries {
+                grouped
+                    .entry(entry.key)
+                    .or_default()
+                    .push((entry.field, entry.value.into_bytes()));
+            }
+            for CompactHashEntry(key, field, value) in request.entries_compact {
+                grouped.entry(key).or_default().push((field, value.into_bytes()));
+            }
+            let mut commands = Vec::with_capacity(grouped.len() + usize::from(!request.key.trim().is_empty()));
+            for (key, entries) in grouped {
+                commands.push(Command::HashMultiSet { key, entries });
+            }
+            if !request.key.trim().is_empty() {
+                commands.push(Command::StringSet {
+                    key: request.key,
+                    value: request.value.into_bytes(),
+                });
+                count += 1;
+            }
+            execute_empty_batch_runtime(&engine, commands)?;
+            let mut output = empty_output(root);
+            output.count = Some(count);
+            output.extra.insert(
+                "matrixark_append_write_path".to_string(),
+                json!("rust_proxy_matrixark_batch_runtime_default"),
+            );
+            output.extra.insert(
+                "matrixark_batch_uses_forced_sync_durable_writes".to_string(),
+                json!(false),
+            );
+            output.extra.insert(
+                "matrixark_batch_storage_visibility".to_string(),
+                json!("runtime_multiplexed_proxy"),
+            );
+            output
+        }
         "batch_hget" => {
             let mut records = Vec::with_capacity(request.entries.len());
             for entry in request.entries {
@@ -2160,7 +2204,7 @@ fn hash_entries_output(
 ) -> Result<RecordLogOutput, String> {
     let response = engine.execute_durable(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
-        command: Command::HashGetAll { key },
+        command: Command::HashGetAll { key: key.clone() },
     });
     if !response.status.ok {
         return Err(format!(
@@ -2171,17 +2215,26 @@ fn hash_entries_output(
     match response.response {
         CommandResponse::HashEntries { entries } => {
             let mut decoded = BTreeMap::new();
+            let mut records = Vec::new();
             for (field, value) in entries {
                 let value = String::from_utf8(value)
                     .map_err(|error| format!("stored hash value is not UTF-8: {error}"))?;
+                records.push(HashReadRecord {
+                    key: key.clone(),
+                    field: field.clone(),
+                    value: value.clone(),
+                });
                 decoded.insert(field, value);
             }
+            let mut extra = BTreeMap::new();
+            extra.insert("native_prefix_scan".to_string(), json!(true));
+            extra.insert("prefix_scan_path".to_string(), json!("rust_proxy_scan_hash"));
             Ok(RecordLogOutput {
                 value: serde_json::to_string(&decoded)
                     .map_err(|error| format!("failed to serialize hash entries: {error}"))?,
                 count: Some(decoded.len()),
                 entries: decoded,
-                records: Vec::new(),
+                records,
                 root,
                 status: String::new(),
                 mode: String::new(),
@@ -2189,7 +2242,7 @@ fn hash_entries_output(
                 raw_storage_backend: String::new(),
                 prometheus: String::new(),
                 cached_clients: None,
-                extra: BTreeMap::new(),
+                extra,
             })
         }
         other => Err(format!("unexpected response for hgetall: {other:?}")),
@@ -2234,6 +2287,14 @@ fn open_engine(request: &RecordLogRequest) -> Result<TemporalEngine, String> {
         root.join("indexes"),
     );
     engine.load_shard(DEFAULT_SHARD_ID);
+    let _ = engine.set_config(SetConfigRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        config: Config {
+            version: 2,
+            async_storage: true,
+            ..Config::default()
+        },
+    });
     let mut cache = engine_cache()
         .lock()
         .map_err(|_| "record-log engine cache lock poisoned".to_string())?;
@@ -2255,7 +2316,7 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
         Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
         _ => None,
     };
-    let response = engine.execute_durable(ExecuteRequest {
+    let response = engine.execute(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         command,
     });
@@ -2279,8 +2340,58 @@ fn execute_empty(engine: &TemporalEngine, command: Command) -> Result<(), String
     }
 }
 
+fn execute_empty_batch_runtime(engine: &TemporalEngine, commands: Vec<Command>) -> Result<(), String> {
+    if commands.is_empty() {
+        return Ok(());
+    }
+    let cache_updates = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::HashSet { key, field, value } if hgetall_snapshot_contains(key) => {
+                Some((key.clone(), vec![(field.clone(), value.clone())]))
+            }
+            Command::HashMultiSet { key, entries } if hgetall_snapshot_contains(key) => {
+                Some((key.clone(), entries.clone()))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let cache_invalidates = commands
+        .iter()
+        .filter_map(|command| match command {
+            Command::HashDelete { key, .. } | Command::CommonDelete { key } => Some(key.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let response = engine.batch_execute(BatchExecuteRequest {
+        shard_id: DEFAULT_SHARD_ID,
+        commands,
+    });
+    if !response.status.ok {
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
+    }
+    for item in response.responses {
+        if !item.status.ok {
+            return Err(format!("{}: {}", item.status.code, item.status.message));
+        }
+        if !matches!(item.response, CommandResponse::Empty) {
+            return Err(format!("unexpected response for batch write: {:?}", item.response));
+        }
+    }
+    for (key, entries) in cache_updates {
+        update_hgetall_snapshot_fields(&key, &entries);
+    }
+    for key in cache_invalidates {
+        invalidate_hgetall_snapshot(&key);
+    }
+    Ok(())
+}
+
 fn read_bytes(engine: &TemporalEngine, command: Command) -> Result<String, String> {
-    let response = engine.execute_durable(ExecuteRequest {
+    let response = engine.execute(ExecuteRequest {
         shard_id: DEFAULT_SHARD_ID,
         command,
     });
