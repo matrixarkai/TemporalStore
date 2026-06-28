@@ -3730,10 +3730,8 @@ def candidate_index_terms(
     if record_type == "context_event":
         terms.update(index_terms_by_batch.get(record.get("batch_id_hash"), []))
         terms.update(index_terms_by_node.get(record.get("node_hash"), []))
-        extraction = record.get("internal_extraction", {})
-        envelope = record.get("envelope", {})
-        terms.add(context_index_name("event_type", extraction.get("event_type")))
-        if not require_oss_understanding():
+        terms.add(context_index_name("event_type", record.get("event_type")))
+        if not require_oss_understanding() and not record.get("event_type"):
             terms.add(context_index_name("event_type", infer_event_type(str(record.get("text", "")))))
         classification = non_default_classification(extraction.get("classification"))
         if classification:

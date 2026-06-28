@@ -1760,9 +1760,7 @@ class MatrixArkLocalAdapter:
             messages = envelope.get("messages", []) if isinstance(envelope.get("messages"), list) else []
             if not messages and kind == "message":
                 messages = [{"role": "unknown", "content": record.get("text", "")}]
-            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else debug_payload.get("internal_extraction", {})
-            if not isinstance(extraction, dict):
-                extraction = {}
+            extraction = debug_payload.get("internal_extraction", {}) if isinstance(debug_payload.get("internal_extraction"), dict) else {}
             for message in messages:
                 if not isinstance(message, dict):
                     continue
@@ -2273,6 +2271,10 @@ class MatrixArkLocalAdapter:
                         "node_path": node_path,
                         "text": text,
                         "summary_text": summarize_text(text),
+                        "classification": "PENDING_ASYNC_EXTRACTION",
+                        "event_type": "pending_async",
+                        "status": "pending",
+                        "source_kind": envelope.get("kind", "message"),
                         "envelope": envelope,
                         "internal_extraction": {
                             "mode": "async_pending",
@@ -3036,6 +3038,11 @@ class MatrixArkLocalAdapter:
                             "node_path": node_path,
                             "text": chunk.text,
                             "summary_text": fact_summary,
+                            "classification": fact_extraction.get("classification", ""),
+                            "event_type": fact_extraction.get("event_type", ""),
+                            "entity_type": fact_extraction.get("entity_type", ""),
+                            "status": fact_extraction.get("status", "observed"),
+                            "source_kind": "resource_fact",
                             "envelope": {**envelope, "kind": "resource_fact"},
                             "internal_extraction": fact_extraction,
                             "source_chunk_hash": chunk.chunk_hash,
@@ -3258,6 +3265,11 @@ class MatrixArkLocalAdapter:
                 "node_hash": node_hash,
                 "node_path": node_path,
                 "text": text,
+                "classification": extraction.get("classification", ""),
+                "event_type": extraction.get("event_type", ""),
+                "entity_type": extraction.get("entity_type", ""),
+                "status": extraction.get("status", "observed"),
+                "source_kind": envelope.get("kind", "message"),
                 "envelope": envelope,
                 "internal_extraction": extraction,
                 "prior_context": prior_context,
@@ -3474,6 +3486,10 @@ class MatrixArkLocalAdapter:
                         "node_path": node_path,
                         "text": event_text,
                         "summary_text": summarize_text(event_text),
+                        "classification": extraction["classification"],
+                        "event_type": extraction["event_type"],
+                        "status": "observed",
+                        "source_kind": envelope.get("kind", "message"),
                         "envelope": {
                             **envelope,
                             "messages": [message],
@@ -3778,9 +3794,7 @@ class MatrixArkLocalAdapter:
             event_time = int(envelope.get("ingestion_time_ms") or record.get("updated_at_ms") or 0)
             if event_time < source_start_ms or event_time > source_end_ms:
                 continue
-            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else debug_payload.get("internal_extraction", {})
-            if not isinstance(extraction, dict):
-                extraction = {}
+            extraction = debug_payload.get("internal_extraction", {}) if isinstance(debug_payload.get("internal_extraction"), dict) else {}
             confidence = float(extraction.get("confidence", record.get("confidence", 1.0)) or 1.0)
             metadata = envelope.get("metadata", {}) if isinstance(envelope.get("metadata"), dict) else {}
             importance = float(metadata.get("importance", record.get("importance", 1.0)) or 1.0)
@@ -4808,8 +4822,7 @@ class MatrixArkLocalAdapter:
             embedding_score = cosine(query_embedding, event_embedding_vectors.get(record["event_id_hash"], []))
             node_score = node_scores.get(record["node_hash"], {}).get("score", 0.0)
             origin_score = hybrid_origin_score(query_terms, text, embedding_score, node_score)
-            extraction = record.get("internal_extraction", {}) if isinstance(record.get("internal_extraction"), dict) else {}
-            event_type = str(record.get("event_type") or extraction.get("event_type") or record.get("classification") or extraction.get("classification") or "")
+            event_type = str(record.get("event_type") or record.get("classification") or "")
             candidate_metadata: Json = {}
             record_metadata = record.get("metadata")
             envelope_metadata = envelope.get("metadata")
