@@ -1830,7 +1830,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             compacted = adapter.read_all()
             self.assertTrue(compacted)
             for record in compacted:
-                if record.get("record_type") == "context_debug_record":
+                if record.get("record_type") in {"context_debug_record", "context_model_registry"}:
                     continue
                 self.assertEqual(scope["scope_key"], record.get("scope_key"))
                 self.assertNotIn("scope", record)
@@ -1842,11 +1842,54 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 if record.get("record_type") == "context_embedding":
                     self.assertNotIn("dim", record)
                     self.assertNotIn("model", record)
-                    self.assertEqual(mcp.stable_hash("embedding_model:matrixark-local-token-hash-v1"), record.get("model_hash"))
+                    self.assertNotIn("model_hash", record)
+                    self.assertEqual(mcp.embedding_model_ref_for_name("matrixark-local-token-hash-v1"), record.get("model_ref"))
+            registry = [record for record in compacted if record.get("record_type") == "context_model_registry"]
+            self.assertEqual(1, len(registry))
+            self.assertEqual("matrixark-local-token-hash-v1", registry[0].get("model_name"))
+            self.assertEqual(mcp.embedding_model_ref_for_name("matrixark-local-token-hash-v1"), registry[0].get("model_ref"))
+            scoped_record = next(record for record in compacted if record.get("record_type") != "context_model_registry")
             self.assertTrue(
-                mcp.scope_matches(mcp.candidate_access_scope(compacted[0]), scope),
+                mcp.scope_matches(mcp.candidate_access_scope(scoped_record), scope),
                 "compacted scope_key should still satisfy scoped retrieval",
             )
+
+    def test_embedding_model_registry_groups_model_name_once(self) -> None:
+        records = [
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "event_text",
+                "ref_type": "event",
+                "ref_hash": 1,
+                "vector": [0.1, 0.2],
+                "dim": 2,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "updated_at_ms": 1000,
+            },
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "entity_state",
+                "ref_type": "entity",
+                "ref_hash": 2,
+                "vector": [0.3, 0.4],
+                "dim": 2,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+                "updated_at_ms": 2000,
+            },
+        ]
+
+        materialized = mcp.materialize_serving_record_batch(records)
+        registry = [record for record in materialized if record.get("record_type") == "context_model_registry"]
+        embeddings = [record for record in materialized if record.get("record_type") == "context_embedding"]
+
+        self.assertEqual(1, len(registry))
+        self.assertEqual("sentence-transformers/all-MiniLM-L6-v2", registry[0]["model_name"])
+        self.assertEqual(2000, registry[0]["updated_at_ms"])
+        self.assertEqual(2, len(embeddings))
+        self.assertTrue(all(record.get("model_ref") == registry[0]["model_ref"] for record in embeddings))
+        self.assertTrue(all("model" not in record for record in embeddings))
+        self.assertTrue(all("model_hash" not in record for record in embeddings))
+        self.assertTrue(all("dim" not in record for record in embeddings))
 
     def test_latest_context_state_compacts_summary_and_summary_embedding_versions(self) -> None:
         records = [
