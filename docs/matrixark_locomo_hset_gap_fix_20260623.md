@@ -80,8 +80,14 @@ Feature/Sequence/Context-style ingestion and retrieval paths used by LOCOMO and 
 
 - page chunk planning no longer serializes the whole growing candidate page after every point; it
   uses incremental JSON size accounting and serializes only final page chunks;
+- already-sorted timestamped batches skip the `BTreeMap` sort/dedup path and append directly;
 - `FeatureQuery` and `FeatureQueryFiltered` decode each unique packed page once per scan instead of
   rereading/redecoding the same page for every timestamp mapped to that page.
+
+`ContextQueryEvents` and `ContextCompressEvents` now use the same per-scan packed-page cache when
+they encounter packed/migrated context pages. Ordinary `ContextWriteEvent` calls still append one
+event page per command today; server-side context write coalescing remains the next QPS target for
+LOCOMO-style ingestion.
 
 Focused validation:
 

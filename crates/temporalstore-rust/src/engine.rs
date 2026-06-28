@@ -7750,6 +7750,7 @@ fn execute_on_shard(
                 .context_events
                 .get(&object_key)
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .range(
                             context_timeline_start(start_time_ms)
@@ -7757,12 +7758,13 @@ fn execute_on_shard(
                         )
                         .take(context_limit(limit))
                         .filter_map(|(timeline_key, address)| {
-                            read_context_value::<ContextEvent>(
+                            read_context_value_cached::<ContextEvent>(
                                 cache,
                                 page_store,
                                 shard_id,
                                 *timeline_key,
                                 address,
+                                &mut page_cache,
                             )
                         })
                         .filter(|event| {
@@ -8305,18 +8307,20 @@ fn execute_on_shard(
                 .context_events
                 .get(&context_event_key(tenant_hash, node_hash))
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .range(
                             context_timeline_start(source_start_ms)
                                 ..context_timeline_end(source_end_ms),
                         )
                         .filter_map(|(timeline_key, address)| {
-                            read_context_value::<ContextEvent>(
+                            read_context_value_cached::<ContextEvent>(
                                 cache,
                                 page_store,
                                 shard_id,
                                 *timeline_key,
                                 address,
+                                &mut page_cache,
                             )
                         })
                         .filter(|event| {
@@ -10515,6 +10519,12 @@ fn read_page_bytes(
 }
 
 fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
+    if points
+        .windows(2)
+        .all(|window| window[0].timestamp_ms < window[1].timestamp_ms)
+    {
+        return points;
+    }
     let mut by_timestamp = BTreeMap::new();
     for point in points.drain(..) {
         by_timestamp.insert(point.timestamp_ms, point);
@@ -10969,6 +10979,25 @@ fn read_context_value<T: ContextWire>(
     address: &PageAddress,
 ) -> Option<T> {
     let point = read_feature_point(cache, page_store, shard_id, timeline_key, address)?;
+    context_from_bytes(&point.value)
+}
+
+fn read_context_value_cached<T: ContextWire>(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    timeline_key: u64,
+    address: &PageAddress,
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Option<T> {
+    let point = read_feature_point_cached(
+        cache,
+        page_store,
+        shard_id,
+        timeline_key,
+        address,
+        packed_page_cache,
+    )?;
     context_from_bytes(&point.value)
 }
 
