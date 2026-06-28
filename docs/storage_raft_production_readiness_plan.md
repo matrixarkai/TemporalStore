@@ -194,6 +194,12 @@ harness evidence:
   `storage_index.object_manager_runtime_ready`. Cache pressure soak evidence is tracked separately
   as `storage_cache_mtcache.cache_pressure_soak_restart_ready`, including memory/disk pressure and
   restart refill from the persisted disk cache.
+- The remaining storage parity evidence fields are explicit as well:
+  `storage_compaction.model_layout_policy_ready`,
+  `storage_dump_load.merged_recovery_ready`,
+  `storage_manager.phase_loop_ready`,
+  `storage_manager.gc_eviction_pressure_ready`, and
+  `storage_cache_mtcache.cache_pressure_soak_restart_ready`.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
 The local gate now writes one combined proof envelope:
