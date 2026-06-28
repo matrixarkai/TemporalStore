@@ -535,6 +535,7 @@ class MatrixArkLocalAdapter:
         cache_key = (
             self._retrieval_records_cache_generation,
             scope_key,
+            session_scope_mode(scope),
             tuple(sorted(allowed_types)),
             secondary_key,
             selected_key,
@@ -4013,6 +4014,10 @@ class MatrixArkLocalAdapter:
             }
 
         question_type = str(args.get("question_type") or infer_query_type(query))
+        retrieval_session_scope = str(args.get("session_scope") or ranking.get("session_scope") or "prefer").strip().lower()
+        if retrieval_session_scope not in {"prefer", "only"}:
+            raise MatrixArkError("session_scope must be prefer or only")
+        retrieval_scope = {**scope, "_session_scope": retrieval_session_scope}
         secondary_index_filter_groups = infer_secondary_index_filter_groups(query, question_type)
         secondary_index_filter_mode = "any_group" if len(secondary_index_filter_groups) > 1 else "all_groups"
         secondary_index_dropped_count = 0
@@ -4044,6 +4049,7 @@ class MatrixArkLocalAdapter:
             canonical_scope_key(scope),
             query,
             question_type,
+            retrieval_session_scope,
             max_context_tokens,
             int(local_budget.get("token_estimate", 0)),
             tuple(sorted(local_budget.get("text_hashes", set()))),
@@ -4064,10 +4070,29 @@ class MatrixArkLocalAdapter:
                         return pack
                     self._context_pack_cache.pop(pack_cache_key, None)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
+        def annotate_session_continuity(candidate: Json, record: Json) -> Json:
+            record_scope = candidate_access_scope(record)
+            status = session_continuity_status(record_scope, retrieval_scope)
+            boost = session_continuity_boost({**candidate, "session_continuity": status}, question_type)
+            reason = (
+                "same-session continuity"
+                if status == "same_session"
+                else "cross-session memory bridge"
+                if status == "cross_session"
+                else "session-neutral context"
+            )
+            return {
+                **candidate,
+                "session_continuity": status,
+                "continuity_boost": round(boost, 6),
+                "continuity_reason": reason,
+                "question_type": question_type,
+            }
+
         finish_retrieval_stage("query_understanding", stage_started_perf)
         native_pack = self.native_context_pack({
             "query": query,
-            "scope": scope,
+            "scope": retrieval_scope,
             "question_type": question_type,
             "query_plan": query_plan,
             "secondary_index_groups": [sorted(group) for group in secondary_index_filter_groups],
@@ -4137,7 +4162,7 @@ class MatrixArkLocalAdapter:
         self._observe_model_latency("query_embedding", (time.perf_counter() - embedding_started_perf) * 1000.0)
         stage_started_perf = time.perf_counter()
         retrieval_record_result = self.retrieval_records(
-            scope=scope,
+            scope=retrieval_scope,
             secondary_index_groups=secondary_index_filter_groups,
         )
         records = retrieval_record_result["records"]
@@ -4207,7 +4232,7 @@ class MatrixArkLocalAdapter:
             if scan_index % 128 == 0 and deadline_exceeded():
                 return deadline_fallback("deadline_during_embedding_index_scan")
             record_type = record.get("record_type")
-            if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
+            if record_type == "context_index" and scope_matches(candidate_access_scope(record), retrieval_scope):
                 index_name = str(record.get("index_name", ""))
                 if index_name:
                     ref_hashes = context_index_ref_hashes(record)
@@ -4522,7 +4547,7 @@ class MatrixArkLocalAdapter:
                     return deadline_fallback("deadline_during_summary_scan", records)
                 if record.get("record_type") != "context_summary":
                     continue
-                if not access_scope_matches_before_scoring(record, scope):
+                if not access_scope_matches_before_scoring(record, retrieval_scope):
                     continue
                 if not selected_by_tree(record):
                     continue
@@ -4548,7 +4573,7 @@ class MatrixArkLocalAdapter:
                     continue
                 primary_matches.append(
                     score_recall_candidate(
-                        {
+                        annotate_session_continuity({
                             "ref_type": "summary",
                             "ref_hash": record.get("summary_hash") or record.get("node_hash"),
                             "node_hash": record.get("node_hash"),
@@ -4569,7 +4594,7 @@ class MatrixArkLocalAdapter:
                             "updated_at_ms": record.get("updated_at_ms", now_ms()),
                             "text": clip_context_text(text),
                             "recall_path": "primary_summary",
-                        },
+                        }, record),
                         ranking,
                         reference_time_ms=reference_time_ms,
                     )
@@ -4590,7 +4615,7 @@ class MatrixArkLocalAdapter:
                 continue
             envelope = record.get("envelope", {}) if isinstance(record.get("envelope"), dict) else {}
             record_scope = candidate_access_scope(record)
-            if not access_scope_matches_before_scoring(record, scope):
+            if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4642,14 +4667,14 @@ class MatrixArkLocalAdapter:
                 "text": clip_context_text(text),
             }
             if origin_score > 0:
-                primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
+                primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
             graph_text = " ".join(record.get("node_path", []) + sorted(index_terms) + [event_type, text])
             graph_score = sparse_lexical_score(query_terms, graph_text)
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
                         {
-                            **candidate,
+                            **annotate_session_continuity(candidate, record),
                             "recall_path": "auxiliary_keyword_graph",
                             "origin_score": graph_score,
                             "keyword_graph_score": graph_score,
@@ -4676,7 +4701,7 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_entity_scan", records)
             if record.get("record_type") != "context_entity":
                 continue
-            if not access_scope_matches_before_scoring(record, scope):
+            if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4720,13 +4745,13 @@ class MatrixArkLocalAdapter:
                 "text": clip_context_text(text),
             }
             if origin_score > 0:
-                primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
+                primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
             graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [text]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
                         {
-                            **candidate,
+                            **annotate_session_continuity(candidate, record),
                             "recall_path": "auxiliary_keyword_graph",
                             "origin_score": graph_score,
                             "keyword_graph_score": graph_score,
@@ -4753,7 +4778,7 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_segment_scan", records)
             if record.get("record_type") != "context_segment":
                 continue
-            if not access_scope_matches_before_scoring(record, scope):
+            if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4795,13 +4820,13 @@ class MatrixArkLocalAdapter:
                 "text": clip_context_text(str(record.get("summary_text", ""))),
             }
             if origin_score > 0:
-                primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_hybrid"}, ranking, reference_time_ms=reference_time_ms))
+                primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_hybrid"}, record), ranking, reference_time_ms=reference_time_ms))
             graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + sorted(index_terms) + [record.get("topic", ""), text]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
                         {
-                            **candidate,
+                            **annotate_session_continuity(candidate, record),
                             "recall_path": "auxiliary_keyword_graph",
                             "origin_score": graph_score,
                             "keyword_graph_score": graph_score,
@@ -4828,7 +4853,7 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_resource_skill_scan", records)
             if record.get("record_type") not in {"resource_chunk", "skill_section"}:
                 continue
-            if not access_scope_matches_before_scoring(record, scope):
+            if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4889,7 +4914,7 @@ class MatrixArkLocalAdapter:
                 continue
             primary_matches.append(
                 score_recall_candidate(
-                    {
+                    annotate_session_continuity({
                         "ref_type": ref_type,
                         "ref_hash": ref_hash,
                         "node_hash": record.get("node_hash"),
@@ -4923,7 +4948,7 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
                         "text": clip_context_text(text),
                         "recall_path": "primary_resource_skill",
-                    },
+                    }, record),
                     ranking,
                     reference_time_ms=reference_time_ms,
                 )
@@ -4934,7 +4959,7 @@ class MatrixArkLocalAdapter:
                 return deadline_fallback("deadline_during_compression_scan", records)
             if record.get("record_type") != "context_compression_event":
                 continue
-            if not access_scope_matches_before_scoring(record, scope):
+            if not access_scope_matches_before_scoring(record, retrieval_scope):
                 continue
             if not selected_by_tree(record):
                 continue
@@ -4967,13 +4992,13 @@ class MatrixArkLocalAdapter:
                 "text": clip_context_text(text),
             }
             if origin_score > 0:
-                primary_matches.append(score_recall_candidate({**candidate, "recall_path": "primary_time_compression"}, ranking, reference_time_ms=reference_time_ms))
+                primary_matches.append(score_recall_candidate(annotate_session_continuity({**candidate, "recall_path": "primary_time_compression"}, record), ranking, reference_time_ms=reference_time_ms))
             graph_score = sparse_lexical_score(query_terms, " ".join(record.get("node_path", []) + [text, "time_compress"]))
             if graph_score > 0:
                 auxiliary_matches.append(
                     score_recall_candidate(
                         {
-                            **candidate,
+                            **annotate_session_continuity(candidate, record),
                             "recall_path": "auxiliary_keyword_graph",
                             "origin_score": graph_score,
                             "keyword_graph_score": graph_score,
@@ -5104,6 +5129,13 @@ class MatrixArkLocalAdapter:
             "embedding_fallback_used": embedding_fallback_used(),
             "recall_policy": {
                 "query_plan": query_plan,
+                "session_continuity": {
+                    "mode": retrieval_session_scope,
+                    "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
+                    "same_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "same_session"),
+                    "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
+                    "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
+                },
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "tree_traversal": {
                     "enabled": True,

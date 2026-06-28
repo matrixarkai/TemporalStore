@@ -2332,6 +2332,93 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             policy_globals["MATRIXARK_MCP_PROFILE"] = old_core_profile
             policy_globals["MATRIXARK_REQUIRE_NATIVE_CANDIDATE_PREFILTER"] = old_core_prefilter
 
+    def test_retrieve_prefers_same_session_but_allows_entity_bridge_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "matrixark.jsonl")
+            same_scope = {
+                "account_id": "acct",
+                "tenant_id": "tenant",
+                "user_id": "user",
+                "session_id": "session_current",
+                "tenant_hash": mcp.stable_hash("acct:tenant"),
+                "user_hash": mcp.stable_hash(f"{mcp.stable_hash('acct:tenant')}:user:user"),
+                "session_hash": mcp.stable_hash(f"{mcp.stable_hash('acct:tenant')}:session:session_current"),
+                "_explicit_scope_keys": ["account_id", "tenant_id", "user_id", "session_id"],
+            }
+            same_scope["scope_key"] = mcp.scope_key_from_hashes(same_scope["tenant_hash"], same_scope["user_hash"], same_scope["session_hash"])
+            prior_session_hash = mcp.stable_hash(f"{same_scope['tenant_hash']}:session:session_prior")
+            prior_scope = {**same_scope, "session_id": "session_prior", "session_hash": prior_session_hash}
+            prior_scope["scope_key"] = mcp.scope_key_from_hashes(prior_scope["tenant_hash"], prior_scope["user_hash"], prior_session_hash)
+            adapter.append_many([
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 101,
+                    "node_hash": 11,
+                    "node_path": ["memory", "approvals"],
+                    "scope": same_scope,
+                    "scope_key": same_scope["scope_key"],
+                    "classification": "confirmation",
+                    "event_type": "confirmation",
+                    "text": "The current session is about the GPU request and approval follow-up.",
+                    "updated_at_ms": 1000,
+                },
+                {
+                    "record_type": "context_entity",
+                    "entity_hash": 202,
+                    "node_hash": 12,
+                    "node_path": ["memory", "approvals"],
+                    "scope": prior_scope,
+                    "scope_key": prior_scope["scope_key"],
+                    "entity_type": "approval_state",
+                    "entity_name": "gpu_request",
+                    "state": "Alice approved the GPU request after finance review.",
+                    "updated_at_ms": 1100,
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "event_type:confirmation",
+                    "ref_hash": 101,
+                    "node_hash": 11,
+                    "scope": same_scope,
+                    "scope_key": same_scope["scope_key"],
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "entity_type:approval_state",
+                    "ref_hash": 202,
+                    "node_hash": 12,
+                    "scope": prior_scope,
+                    "scope_key": prior_scope["scope_key"],
+                },
+            ])
+
+            pack = adapter.retrieve({
+                "query": "Who approved the GPU request?",
+                "scope": same_scope,
+                "session_scope": "prefer",
+                "max_context_tokens": 1000,
+                "audit_mode": "off",
+                "ranking": {"max_selected_refs": 8},
+            })
+
+            selected = pack["selected_refs"]
+            self.assertTrue(any(ref.get("session_continuity") == "same_session" for ref in selected))
+            self.assertTrue(any(ref.get("session_continuity") == "cross_session" and ref.get("ref_type") == "entity" for ref in selected))
+            policy = pack["recall_policy"]["session_continuity"]
+            self.assertEqual(policy["mode"], "prefer")
+            self.assertGreaterEqual(policy["same_session_selected_ref_count"], 1)
+            self.assertGreaterEqual(policy["entity_bridge_selected_ref_count"], 1)
+
+            strict_pack = adapter.retrieve({
+                "query": "Who approved the GPU request?",
+                "scope": same_scope,
+                "session_scope": "only",
+                "max_context_tokens": 1000,
+                "audit_mode": "off",
+                "ranking": {"max_selected_refs": 8},
+            })
+            self.assertFalse(any(ref.get("session_continuity") == "cross_session" for ref in strict_pack["selected_refs"]))
+
     def test_service_backpressure_fallback_does_not_read_all_for_native_backend(self) -> None:
         class _NoReadAllNativeAdapter:
             def __init__(self) -> None:
