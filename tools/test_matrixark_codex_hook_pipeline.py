@@ -108,6 +108,35 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
             self.assertTrue(all("index_hash" not in record for record in index_records))
 
+    def test_batch_extract_events_are_timestamp_keyed_under_segment_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            adapter = MatrixArkLocalAdapter(Path(tmp_dir) / "matrixark-batch-segment-time.jsonl")
+            result = adapter.batch_extract(
+                {
+                    "scope": {
+                        "account_id": "acct_seg",
+                        "tenant_id": "tenant_seg",
+                        "user_id": "user_seg",
+                        "session_id": "session_seg",
+                    },
+                    "messages": [
+                        {"role": "user", "content": "Alice discussed recursion base cases."},
+                        {"role": "assistant", "content": "Use a base case to stop recursion."},
+                    ],
+                    "force": True,
+                }
+            )
+            self.assertGreaterEqual(result.get("segments_written", 0), 1)
+            records = adapter.read_all()
+            segments = [row for row in records if row.get("record_type") == "context_segment"]
+            events = [row for row in records if row.get("record_type") == "context_event"]
+            self.assertTrue(segments)
+            self.assertTrue(events)
+            segment_hashes = {row.get("segment_hash") for row in segments}
+            self.assertTrue(all(row.get("context_event_parent_type") == "context_segment" for row in events))
+            self.assertTrue(all(row.get("context_event_parent_hash") in segment_hashes for row in events))
+            self.assertTrue(all(str(row.get("event_time_key", "")).startswith(str(row.get("event_time_ms", 0)).zfill(20)) for row in events))
+
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(
             os.environ,
