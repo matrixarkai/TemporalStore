@@ -357,6 +357,8 @@ Latest AWS/test state:
     - if selected subtree has fewer than a bounded number of candidate records, exact dense scoring remains acceptable;
     - if selected subtree or tenant scope exceeds the threshold, use BM25 sparse-first or hybrid candidate generation;
     - candidate limits should be config-driven: `sparse_top_k`, `dense_top_k`, `keyword_top_k`, `final_top_k`, and `deadline_ms`.
+    - dense ContextNodes should be kept small enough for exact scoring; when a node becomes dense, score more candidates only when query planning asks for broad evidence, otherwise split the node by topic/session/time bucket so a hot leaf does not carry thousands of active raw candidates.
+    - default `MATRIXARK_MAX_CANDIDATES_PER_NODE` is intentionally larger for recall headroom, but it is a guardrail, not the long-term scale design; dense-node splitting, time buckets, and stronger sparse/hybrid prefiltering should keep normal hot leaves well below the cap.
   - Query planning:
     - exact identifiers, names, file paths, API names, dates, and quoted phrases should raise the sparse quota;
     - vague semantic questions should raise the dense quota;
