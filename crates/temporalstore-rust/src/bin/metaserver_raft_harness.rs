@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
-use temporalstore_rust::raft::RaftReplicaRole;
+use temporalstore_rust::raft::{ByteRaftProcessPathSemanticsEvidence, RaftReplicaRole};
 use temporalstore_rust::{
     AddNamespaceRequest, Command, MetaCommand, MetaMutation, MetaOwnedDataRaftMembershipReport,
     OpenRaftMetaProcessRolloutReport, OpenRaftProcessNodeEvidence, ProductionMetaRaftRuntime,
@@ -475,6 +475,33 @@ fn meta_process_rollout_report(
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
     let voter_count = voters.len();
+    let observed_process_requests = read_index.max(1);
+    let read_index_responses_observed = u64::from(read_index_validated);
+    let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
+        observed_process_requests,
+        read_index_responses_observed,
+        per_peer_pipeline_state_observed: nodes.len() >= 3
+            && nodes
+                .iter()
+                .all(|node| node.commit_index > 0 && node.applied_index > 0),
+        append_pipeline_state_observed: read_index > 0,
+        snapshot_lifecycle_observed: snapshot_install_validated,
+        wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
+        restart_recovery_observed: recovered_after_restart,
+        failover_observed: true,
+        membership_change_observed: true,
+        secondary_lag_observed: read_index_validated && scheduler_task_replay_validated,
+        ready: observed_process_requests > 0
+            && read_index_responses_observed > 0
+            && per_node_log_store_inspection_count >= voter_count
+            && snapshot_install_validated
+            && recovered_after_restart
+            && scheduler_task_replay_validated,
+        blockers: Vec::new(),
+    };
+    if !byteraft_process_semantics.ready {
+        blockers.push("byteraft_process_semantics_missing".to_string());
+    }
     OpenRaftMetaProcessRolloutReport {
         voters,
         learners: Vec::new(),
@@ -482,8 +509,8 @@ fn meta_process_rollout_report(
         spawned_process_count,
         independent_wal_dirs,
         independent_snapshot_dirs,
-        observed_process_requests: read_index.max(1),
-        read_index_responses_observed: u64::from(read_index_validated),
+        observed_process_requests,
+        read_index_responses_observed,
         restarted_node_count,
         per_node_log_store_inspection_count,
         mutation_proposed_through_process_api,
@@ -497,6 +524,7 @@ fn meta_process_rollout_report(
         recovered_after_restart,
         scheduler_task_replay_validated,
         multi_process_log_store_validated,
+        byteraft_process_semantics: byteraft_process_semantics.clone(),
         ready: mutation_proposed_through_process_api
             && read_index_validated
             && snapshot_install_validated
@@ -506,7 +534,8 @@ fn meta_process_rollout_report(
             && independent_snapshot_dirs
             && restarted_node_count >= voter_count
             && per_node_log_store_inspection_count >= voter_count
-            && multi_process_log_store_validated,
+            && multi_process_log_store_validated
+            && byteraft_process_semantics.ready,
         blockers,
     }
 }

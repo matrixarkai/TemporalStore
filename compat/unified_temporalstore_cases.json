@@ -4049,7 +4049,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, and per-node log-store inspection evidence.",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, per-node log-store inspection evidence, and ByteRaft-derived process semantics for per-peer pipeline state, snapshot lifecycle, WAL lifecycle, failover, membership, and secondary lag where applicable.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [

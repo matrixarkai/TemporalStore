@@ -2749,6 +2749,76 @@ fn raft_openraft_rollout_readiness_reports_real_process_rollout_evidence() {
         .any(|item| item.contains("OpenRaft data-node process rollout")));
 }
 
+// shared-corpus: raft_openraft_process_rollout_evidence
+#[test]
+fn openraft_rollout_reports_carry_byteraft_process_semantics() {
+    let semantics = ByteRaftProcessPathSemanticsEvidence {
+        observed_process_requests: 3,
+        read_index_responses_observed: 3,
+        per_peer_pipeline_state_observed: true,
+        append_pipeline_state_observed: true,
+        snapshot_lifecycle_observed: true,
+        wal_segment_lifecycle_observed: true,
+        restart_recovery_observed: true,
+        failover_observed: true,
+        membership_change_observed: true,
+        secondary_lag_observed: true,
+        ready: true,
+        blockers: Vec::new(),
+    };
+    let node = OpenRaftProcessNodeEvidence {
+        node_id: 1,
+        addr: "127.0.0.1:18001".to_string(),
+        wal_dir: "/tmp/node-1/wal".to_string(),
+        snapshot_dir: "/tmp/node-1/snapshots".to_string(),
+        commit_index: 3,
+        applied_index: 3,
+        snapshot_id: Some("snapshot-3".to_string()),
+        restarted: true,
+        log_store_validated: true,
+        wal_segments_inspected: 1,
+        snapshot_files_inspected: 1,
+    };
+    let report = OpenRaftDataNodeProcessRolloutReport {
+        shard_id: 7,
+        voters: vec![1, 2, 3],
+        learners: Vec::new(),
+        nodes: vec![node],
+        spawned_process_count: 3,
+        independent_wal_dirs: true,
+        independent_snapshot_dirs: true,
+        observed_process_requests: 3,
+        read_index_responses_observed: 3,
+        restarted_node_count: 3,
+        per_node_log_store_inspection_count: 3,
+        write_proposed_through_process_api: true,
+        leader_transfer_validated: true,
+        failover_validated: true,
+        recovered_after_restart: true,
+        restart_recovery_validated: true,
+        snapshot_install_validated: true,
+        applied_fence_validated: true,
+        multi_process_log_store_validated: true,
+        byteraft_process_semantics: semantics,
+        ready: true,
+        blockers: Vec::new(),
+    };
+    let json = serde_json::to_value(report).unwrap();
+    assert_eq!(
+        json["byteraft_process_semantics"]["per_peer_pipeline_state_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_lifecycle_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
+        true
+    );
+    assert_eq!(json["byteraft_process_semantics"]["ready"], true);
+}
+
 #[test]
 fn raft_atomic_apply_readiness_covers_data_node_atomic_durability() {
     let readiness = raft_atomic_apply_readiness();
