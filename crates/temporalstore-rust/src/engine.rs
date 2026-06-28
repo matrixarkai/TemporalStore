@@ -128,6 +128,11 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
     ) -> ExecuteResponse {
+        if async_storage_override.is_some() {
+            if let Some(response) = self.execute_read_only_fast_path(&request) {
+                return response;
+            }
+        }
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&request.shard_id) else {
             return ExecuteResponse {
@@ -280,6 +285,75 @@ impl TemporalEngine {
         ExecuteResponse {
             status: Status::ok(),
             response: outcome.response,
+        }
+    }
+
+    fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
+        let read_command = matches!(
+            request.command,
+            Command::StringGet { .. } | Command::HashGetAll { .. }
+        );
+        if !read_command {
+            return None;
+        }
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&request.shard_id) else {
+            return Some(ExecuteResponse {
+                status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
+                response: CommandResponse::Empty,
+            });
+        };
+        match &request.command {
+            Command::StringGet { key } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: cached_response(&self.cache, CacheKey::string(request.shard_id, key), || {
+                        CommandResponse::Bytes {
+                            value: shard.strings.get(key).and_then(|address| {
+                                read_page_bytes(&self.cache, &self.block_store, request.shard_id, address)
+                            }),
+                        }
+                    }),
+                })
+            }
+            Command::HashGetAll { key } => {
+                if shard
+                    .expires_at_ms
+                    .get(key)
+                    .map(|expires_at| *expires_at <= now_ms())
+                    .unwrap_or(false)
+                {
+                    return None;
+                }
+                let entries = shard
+                    .hashes
+                    .get(key)
+                    .map(|fields| {
+                        let mut entries = fields
+                            .iter()
+                            .filter_map(|(field, address)| {
+                                read_page_bytes(&self.cache, &self.block_store, request.shard_id, address)
+                                    .map(|value| (field.clone(), value))
+                            })
+                            .collect::<Vec<_>>();
+                        entries.sort_by(|a, b| a.0.cmp(&b.0));
+                        entries
+                    })
+                    .unwrap_or_default();
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::HashEntries { entries },
+                })
+            }
+            _ => None,
         }
     }
 

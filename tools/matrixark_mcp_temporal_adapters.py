@@ -1322,6 +1322,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 raise MatrixArkError("timed out waiting for direct TemporalStore write queue to drain")
             time.sleep(0.01)
 
+    def _append_client_for_records(self, records: list[Json]) -> Any:
+        return self._client
+
     def _append_many_materialized(self, records: list[Json], *, allow_queue: bool = True) -> None:
         if not records:
             return
@@ -3574,6 +3577,14 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
             io_timeout_ms=io_timeout_ms,
             sdk_mode=sdk_mode,
         )
+        self._retrieve_client: MatrixArkRustProxyClient | None = None
+        self._summary_client: MatrixArkRustProxyClient | None = None
+        self._retrieve_client_lock = threading.RLock()
+        self._summary_client_lock = threading.RLock()
+        self._rust_proxy_path = proxy_path
+        self._rust_request_timeout_ms = request_timeout_ms
+        self._rust_io_timeout_ms = io_timeout_ms
+        self._rust_sdk_mode = sdk_mode
         self._metaserver = metaserver
         self._namespace = namespace
         self._table = table
@@ -3605,6 +3616,167 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._backend_ready = False
         self._backend_ready_result = None
         self._backend_readiness_lock = threading.RLock()
+
+    def _native_summary_client(self) -> MatrixArkRustProxyClient:
+        """Return a dedicated Rust proxy lane for summary and audit writes."""
+
+        with self._summary_client_lock:
+            if self._summary_client is None:
+                self._summary_client = MatrixArkRustProxyClient(
+                    proxy_path=self._rust_proxy_path,
+                    metaserver=self._metaserver,
+                    namespace=self._namespace,
+                    table=self._table,
+                    request_timeout_ms=self._rust_request_timeout_ms,
+                    io_timeout_ms=self._rust_io_timeout_ms,
+                    sdk_mode=self._rust_sdk_mode,
+                )
+            return self._summary_client
+
+    def _append_client_for_records(self, records: list[Json]) -> Any:
+        hot_record_types = {
+            "context_event",
+            "context_entity",
+            "context_segment",
+            "resource_chunk",
+            "resource_manifest",
+            "resource_registry",
+            "skill_manifest",
+            "skill_section",
+            "skill_registry_update",
+            "context_index",
+        }
+        summary_or_audit_types = {
+            "context_child_ref",
+            "context_embedding",
+            "context_pack_audit",
+            "context_summary",
+            "context_summary_dirty",
+            "context_summary_refresh_audit",
+            "matrixark_audit_log",
+        }
+        record_types = {str(record.get("record_type") or "") for record in records if isinstance(record, dict)}
+        if record_types and not (record_types & hot_record_types) and (record_types & summary_or_audit_types):
+            return self._native_summary_client()
+        return self._client
+
+    def _native_retrieve_client(self) -> MatrixArkRustProxyClient:
+        """Return a dedicated Rust proxy lane for serving reads.
+
+        The Rust stdio proxy is single-flight per process, so one slow write,
+        audit flush, or summary refresh can otherwise sit in front of retrieve
+        calls. Keeping a lazy read lane preserves the long-lived proxy contract
+        while avoiding retrieval head-of-line blocking.
+        """
+
+        with self._retrieve_client_lock:
+            if self._retrieve_client is None:
+                self._retrieve_client = MatrixArkRustProxyClient(
+                    proxy_path=self._rust_proxy_path,
+                    metaserver=self._metaserver,
+                    namespace=self._namespace,
+                    table=self._table,
+                    request_timeout_ms=self._rust_request_timeout_ms,
+                    io_timeout_ms=self._rust_io_timeout_ms,
+                    sdk_mode=self._rust_sdk_mode,
+                )
+            return self._retrieve_client
+
+    def supports_native_candidate_prefilter(self) -> bool:
+        return True
+
+    def supports_native_context_pack(self) -> bool:
+        return True
+
+    def native_context_pack(self, request: Json) -> Json | None:
+        retriever = self._native_retrieve_client().matrixark_retrieve_context_pack
+        try:
+            response = retriever(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                request=request,
+            )
+        except Exception as exc:
+            if self.native_context_pack_required():
+                raise MatrixArkError(
+                    f"backend-native ContextPack assembly failed for {self._backend_label()}: {exc}. "
+                    "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
+                ) from exc
+            return None
+        if not isinstance(response, dict) or not response.get("native_pack_assembly"):
+            if self.native_context_pack_required():
+                raise MatrixArkError(
+                    f"backend-native ContextPack assembly returned an invalid response for {self._backend_label()}. "
+                    "Python reference packing is disabled for TemporalStore serving unless explicitly overridden for local debug."
+                )
+            return None
+        if isinstance(response.get("records"), list):
+            raise MatrixArkError("native matrixark_retrieve_context_pack must return a finished ContextPack, not raw records")
+        pack = response.get("context_pack")
+        if not isinstance(pack, dict):
+            return None
+        pack.setdefault("context_pack_assembly", "native_backend")
+        pack.setdefault("backend", self._backend_label())
+        recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+        contract = recall_policy.get("native_response_contract") if isinstance(recall_policy.get("native_response_contract"), dict) else {}
+        contract.setdefault("raw_records_returned_to_python", False)
+        contract.setdefault("python_hot_path_records", 0)
+        contract.setdefault("python_role", "dispatch_request_receive_context_pack")
+        contract.setdefault("backend_role", "scan_filter_score_pack")
+        contract.setdefault("rust_proxy_dedicated_retrieve_lane", True)
+        recall_policy["native_response_contract"] = contract
+        pack["recall_policy"] = recall_policy
+        return pack
+
+    def _native_candidate_scan(
+        self,
+        *,
+        scope: Json,
+        record_types: set[str],
+        secondary_index_groups: list[set[str]] | None,
+        selected_node_hashes: set[int] | None,
+    ) -> Json | None:
+        try:
+            response = self._native_retrieve_client().matrixark_scan_candidates(
+                count_key=self._count_key,
+                record_hash_key=self._record_hash_key,
+                shard_size=self._shard_size,
+                scope=scope,
+                record_types=sorted(record_types),
+                secondary_index_groups=[sorted(group) for group in (secondary_index_groups or [])],
+                selected_node_hashes=sorted(int(item) for item in (selected_node_hashes or set())),
+            )
+        except Exception as exc:
+            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+                raise MatrixArkError(
+                    f"backend-native candidate prefilter failed for {self._backend_label()}: {exc}. "
+                    "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
+                ) from exc
+            return None
+        records = response.get("records") if isinstance(response, dict) else None
+        if not isinstance(records, list):
+            if native_candidate_prefilter_required(backend_label=self._backend_label()):
+                raise MatrixArkError(
+                    f"backend-native candidate prefilter returned an invalid response for {self._backend_label()}. "
+                    "Python read_all scan/prefilter is disabled for TemporalStore serving unless explicitly overridden for local debug."
+                )
+            return None
+        scan_stats = dict(response.get("scan_stats") or {})
+        scan_stats.setdefault("backend", self._backend_label())
+        scan_stats.setdefault("execution_mode", "native_temporalstore_candidate_prefilter")
+        scan_stats.setdefault("backend_pushdown", True)
+        scan_stats.setdefault("direct_backend_prefilter", True)
+        scan_stats.setdefault("native_pushdown", True)
+        scan_stats.setdefault("native_prefix_scan", True)
+        scan_stats.setdefault("native_secondary_index_prefilter", bool(secondary_index_groups))
+        scan_stats.setdefault("native_pack_assembly", False)
+        scan_stats.setdefault("cache_hit", False)
+        scan_stats.setdefault("record_types", sorted(record_types))
+        scan_stats.setdefault("selected_node_hashes_supplied", len(selected_node_hashes or set()))
+        scan_stats.setdefault("pack_assembly_location", "native_backend_candidate_scan")
+        scan_stats.setdefault("rust_proxy_dedicated_retrieve_lane", True)
+        return {"records": records, "scan_stats": scan_stats}
 
     def _backend_metaserver(self) -> str:
         return self._client.metaserver
@@ -3693,8 +3865,18 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         except Exception as exc:
             readiness = {"ok": False, "error": str(exc)}
         rust_client_metrics = self._client.metrics_snapshot()
+        rust_retrieve_metrics: Json | None = None
+        rust_summary_metrics: Json | None = None
+        if self._retrieve_client is not None:
+            rust_retrieve_metrics = self._retrieve_client.metrics_snapshot()
+        if self._summary_client is not None:
+            rust_summary_metrics = self._summary_client.metrics_snapshot()
         try:
             prometheus = self._backend_neutral_prometheus(rust_client_metrics) + self._client.metrics_prometheus()
+            if self._retrieve_client is not None:
+                prometheus += self._retrieve_client.metrics_prometheus()
+            if self._summary_client is not None:
+                prometheus += self._summary_client.metrics_prometheus()
         except Exception as exc:
             prometheus = self._backend_neutral_prometheus(rust_client_metrics) + f"# matrixark_rust_proxy_metrics_error {json.dumps(str(exc))}\n"
         return {
@@ -3720,6 +3902,7 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "prefix_scan": True,
                 "connection_pooling": True,
                 "client_pooling": True,
+                "dedicated_retrieve_lane": True,
                 "backpressure": True,
                 "graceful_shutdown": True,
                 "timeout_handling": True,
@@ -3737,6 +3920,17 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "audit_buffered_records": len(self._audit_buffer),
                 "audit_flush_failures": self._audit_flush_failures,
                 "rust_client": rust_client_metrics,
+                "rust_write_client": rust_client_metrics,
+                "rust_retrieve_client": rust_retrieve_metrics,
+                "rust_summary_client": rust_summary_metrics,
+                "rust_proxy_lanes": {
+                    "write": True,
+                    "retrieve": self._retrieve_client is not None,
+                    "summary_audit": self._summary_client is not None,
+                    "summary_audit_share_write_lane": False,
+                    "retrieve_isolated_from_summary_audit": True,
+                    "ingest_isolated_from_summary_audit": True,
+                },
             },
         }
 
