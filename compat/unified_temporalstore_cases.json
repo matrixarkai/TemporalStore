@@ -3088,6 +3088,125 @@
       ]
     },
     {
+      "name": "storage_object_manager_cold_hot_reload",
+      "shard_id": 52,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage reloads cold and hot object ownership through the native slot/object/page index, proving the object manager path survives memory eviction and process restart.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_object_manager_cold_hot_reload_and_page_address_fallback"
+          },
+          "name": "rust_storage_object_manager_cold_hot_reload",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_page_address_disk_cache_shared_store_fallback",
+      "shard_id": 53,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust uses PageAddress metadata to refill from persistent page storage and disk cache after memory eviction, then validates restart lookup through the slot-first index.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_object_manager_cold_hot_reload_and_page_address_fallback"
+          },
+          "name": "rust_storage_page_address_disk_cache_fallback",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_tombstone_compaction",
+      "shard_id": 62,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust reports tombstoned objects and applies model-layout compaction policy evidence for deleted logical records.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_compaction_reports_tombstones_and_stale_density"
+          },
+          "name": "rust_storage_tombstone_compaction_policy",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_stale_page_density_compaction",
+      "shard_id": 63,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust compaction reports stale page estimates and stale density for C++-style page reclamation decisions.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_compaction_reports_tombstones_and_stale_density"
+          },
+          "name": "rust_storage_stale_page_density_compaction_policy",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_merged_dump_load_restart_interruption",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust merged dump/load install records prepare and rollback markers so restart interruption scans can roll forward or report incomplete commits safely.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_merged_dump_load_restart_interruption_reports_rollback_marker"
+          },
+          "name": "rust_storage_merged_dump_load_restart_interruption",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_gc_eviction_cold_reads",
+      "shard_id": 64,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManager-style GC plus cache eviction preserves cold reads by falling back through page storage while expired records stay removed.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact"
+          },
+          "name": "rust_storage_gc_eviction_preserves_cold_reads",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_risk_context_page_backed_parity",
+      "shard_id": 65,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust Risk and Context writes are page-backed in the slot-first index and replay correctly after restart instead of relying only on model-map projections.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_risk_and_context_page_backed_restart_parity"
+          },
+          "name": "rust_storage_risk_context_page_backed_restart",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [

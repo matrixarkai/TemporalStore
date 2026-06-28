@@ -17226,6 +17226,378 @@ mod tests {
             .contains(&"stale_page_conflicts".to_string()));
     }
 
+    // shared-corpus: storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
+    #[test]
+    fn storage_object_manager_cold_hot_reload_and_page_address_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            32,
+            cache_dir.clone(),
+            page_dir.clone(),
+            index_dir.clone(),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "cold-hot".to_string(),
+                        value: b"object-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "cold-hot".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"object-value".to_vec())
+            }
+        );
+        let hot_stats = engine.cache().stats();
+        assert!(hot_stats.puts > 0);
+
+        engine.cache().clear_memory_for_test();
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "cold-hot".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"object-value".to_vec())
+            }
+        );
+        assert!(engine.cache().stats().disk_fills > 0);
+
+        engine.cache().invalidate_shard(1).unwrap();
+        let reads_before = engine.page_store().stats().reads;
+        assert_eq!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "cold-hot".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"object-value".to_vec())
+            }
+        );
+        assert!(engine.page_store().stats().reads > reads_before);
+
+        let restored = TemporalEngine::with_local_dirs(32, cache_dir, page_dir, index_dir);
+        restored.load_shard(1);
+        let report = restored.storage_physical_index_report(1);
+        assert!(report.slot_index_authority);
+        assert!(report
+            .slot_nodes
+            .iter()
+            .flat_map(|slot| slot.page_indexes.iter())
+            .any(|page| page.model_id == "string"
+                && page.object_key == "cold-hot"
+                && page.object_id.is_some()));
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "cold-hot".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"object-value".to_vec())
+            }
+        );
+    }
+
+    // shared-corpus: storage_tombstone_compaction storage_stale_page_density_compaction
+    #[test]
+    fn storage_compaction_reports_tombstones_and_stale_density() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "tombstone-me".to_string(),
+                        value: b"gone".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::CommonDelete {
+                        key: "tombstone-me".to_string(),
+                    },
+                })
+                .status
+                .ok
+        );
+        for value in ["v1", "v2", "v3", "v4"] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: "dense".to_string(),
+                            value: value.as_bytes().to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        let recovery = engine.storage_recovery_report(1);
+        assert!(recovery.object_lifecycle.tombstoned_object_ids > 0);
+        assert!(recovery
+            .object_lifecycle
+            .tombstoned_object_keys
+            .contains(&"tombstone-me".to_string()));
+
+        let compact = engine.compact_shard_pages(1).unwrap();
+        let string_policy = compact
+            .before
+            .model_policies
+            .iter()
+            .find(|policy| policy.model_id == "string")
+            .expect("string compaction policy should exist");
+        assert!(string_policy.stale_page_estimate > 0);
+        assert!(string_policy.stale_density_basis_points > 0);
+        assert!(compact.rewritten_page_refs > 0);
+    }
+
+    // shared-corpus: storage_merged_dump_load_restart_interruption
+    #[test]
+    fn storage_merged_dump_load_restart_interruption_reports_rollback_marker() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 92,
+            load_version: 3,
+            local_node_id: Some(1),
+            shard_uri: "local://merged-dump-interrupt/shard-92".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: 10,
+            readonly: false,
+            table_name: "merged_dump_interrupt_table".to_string(),
+        });
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 92,
+                    command: Command::StringSet {
+                        key: "interrupt".to_string(),
+                        value: b"safe".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        let source = engine.create_slot_dump_manifest(92, Vec::new()).unwrap();
+        let merged = engine
+            .create_merged_slot_dump_manifest(
+                92,
+                Vec::new(),
+                vec![source.manifest_id.clone()],
+                Some(4),
+            )
+            .unwrap();
+        engine
+            .persist_slot_dump_install_marker(&merged, "rollback")
+            .unwrap();
+        engine
+            .persist_slot_dump_install_marker(&merged, "prepare")
+            .unwrap();
+
+        let all_markers = list_slot_dump_install_markers_at(&engine.index_dir, 92).unwrap();
+        assert!(all_markers
+            .iter()
+            .any(|marker| marker.manifest_id == merged.manifest_id && marker.phase == "rollback"));
+        let interrupted = engine.interrupted_slot_dump_installs(92);
+        let prepare_marker = interrupted
+            .iter()
+            .find(|marker| marker.manifest_id == merged.manifest_id && marker.phase == "prepare")
+            .expect("prepare marker should survive restart interruption scan");
+        let roll_forward = engine.slot_dump_install_roll_forward_report(prepare_marker);
+        assert_eq!(roll_forward.shard_id, 92);
+        assert!(!roll_forward.completed_commit);
+    }
+
+    // shared-corpus: storage_risk_context_page_backed_parity
+    #[test]
+    fn storage_risk_and_context_page_backed_restart_parity() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(
+            4096,
+            cache_dir.clone(),
+            page_dir.clone(),
+            index_dir.clone(),
+        );
+        engine.load_shard(1);
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskSet {
+                        family: RiskFamily::Cpc,
+                        key: "risk-page".to_string(),
+                        timestamp_ms: 100,
+                        amount: 9,
+                    },
+                })
+                .status
+                .ok
+        );
+        let entity = ContextEntity {
+            entity_hash: 7007,
+            node_hash: 42,
+            entity_type: 1,
+            name: "risk_context_entity".to_string(),
+            value: "present".to_string(),
+            updated_at_ms: 100,
+            valid_from_ms: 100,
+            confidence: 0.95,
+            source_event_hashes: vec![707],
+        };
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextUpsertEntity {
+                        tenant_hash: 9,
+                        entity: entity.clone(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWriteEvent {
+                        tenant_hash: 9,
+                        node_hash: 42,
+                        event: ContextEvent {
+                            event_id_hash: 707,
+                            event_time_ms: 100,
+                            kind: 2,
+                            event_type: 3,
+                            actor_hash: 4,
+                            status: 1,
+                            valid_until_ms: 0,
+                            confidence: 0.91,
+                            importance: 0.8,
+                            text: "risk context event".to_string(),
+                            source_ref: "local://risk-context".to_string(),
+                            related_node_hashes: vec![42],
+                            compact_attrs: vec![1],
+                        },
+                        first_write_only: false,
+                    },
+                })
+                .status
+                .ok
+        );
+        let physical = engine.storage_physical_index_report(1);
+        let pages = physical
+            .slot_nodes
+            .iter()
+            .flat_map(|slot| slot.page_indexes.iter())
+            .collect::<Vec<_>>();
+        assert!(pages.iter().any(|page| page.model_id == "risk"
+            && page.object_key == "risk:cpc:risk-page"
+            && page.object_id.is_some()));
+        assert!(pages.iter().any(|page| page.model_id == "context_entity"
+            && page.object_key == "ctx:entity:9:42:7007"
+            && page.object_id.is_some()));
+        assert!(pages.iter().any(|page| page.model_id == "context_event"
+            && page.object_key == "ctx:event:9:42"
+            && page.object_id.is_some()));
+
+        let restored = TemporalEngine::with_local_dirs(4096, cache_dir, page_dir, index_dir);
+        restored.load_shard(1);
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFamilyQuery {
+                        family: RiskFamily::Cpc,
+                        key: "risk-page".to_string(),
+                        start_ms: 0,
+                        end_ms: 200,
+                        aggregator: "sum".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 9 }
+        );
+        assert!(matches!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextGetEntity {
+                        tenant_hash: 9,
+                        node_hash: 42,
+                        entity_hash: 7007,
+                    },
+                })
+                .response,
+            CommandResponse::ContextEntity { entity: Some(ref stored), .. } if stored == &entity
+        ));
+        assert!(matches!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextQueryEvents {
+                        tenant_hash: 9,
+                        node_hash: 42,
+                        start_time_ms: 0,
+                        end_time_ms: 200,
+                        limit: Some(10),
+                        current_valid_only: true,
+                        as_of_ms: 0,
+                        kinds: vec![2],
+                        statuses: vec![1],
+                        min_confidence: 0.0,
+                        min_importance: 0.0,
+                    },
+                })
+                .response,
+            CommandResponse::ContextEvents { ref events, .. } if events.len() == 1
+        ));
+    }
+
     #[test]
     fn slot_dump_manifest_validation_rejects_checksum_and_missing_segments() {
         let dir = tempfile::tempdir().unwrap();
