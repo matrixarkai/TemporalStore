@@ -31,6 +31,8 @@ Rust owns:
 - storage-facing record writes
 - batch record writes
 - prefix/count record reads and scans
+- native MatrixArk candidate scan with secondary-index prefiltering
+- native MatrixArk ContextPack scoring and budget assembly
 - ContextEvent, ContextEntity, ContextSummary, ContextIndex, ContextEmbedding,
   ContextPackAudit records
 - audit buffering through the MatrixArk adapter
@@ -54,6 +56,9 @@ Default lane widths:
 The metrics snapshot exposes `lane_worker_counts`, `lane_metrics`,
 `write_lane_workers`, `read_lane_workers`, and `retrieve_lane_workers` so scale
 reports can distinguish storage pressure from native retrieve-pack pressure.
+Each lane reports queue wait time, while native responses also expose Rust
+engine time and response serialization time. Retrieval responses additionally
+report scan count, cache hit state, selected refs, and dropped refs.
 
 ## Proxy Commands
 
@@ -73,6 +78,14 @@ The Rust proxy supports:
 - `write_matrixark_records`
 - `read_matrixark_record`
 - `read_matrixark_records`
+- `matrixark_batch_append_records`
+- `matrixark_scan_candidates`
+- `matrixark_retrieve_context_pack`
+
+`matrixark_retrieve_context_pack` is the production hot path for Rust-backed
+serving: Python sends one request and receives a finished `ContextPack` plus
+telemetry. Python should not materialize thousands of raw records when this
+native path is available.
 
 ## MatrixArk MCP Integration
 

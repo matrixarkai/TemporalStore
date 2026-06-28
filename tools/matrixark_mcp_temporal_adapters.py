@@ -3097,6 +3097,15 @@ class MatrixArkRustProxyClient:
         self._lane_commands_total: dict[str, int] = {lane: 0 for lane in self._lane_worker_counts}
         self._lane_wait_ms_total: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
         self._lane_wait_ms_max: dict[str, float] = {lane: 0.0 for lane in self._lane_worker_counts}
+        self._serialization_ms_total = 0.0
+        self._serialization_ms_max = 0.0
+        self._rust_engine_ms_total = 0.0
+        self._rust_engine_ms_max = 0.0
+        self._scan_count_total = 0
+        self._cache_hits_total = 0
+        self._cache_misses_total = 0
+        self._selected_refs_total = 0
+        self._dropped_refs_total = 0
         self._context_record_counts: dict[str, int] = {}
         self._started_at = time.time()
         self._proc: subprocess.Popen[str] | None = None
@@ -3287,6 +3296,66 @@ class MatrixArkRustProxyClient:
                     self._timeouts_total += 1
             if backpressure:
                 self._backpressure_rejections_total += 1
+            if response:
+                serialization_ms = self._nested_float(
+                    response,
+                    "serialization_time_ms",
+                    "serialization_ms",
+                    "serialization_time",
+                )
+                engine_ms = self._nested_float(
+                    response,
+                    "rust_engine_time_ms",
+                    "engine_ms",
+                    "rust_engine_ms",
+                )
+                self._serialization_ms_total += serialization_ms
+                self._serialization_ms_max = max(self._serialization_ms_max, serialization_ms)
+                self._rust_engine_ms_total += engine_ms
+                self._rust_engine_ms_max = max(self._rust_engine_ms_max, engine_ms)
+                scan_count = int(
+                    self._nested_float(
+                        response,
+                        "scan_count",
+                        "scan_stats.scanned_records",
+                        "context_pack.recall_policy.scan_stats.scanned_records",
+                    )
+                    or 0
+                )
+                self._scan_count_total += scan_count
+                cache_hit = bool(response.get("cache_hit") or response.get("cache_hit_used"))
+                if cache_hit:
+                    self._cache_hits_total += 1
+                elif op in {"matrixark_scan_candidates", "matrixark_retrieve_context_pack"}:
+                    self._cache_misses_total += 1
+                selected_count = int(
+                    self._nested_float(
+                        response,
+                        "selected_ref_count",
+                        "context_pack.selected_ref_count",
+                    )
+                    or 0
+                )
+                if not selected_count and isinstance(response.get("context_pack"), dict):
+                    refs = response["context_pack"].get("selected_refs") or response["context_pack"].get("remote_context_refs") or []
+                    if isinstance(refs, list):
+                        selected_count = len(refs)
+                self._selected_refs_total += selected_count
+                dropped_count = int(
+                    self._nested_float(
+                        response,
+                        "dropped_ref_count",
+                        "context_pack.dropped_ref_count",
+                    )
+                    or 0
+                )
+                if not dropped_count and isinstance(response.get("context_pack"), dict):
+                    dropped = response["context_pack"].get("dropped_refs")
+                    if isinstance(dropped, dict):
+                        reasons = dropped.get("reason_counts")
+                        if isinstance(reasons, dict):
+                            dropped_count = sum(int(value or 0) for value in reasons.values())
+                self._dropped_refs_total += dropped_count
             self._last_latency_ms = elapsed_ms
             self._max_observed_latency_ms = max(self._max_observed_latency_ms, elapsed_ms)
             self._latency_samples_ms.append(elapsed_ms)
@@ -3315,6 +3384,23 @@ class MatrixArkRustProxyClient:
                     self._records_read_total += 1
                 elif op in {"batch_hget", "hgetall", "scan_hash"}:
                     self._records_read_total += count
+
+    @staticmethod
+    def _nested_float(payload: Json, *paths: str) -> float:
+        for path in paths:
+            current: Any = payload
+            for part in path.split("."):
+                if not isinstance(current, dict) or part not in current:
+                    current = None
+                    break
+                current = current[part]
+            if current is None:
+                continue
+            try:
+                return float(current)
+            except (TypeError, ValueError):
+                continue
+        return 0.0
 
     def _count_context_record(self, value: Any) -> None:
         if not isinstance(value, str) or not value.startswith("{"):
@@ -3379,6 +3465,8 @@ class MatrixArkRustProxyClient:
                     "commands_total": self._lane_commands_total.get(lane, 0),
                     "wait_ms_total": round(self._lane_wait_ms_total.get(lane, 0.0), 3),
                     "wait_ms_max": round(self._lane_wait_ms_max.get(lane, 0.0), 3),
+                    "queue_wait_ms_total": round(self._lane_wait_ms_total.get(lane, 0.0), 3),
+                    "queue_wait_ms_max": round(self._lane_wait_ms_max.get(lane, 0.0), 3),
                     "p95_latency_ms": round(self._percentile(values, 0.95), 3),
                     "p99_latency_ms": round(self._percentile(values, 0.99), 3),
                 }
@@ -3415,6 +3503,17 @@ class MatrixArkRustProxyClient:
                 "records_written_total": self._records_written_total,
                 "records_read_total": self._records_read_total,
                 "backpressure_rejections_total": self._backpressure_rejections_total,
+                "proxy_queue_wait_ms_total": round(sum(self._lane_wait_ms_total.values()), 3),
+                "proxy_queue_wait_ms_max": round(max(self._lane_wait_ms_max.values()) if self._lane_wait_ms_max else 0.0, 3),
+                "serialization_ms_total": round(self._serialization_ms_total, 3),
+                "serialization_ms_max": round(self._serialization_ms_max, 3),
+                "rust_engine_ms_total": round(self._rust_engine_ms_total, 3),
+                "rust_engine_ms_max": round(self._rust_engine_ms_max, 3),
+                "scan_count_total": self._scan_count_total,
+                "cache_hits_total": self._cache_hits_total,
+                "cache_misses_total": self._cache_misses_total,
+                "selected_refs_total": self._selected_refs_total,
+                "dropped_refs_total": self._dropped_refs_total,
                 "last_latency_ms": round(self._last_latency_ms, 3),
                 "latency_ms_sum": round(sum(samples), 3),
                 "latency_ms_count": len(samples),
@@ -3876,6 +3975,27 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.",
                 "# TYPE matrixark_backend_audit_flush_failures_total counter",
                 f'matrixark_backend_audit_flush_failures_total{{backend="{backend}"}} {int(getattr(self, "_audit_flush_failures", 0) or 0)}',
+                "# HELP matrixark_backend_proxy_queue_wait_ms_total Total proxy lane queue wait time in milliseconds.",
+                "# TYPE matrixark_backend_proxy_queue_wait_ms_total counter",
+                f'matrixark_backend_proxy_queue_wait_ms_total{{backend="{backend}"}} {snapshot.get("proxy_queue_wait_ms_total", 0)}',
+                "# HELP matrixark_backend_serialization_time_ms_total Total Rust proxy JSON serialization time in milliseconds.",
+                "# TYPE matrixark_backend_serialization_time_ms_total counter",
+                f'matrixark_backend_serialization_time_ms_total{{backend="{backend}"}} {snapshot.get("serialization_ms_total", 0)}',
+                "# HELP matrixark_backend_rust_engine_time_ms_total Total Rust engine execution time in milliseconds.",
+                "# TYPE matrixark_backend_rust_engine_time_ms_total counter",
+                f'matrixark_backend_rust_engine_time_ms_total{{backend="{backend}"}} {snapshot.get("rust_engine_ms_total", 0)}',
+                "# HELP matrixark_retrieve_scan_count_total Total records scanned by native MatrixArk retrieval.",
+                "# TYPE matrixark_retrieve_scan_count_total counter",
+                f'matrixark_retrieve_scan_count_total{{backend="{backend}"}} {int(snapshot.get("scan_count_total") or 0)}',
+                "# HELP matrixark_retrieve_cache_hits_total Total native MatrixArk retrieval cache hits.",
+                "# TYPE matrixark_retrieve_cache_hits_total counter",
+                f'matrixark_retrieve_cache_hits_total{{backend="{backend}"}} {int(snapshot.get("cache_hits_total") or 0)}',
+                "# HELP matrixark_context_pack_selected_refs_total Total refs selected by native ContextPack assembly.",
+                "# TYPE matrixark_context_pack_selected_refs_total counter",
+                f'matrixark_context_pack_selected_refs_total{{backend="{backend}"}} {int(snapshot.get("selected_refs_total") or 0)}',
+                "# HELP matrixark_context_pack_dropped_refs_total Total refs dropped by native ContextPack assembly.",
+                "# TYPE matrixark_context_pack_dropped_refs_total counter",
+                f'matrixark_context_pack_dropped_refs_total{{backend="{backend}"}} {int(snapshot.get("dropped_refs_total") or 0)}',
             ]
         )
         return "\n".join(lines) + "\n"

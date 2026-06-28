@@ -61,6 +61,12 @@ Rust:
 - Single-shot record-log CLI is debug-only.
 - Batch append/read: `batch_hset` / `batch_hget`.
 - Prefix/hash scan fast path: `scan_hash` / `hgetall`.
+- MatrixArk native batch append: `matrixark_batch_append_records`.
+- MatrixArk native candidate scan: `matrixark_scan_candidates`, including
+  secondary-index prefiltering before Python receives candidates.
+- MatrixArk native ContextPack assembly: `matrixark_retrieve_context_pack`, so
+  Python receives selected/dropped refs, token counts, scan stats, and telemetry
+  without doing full-log scans or hot-path pack assembly.
 - Health/readiness/metrics: `health`, `readiness`, `metrics_prometheus`.
 - Graceful shutdown clears cached engines.
 - Connection/client pooling: cached `TemporalEngine` instances by record-log root.
@@ -79,8 +85,8 @@ C++:
 The next performance-critical pieces to move from Python orchestration into C++
 and Rust native services are:
 
-- Tree traversal with L0/L1 summary scoring and secondary-index prefiltering.
-- ContextPack assembly and dropped-ref audit construction.
+- C++ native ContextPack assembly parity on paths that still use Python
+  reference packing.
 - Async audit buffering and flush scheduling.
 - Resource and skill registry scans.
 - Native sparse/BM25 index once the shared corpus requires it.

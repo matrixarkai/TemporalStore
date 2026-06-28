@@ -2794,6 +2794,52 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertIn("write", metrics["lane_worker_counts"])
         self.assertIn("read", metrics["lane_worker_counts"])
         self.assertIn("retrieve", metrics["lane_worker_counts"])
+        self.assertIn("proxy_queue_wait_ms_total", metrics)
+        self.assertIn("serialization_ms_total", metrics)
+        self.assertIn("rust_engine_ms_total", metrics)
+        self.assertIn("scan_count_total", metrics)
+        self.assertIn("cache_hits_total", metrics)
+        self.assertIn("selected_refs_total", metrics)
+        self.assertIn("dropped_refs_total", metrics)
+        for lane in ("write", "read", "retrieve"):
+            self.assertIn("queue_wait_ms_total", metrics["lane_metrics"][lane])
+
+    def test_rust_proxy_metrics_record_native_hot_path_counts(self) -> None:
+        client = mcp.MatrixArkRustProxyClient(
+            proxy_path="/bin/true",
+            metaserver="127.0.0.1:18000",
+            namespace="deploy_ns",
+            table="deploy_table",
+            request_timeout_ms=1000,
+            io_timeout_ms=1000,
+        )
+
+        client._record_call_metrics(
+            "matrixark_retrieve_context_pack",
+            {},
+            {
+                "ok": True,
+                "rust_engine_time_ms": 7,
+                "serialization_time_ms": 2,
+                "scan_count": 11,
+                "cache_hit": True,
+                "selected_ref_count": 3,
+                "dropped_ref_count": 5,
+            },
+            12.0,
+            failed=False,
+            lane="retrieve",
+            wait_ms=4.0,
+        )
+        metrics = client.metrics_snapshot()
+
+        self.assertEqual(metrics["rust_engine_ms_total"], 7)
+        self.assertEqual(metrics["serialization_ms_total"], 2)
+        self.assertEqual(metrics["scan_count_total"], 11)
+        self.assertEqual(metrics["cache_hits_total"], 1)
+        self.assertEqual(metrics["selected_refs_total"], 3)
+        self.assertEqual(metrics["dropped_refs_total"], 5)
+        self.assertEqual(metrics["lane_metrics"]["retrieve"]["queue_wait_ms_total"], 4)
 
     def test_rust_server_exposes_rust_proxy_argument(self) -> None:
         repo = Path(__file__).resolve().parents[1]

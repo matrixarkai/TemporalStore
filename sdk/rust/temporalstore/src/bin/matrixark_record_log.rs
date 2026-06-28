@@ -69,6 +69,14 @@ struct MetricsSnapshot {
     clients_created: u64,
     parse_errors: u64,
     client_connect_errors: u64,
+    rust_engine_time_ms_sum: u128,
+    rust_engine_time_ms_max: u128,
+    serialization_time_ms_sum: u128,
+    serialization_time_ms_max: u128,
+    scan_count_total: u64,
+    cache_hit_total: u64,
+    selected_refs_total: u64,
+    dropped_refs_total: u64,
     op: HashMap<String, OpMetrics>,
 }
 
@@ -85,16 +93,57 @@ impl Default for MetricsSnapshot {
             clients_created: 0,
             parse_errors: 0,
             client_connect_errors: 0,
+            rust_engine_time_ms_sum: 0,
+            rust_engine_time_ms_max: 0,
+            serialization_time_ms_sum: 0,
+            serialization_time_ms_max: 0,
+            scan_count_total: 0,
+            cache_hit_total: 0,
+            selected_refs_total: 0,
+            dropped_refs_total: 0,
             op: HashMap::new(),
         }
     }
 }
 
 impl MetricsSnapshot {
-    fn observe(&mut self, op: &str, ok: bool, elapsed_ms: u128, stats: CommandStats) {
+    fn observe(
+        &mut self,
+        op: &str,
+        ok: bool,
+        elapsed_ms: u128,
+        serialization_ms: u128,
+        result: Option<&Value>,
+        stats: CommandStats,
+    ) {
         self.commands_total += 1;
         if !ok {
             self.commands_failed += 1;
+        }
+        self.rust_engine_time_ms_sum += elapsed_ms;
+        self.rust_engine_time_ms_max = self.rust_engine_time_ms_max.max(elapsed_ms);
+        self.serialization_time_ms_sum += serialization_ms;
+        self.serialization_time_ms_max = self.serialization_time_ms_max.max(serialization_ms);
+        if let Some(result) = result {
+            self.scan_count_total += result
+                .get("scan_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            if result
+                .get("cache_hit")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                self.cache_hit_total += 1;
+            }
+            self.selected_refs_total += result
+                .get("selected_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            self.dropped_refs_total += result
+                .get("dropped_ref_count")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
         }
         self.records_written += stats.records_written;
         self.records_read += stats.records_read;
@@ -141,6 +190,78 @@ impl MetricsSnapshot {
             "matrixark_rust_record_log_command_latency_ms_max",
             "gauge",
             "Maximum observed command latency in milliseconds by op.",
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_rust_engine_time_ms_total",
+            "counter",
+            "Total Rust engine execution time in milliseconds.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_rust_engine_time_ms_total",
+            "{backend=\"rust\"}",
+            self.rust_engine_time_ms_sum,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_backend_serialization_time_ms_total",
+            "counter",
+            "Total Rust proxy response serialization time in milliseconds.",
+        );
+        line(
+            &mut out,
+            "matrixark_backend_serialization_time_ms_total",
+            "{backend=\"rust\"}",
+            self.serialization_time_ms_sum,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_retrieve_scan_count_total",
+            "counter",
+            "Total records scanned by native MatrixArk retrieval calls.",
+        );
+        line(
+            &mut out,
+            "matrixark_retrieve_scan_count_total",
+            "{backend=\"rust\"}",
+            self.scan_count_total,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_retrieve_cache_hits_total",
+            "counter",
+            "Total native MatrixArk retrieval cache hits.",
+        );
+        line(
+            &mut out,
+            "matrixark_retrieve_cache_hits_total",
+            "{backend=\"rust\"}",
+            self.cache_hit_total,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_context_pack_selected_refs_total",
+            "counter",
+            "Total refs selected by native MatrixArk ContextPack assembly.",
+        );
+        line(
+            &mut out,
+            "matrixark_context_pack_selected_refs_total",
+            "{backend=\"rust\"}",
+            self.selected_refs_total,
+        );
+        metric_header(
+            &mut out,
+            "matrixark_context_pack_dropped_refs_total",
+            "counter",
+            "Total refs dropped by native MatrixArk ContextPack assembly.",
+        );
+        line(
+            &mut out,
+            "matrixark_context_pack_dropped_refs_total",
+            "{backend=\"rust\"}",
+            self.dropped_refs_total,
         );
         let mut ops: Vec<_> = self.op.iter().collect();
         ops.sort_by(|a, b| a.0.cmp(b.0));
@@ -929,13 +1050,18 @@ fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> Str
     let Some(query) = query_scope else {
         return "unscoped".to_string();
     };
-    let Some(query_session) = query.get("session_id").and_then(Value::as_str).filter(|text| !text.is_empty()) else {
+    let Some(query_session) = query
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    else {
         return "unscoped".to_string();
     };
     if record_scope_string(record, "session_id").as_deref() == Some(query_session) {
         return "same_session".to_string();
     }
-    let has_sessionish_scope = record_scope_string(record, "scope_key").is_some() || record_scope_string(record, "session_id").is_some();
+    let has_sessionish_scope = record_scope_string(record, "scope_key").is_some()
+        || record_scope_string(record, "session_id").is_some();
     if has_sessionish_scope {
         "cross_session".to_string()
     } else {
@@ -944,7 +1070,10 @@ fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> Str
 }
 
 fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
-    let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     match status {
         "same_session" => match record_type {
             "context_event" | "context_segment" => 0.16,
@@ -955,7 +1084,10 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
         "cross_session" => {
             if record_type == "context_entity" || context_class == "resource_fact" {
                 0.11
-            } else if matches!(record_type, "context_event" | "context_segment" | "context_compression_event") {
+            } else if matches!(
+                record_type,
+                "context_event" | "context_segment" | "context_compression_event"
+            ) {
                 0.06
             } else {
                 0.0
@@ -965,24 +1097,44 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
     }
 }
 
-fn cross_session_rerank_boost(record: &Value, context_class: &str, status: &str, question_type: &str) -> f64 {
+fn cross_session_rerank_boost(
+    record: &Value,
+    context_class: &str,
+    status: &str,
+    question_type: &str,
+) -> f64 {
     if status != "cross_session" {
         return 0.0;
     }
-    let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     let has_citation = record.get("source_ref").is_some()
         || record.get("citation").is_some()
         || record.get("source_chunk_hash").is_some();
     match record_type {
         "context_entity" => {
-            if matches!(question_type, "current_state" | "latest" | "multi_hop") { 0.08 } else { 0.04 }
+            if matches!(question_type, "current_state" | "latest" | "multi_hop") {
+                0.08
+            } else {
+                0.04
+            }
         }
         "resource_chunk" if has_citation => 0.04,
-        "context_event" | "context_segment" if matches!(question_type, "multi_hop" | "why_emotion" | "fact") => 0.03,
+        "context_event" | "context_segment"
+            if matches!(question_type, "multi_hop" | "why_emotion" | "fact") =>
+        {
+            0.03
+        }
         "context_compression_event" => 0.02,
         "context_summary" if question_type != "broad_exploration" => -0.04,
         _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
-            if has_citation { 0.06 } else { 0.04 }
+            if has_citation {
+                0.06
+            } else {
+                0.04
+            }
         }
         _ => 0.0,
     }
@@ -1330,11 +1482,17 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
             .collect::<Vec<_>>()
     };
 
+    let dropped_ref_count =
+        dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
     Ok(json!({
         "ok": true,
         "count": filtered.len(),
         "records": filtered,
         "native_candidate_prefilter": true,
+        "scan_count": scanned_records,
+        "cache_hit": false,
+        "selected_ref_count": 0,
+        "dropped_ref_count": dropped_ref_count,
         "scan_stats": {
             "execution_mode": "rust_proxy_native_candidate_prefilter",
             "native_prefix_scan": true,
@@ -1395,8 +1553,14 @@ fn context_class_name(record: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("");
     if record_type == "context_event" {
-        let classification = record.get("classification").and_then(Value::as_str).unwrap_or("");
-        let event_type = record.get("event_type").and_then(Value::as_str).unwrap_or("");
+        let classification = record
+            .get("classification")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let event_type = record
+            .get("event_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if classification == "resource_fact" || event_type.starts_with("resource_") {
             return "resource_fact".to_string();
         }
@@ -1571,13 +1735,25 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 score += 0.06;
             }
             let context_class = context_class_name(&record);
-            let session_continuity = session_continuity_status(&record, scope_for_continuity.as_ref());
-            let continuity_boost_value = continuity_boost(&record, &context_class, &session_continuity);
+            let session_continuity =
+                session_continuity_status(&record, scope_for_continuity.as_ref());
+            let continuity_boost_value =
+                continuity_boost(&record, &context_class, &session_continuity);
             score += continuity_boost_value;
-            let cross_session_rerank_boost_value =
-                cross_session_rerank_boost(&record, &context_class, &session_continuity, &question_type);
+            let cross_session_rerank_boost_value = cross_session_rerank_boost(
+                &record,
+                &context_class,
+                &session_continuity,
+                &question_type,
+            );
             score += cross_session_rerank_boost_value;
-            (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value)
+            (
+                score,
+                record,
+                session_continuity,
+                continuity_boost_value,
+                cross_session_rerank_boost_value,
+            )
         })
         .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
         .collect();
@@ -1602,7 +1778,14 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut cross_selected_refs = 0_u64;
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
-    for (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value) in scored {
+    for (
+        score,
+        record,
+        session_continuity,
+        continuity_boost_value,
+        cross_session_rerank_boost_value,
+    ) in scored
+    {
         if selected.len() as u64 >= max_refs {
             break;
         }
@@ -1638,7 +1821,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         if is_cross_session
             && cross_policy.budget_tokens > 0
             && cross_used_tokens + tokens > cross_policy.budget_tokens
-            && !(is_entity_bridge && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
+            && !(is_entity_bridge
+                && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
         {
             dropped_cross_budget += 1;
             continue;
@@ -1673,7 +1857,10 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
     if let Some(stats) = scan_stats.as_object_mut() {
         stats.insert("native_pack_assembly".to_string(), json!(true));
-        stats.insert("pack_assembly_location".to_string(), json!("rust_proxy_native"));
+        stats.insert(
+            "pack_assembly_location".to_string(),
+            json!("rust_proxy_native"),
+        );
         stats.insert("next_native_gap".to_string(), json!(""));
     }
     let pack = json!({
@@ -1771,11 +1958,37 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         },
         "quality_warnings": []
     });
+    let scan_dropped_count = scan_stats
+        .get("dropped_by_type")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        + scan_stats
+            .get("dropped_by_scope")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("selected_node_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("secondary_index_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    let dropped_ref_count = dropped_over_budget
+        + dropped_cross_budget
+        + dropped_cross_session_cap
+        + dropped_cross_candidate_cap
+        + scan_dropped_count;
     Ok(json!({
         "ok": true,
+        "count": selected.len(),
         "native_pack_assembly": true,
         "raw_records_returned": false,
         "python_hot_path_records": 0,
+        "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
+        "cache_hit": false,
+        "selected_ref_count": selected.len(),
+        "dropped_ref_count": dropped_ref_count,
         "context_pack": pack,
         "scan_stats": scan_stats
     }))
@@ -1949,21 +2162,39 @@ fn run(command: Command) -> Result<Value, String> {
     run_with_client(&client, command)
 }
 
-fn print_result(result: Result<Value, String>, elapsed_ms: u128) -> bool {
+fn print_result(result: Result<Value, String>, engine_ms: u128) -> (bool, u128) {
     match result {
         Ok(mut value) => {
             if let Some(object) = value.as_object_mut() {
-                object.insert("elapsed_ms".to_string(), json!(elapsed_ms));
+                object.insert("rust_engine_time_ms".to_string(), json!(engine_ms));
+            }
+            let serialize_started = Instant::now();
+            let _ = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+            let serialization_ms = serialize_started.elapsed().as_millis();
+            let total_ms = engine_ms + serialization_ms;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("serialization_time_ms".to_string(), json!(serialization_ms));
+                object.insert("elapsed_ms".to_string(), json!(total_ms));
             }
             println!("{}", value);
-            true
+            (true, total_ms)
         }
         Err(err) => {
-            println!(
-                "{}",
-                json!({"ok": false, "error": err, "elapsed_ms": elapsed_ms})
-            );
-            false
+            let mut value = json!({
+                "ok": false,
+                "error": err,
+                "rust_engine_time_ms": engine_ms
+            });
+            let serialize_started = Instant::now();
+            let _ = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+            let serialization_ms = serialize_started.elapsed().as_millis();
+            let total_ms = engine_ms + serialization_ms;
+            if let Some(object) = value.as_object_mut() {
+                object.insert("serialization_time_ms".to_string(), json!(serialization_ms));
+                object.insert("elapsed_ms".to_string(), json!(total_ms));
+            }
+            println!("{}", value);
+            (false, total_ms)
         }
     }
 }
@@ -2068,9 +2299,26 @@ fn serve() -> i32 {
             Ok(value) => (true, command_stats(&command, value)),
             Err(_) => (false, CommandStats::default()),
         };
-        metrics.observe(&op, ok, elapsed_ms, stats);
+        let serialization_started = Instant::now();
+        match &result {
+            Ok(value) => {
+                let _ = serde_json::to_string(value);
+            }
+            Err(err) => {
+                let _ = serde_json::to_string(&json!({"ok": false, "error": err}));
+            }
+        }
+        let serialization_ms = serialization_started.elapsed().as_millis();
+        metrics.observe(
+            &op,
+            ok,
+            elapsed_ms,
+            serialization_ms,
+            result.as_ref().ok(),
+            stats,
+        );
         export_metrics_if_configured(&metrics);
-        print_result(result, elapsed_ms);
+        let _ = print_result(result, elapsed_ms);
         let _ = stdout.flush();
     }
     0
@@ -2090,7 +2338,7 @@ fn single_shot() -> i32 {
         }
     };
     let started = Instant::now();
-    if print_result(run(command), started.elapsed().as_millis()) {
+    if print_result(run(command), started.elapsed().as_millis()).0 {
         0
     } else {
         1
@@ -2191,13 +2439,22 @@ mod tests {
             "write_matrixark_record",
             true,
             12,
+            1,
+            None,
             CommandStats {
                 records_written: 1,
                 bytes_written: 128,
                 ..CommandStats::default()
             },
         );
-        metrics.observe("write_matrixark_record", false, 30, CommandStats::default());
+        metrics.observe(
+            "write_matrixark_record",
+            false,
+            30,
+            2,
+            None,
+            CommandStats::default(),
+        );
         let text = metrics.render_prometheus();
         assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"ok\"} 1"));
         assert!(text.contains("matrixark_rust_record_log_commands_total{op=\"write_matrixark_record\",status=\"error\"} 1"));

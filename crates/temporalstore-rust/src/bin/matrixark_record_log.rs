@@ -91,6 +91,10 @@ struct RecordLogResponse {
     cached_clients: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     elapsed_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rust_engine_time_ms: Option<u128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    serialization_time_ms: Option<u128>,
     #[serde(skip_serializing_if = "String::is_empty")]
     error: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -129,11 +133,8 @@ fn main() {
         std::process::exit(64);
     }
     let started = Instant::now();
-    let response = response_from_result(run(), started.elapsed().as_millis());
-    println!(
-        "{}",
-        serde_json::to_string(&response).expect("record-log response should serialize")
-    );
+    let mut response = response_from_result(run(), started.elapsed().as_millis());
+    println!("{}", serialize_response_with_metrics(&mut response));
     if !response.ok {
         std::process::exit(1);
     }
@@ -166,6 +167,8 @@ fn response_from_result(
             prometheus: output.prometheus,
             cached_clients: output.cached_clients,
             elapsed_ms: Some(elapsed_ms),
+            rust_engine_time_ms: Some(elapsed_ms),
+            serialization_time_ms: None,
             error: String::new(),
             error_code: String::new(),
             retryable: None,
@@ -285,15 +288,11 @@ fn serve() -> i32 {
                     cached_clients: Some(cached_clients),
                     ..empty_output(PathBuf::new())
                 };
-                let response = response_from_result(
+                let mut response = response_from_result(
                     Ok(("shutdown".to_string(), output)),
                     started.elapsed().as_millis(),
                 );
-                let _ = writeln!(
-                    stdout,
-                    "{}",
-                    serde_json::to_string(&response).expect("record-log response should serialize")
-                );
+                let _ = writeln!(stdout, "{}", serialize_response_with_metrics(&mut response));
                 let _ = stdout.flush();
                 return 0;
             }
@@ -323,12 +322,14 @@ fn serve() -> i32 {
             )),
         };
         let elapsed_ms = started.elapsed().as_millis();
-        let response = response_from_result(result, elapsed_ms);
+        let mut response = response_from_result(result, elapsed_ms);
+        let response_json = serialize_response_with_metrics(&mut response);
         command_count += 1;
-        latency_sum_ms += elapsed_ms;
-        latency_max_ms = latency_max_ms.max(elapsed_ms);
+        let observed_elapsed_ms = response.elapsed_ms.unwrap_or(elapsed_ms);
+        latency_sum_ms += observed_elapsed_ms;
+        latency_max_ms = latency_max_ms.max(observed_elapsed_ms);
         for (idx, upper_bound) in LATENCY_BUCKETS_MS.iter().enumerate() {
-            if elapsed_ms <= *upper_bound {
+            if observed_elapsed_ms <= *upper_bound {
                 latency_buckets[idx] += 1;
             }
         }
@@ -347,11 +348,7 @@ fn serve() -> i32 {
             "batch_hget" | "hgetall" | "scan_hash" => response.count.unwrap_or(0) as u64,
             _ => 0,
         };
-        let _ = writeln!(
-            stdout,
-            "{}",
-            serde_json::to_string(&response).expect("record-log response should serialize")
-        );
+        let _ = writeln!(stdout, "{}", response_json);
         let _ = stdout.flush();
     }
     0
@@ -854,7 +851,12 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
     }
 }
 
-fn cross_session_rerank_boost(record: &Value, context_class: &str, status: &str, question_type: &str) -> f64 {
+fn cross_session_rerank_boost(
+    record: &Value,
+    context_class: &str,
+    status: &str,
+    question_type: &str,
+) -> f64 {
     if status != "cross_session" {
         return 0.0;
     }
@@ -867,14 +869,26 @@ fn cross_session_rerank_boost(record: &Value, context_class: &str, status: &str,
         || record.get("source_chunk_hash").is_some();
     match record_type {
         "context_entity" => {
-            if matches!(question_type, "current_state" | "latest" | "multi_hop") { 0.08 } else { 0.04 }
+            if matches!(question_type, "current_state" | "latest" | "multi_hop") {
+                0.08
+            } else {
+                0.04
+            }
         }
         "resource_chunk" if has_citation => 0.04,
-        "context_event" | "context_segment" if matches!(question_type, "multi_hop" | "why_emotion" | "fact") => 0.03,
+        "context_event" | "context_segment"
+            if matches!(question_type, "multi_hop" | "why_emotion" | "fact") =>
+        {
+            0.03
+        }
         "context_compression_event" => 0.02,
         "context_summary" if question_type != "broad_exploration" => -0.04,
         _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
-            if has_citation { 0.06 } else { 0.04 }
+            if has_citation {
+                0.06
+            } else {
+                0.04
+            }
         }
         _ => 0.0,
     }
@@ -1273,11 +1287,17 @@ fn scan_matrixark_candidates(
             .collect::<Vec<_>>()
     };
 
+    let dropped_ref_count =
+        dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
     Ok(json!({
         "ok": true,
         "count": filtered.len(),
         "records": filtered,
         "native_candidate_prefilter": true,
+        "scan_count": scanned_records,
+        "cache_hit": false,
+        "selected_ref_count": 0,
+        "dropped_ref_count": dropped_ref_count,
         "scan_stats": {
             "execution_mode": "rust_proxy_native_candidate_prefilter",
             "native_prefix_scan": true,
@@ -1528,11 +1548,21 @@ fn retrieve_context_pack_native(
             let continuity_boost_value =
                 continuity_boost(&record, &context_class, &session_continuity);
             score += continuity_boost_value;
-            let cross_session_rerank_boost_value =
-                cross_session_rerank_boost(&record, &context_class, &session_continuity, &question_type);
+            let cross_session_rerank_boost_value = cross_session_rerank_boost(
+                &record,
+                &context_class,
+                &session_continuity,
+                &question_type,
+            );
             score += cross_session_rerank_boost_value;
             score += type_priority_boost(&record, &context_class, &question_type);
-            (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value)
+            (
+                score,
+                record,
+                session_continuity,
+                continuity_boost_value,
+                cross_session_rerank_boost_value,
+            )
         })
         .filter(|(score, _, _, _, _)| *score >= min_similarity_score)
         .collect();
@@ -1557,7 +1587,14 @@ fn retrieve_context_pack_native(
     let mut entity_bridge_selected_refs = 0_u64;
     let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     let mut used_tokens = 0_u64;
-    for (score, record, session_continuity, continuity_boost_value, cross_session_rerank_boost_value) in scored {
+    for (
+        score,
+        record,
+        session_continuity,
+        continuity_boost_value,
+        cross_session_rerank_boost_value,
+    ) in scored
+    {
         if selected.len() as u64 >= max_refs {
             break;
         }
@@ -1730,11 +1767,37 @@ fn retrieve_context_pack_native(
         },
         "quality_warnings": []
     });
+    let scan_dropped_count = scan_stats
+        .get("dropped_by_type")
+        .and_then(Value::as_u64)
+        .unwrap_or(0)
+        + scan_stats
+            .get("dropped_by_scope")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("selected_node_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+        + scan_stats
+            .get("secondary_index_dropped_candidate_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+    let dropped_ref_count = dropped_over_budget
+        + dropped_cross_budget
+        + dropped_cross_session_cap
+        + dropped_cross_candidate_cap
+        + scan_dropped_count;
     Ok(json!({
         "ok": true,
+        "count": selected.len(),
         "native_pack_assembly": true,
         "raw_records_returned": false,
         "python_hot_path_records": 0,
+        "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
+        "cache_hit": false,
+        "selected_ref_count": selected.len(),
+        "dropped_ref_count": dropped_ref_count,
         "context_pack": pack,
         "scan_stats": scan_stats
     }))
