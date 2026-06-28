@@ -2487,6 +2487,44 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(len(client.calls), 1)
         self.assertNotIn("query_embedding", client.calls[0]["request"])
         self.assertEqual(client.calls[0]["request"]["query"], "What did Alice approve?")
+        cross_session = client.calls[0]["request"]["cross_session"]
+        self.assertTrue(cross_session["enabled"])
+        self.assertEqual(cross_session["budget_tokens"], 332)
+        self.assertEqual(cross_session["max_sessions"], 8)
+        self.assertEqual(cross_session["strategy"], "same_session_first_entity_bridge_then_bounded_cross_session")
+
+    def test_direct_native_context_pack_accepts_explicit_cross_session_budget(self) -> None:
+        mcp.MATRIXARK_MCP_PROFILE = "production"
+        mcp.MATRIXARK_REQUIRE_NATIVE_CONTEXT_PACK = ""
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._count_key = "matrixark:test:record_count"
+        adapter._record_hash_key = "matrixark:test:records"
+        adapter._shard_size = 128
+        adapter._backend_label = lambda: "temporalstore-direct"
+        adapter._context_pack_cache_max_entries = 0
+        adapter._context_pack_cache_ttl_s = 0
+        adapter._context_pack_cache_lock = threading.RLock()
+        adapter._context_pack_cache = {}
+        adapter._retrieval_records_cache_generation = 0
+        adapter._observe_model_latency = lambda *args, **kwargs: None
+        adapter.native_context_pack_required = lambda: True
+
+        adapter.retrieve({
+            "query": "What is my current storage preference?",
+            "scope": {"account_id": "acct", "session_id": "s1"},
+            "question_type": "current_state",
+            "max_context_tokens": 2000,
+            "cross_session": {"budget_tokens": 777, "max_sessions": 3, "parallelism": 2},
+            "audit_mode": "off",
+        })
+
+        cross_session = client.calls[0]["request"]["cross_session"]
+        self.assertTrue(cross_session["enabled"])
+        self.assertEqual(cross_session["budget_tokens"], 777)
+        self.assertEqual(cross_session["max_sessions"], 3)
+        self.assertEqual(cross_session["parallelism"], 2)
 
     def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
         client = _NativeContextPackClient()
@@ -2643,6 +2681,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn('record_type == "resource_chunk"', source)
         self.assertIn('record_type == "context_summary"', source)
         self.assertIn('score += TypePriorityBoost', source)
+
+    def test_cpp_and_rust_native_pack_enforce_cross_session_budget(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        cpp_source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+        rust_source = (repo / "crates/temporalstore-rust/src/bin/matrixark_record_log.rs").read_text()
+
+        for source in [cpp_source, rust_source]:
+            self.assertIn("cross_session", source)
+            self.assertIn("budget_tokens", source)
+            self.assertIn("max_sessions", source)
+            self.assertIn("max_candidates", source)
+            self.assertIn("entity_bridge_selected_ref_count", source)
+            self.assertIn("same_session_first_entity_bridge_then_bounded_cross_session", source)
 
     def test_proxy_contract_exposes_matrixark_native_hot_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]

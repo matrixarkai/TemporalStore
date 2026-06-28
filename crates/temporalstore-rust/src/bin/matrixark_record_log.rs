@@ -602,7 +602,6 @@ fn unix_ms() -> u128 {
         .unwrap_or(0)
 }
 
-
 fn required_option(value: Option<String>, name: &str) -> Result<String, String> {
     value
         .filter(|item| !item.is_empty())
@@ -610,7 +609,8 @@ fn required_option(value: Option<String>, name: &str) -> Result<String, String> 
 }
 
 fn hgetall_snapshot_cache() -> &'static Mutex<BTreeMap<String, BTreeMap<String, String>>> {
-    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> = OnceLock::new();
+    static HGETALL_SNAPSHOT_CACHE: OnceLock<Mutex<BTreeMap<String, BTreeMap<String, String>>>> =
+        OnceLock::new();
     HGETALL_SNAPSHOT_CACHE.get_or_init(|| Mutex::new(BTreeMap::new()))
 }
 
@@ -646,7 +646,10 @@ fn hgetall_map(engine: &TemporalEngine, key: String) -> Result<BTreeMap<String, 
         command: Command::HashGetAll { key: key.clone() },
     });
     if !response.status.ok {
-        return Err(format!("{}: {}", response.status.code, response.status.message));
+        return Err(format!(
+            "{}: {}",
+            response.status.code, response.status.message
+        ));
     }
     match response.response {
         CommandResponse::HashEntries { entries } => {
@@ -726,10 +729,10 @@ fn session_scope_mode(query: &Value) -> &str {
         .get("_session_scope")
         .or_else(|| query.get("session_scope"))
         .and_then(Value::as_str)
-        .unwrap_or("only")
+        .unwrap_or("prefer")
     {
-        "prefer" | "preferred" | "soft" | "continuity" => "prefer",
-        _ => "only",
+        "only" | "strict" => "only",
+        _ => "prefer",
     }
 }
 
@@ -792,13 +795,18 @@ fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> Str
     let Some(query) = query_scope else {
         return "unscoped".to_string();
     };
-    let Some(query_session) = query.get("session_id").and_then(Value::as_str).filter(|text| !text.is_empty()) else {
+    let Some(query_session) = query
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+    else {
         return "unscoped".to_string();
     };
     if record_scope_string(record, "session_id").as_deref() == Some(query_session) {
         return "same_session".to_string();
     }
-    let has_sessionish_scope = record_scope_string(record, "scope_key").is_some() || record_scope_string(record, "session_id").is_some();
+    let has_sessionish_scope = record_scope_string(record, "scope_key").is_some()
+        || record_scope_string(record, "session_id").is_some();
     if has_sessionish_scope {
         "cross_session".to_string()
     } else {
@@ -807,7 +815,10 @@ fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> Str
 }
 
 fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
-    let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
     match status {
         "same_session" => match record_type {
             "context_event" | "context_segment" => 0.16,
@@ -818,13 +829,161 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
         "cross_session" => {
             if record_type == "context_entity" || context_class == "resource_fact" {
                 0.11
-            } else if matches!(record_type, "context_event" | "context_segment" | "context_compression_event") {
+            } else if matches!(
+                record_type,
+                "context_event" | "context_segment" | "context_compression_event"
+            ) {
                 0.06
             } else {
                 0.0
             }
         }
         _ => 0.0,
+    }
+}
+
+fn type_priority_boost(record: &Value, context_class: &str, question_type: &str) -> f64 {
+    let record_type = record
+        .get("record_type")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    match record_type {
+        "skill_section" => {
+            if matches!(question_type, "procedure" | "evidence") {
+                0.42
+            } else {
+                0.34
+            }
+        }
+        "resource_chunk" => {
+            if matches!(question_type, "evidence" | "fact") {
+                0.20
+            } else {
+                0.12
+            }
+        }
+        "context_entity" => {
+            if question_type == "current_state" {
+                0.24
+            } else {
+                0.12
+            }
+        }
+        "context_event" | "context_segment" => 0.10,
+        "context_summary" => {
+            if matches!(question_type, "broad" | "exploration") {
+                0.12
+            } else {
+                0.0
+            }
+        }
+        _ => {
+            if context_class == "resource_fact" {
+                0.18
+            } else {
+                0.0
+            }
+        }
+    }
+}
+
+fn cross_session_key(record: &Value) -> String {
+    record_scope_string(record, "session_id")
+        .or_else(|| record_scope_string(record, "scope_key"))
+        .or_else(|| record_node_hash(record).map(|node| format!("node:{node}")))
+        .unwrap_or_else(|| "unknown_cross_session".to_string())
+}
+
+#[derive(Clone, Debug)]
+struct CrossSessionPolicy {
+    enabled: bool,
+    budget_ratio: f64,
+    budget_tokens: u64,
+    max_budget_tokens: u64,
+    max_sessions: u64,
+    max_candidates: u64,
+    min_entity_bridge_refs: u64,
+    parallelism: u64,
+}
+
+fn parse_cross_session_policy(
+    request: &Value,
+    scope: Option<&Value>,
+    remote_budget: u64,
+    question_type: &str,
+) -> CrossSessionPolicy {
+    let default_enabled = scope.map(session_scope_mode) == Some("prefer") && remote_budget > 0;
+    let config = request
+        .get("cross_session")
+        .filter(|value| value.is_object());
+    let mut budget_ratio = if matches!(question_type, "current_state" | "latest") {
+        0.45
+    } else {
+        0.35
+    };
+    if let Some(value) = config
+        .and_then(|cfg| cfg.get("budget_ratio"))
+        .and_then(Value::as_f64)
+    {
+        budget_ratio = value.clamp(0.0, 1.0);
+    }
+    let max_budget_tokens = config
+        .and_then(|cfg| cfg.get("max_budget_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(4096);
+    let mut computed = (remote_budget as f64 * budget_ratio) as u64;
+    if remote_budget >= 1200 && computed > 0 {
+        computed = computed.max(512);
+    }
+    let enabled = config
+        .and_then(|cfg| cfg.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(default_enabled)
+        && default_enabled;
+    let mut budget_tokens = config
+        .and_then(|cfg| cfg.get("budget_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(computed);
+    let mut max_sessions = config
+        .and_then(|cfg| cfg.get("max_sessions"))
+        .and_then(Value::as_u64)
+        .unwrap_or(8);
+    let mut max_candidates = config
+        .and_then(|cfg| cfg.get("max_candidates"))
+        .and_then(Value::as_u64)
+        .unwrap_or(256);
+    let mut min_entity_bridge_refs = config
+        .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(3);
+    let mut parallelism = config
+        .and_then(|cfg| cfg.get("parallelism"))
+        .and_then(Value::as_u64)
+        .unwrap_or(4)
+        .max(1);
+    if !enabled {
+        budget_tokens = 0;
+        max_sessions = 0;
+        max_candidates = 0;
+        min_entity_bridge_refs = 0;
+        parallelism = 0;
+    } else {
+        let cap = if max_budget_tokens == 0 {
+            remote_budget
+        } else {
+            max_budget_tokens
+        };
+        budget_tokens = budget_tokens.min(remote_budget).min(cap);
+    }
+    CrossSessionPolicy {
+        enabled,
+        budget_ratio,
+        budget_tokens,
+        max_budget_tokens,
+        max_sessions,
+        max_candidates,
+        min_entity_bridge_refs,
+        parallelism,
     }
 }
 
@@ -948,11 +1107,19 @@ fn decode_matrixark_payload(value: &str) -> Vec<Value> {
     }
 }
 
-fn scan_matrixark_candidates(engine: &TemporalEngine, command: &RecordLogRequest) -> Result<Value, String> {
+fn scan_matrixark_candidates(
+    engine: &TemporalEngine,
+    command: &RecordLogRequest,
+) -> Result<Value, String> {
     let count_key = required_option(command.count_key.clone(), "count_key")?;
     let record_hash_key = required_option(command.record_hash_key.clone(), "record_hash_key")?;
     let shard_size = command.shard_size.unwrap_or(1024).max(1);
-    let count_text = read_bytes(engine, Command::StringGet { key: count_key.clone() })?;
+    let count_text = read_bytes(
+        engine,
+        Command::StringGet {
+            key: count_key.clone(),
+        },
+    )?;
     let count = count_text.parse::<u64>().unwrap_or(0);
     let allowed_types: HashSet<String> = command
         .record_types
@@ -1133,8 +1300,14 @@ fn context_class_name(record: &Value) -> String {
         .and_then(Value::as_str)
         .unwrap_or("");
     if record_type == "context_event" {
-        let classification = record.get("classification").and_then(Value::as_str).unwrap_or("");
-        let event_type = record.get("event_type").and_then(Value::as_str).unwrap_or("");
+        let classification = record
+            .get("classification")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let event_type = record
+            .get("event_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         if classification == "resource_fact" || event_type.starts_with("resource_") {
             return "resource_fact".to_string();
         }
@@ -1149,7 +1322,13 @@ fn context_class_name(record: &Value) -> String {
     }
 }
 
-fn pack_ref_from_record(record: &Value, score: f64, reason: &str, session_continuity: &str, continuity_boost_value: f64) -> Value {
+fn pack_ref_from_record(
+    record: &Value,
+    score: f64,
+    reason: &str,
+    session_continuity: &str,
+    continuity_boost_value: f64,
+) -> Value {
     let ref_type = context_class_name(record);
     let text = candidate_text(record);
     let continuity_reason = match session_continuity {
@@ -1173,7 +1352,10 @@ fn pack_ref_from_record(record: &Value, score: f64, reason: &str, session_contin
     })
 }
 
-fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequest) -> Result<Value, String> {
+fn retrieve_context_pack_native(
+    engine: &TemporalEngine,
+    command: &RecordLogRequest,
+) -> Result<Value, String> {
     let request = command.record.clone().unwrap_or_else(|| json!({}));
     let query = request
         .get("query")
@@ -1190,6 +1372,11 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
         .and_then(Value::as_u64)
         .or_else(|| request.get("max_context_tokens").and_then(Value::as_u64))
         .unwrap_or(4000);
+    let question_type = request
+        .get("question_type")
+        .and_then(Value::as_str)
+        .unwrap_or("fact")
+        .to_string();
     let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
         .and_then(Value::as_u64)
         .unwrap_or(48)
@@ -1244,6 +1431,12 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
         .cloned()
         .unwrap_or_default();
     let scope_for_continuity = scan_command.scope.clone();
+    let cross_policy = parse_cross_session_policy(
+        &request,
+        scope_for_continuity.as_ref(),
+        remote_budget,
+        &question_type,
+    );
     let mut scored: Vec<(f64, Value, String, f64)> = records
         .into_iter()
         .filter(|record| {
@@ -1277,9 +1470,12 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
                 score += 0.06;
             }
             let context_class = context_class_name(&record);
-            let session_continuity = session_continuity_status(&record, scope_for_continuity.as_ref());
-            let continuity_boost_value = continuity_boost(&record, &context_class, &session_continuity);
+            let session_continuity =
+                session_continuity_status(&record, scope_for_continuity.as_ref());
+            let continuity_boost_value =
+                continuity_boost(&record, &context_class, &session_continuity);
             score += continuity_boost_value;
+            score += type_priority_boost(&record, &context_class, &question_type);
             (score, record, session_continuity, continuity_boost_value)
         })
         .collect();
@@ -1293,6 +1489,13 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
     let mut selected_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_nodes: HashSet<u64> = HashSet::new();
     let mut dropped_over_budget = 0_u64;
+    let mut dropped_cross_budget = 0_u64;
+    let mut dropped_cross_session_cap = 0_u64;
+    let mut dropped_cross_candidate_cap = 0_u64;
+    let mut cross_used_tokens = 0_u64;
+    let mut cross_selected_refs = 0_u64;
+    let mut entity_bridge_selected_refs = 0_u64;
+    let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     let mut used_tokens = 0_u64;
     for (score, record, session_continuity, continuity_boost_value) in scored {
         if selected.len() as u64 >= max_refs {
@@ -1304,8 +1507,52 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
             dropped_over_budget += 1;
             continue;
         }
+        let context_class = context_class_name(&record);
+        let is_cross_session = session_continuity == "cross_session";
+        let is_entity_bridge = is_cross_session && context_class == "entity";
+        let cross_key = if is_cross_session {
+            cross_session_key(&record)
+        } else {
+            String::new()
+        };
+        if is_cross_session && !cross_policy.enabled {
+            dropped_cross_budget += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_candidates > 0
+            && cross_selected_refs >= cross_policy.max_candidates
+        {
+            dropped_cross_candidate_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_sessions > 0
+            && !selected_cross_sessions.contains(&cross_key)
+            && selected_cross_sessions.len() as u64 >= cross_policy.max_sessions
+        {
+            dropped_cross_session_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.budget_tokens > 0
+            && cross_used_tokens + tokens > cross_policy.budget_tokens
+            && !(is_entity_bridge
+                && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
+        {
+            dropped_cross_budget += 1;
+            continue;
+        }
         used_tokens += tokens;
-        *selected_counts.entry(context_class_name(&record)).or_default() += 1;
+        if is_cross_session {
+            cross_used_tokens += tokens;
+            cross_selected_refs += 1;
+            selected_cross_sessions.insert(cross_key);
+            if is_entity_bridge {
+                entity_bridge_selected_refs += 1;
+            }
+        }
+        *selected_counts.entry(context_class).or_default() += 1;
         if let Some(node_hash) = record_node_hash(&record) {
             selected_nodes.insert(node_hash);
         }
@@ -1321,19 +1568,30 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
     let mut scan_stats = scan.get("scan_stats").cloned().unwrap_or_else(|| json!({}));
     if let Some(stats) = scan_stats.as_object_mut() {
         stats.insert("native_pack_assembly".to_string(), json!(true));
-        stats.insert("pack_assembly_location".to_string(), json!("rust_proxy_native"));
+        stats.insert(
+            "pack_assembly_location".to_string(),
+            json!("rust_proxy_native"),
+        );
         stats.insert("next_native_gap".to_string(), json!(""));
     }
     let pack = json!({
         "context_pack_id": context_pack_id,
         "query": query,
-        "question_type": request.get("question_type").cloned().unwrap_or_else(|| json!("fact")),
+        "question_type": question_type,
         "selected_ref_counts": selected_counts,
         "remote_context_refs": selected,
         "selected_refs": selected,
         "dropped_refs": {
             "over_budget": dropped_over_budget,
-            "reason_counts": {"over_budget": dropped_over_budget}
+            "cross_session_budget": dropped_cross_budget,
+            "cross_session_session_cap": dropped_cross_session_cap,
+            "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "reason_counts": {
+                "over_budget": dropped_over_budget,
+                "cross_session_budget": dropped_cross_budget,
+                "cross_session_session_cap": dropped_cross_session_cap,
+                "cross_session_candidate_cap": dropped_cross_candidate_cap
+            }
         },
         "used_context_tokens": used_tokens,
         "used_remote_context_tokens": used_tokens,
@@ -1356,11 +1614,28 @@ fn retrieve_context_pack_native(engine: &TemporalEngine, command: &RecordLogRequ
             },
             "scan_stats": scan_stats,
             "session_continuity": {
-                "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("only"),
+                "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("prefer"),
                 "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
                 "same_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session")).count(),
-                "cross_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session")).count(),
-                "entity_bridge_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session") && item.get("ref_type").and_then(Value::as_str) == Some("entity")).count()
+                "cross_session_selected_ref_count": cross_selected_refs,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs
+            },
+            "cross_session": {
+                "enabled": cross_policy.enabled,
+                "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
+                "budget_ratio": cross_policy.budget_ratio,
+                "budget_tokens": cross_policy.budget_tokens,
+                "remote_budget_tokens": remote_budget,
+                "max_budget_tokens": cross_policy.max_budget_tokens,
+                "max_sessions": cross_policy.max_sessions,
+                "max_candidates": cross_policy.max_candidates,
+                "parallelism": cross_policy.parallelism,
+                "selected_tokens": cross_used_tokens,
+                "selected_ref_count": cross_selected_refs,
+                "selected_session_count": selected_cross_sessions.len() as u64,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
+                "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
+                "budget_guidance": "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens"
             },
             "tree_traversal": {
                 "enabled": true,
@@ -1540,7 +1815,10 @@ fn validate_request(request: &RecordLogRequest) -> Result<(), String> {
         }
         "matrixark_scan_candidates" | "matrixark_retrieve_context_pack" => {
             require_non_empty("count_key", request.count_key.as_deref().unwrap_or(""))?;
-            require_non_empty("record_hash_key", request.record_hash_key.as_deref().unwrap_or(""))
+            require_non_empty(
+                "record_hash_key",
+                request.record_hash_key.as_deref().unwrap_or(""),
+            )
         }
         "hset" | "hget" | "hdel" => {
             require_non_empty("key", &request.key)?;

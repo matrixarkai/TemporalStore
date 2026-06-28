@@ -4027,6 +4027,17 @@ class MatrixArkLocalAdapter:
         if not isinstance(max_context_tokens, int) or max_context_tokens <= 0:
             raise MatrixArkError("max_context_tokens must be a positive integer")
         local_budget = local_context_budget(args)
+        local_tokens = int(local_budget.get("token_estimate", 0))
+        safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
+        remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
+        local_budget["remote_budget_tokens"] = remote_context_budget_tokens
+        cross_session_policy = build_cross_session_policy(
+            args,
+            ranking,
+            question_type=question_type,
+            session_scope=retrieval_session_scope,
+            remote_budget_tokens=remote_context_budget_tokens,
+        )
         query_terms = {term for term in tokens(query) if len(term) > 2}
         raw_reference_time_ms = args.get("reference_time_ms", now_ms())
         if not isinstance(raw_reference_time_ms, int):
@@ -4103,6 +4114,7 @@ class MatrixArkLocalAdapter:
                 "safety_margin_tokens": int(local_budget.get("safety_margin_tokens", 0)),
                 "remote_budget_tokens": int(local_budget.get("remote_budget_tokens", max_context_tokens)),
             },
+            "cross_session": cross_session_policy,
             "ranking": ranking,
             "deadline_ms": deadline_ms,
             "reference_time_ms": reference_time_ms,
@@ -5024,9 +5036,6 @@ class MatrixArkLocalAdapter:
         stage_started_perf = time.perf_counter()
         primary_matches.sort(key=lambda item: item["score"], reverse=True)
         auxiliary_matches.sort(key=lambda item: item["score"], reverse=True)
-        local_tokens = int(local_budget.get("token_estimate", 0))
-        safety_margin_tokens = int(local_budget.get("safety_margin_tokens", 0))
-        remote_context_budget_tokens = max(0, max_context_tokens - local_tokens - safety_margin_tokens)
         selected_ref_cap = max(1, int(max_selected_refs or max(8, min(256, max_context_tokens))))
         rerank_candidate_limit = max(selected_ref_cap, max(8, min(256, max_context_tokens)))
         first_stage_candidate_count = len(primary_matches) + len(auxiliary_matches)
@@ -5058,6 +5067,7 @@ class MatrixArkLocalAdapter:
             duplicate_text_hashes=local_budget["text_hashes"],
             deadline_exceeded=deadline_exceeded,
             deadline_reason="deadline_during_context_pack",
+            cross_session_policy=cross_session_policy,
         )
         partial_context_pack = bool(dropped_over_budget.get("deadline_exceeded"))
         quality_warnings = []
@@ -5136,6 +5146,7 @@ class MatrixArkLocalAdapter:
                     "cross_session_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session"),
                     "entity_bridge_selected_ref_count": sum(1 for item in selected if item.get("session_continuity") == "cross_session" and item.get("ref_type") == "entity"),
                 },
+                "cross_session": dropped_over_budget.get("cross_session_policy", cross_session_policy),
                 "backend_retrieval_pushdown": retrieval_scan_stats,
                 "tree_traversal": {
                     "enabled": True,
