@@ -161,6 +161,11 @@ TIME_COMPRESSION_SUMMARY_BASE_URL = os.environ.get("MATRIXARK_TIME_COMPRESSION_S
 TIME_COMPRESSION_SUMMARY_API_KEY_ENV = os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_API_KEY_ENV", "OPENAI_API_KEY")
 TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_TIME_COMPRESSION_SUMMARY_TIMEOUT_SEC", "30"))
 TIME_COMPRESSION_REQUIRE_LLM_SUMMARY = os.environ.get("MATRIXARK_REQUIRE_LLM_TIME_COMPRESSION", "").strip().lower() in {"1", "true", "yes"}
+EXTRACTION_LLM_MODEL = os.environ.get("MATRIXARK_EXTRACTION_MODEL", os.environ.get("OPENAI_MODEL", "qwen2.5:1.5b"))
+EXTRACTION_LLM_BASE_URL = os.environ.get("MATRIXARK_EXTRACTION_BASE_URL", os.environ.get("OPENAI_BASE_URL", "http://127.0.0.1:8000/v1")).rstrip("/")
+EXTRACTION_LLM_API_KEY_ENV = os.environ.get("MATRIXARK_EXTRACTION_API_KEY_ENV", "OPENAI_API_KEY")
+EXTRACTION_LLM_TIMEOUT_SEC = float(os.environ.get("MATRIXARK_EXTRACTION_TIMEOUT_SEC", "30"))
+EXTRACTION_LLM_MAX_TOKENS = int(os.environ.get("MATRIXARK_EXTRACTION_MAX_TOKENS", "1200"))
 _OSS_SEGMENT_MODEL_CACHE: dict[str, Any] = {}
 _OSS_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _OSS_UNDERSTANDING_PROTOTYPE_CACHE: dict[str, dict[str, list[float]]] = {}
@@ -1318,6 +1323,193 @@ def prior_context_payload(level: str, event_records: list[Json], all_records: li
     }
 
 
+def openai_compatible_json_call(*, system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> Json:
+    payload = {
+        "model": model or EXTRACTION_LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "temperature": 0,
+        "max_tokens": max_tokens or EXTRACTION_LLM_MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {"Content-Type": "application/json"}
+    api_key = os.environ.get(EXTRACTION_LLM_API_KEY_ENV, "")
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    request = urllib.request.Request(
+        f"{EXTRACTION_LLM_BASE_URL}/chat/completions",
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=EXTRACTION_LLM_TIMEOUT_SEC) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        content = str(data.get("choices", [{}])[0].get("message", {}).get("content", "")).strip()
+        if not content:
+            raise MatrixArkError("OpenAI-compatible extraction provider returned empty content")
+        return parse_first_json_object(content)
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError, MatrixArkError) as exc:
+        raise MatrixArkError(f"OpenAI-compatible extraction provider failed: {exc}") from exc
+
+
+def normalize_extracted_entities(raw_entities: Any, *, fallback_text: str, source_refs: list[str], extracted_by: str) -> list[Json]:
+    if not isinstance(raw_entities, list):
+        return []
+    entities: list[Json] = []
+    for raw in raw_entities[:12]:
+        if not isinstance(raw, dict):
+            continue
+        entity_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("entity_type") or raw.get("type") or "entity").lower()).strip("_") or "entity"
+        entity_name = summarize_text(str(raw.get("entity_name") or raw.get("name") or entity_type).strip(), limit=96)
+        state = summarize_text(str(raw.get("state") or raw.get("value") or raw.get("summary") or fallback_text).strip(), limit=320)
+        if not state:
+            continue
+        try:
+            confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.82))))
+        except (TypeError, ValueError):
+            confidence = 0.82
+        operator = str(raw.get("operator") or "LLM_MERGE")
+        patches = raw.get("field_patches") if isinstance(raw.get("field_patches"), list) else []
+        if not patches and entity_type not in {"confirmation", "correction"}:
+            patches = [entity_patch("", state)]
+        refs = raw.get("source_refs") if isinstance(raw.get("source_refs"), list) else source_refs
+        entities.append(
+            {
+                "entity_type": entity_type,
+                "entity_name": entity_name or entity_type,
+                "state": state,
+                "confidence": round(confidence, 6),
+                "source_refs": [str(ref) for ref in refs] if refs else source_refs,
+                "operator": operator,
+                "field_patches": patches[:3],
+                "extracted_by": extracted_by,
+            }
+        )
+    return dedupe_entities(entities)
+
+
+def normalize_extracted_segments(raw_segments: Any, messages: list[Json]) -> list[Json]:
+    if isinstance(raw_segments, list):
+        try:
+            return normalize_model_segments({"segments": raw_segments}, messages)
+        except MatrixArkError:
+            return []
+    return []
+
+
+def normalize_extracted_facts(raw_facts: Any, *, chunk: Any, chunk_metadata: Json, raw_uri: str, resource_version: str, provider: str) -> list[Json]:
+    if not isinstance(raw_facts, list):
+        return []
+    facts: list[Json] = []
+    for raw in raw_facts[:12]:
+        if not isinstance(raw, dict):
+            continue
+        event_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("event_type") or raw.get("fact_type") or "resource_fact").lower()).strip("_") or "resource_fact"
+        if not event_type.startswith("resource_"):
+            event_type = f"resource_{event_type}"
+        entity_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("entity_type") or event_type).lower()).strip("_") or event_type
+        if not entity_type.startswith("resource_"):
+            entity_type = f"resource_{entity_type}"
+        value = summarize_text(str(raw.get("value") or raw.get("summary_text") or raw.get("state") or "").strip(), limit=260)
+        if not value:
+            continue
+        entity_name = summarize_text(str(raw.get("entity_name") or raw.get("name") or "").strip(), limit=140)
+        if not entity_name:
+            entity_name = resource_fact_entity_name({"entity_type": entity_type, "entity_prefix": entity_type.removeprefix("resource_")}, value, chunk_metadata, raw_uri)
+        try:
+            confidence = max(0.0, min(1.0, float(raw.get("confidence", 0.86))))
+        except (TypeError, ValueError):
+            confidence = 0.86
+        facts.append(
+            {
+                "mode": "matrixark_resource_schema_openai_compatible",
+                "classification": "RESOURCE_FACT",
+                "event_type": event_type,
+                "entity_type": entity_type,
+                "status": str(raw.get("status") or "observed"),
+                "value": value,
+                "entity_name": entity_name,
+                "confidence": round(confidence, 6),
+                "source_chunk_hash": chunk.chunk_hash,
+                "source_ref": chunk.source_ref,
+                "resource_version": resource_version,
+                "extraction_provider": provider,
+            }
+        )
+    return facts
+
+
+def openai_compatible_one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
+    messages = envelope["messages"]
+    indexed = "\n".join(f"{index}. {message.get('role', 'user')}: {message.get('content', '')}" for index, message in enumerate(messages))
+    source_event_ids = envelope.get("source_event_ids", [])
+    source_refs = [str(ref) for ref in source_event_ids] if isinstance(source_event_ids, list) and source_event_ids else [str(index) for index, _ in enumerate(messages)]
+    system = "Return only JSON. You are a one-pass memory extractor for MatrixArk."
+    user = (
+        "Extract memory from this logical conversation batch in one pass. "
+        "Return JSON with keys classification, event_type, batch_summary, entities, segments, indexes. "
+        "Entities must use a stable concise entity_name and a separate state sentence; do not copy the same phrase into both. "
+        "Each entity shape: {entity_type, entity_name, state, confidence, operator, field_patches}. "
+        "Segments shape: {topic, coordinate_tuples, message_indexes, saliency_score, summary_text}. "
+        "Use event_type values like approval_state, budget_update, deadline, procedure, correction, status_update.\n\n"
+        f"Conversation:\n{indexed}\n\nJSON:"
+    )
+    raw = openai_compatible_json_call(system=system, user=user)
+    batch_text = text_from_messages(messages)
+    entities = normalize_extracted_entities(raw.get("entities"), fallback_text=batch_text, source_refs=source_refs, extracted_by="openai_compatible")
+    if not entities:
+        if require_oss_understanding():
+            raise MatrixArkError("OpenAI-compatible extraction returned no entities")
+        entities = extract_batch_entities(messages, envelope)
+        for entity in entities:
+            entity["extracted_by"] = "deterministic_fallback"
+    segments = normalize_extracted_segments(raw.get("segments"), messages)
+    if not segments:
+        if require_oss_understanding():
+            raise MatrixArkError("OpenAI-compatible extraction returned no segments")
+        segments, _segment_meta = detect_memory_segments(messages, {**envelope, "segment_provider": "deterministic"})
+    event_type = re.sub(r"[^a-z0-9_]+", "_", str(raw.get("event_type") or infer_event_type(batch_text)).lower()).strip("_") or "session"
+    classification = re.sub(r"[^A-Z0-9_]+", "_", str(raw.get("classification") or "BATCH_MEMORY").upper()).strip("_") or "BATCH_MEMORY"
+    indexes = raw.get("indexes") if isinstance(raw.get("indexes"), list) else []
+    normalized_indexes = [str(item) for item in indexes if isinstance(item, str)]
+    normalized_indexes = ordered_unique(normalized_indexes + [context_index_name("event_type", event_type), context_index_name("classification", classification)])
+    return {
+        "mode": "matrixark_one_pass_schema_openai_compatible",
+        "understanding_provider": "openai_compatible",
+        "schema": ONE_PASS_MEMORY_SCHEMA,
+        "classification": classification,
+        "status": str(raw.get("status") or "observed"),
+        "event_type": event_type,
+        "entities": entities,
+        "segments": segments,
+        "segment_provider": {"provider": "openai_compatible", "execution_mode": "llm_json", "model": EXTRACTION_LLM_MODEL, "fallback_used": False, "segment_count": len(segments)},
+        "indexes": normalized_indexes[:8],
+        "batch_summary": summarize_text(str(raw.get("batch_summary") or raw.get("summary") or batch_text), limit=700),
+        "message_count": len(messages),
+        "token_count_estimate": len(tokens(batch_text)),
+        "prior_context": prior_context.get("level", ""),
+        "prior_refs": prior_context.get("refs", []),
+        "prior_message_count": len(prior_context.get("messages", [])),
+        "prior_summary_count": len(prior_context.get("summaries", [])),
+    }
+
+
+def openai_compatible_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, raw_uri: str, resource_version: str) -> list[Json]:
+    system = "Return only JSON. You extract cited resource facts for MatrixArk."
+    user = (
+        "Extract decisions, owners, costs, deadlines, API contracts, troubleshooting steps, policies, approvals, risks, and procedures from the resource chunk. "
+        "Return JSON with {facts:[...]}. Each fact shape: {event_type, entity_type, entity_name, value, confidence}. "
+        "event_type and entity_type should use resource_* names. entity_name must be a stable subject, while value is the factual state. "
+        "Do not invent facts; use an empty facts list if nothing is useful.\n\n"
+        f"Source ref: {chunk.source_ref}\nMetadata: {json.dumps(chunk_metadata, sort_keys=True)[:1200]}\nChunk text:\n{chunk.text[:6000]}\n\nJSON:"
+    )
+    raw = openai_compatible_json_call(system=system, user=user)
+    return normalize_extracted_facts(raw.get("facts"), chunk=chunk, chunk_metadata=chunk_metadata, raw_uri=raw_uri, resource_version=resource_version, provider="openai_compatible")
+
+
 def compact_internal_extraction(envelope: Json, *, prior_context: Json) -> Json:
     """Rules-first internal extraction used by the local MCP MVP.
 
@@ -1557,6 +1749,12 @@ def one_pass_memory_extraction(envelope: Json, *, prior_context: Json) -> Json:
     """
 
     provider = understanding_provider(envelope)
+    if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
+        try:
+            return openai_compatible_one_pass_memory_extraction(envelope, prior_context=prior_context)
+        except MatrixArkError:
+            if require_oss_understanding():
+                raise
     messages = envelope["messages"]
     batch_text = text_from_messages(messages)
     batch_terms = tokens(batch_text)
@@ -3019,6 +3217,21 @@ def extract_resource_facts(chunk: Any, *, chunk_metadata: Json, envelope: Json, 
     unchanged.
     """
     mode = resource_extraction_mode(envelope)
+    provider = understanding_provider(envelope)
+    if provider in {"openai", "openai_compatible", "openai_compatible_llm"}:
+        try:
+            model_facts = openai_compatible_resource_facts(
+                chunk,
+                chunk_metadata=chunk_metadata,
+                envelope=envelope,
+                raw_uri=raw_uri,
+                resource_version=resource_version,
+            )
+            if model_facts or require_oss_understanding():
+                return model_facts
+        except MatrixArkError:
+            if require_oss_understanding():
+                raise
     facts: list[Json] = []
     for fact_schema in matched_resource_fact_schemas(chunk.text, chunk.metadata):
         fact_event_type = str(fact_schema["fact_type"])

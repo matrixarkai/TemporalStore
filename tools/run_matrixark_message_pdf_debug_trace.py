@@ -932,6 +932,9 @@ def write_outputs(
         "",
         f"- Embedding model: `{trace['embedding_model']}`",
         f"- Embedding execution mode: `{trace['embedding_execution_mode']}`",
+        f"- Extraction provider: `{trace.get('extraction_provider')}`",
+        f"- Extraction model: `{trace.get('extraction_model')}` at `{trace.get('extraction_base_url')}`",
+        f"- Require OSS understanding: `{trace.get('require_oss_understanding')}`",
         f"- Query: `{QUERY}`",
         f"- Summary refresh: background interval `{trace['summary_refresh_policy']['background_interval_ms']}` ms, limit `{trace['summary_refresh_policy']['background_limit']}` dirty nodes per tick",
         f"- Node L1 policy: {trace['summary_refresh_policy']['node_l1_policy']}",
@@ -1082,7 +1085,7 @@ def write_outputs(
   <header>
     <h1>MatrixArk Message + Resource Debug Trace</h1>
     <p class="muted">Conversation + resource ingestion, extraction, resource chunking, embeddings, summaries, tree traversal, ContextPack, audit, and replay.</p>
-    <p><span class="pill">{html.escape(trace['embedding_model'])}</span><span class="pill">{html.escape(trace['embedding_execution_mode'])}</span><span class="pill">Summary refresh: background interval {trace['summary_refresh_policy']['background_interval_ms']} ms</span><span class="pill">Limit {trace['summary_refresh_policy']['background_limit']} dirty nodes/tick</span></p>
+    <p><span class="pill">{html.escape(trace['embedding_model'])}</span><span class="pill">{html.escape(trace['embedding_execution_mode'])}</span><span class="pill">Extraction: {html.escape(str(trace.get('extraction_provider')))}</span><span class="pill">Summary refresh: background interval {trace['summary_refresh_policy']['background_interval_ms']} ms</span><span class="pill">Limit {trace['summary_refresh_policy']['background_limit']} dirty nodes/tick</span></p>
     <p class="muted">Node L1 policy: {html.escape(trace['summary_refresh_policy']['node_l1_policy'])}</p>
     <p class="muted">Embedding note: {html_embedding_note}</p>
   </header>
@@ -1143,6 +1146,8 @@ def main() -> int:
     mcp_core.ENABLE_CONTEXT_REPLAY = bool(args.include_debug_audit)
     mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = bool(args.include_debug_audit)
 
+    if args.require_oss_understanding:
+        os.environ["MATRIXARK_REQUIRE_OSS_UNDERSTANDING"] = "1"
     output_dir = Path(args.output_dir).resolve()
     fixture_dir = output_dir / "fixtures"
     event_log = output_dir / "matrixark_message_resource_debug_trace.jsonl"
@@ -1213,6 +1218,8 @@ def main() -> int:
                 },
                 "auto_batch_extract": True,
                 "session_buffer_threshold": 20,
+                "extraction_provider": args.extraction_provider,
+                "understanding_provider": args.extraction_provider,
             },
         )
         trace["calls"].append({"tool": "matrixark_ingest", "kind": "message", "message_index": index, "result": result})
@@ -1226,6 +1233,8 @@ def main() -> int:
             "force": True,
             "commit_reason": "manual_api",
             "threshold_messages": 20,
+            "extraction_provider": args.extraction_provider,
+            "understanding_provider": args.extraction_provider,
         },
     )
     trace["calls"].append({"tool": "matrixark_session_commit", "result": commit_result})
@@ -1256,6 +1265,8 @@ def main() -> int:
                     "resource_title": fixture["title"],
                 },
                 "wait": True,
+                "extraction_provider": args.extraction_provider,
+                "understanding_provider": args.extraction_provider,
             },
         )
         trace["calls"].append({"tool": "matrixark_ingest", "kind": "resource", "resource_type": "pdf", "raw_uri": str(pdf_path), "result": result})
