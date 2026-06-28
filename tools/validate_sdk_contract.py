@@ -155,9 +155,12 @@ def main() -> int:
         "tonic replacement is covered",
         "typed client migration is covered",
         "topology sync and route invalidation",
+        "C++ partition-set/member/version route-cache tests",
+        "Rust client route cache models the C++ partition-set hierarchy",
         "retry budgets are covered",
         "admission policy is covered",
         "migration docs are validated",
+        "supported command families",
         "shared C++/Rust corpus",
         "Rust-native HTTP/JSON, RESP, and tonic migration contract",
         "client/proxy readiness gate treats the Rust-native replacement contract",
@@ -205,6 +208,7 @@ def main() -> int:
         "typed_table_client_tested",
         "topology_sync_tested",
         "retry_budget_tested",
+        "supported_command_families",
         "migration_docs_ready",
     ]:
         if phrase not in client_rs:

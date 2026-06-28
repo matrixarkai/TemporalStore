@@ -4118,6 +4118,28 @@
       ]
     },
     {
+      "name": "control_client_cpp_partition_set_route_cache",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust client routing case for C++ partition-set hierarchy in the Rust route cache: table id, member partition ids, partition version, slot ranges, primary/replica members, topology version, and preflight evidence.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/client.rs",
+              "src/common/partition_id_type.h",
+              "src/common/test/partition_id_test.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_route_cache_preserves_cpp_partition_set_member_version_hierarchy -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "client_cpp_partition_set_route_cache_shared"
+        }
+      ]
+    },
+    {
       "name": "control_proxy_admission_policy",
       "shard_id": 1,
       "steps": [
@@ -7800,6 +7822,7 @@
       "raft_openraft_process_rollout_evidence",
       "control_topology_version_change",
       "control_stale_route_invalidation",
+      "control_client_cpp_partition_set_route_cache",
       "control_proxy_admission_policy",
       "control_proxy_operational_surface_aliases",
       "control_proxy_tonic_streaming_maturity",

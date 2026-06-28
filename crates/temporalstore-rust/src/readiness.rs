@@ -386,6 +386,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
     let rust_native_http_json_ready = replacement_contract.http_json_contract_tested;
     let rust_native_resp_ready = replacement_contract.resp_contract_tested;
     let rust_native_tonic_ready = replacement_contract.tonic_contract_tested;
+    let supported_command_families = replacement_contract.supported_command_families.len() >= 11;
     let legacy_cplusplus_wire_out_of_scope = true;
     let cpp_wire_migration_ready = false;
     let compatibility_result_ready = wire_compatibility_decision_tracked
@@ -393,6 +394,7 @@ pub fn client_routing_readiness_report() -> ClientRoutingReadinessReport {
         && rust_native_http_json_ready
         && rust_native_resp_ready
         && rust_native_tonic_ready
+        && supported_command_families
         && legacy_cplusplus_wire_out_of_scope
         && !cpp_wire_migration_ready;
     let local_client_ready = typed_table_client_ready
@@ -1748,6 +1750,10 @@ mod tests {
         assert!(client_contract.typed_table_client_tested);
         assert!(client_contract.topology_sync_tested);
         assert!(client_contract.retry_budget_tested);
+        assert!(client_contract.supported_command_families.len() >= 11);
+        assert!(client_contract
+            .supported_command_families
+            .contains(&"context".to_string()));
         assert!(client_contract.migration_docs_ready);
 
         let client = client_routing_readiness_report();
