@@ -4150,7 +4150,7 @@ class MatrixArkLocalAdapter:
                         recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
                         recall_policy["context_pack_cache"] = {"hit": True, "ttl_s": self._context_pack_cache_ttl_s}
                         pack["recall_policy"] = recall_policy
-                        return pack
+                        return compact_context_pack_for_serving(pack, include_debug=debug_refs)
                     self._context_pack_cache.pop(pack_cache_key, None)
         auxiliary_quota = integer_arg(ranking, "auxiliary_quota", 2, minimum=0)
         def annotate_session_continuity(candidate: Json, record: Json) -> Json:
@@ -4246,7 +4246,7 @@ class MatrixArkLocalAdapter:
                 "dropped_ref_details": "audit_only" if not debug_refs else "included",
                 "enable_debug_refs_with": "include_debug_refs=true or MATRIXARK_CONTEXT_PACK_DEBUG_REFS=1",
             }
-            return native_pack
+            return compact_context_pack_for_serving(native_pack, include_debug=debug_refs)
         if self.native_context_pack_required():
             raise MatrixArkError(
                 "backend-native ContextPack assembly is required for TemporalStore serving, "
