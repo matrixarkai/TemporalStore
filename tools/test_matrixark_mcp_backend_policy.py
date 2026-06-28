@@ -1291,6 +1291,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                         "ref_hash": 10,
                         "node_hash": 10,
                         "vector": [0.1],
+                        "dim": 1,
+                        "model": "matrixark-local-token-hash-v1",
                         "scope": scope,
                     },
                     {
@@ -1323,6 +1325,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     self.assertNotIn("created_at_ms", record)
                     self.assertNotIn("depth", record)
                     self.assertEqual(1780000000000, record.get("updated_at_ms"))
+                if record.get("record_type") == "context_embedding":
+                    self.assertNotIn("dim", record)
+                    self.assertNotIn("model", record)
+                    self.assertEqual(mcp.stable_hash("embedding_model:matrixark-local-token-hash-v1"), record.get("model_hash"))
             self.assertTrue(
                 mcp.scope_matches(mcp.candidate_access_scope(compacted[0]), scope),
                 "compacted scope_key should still satisfy scoped retrieval",
