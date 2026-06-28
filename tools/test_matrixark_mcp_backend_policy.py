@@ -2526,9 +2526,59 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
         cross_session = client.calls[0]["request"]["cross_session"]
         self.assertTrue(cross_session["enabled"])
-        self.assertEqual(cross_session["budget_tokens"], 777)
+        self.assertEqual(cross_session["budget_tokens"], 380)
+        self.assertEqual(cross_session["max_budget_ratio"], 0.2)
+        self.assertEqual(cross_session["raw_evidence_min_score"], 0.45)
         self.assertEqual(cross_session["max_sessions"], 3)
         self.assertEqual(cross_session["parallelism"], 2)
+
+
+    def test_cross_session_budget_is_cap_and_raw_events_need_high_confidence(self) -> None:
+        policy = mcp.build_cross_session_policy(
+            {"cross_session": {"budget_tokens": 900, "raw_evidence_min_score": 0.45}},
+            {},
+            question_type="current_state",
+            session_scope="prefer",
+            remote_budget_tokens=2000,
+        )
+        self.assertEqual(policy["budget_tokens"], 400)
+        self.assertEqual(policy["max_budget_ratio"], 0.2)
+
+        selected, used_tokens, dropped = mcp.select_token_budgeted_refs(
+            [
+                {
+                    "ref_type": "event",
+                    "ref_hash": 1,
+                    "session_continuity": "cross_session",
+                    "score": 0.40,
+                    "scope": {"session_id": "old"},
+                    "text": "Old raw event says Alice may approve the GPU request later.",
+                },
+                {
+                    "ref_type": "entity",
+                    "ref_hash": 2,
+                    "session_continuity": "cross_session",
+                    "score": 0.24,
+                    "scope": {"session_id": "old"},
+                    "text": "Current entity state: Alice approved the GPU request.",
+                },
+            ],
+            [],
+            max_context_tokens=1000,
+            auxiliary_quota=0,
+            question_type="current_state",
+            min_score=0.2,
+            cross_session_policy={
+                **policy,
+                "budget_tokens": 400,
+                "raw_evidence_min_score": 0.45,
+            },
+        )
+
+        self.assertEqual([item["ref_type"] for item in selected], ["entity"])
+        self.assertGreater(used_tokens, 0)
+        self.assertGreaterEqual(dropped["low_score"], 1)
+        self.assertEqual(dropped["cross_session_policy"]["selected_ref_count"], 1)
 
     def test_direct_native_context_pack_dispatches_single_backend_request(self) -> None:
         client = _NativeContextPackClient()

@@ -117,8 +117,10 @@ Latest AWS/test state:
   - Retrieval workflow:
     - resolve identity and access scope first from API key/SSO/session;
     - same-user cross-session retrieval is enabled by default only in `session_scope=prefer`, not `only`;
-    - default cross-session budget is deliberately bounded: 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date, capped by `MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS`;
+    - default cross-session budget is deliberately bounded: 12% normal, 15% broad/evidence, 20% current/latest/multi-hop/date, capped by `MATRIXARK_CROSS_SESSION_MAX_BUDGET_TOKENS` and `MATRIXARK_CROSS_SESSION_MAX_BUDGET_RATIO`;
+    - 20% is a maximum cap, not a quota; unused cross-session budget remains available for same-session continuity, resources, and skills;
     - cross-session candidates must pass `MATRIXARK_CROSS_SESSION_MIN_SCORE` before fanout/top-k/token packing;
+    - raw cross-session events/segments must pass `MATRIXARK_CROSS_SESSION_RAW_EVIDENCE_MIN_SCORE`; prefer cross-session entities, summaries, and TIME_COMPRESS records unless the query needs high-confidence raw evidence;
     - default cross-session fanout is 3 sessions and 24 candidates so same-session continuity, resources, and skills keep most of the remote budget;
     - retrieve same-session and same-user private context first;
     - retrieve shared resources/skills next because they are intentionally governed context;

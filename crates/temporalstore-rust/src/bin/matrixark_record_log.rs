@@ -870,19 +870,21 @@ fn cross_session_rerank_boost(
     match record_type {
         "context_entity" => {
             if matches!(question_type, "current_state" | "latest" | "multi_hop") {
-                0.08
+                0.10
             } else {
-                0.04
+                0.06
             }
         }
         "resource_chunk" if has_citation => 0.04,
         "context_event" | "context_segment"
-            if matches!(question_type, "multi_hop" | "why_emotion" | "fact") =>
+            if matches!(question_type, "multi_hop" | "why_emotion" | "fact" | "evidence") =>
         {
-            0.03
+            0.01
         }
-        "context_compression_event" => 0.02,
-        "context_summary" if question_type != "broad_exploration" => -0.04,
+        "context_compression_event" => 0.05,
+        "context_summary" => {
+            if question_type == "broad_exploration" { 0.05 } else { 0.02 }
+        }
         _ if matches!(context_class, "resource_fact" | "resource_entity_fact") => {
             if has_citation {
                 0.06
@@ -951,10 +953,12 @@ struct CrossSessionPolicy {
     enabled: bool,
     budget_ratio: f64,
     budget_tokens: u64,
+    max_budget_ratio: f64,
     max_budget_tokens: u64,
     max_sessions: u64,
     max_candidates: u64,
     min_score: f64,
+    raw_evidence_min_score: f64,
     min_entity_bridge_refs: u64,
     parallelism: u64,
 }
@@ -976,11 +980,19 @@ fn parse_cross_session_policy(
     } else {
         0.12
     };
+    let max_budget_ratio = config
+        .and_then(|cfg| cfg.get("max_budget_ratio"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.20)
+        .clamp(0.0, 1.0);
+    if budget_ratio > max_budget_ratio {
+        budget_ratio = max_budget_ratio;
+    }
     if let Some(value) = config
         .and_then(|cfg| cfg.get("budget_ratio"))
         .and_then(Value::as_f64)
     {
-        budget_ratio = value.clamp(0.0, 1.0);
+        budget_ratio = value.clamp(0.0, max_budget_ratio);
     }
     let max_budget_tokens = config
         .and_then(|cfg| cfg.get("max_budget_tokens"))
@@ -1012,6 +1024,11 @@ fn parse_cross_session_policy(
         .and_then(Value::as_f64)
         .unwrap_or(0.20)
         .clamp(0.0, 1.0);
+    let mut raw_evidence_min_score = config
+        .and_then(|cfg| cfg.get("raw_evidence_min_score"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.45)
+        .clamp(0.0, 1.0);
     let mut min_entity_bridge_refs = config
         .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
         .and_then(Value::as_u64)
@@ -1026,6 +1043,7 @@ fn parse_cross_session_policy(
         max_sessions = 0;
         max_candidates = 0;
         min_score = 0.0;
+        raw_evidence_min_score = 0.0;
         min_entity_bridge_refs = 0;
         parallelism = 0;
     } else {
@@ -1034,16 +1052,26 @@ fn parse_cross_session_policy(
         } else {
             max_budget_tokens
         };
-        budget_tokens = budget_tokens.min(remote_budget).min(cap);
+        let mut ratio_cap = if max_budget_ratio > 0.0 {
+            (remote_budget as f64 * max_budget_ratio) as u64
+        } else {
+            remote_budget
+        };
+        if ratio_cap == 0 && remote_budget > 0 && max_budget_ratio > 0.0 {
+            ratio_cap = 1;
+        }
+        budget_tokens = budget_tokens.min(remote_budget).min(cap).min(ratio_cap);
     }
     CrossSessionPolicy {
         enabled,
         budget_ratio,
         budget_tokens,
+        max_budget_ratio,
         max_budget_tokens,
         max_sessions,
         max_candidates,
         min_score,
+        raw_evidence_min_score,
         min_entity_bridge_refs,
         parallelism,
     }
@@ -1617,7 +1645,13 @@ fn retrieve_context_pack_native(
         }
         let context_class = context_class_name(&record);
         let is_cross_session = session_continuity == "cross_session";
+        let record_type = record
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let is_entity_bridge = is_cross_session && context_class == "entity";
+        let is_cross_session_raw_evidence = is_cross_session
+            && matches!(record_type, "context_event" | "context_segment");
         let cross_key = if is_cross_session {
             cross_session_key(&record)
         } else {
@@ -1628,6 +1662,13 @@ fn retrieve_context_pack_native(
             continue;
         }
         if is_cross_session && cross_policy.min_score > 0.0 && score < cross_policy.min_score {
+            dropped_low_score += 1;
+            continue;
+        }
+        if is_cross_session_raw_evidence
+            && cross_policy.raw_evidence_min_score > 0.0
+            && score < cross_policy.raw_evidence_min_score
+        {
             dropped_low_score += 1;
             continue;
         }
@@ -1753,19 +1794,21 @@ fn retrieve_context_pack_native(
                 "enabled": cross_policy.enabled,
                 "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
                 "budget_ratio": cross_policy.budget_ratio,
+                "max_budget_ratio": cross_policy.max_budget_ratio,
                 "budget_tokens": cross_policy.budget_tokens,
                 "remote_budget_tokens": remote_budget,
                 "max_budget_tokens": cross_policy.max_budget_tokens,
                 "max_sessions": cross_policy.max_sessions,
                 "max_candidates": cross_policy.max_candidates,
                 "min_score": cross_policy.min_score,
+                "raw_evidence_min_score": cross_policy.raw_evidence_min_score,
                 "parallelism": cross_policy.parallelism,
                 "selected_tokens": cross_used_tokens,
                 "selected_ref_count": cross_selected_refs,
                 "selected_session_count": selected_cross_sessions.len() as u64,
                 "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
                 "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
-                "budget_guidance": "default cross-session budget is conservative: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date, capped by max_budget_tokens; same-session, resources, and skills keep the rest"
+                "budget_guidance": "cross-session budget is a maximum cap, not a quota: 12% normally, 15% for broad/evidence, 20% for current-state/latest/multi-hop/date; spend it only on high-quality refs, prefer entities/summaries/compressions, and require high-confidence raw events"
             },
             "tree_traversal": {
                 "enabled": true,
