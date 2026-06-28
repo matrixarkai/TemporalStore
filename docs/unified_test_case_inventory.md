@@ -76,13 +76,13 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 169
-total steps: 331
-executable shared behavior cases: 169
-executable shared behavior steps: 331
-C++ existing-test/static parity surfaces: 193
+total cases: 170
+total steps: 332
+executable shared behavior cases: 170
+executable shared behavior steps: 332
+C++ existing-test/static parity surfaces: 194
 C++ adapter coverage families: 9
-C++ required source/test/harness paths: 191 unique paths
+C++ required source/test/harness paths: 198 unique paths
 required command kinds: 64
 required response kinds: 20
 ```
@@ -305,6 +305,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_scheduler_token_stale_rejection` | Rust-executable/C++-static gate for metaserver scheduler-issued lifecycle tokens and stale generation rejection. |
 | `control_datanode_lifecycle_restart_recovery` | Rust-executable/C++-static gate for data-node lifecycle, snapshot restore, and restart diagnostics. |
 | `control_client_retry_budget_topology_refresh` | Rust-executable/C++-static gate for client retry budgets, topology refresh, stale route invalidation, and no duplicate unsafe writes. |
+| `control_client_metasync_outage_churn_stress` | Rust-executable/C++-static gate for MetaSyncer jitter/backoff/deadline behavior under metaserver outage and topology churn. |
+| `control_client_pipeline_batch_partial_timeout_contract` | Rust-executable/C++-static gate for ordered batching, partial failures, retry-safe versus unsafe writes, and timeout budget propagation. |
+| `control_client_deployment_placement_routing_hooks` | Rust-executable/C++-static gate for deployment placement hooks, location-affine secondary reads, and primary-only write routing. |
 | `cross_storage_control_agent_parity` | Rust-executable/C++-static gate tying storage dump/load/cache recovery, client/proxy topology/admission, data-node lifecycle, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one cross-subsystem contract. |
 | `ingestion_kafka_consumer_group_runtime_rebalance` | Rust-executable/C++-static gate for Kafka consumer-group runtime assignment, rebalance-required detection, and backpressure. |
 | `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |

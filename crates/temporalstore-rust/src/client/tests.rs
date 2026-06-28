@@ -1640,6 +1640,205 @@ fn client_router_prefers_same_location_replica_when_available() {
     );
 }
 
+// shared-corpus: control_client_deployment_placement_routing_hooks
+#[test]
+fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_primary() {
+    let primary_addr = free_local_addr();
+    let replica_addr = free_local_addr();
+    let meta_addr = free_local_addr();
+    let primary_writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let primary_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let replica_writes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let replica_reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    std::thread::spawn({
+        let primary_addr = primary_addr.clone();
+        let primary_writes = std::sync::Arc::clone(&primary_writes);
+        let primary_reads = std::sync::Arc::clone(&primary_reads);
+        move || {
+            serve(&primary_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        match req.command {
+                            Command::StringSet { .. } => {
+                                primary_writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                json_response(
+                                    200,
+                                    &ExecuteResponse {
+                                        status: Status::ok(),
+                                        response: CommandResponse::Empty,
+                                    },
+                                )
+                            }
+                            Command::StringGet { .. } => {
+                                primary_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                json_response(
+                                    200,
+                                    &ExecuteResponse {
+                                        status: Status::ok(),
+                                        response: CommandResponse::Bytes {
+                                            value: Some(b"primary".to_vec()),
+                                        },
+                                    },
+                                )
+                            }
+                            _ => json_response(400, &Status::error("bad_request", "unexpected")),
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        }
+    });
+
+    std::thread::spawn({
+        let replica_addr = replica_addr.clone();
+        let replica_writes = std::sync::Arc::clone(&replica_writes);
+        let replica_reads = std::sync::Arc::clone(&replica_reads);
+        move || {
+            serve(&replica_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/execute") => {
+                        let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                        match req.command {
+                            Command::StringGet { .. } => {
+                                replica_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                json_response(
+                                    200,
+                                    &ExecuteResponse {
+                                        status: Status::ok(),
+                                        response: CommandResponse::Bytes {
+                                            value: Some(b"replica-local".to_vec()),
+                                        },
+                                    },
+                                )
+                            }
+                            Command::StringSet { .. } => {
+                                replica_writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                json_response(
+                                    200,
+                                    &ExecuteResponse {
+                                        status: Status::error(
+                                            "wrong_endpoint",
+                                            "replica received primary-only write",
+                                        ),
+                                        response: CommandResponse::Empty,
+                                    },
+                                )
+                            }
+                            _ => json_response(400, &Status::error("bad_request", "unexpected")),
+                        }
+                    }
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        }
+    });
+
+    std::thread::spawn({
+        let meta_addr = meta_addr.clone();
+        let primary_addr = primary_addr.clone();
+        let replica_addr = replica_addr.clone();
+        move || {
+            serve(&meta_addr, move |request| {
+                match (request.method.as_str(), request.path.as_str()) {
+                    ("POST", "/tables/topology") => json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 81,
+                                namespace: "ns".to_string(),
+                                table_name: "placed".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 11,
+                                first_shard_id: 81,
+                                shard_count: 1,
+                                replica_count: 2,
+                                use_cpp_partition_ids: false,
+                                partition_version: 3,
+                                serving_options: crate::meta::TableServingOptions {
+                                    pin_primary: false,
+                                    replica_read_policy: "round_robin_replica".to_string(),
+                                    preferred_location: String::new(),
+                                    drop_percent: 0,
+                                    max_read_retries: 1,
+                                    max_write_retries: 1,
+                                    retry_backoff_ms: 1,
+                                    continuous_failed_time_ms: 100,
+                                    io_timeout_ms: 1_000,
+                                    connect_timeout_ms: 1_000,
+                                },
+                            }),
+                            partitions: vec![TablePartition {
+                                shard_id: 81,
+                                start_slot: 0,
+                                end_slot: u64::MAX,
+                                primary: Some(primary_addr.clone()),
+                                replicas: vec![primary_addr.clone(), replica_addr.clone()],
+                                primary_endpoint: Some(ServerEndpoint {
+                                    server_addr: primary_addr.clone(),
+                                    location: "zone-primary".to_string(),
+                                }),
+                                replica_endpoints: vec![
+                                    ServerEndpoint {
+                                        server_addr: primary_addr.clone(),
+                                        location: "zone-primary".to_string(),
+                                    },
+                                    ServerEndpoint {
+                                        server_addr: replica_addr.clone(),
+                                        location: "zone-local".to_string(),
+                                    },
+                                ],
+                            }],
+                            unchanged: false,
+                        },
+                    ),
+                    _ => json_response(404, &Status::error("not_found", "not found")),
+                }
+            })
+            .unwrap();
+        }
+    });
+
+    wait_for_http(&primary_addr);
+    wait_for_http(&replica_addr);
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some(meta_addr),
+        local_location: "zone-local".to_string(),
+        route_cache_ttl_ms: 60_000,
+        ..ClientOptions::default()
+    });
+    let placement = client.deployment_placement_policy("neptune-prod");
+    assert_eq!(placement.preferred_location, "zone-local");
+    assert!(placement.require_location_affinity);
+
+    let table = client.open_table_from_meta("ns", "placed").unwrap();
+    assert_eq!(
+        table.options().replica_read_policy,
+        ReplicaReadPolicy::RoundRobinReplica
+    );
+    assert_eq!(table.options().preferred_location, "zone-local");
+    assert!(!table.options().pin_primary);
+
+    table.set("placed-key", b"value".to_vec()).unwrap();
+    assert_eq!(
+        table.get("placed-key").unwrap(),
+        Some(b"replica-local".to_vec())
+    );
+
+    assert_eq!(primary_writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(primary_reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(replica_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(replica_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
 #[test]
 fn client_table_drop_percent_rejects_sampled_requests_before_network() {
     let client = TemporalStoreClient::with_options(ClientOptions {

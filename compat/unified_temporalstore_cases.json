@@ -5818,6 +5818,26 @@
       ]
     },
     {
+      "name": "control_client_deployment_placement_routing_hooks",
+      "shard_id": 64,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust client placement/routing case for deployment placement hooks, location-affine secondary reads, and primary-only write routing.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/client/routing.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_primary -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "client_deployment_placement_routing_hooks_shared"
+        }
+      ]
+    },
+    {
       "name": "ingestion_kafka_consumer_group_runtime_rebalance",
       "shard_id": 65,
       "steps": [
@@ -7918,6 +7938,7 @@
       "control_client_retry_budget_topology_refresh",
       "control_client_metasync_outage_churn_stress",
       "control_client_pipeline_batch_partial_timeout_contract",
+      "control_client_deployment_placement_routing_hooks",
       "cross_storage_control_agent_parity",
       "ingestion_kafka_consumer_group_runtime_rebalance",
       "ingestion_flink_checkpoint_restart_failover",
