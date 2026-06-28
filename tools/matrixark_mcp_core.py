@@ -637,6 +637,28 @@ EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent
 ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
 CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 
+# Fields that are useful while debugging a request but are derivable from
+# scope_key, event_time_key, node_path, or ContextEmbedding metadata. Keep them
+# out of hot serving records unless the caller explicitly asks for debug data.
+COMPACT_DERIVED_SCOPE_FIELDS = {"_explicit_scope_keys"}
+COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES = {
+    "context_node",
+    "context_child_ref",
+    "context_summary",
+    "context_summary_dirty",
+}
+COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS = {
+    "account_id",
+    "account_hash",
+    "tenant_id",
+    "tenant_hash",
+    "user_id",
+    "user_hash",
+    "session_id",
+    "session_hash",
+    "agent_name",
+}
+
 
 def _record_debug_ref(record: Json) -> tuple[str, Any]:
     record_type = str(record.get("record_type") or "")
@@ -739,6 +761,16 @@ def compact_record_lifecycle_fields(record: Json) -> Json:
     if record_type not in COMPACT_TIMESTAMP_RECORD_TYPES:
         return record
     compacted = dict(record)
+    if str(compacted.get("scope_key") or ""):
+        for field in COMPACT_DERIVED_SCOPE_FIELDS:
+            compacted.pop(field, None)
+        if record_type in COMPACT_TOPOLOGY_SCOPE_STRING_RECORD_TYPES:
+            for field in COMPACT_TOPOLOGY_SCOPE_STRING_FIELDS:
+                compacted.pop(field, None)
+    if record_type == "context_event":
+        # event_time_key + parent hash/type is the serving key; the fully
+        # expanded string is debug-only noise in hot records.
+        compacted.pop("context_event_key", None)
     if record_type == "context_embedding":
         vector = compacted.get("vector")
         if isinstance(vector, list) and compacted.get("dim") is not None:
@@ -4765,9 +4797,9 @@ def selected_context_class_counts(refs: list[Json]) -> Json:
 def compact_context_pack_ref(ref: Json) -> Json:
     """Return the prompt-facing ContextPack ref shape.
 
-    Audit records keep hashes, matched indexes, provider/debug fields, and full
-    score breakdowns. The live ContextPack should spend tokens on evidence and
-    citations, not routing internals.
+    Audit records keep hashes, matched indexes, provider/debug fields, score
+    breakdowns, raw URIs, and routing internals. The live ContextPack should
+    spend tokens on evidence and citations.
     """
     item: Json = {}
     for field in [
@@ -4776,14 +4808,10 @@ def compact_context_pack_ref(ref: Json) -> Json:
         "text_preview",
         "citation",
         "source_ref",
-        "raw_uri",
         "resource_type",
-        "resource_version",
         "summary_type",
         "operator",
         "session_continuity",
-        "sharing_scope",
-        "packing_policy",
     ]:
         value = ref.get(field)
         if value not in (None, "", [], {}):
@@ -4791,16 +4819,17 @@ def compact_context_pack_ref(ref: Json) -> Json:
     context_class = ref.get("context_class")
     if context_class and context_class != item.get("ref_type"):
         item["context_class"] = context_class
-    if "score" in ref:
-        try:
-            item["score"] = round(float(ref.get("score") or 0.0), 4)
-        except (TypeError, ValueError):
-            pass
-    if "token_estimate" in ref:
-        try:
-            item["token_estimate"] = int(ref.get("token_estimate") or 0)
-        except (TypeError, ValueError):
-            pass
+    if os.environ.get("MATRIXARK_CONTEXT_PACK_INCLUDE_SCORES", "0").strip().lower() in {"1", "true", "yes"}:
+        if "score" in ref:
+            try:
+                item["score"] = round(float(ref.get("score") or 0.0), 4)
+            except (TypeError, ValueError):
+                pass
+        if "token_estimate" in ref:
+            try:
+                item["token_estimate"] = int(ref.get("token_estimate") or 0)
+            except (TypeError, ValueError):
+                pass
     metadata = ref.get("metadata")
     if isinstance(metadata, dict):
         compact_metadata = {
@@ -4808,7 +4837,6 @@ def compact_context_pack_ref(ref: Json) -> Json:
             for field in [
                 "unit_kind",
                 "heading",
-                "heading_slug",
                 "relative_path",
                 "page",
                 "page_section",
@@ -4832,6 +4860,86 @@ def compact_context_pack_refs(refs: list[Json], *, include_debug: bool = False) 
     if include_debug:
         return refs
     return [compact_context_pack_ref(ref) for ref in refs]
+
+
+def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False) -> Json:
+    """Strip non-answer-bearing routing details from normal ContextPack output."""
+    if include_debug:
+        return pack
+    compact = dict(pack)
+    compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=False)
+    compact["remote_context_refs"] = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=False)
+    compact["dropped_refs"] = compact_dropped_refs_for_context_pack(compact.get("dropped_refs", {}), include_debug=False)
+
+    recall_summary = compact_recall_policy_for_audit(compact.get("recall_policy", {}))
+    if recall_summary:
+        query_plan = recall_summary.get("query_plan")
+        if isinstance(query_plan, dict):
+            secondary_filters = query_plan.pop("secondary_filters", None)
+            if isinstance(secondary_filters, dict) and secondary_filters:
+                query_plan["secondary_filter_fields"] = sorted(str(key) for key in secondary_filters.keys())[:10]
+                query_plan["secondary_filter_value_count"] = sum(
+                    len(value) if isinstance(value, list) else 1
+                    for value in secondary_filters.values()
+                )
+            temporal_window = query_plan.get("temporal_window")
+            if isinstance(temporal_window, dict):
+                query_plan["temporal_window"] = {
+                    field: temporal_window.get(field)
+                    for field in ["mode", "valid_as_of"]
+                    if temporal_window.get(field) not in (None, "", [], {})
+                }
+        tree = recall_summary.get("tree")
+        if isinstance(tree, dict):
+            recall_summary["tree"] = {
+                field: tree.get(field)
+                for field in ["enabled", "fallback_to_flat", "selected_node_count", "selected_leaf_count", "candidate_records_after_tree"]
+                if tree.get(field) not in (None, "", [], {})
+            }
+        rerank = recall_summary.get("rerank")
+        if isinstance(rerank, dict):
+            recall_summary["rerank"] = {
+                field: rerank.get(field)
+                for field in ["enabled", "mode", "reranked_candidate_count"]
+                if rerank.get(field) not in (None, "", [], {})
+            }
+        deadline = recall_summary.get("deadline")
+        if isinstance(deadline, dict) and not deadline.get("partial_context_pack"):
+            recall_summary.pop("deadline", None)
+        compact["recall_policy"] = recall_summary
+    else:
+        compact.pop("recall_policy", None)
+
+    local_policy = compact.get("local_context_policy")
+    if isinstance(local_policy, dict):
+        compact["local_context_policy"] = {
+            field: local_policy.get(field)
+            for field in [
+                "local_context_count",
+                "local_context_tokens",
+                "safety_margin_tokens",
+                "remote_is_additive_only_within_remaining_budget",
+            ]
+            if local_policy.get(field) not in (None, "", [], {})
+        }
+
+    if compact.get("embedding_fallback_used"):
+        compact["embedding_status"] = {
+            "fallback_used": True,
+            "execution_mode": compact.get("embedding_execution_mode", ""),
+            "model": compact.get("query_embedding_model", ""),
+        }
+    for field in [
+        "context_assembly_policy",
+        "context_pack_payload_policy",
+        "operational_visibility_policy",
+        "layer_scores",
+        "query_embedding_model",
+        "embedding_execution_mode",
+        "embedding_fallback_used",
+    ]:
+        compact.pop(field, None)
+    return {key: value for key, value in compact.items() if value not in (None, "", [], {})}
 
 
 def compact_dropped_refs_for_context_pack(dropped: Json, *, include_debug: bool = False) -> Json:
@@ -5031,7 +5139,6 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "keywords",
         "source_locator",
         "resource_version",
-        "content_hash",
         "row_start",
         "row_end",
         "record_start",
