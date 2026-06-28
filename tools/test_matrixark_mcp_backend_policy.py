@@ -1257,6 +1257,34 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
 
+    def test_context_pack_access_view_omits_hashes(self) -> None:
+        access = mcp.MatrixArkMcpServer._serving_access(
+            {
+                "_matrixark_auth": {
+                    "account_id": "acct_local",
+                    "tenant_id": "tenant_codex",
+                    "user_id": "deeproute",
+                    "session_id": "debug-message-pdf-session",
+                    "agent_name": "codex",
+                    "api_key_id": "dev",
+                    "role": "dev_admin",
+                    "mode": "dev",
+                    "scope_key": "t=1|u=2|s=3|",
+                    "tenant_hash": 1,
+                    "user_hash": 2,
+                    "session_hash": 3,
+                }
+            }
+        )
+        self.assertEqual("acct_local", access.get("account_id"))
+        self.assertEqual("tenant_codex", access.get("tenant_id"))
+        self.assertEqual("deeproute", access.get("user_id"))
+        self.assertEqual("debug-message-pdf-session", access.get("session_id"))
+        self.assertNotIn("scope_key", access)
+        self.assertNotIn("tenant_hash", access)
+        self.assertNotIn("user_hash", access)
+        self.assertNotIn("session_hash", access)
+
     def test_message_event_secondary_indexes_are_capped(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "events.jsonl")

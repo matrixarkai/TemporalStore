@@ -406,6 +406,23 @@ class MatrixArkMcpServer:
         ]
         return stable_hash("idempotency:" + name + ":" + ":".join(scope_parts) + ":" + raw_key)
 
+    @staticmethod
+    def _serving_access(args: Json) -> Json:
+        auth = args.get("_matrixark_auth", {})
+        if not isinstance(auth, dict):
+            return {}
+        fields = [
+            "account_id",
+            "tenant_id",
+            "user_id",
+            "session_id",
+            "agent_name",
+            "api_key_id",
+            "role",
+            "mode",
+        ]
+        return {field: auth.get(field) for field in fields if auth.get(field) not in (None, "", [], {})}
+
     def _idempotent_replay_response(self, name: str, args: Json, identity: Json, hook: Json | None) -> Json | None:
         if name not in self.IDEMPOTENT_WRITE_TOOLS:
             return None
