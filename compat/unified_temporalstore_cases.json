@@ -3076,7 +3076,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage compaction emits C++-style model-layout policy evidence for string, hash, set, timestamped, and context models, including stale-page and tombstone-density fields.",
+            "description": "Rust storage compaction emits C++-style model-layout policy evidence for string, hash, set, timestamped, context, and Risk models, including object-page packing, cold-page rewrite, stale-page density, tombstone density, and index rewrite evidence.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
@@ -3144,7 +3144,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust reports tombstoned objects and applies model-layout compaction policy evidence for deleted logical records.",
+            "description": "Rust reports tombstoned objects and applies model-layout compaction policy evidence for deleted logical records, including tombstone density and stale-density rewrite actions.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",

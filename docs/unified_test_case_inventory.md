@@ -117,8 +117,9 @@ ObjectManager/SlotStore runtime authority modules against the same physical inde
 `storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
 across single-page object, multi-object, multi-page object, delete, compaction, slot
 dump/load, and restart. `storage_model_layout_compaction_policies` covers
-model-layout-aware compaction policy evidence for string, hash, set, timestamped, and
-context model families, including stale-page and tombstone-density fields.
+model-layout-aware compaction policy evidence for string, hash, set, timestamped,
+context, and Risk model families, including object-page packing, cold-page rewrite,
+stale-page density, tombstone-density, and index rewrite fields.
 `storage_merged_dump_load_lifecycle` covers the merged dump/load policy evidence:
 validated multi-slot source manifests, source-slot coverage rejection, rollback marker evidence,
 load-version handoff, and stale object/page conflict preflight reports. The storage family also now includes focused
@@ -201,8 +202,8 @@ C++ execution should progressively cover every executable case.
 | `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after memory eviction and restart. |
 | `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index. |
 | `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
-| `storage_tombstone_compaction` | Rust verifies tombstoned object reporting and model-layout compaction policy evidence. |
-| `storage_stale_page_density_compaction` | Rust verifies stale page estimate and density evidence for compaction decisions. |
+| `storage_tombstone_compaction` | Rust verifies tombstoned object reporting plus model-layout tombstone-density and rewrite-action evidence. |
+| `storage_stale_page_density_compaction` | Rust verifies stale page estimate, density evidence, cold-page rewrite, object-page packing, and rewritten index refs for compaction decisions. |
 | `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers, merged-installer roll-forward, load-version handoff after retry, and incomplete-commit reporting. |
 | `storage_gc_eviction_cold_reads` | Rust verifies StorageManager GC plus eviction preserves cold reads through page-store fallback. |
 | `storage_manager_continuous_background_runtime` | Rust verifies stoppable continuous StorageManager runtime with jitter, backoff, pause/resume, per-phase enable flags, and bounded work per round. |

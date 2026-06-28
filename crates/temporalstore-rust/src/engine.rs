@@ -5215,22 +5215,24 @@ impl TemporalEngine {
             .page_store
             .roll_segment()
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
-        let mut rewritten_page_refs = 0;
+        let mut rewrite_stats = CompactionRewriteStats::default();
 
         compact_page_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
+            "string",
             shard.strings.values_mut(),
-            &mut rewritten_page_refs,
+            &mut rewrite_stats,
         )?;
         for fields in shard.hashes.values_mut() {
             compact_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "hash",
                 fields.values_mut(),
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for members in shard.sets.values_mut() {
@@ -5238,8 +5240,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "set",
                 members.values_mut(),
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.features.values_mut() {
@@ -5247,8 +5250,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "feature",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.sequences.values_mut() {
@@ -5256,8 +5260,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "sequence",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.ips.values_mut() {
@@ -5265,31 +5270,35 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "ips",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         compact_page_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
+            "risk",
             shard.risk_pages.values_mut(),
-            &mut rewritten_page_refs,
+            &mut rewrite_stats,
         )?;
         compact_page_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
+            "context_node",
             shard.context_nodes.values_mut(),
-            &mut rewritten_page_refs,
+            &mut rewrite_stats,
         )?;
         for series in shard.context_events.values_mut() {
             compact_feature_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_event",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.context_indexes.values_mut() {
@@ -5297,8 +5306,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_index",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.context_audits.values_mut() {
@@ -5306,8 +5316,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_audit",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.context_dirty.values_mut() {
@@ -5315,8 +5326,9 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_dirty",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.context_children.values_mut() {
@@ -5324,24 +5336,27 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_child",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         compact_page_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
+            "context_embedding",
             shard.context_embeddings.values_mut(),
-            &mut rewritten_page_refs,
+            &mut rewrite_stats,
         )?;
         for series in shard.context_summaries.values_mut() {
             compact_feature_page_addresses(
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_summary",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         for series in shard.context_compressions.values_mut() {
@@ -5349,16 +5364,18 @@ impl TemporalEngine {
                 &self.page_store,
                 &self.cache,
                 shard_id,
+                "context_compression",
                 series,
-                &mut rewritten_page_refs,
+                &mut rewrite_stats,
             )?;
         }
         compact_page_addresses(
             &self.page_store,
             &self.cache,
             shard_id,
+            "context_entity",
             shard.context_entities.values_mut(),
-            &mut rewritten_page_refs,
+            &mut rewrite_stats,
         )?;
         for (key, meta_series) in &mut shard.ips_meta {
             if let Some(address_series) = shard.ips.get(key) {
@@ -5386,8 +5403,15 @@ impl TemporalEngine {
             shard_id,
             previous_page_segment_id: roll.previous_page_segment_id,
             compacted_page_segment_id: roll.new_page_segment_id,
-            rewritten_page_refs,
+            rewritten_page_refs: rewrite_stats.rewritten_page_refs,
+            cold_page_rewrite_refs: rewrite_stats.cold_page_rewrite_refs,
+            object_page_pack_group_count: before
+                .model_policies
+                .iter()
+                .map(|policy| policy.object_page_pack_group_count as usize)
+                .sum(),
             stale_page_segment_ids,
+            model_rewrite_policies: rewrite_stats.into_reports(&before),
             before,
             after,
         })
@@ -10142,11 +10166,12 @@ fn compaction_utility_report(
         live_page_refs,
         stale_page_estimate,
         live_ref_density_basis_points,
-        model_policies: model_compaction_policy_reports(&entries, &segment_page_counts),
+        model_policies: model_compaction_policy_reports(shard, &entries, &segment_page_counts),
     }
 }
 
 fn model_compaction_policy_reports(
+    shard: &ShardState,
     entries: &[LivePageEntry],
     segment_page_counts: &BTreeMap<u64, u64>,
 ) -> Vec<ModelCompactionPolicyReport> {
@@ -10166,6 +10191,35 @@ fn model_compaction_policy_reports(
             stats.live_page_refs = stats.live_page_refs.saturating_add(1);
             stats.segment_ids.insert(entry.address.page_segment_id);
         }
+    }
+    for key in shard
+        .dirty_objects
+        .iter()
+        .filter(|key| !record_exists(shard, key))
+    {
+        let model_id = if shard.hashes.contains_key(key) {
+            "hash"
+        } else if shard.sets.contains_key(key) {
+            "set"
+        } else if shard.features.contains_key(key) {
+            "feature"
+        } else if shard.sequences.contains_key(key) {
+            "sequence"
+        } else if shard.ips.contains_key(key) {
+            "ips"
+        } else if shard.risk_pages.contains_key(key) {
+            "risk"
+        } else if shard.context_nodes.contains_key(key) {
+            "context_node"
+        } else if shard.context_entities.contains_key(key) {
+            "context_entity"
+        } else if shard.context_embeddings.contains_key(key) {
+            "context_embedding"
+        } else {
+            "string"
+        };
+        let stats = by_model.entry(model_id.to_string()).or_default();
+        stats.deleted_page_refs = stats.deleted_page_refs.saturating_add(1);
     }
 
     by_model
@@ -10195,6 +10249,7 @@ fn model_compaction_policy_reports(
             };
             ModelCompactionPolicyReport {
                 layout_policy: compaction_layout_policy_for_model(&model_id).to_string(),
+                object_page_packing_enabled: compaction_object_page_packing_enabled(&model_id),
                 model_id,
                 live_page_refs: stats.live_page_refs,
                 deleted_page_refs: stats.deleted_page_refs,
@@ -10202,6 +10257,15 @@ fn model_compaction_policy_reports(
                 stale_page_estimate,
                 stale_density_basis_points,
                 tombstone_density_basis_points,
+                object_page_pack_group_count: stats.segment_ids.len() as u64,
+                cold_page_rewrite_eligible_refs: stats.live_page_refs,
+                compaction_action: compaction_action_for_policy(
+                    stats.live_page_refs,
+                    stats.deleted_page_refs,
+                    stale_density_basis_points,
+                    tombstone_density_basis_points,
+                )
+                .to_string(),
             }
         })
         .collect()
@@ -10219,14 +10283,107 @@ fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
     }
 }
 
+fn compaction_object_page_packing_enabled(model_id: &str) -> bool {
+    matches!(
+        compaction_layout_policy_for_model(model_id),
+        "single_page_object" | "component_page_object"
+    )
+}
+
+fn compaction_action_for_policy(
+    live_page_refs: u64,
+    deleted_page_refs: u64,
+    stale_density_basis_points: u64,
+    tombstone_density_basis_points: u64,
+) -> &'static str {
+    if live_page_refs == 0 && deleted_page_refs > 0 {
+        "drop_tombstones"
+    } else if tombstone_density_basis_points > 0 || deleted_page_refs > 0 {
+        "rewrite_live_drop_tombstones"
+    } else if stale_density_basis_points > 0 {
+        "rewrite_stale_density"
+    } else {
+        "rewrite_cold_or_pack"
+    }
+}
+
+#[derive(Debug, Default)]
+struct CompactionRewriteStats {
+    rewritten_page_refs: usize,
+    cold_page_rewrite_refs: usize,
+    by_model: BTreeMap<String, ModelCompactionRewriteStats>,
+}
+
+#[derive(Debug, Default)]
+struct ModelCompactionRewriteStats {
+    rewritten_page_refs: usize,
+    cold_page_rewrite_refs: usize,
+}
+
+impl CompactionRewriteStats {
+    fn record(&mut self, model_id: &str, cold_page: bool) {
+        self.rewritten_page_refs = self.rewritten_page_refs.saturating_add(1);
+        let model = self.by_model.entry(model_id.to_string()).or_default();
+        model.rewritten_page_refs = model.rewritten_page_refs.saturating_add(1);
+        if cold_page {
+            self.cold_page_rewrite_refs = self.cold_page_rewrite_refs.saturating_add(1);
+            model.cold_page_rewrite_refs = model.cold_page_rewrite_refs.saturating_add(1);
+        }
+    }
+
+    fn into_reports(
+        self,
+        before: &ShardCompactionUtilityReport,
+    ) -> Vec<ModelCompactionRewriteReport> {
+        self.by_model
+            .into_iter()
+            .map(|(model_id, stats)| {
+                let before_policy = before
+                    .model_policies
+                    .iter()
+                    .find(|policy| policy.model_id == model_id);
+                ModelCompactionRewriteReport {
+                    layout_policy: compaction_layout_policy_for_model(&model_id).to_string(),
+                    model_id,
+                    rewritten_page_refs: stats.rewritten_page_refs,
+                    cold_page_rewrite_refs: stats.cold_page_rewrite_refs,
+                    object_page_pack_group_count: before_policy
+                        .map(|policy| policy.object_page_pack_group_count as usize)
+                        .unwrap_or_default(),
+                    tombstone_density_basis_points: before_policy
+                        .map(|policy| policy.tombstone_density_basis_points)
+                        .unwrap_or_default(),
+                    stale_density_basis_points: before_policy
+                        .map(|policy| policy.stale_density_basis_points)
+                        .unwrap_or_default(),
+                }
+            })
+            .collect()
+    }
+}
+
+fn page_memory_resident(cache: &MultiLayerCache, shard_id: ShardId, address: &PageAddress) -> bool {
+    cache
+        .get_memory(&CacheKey::page_with_slot(
+            shard_id,
+            address.page_segment_id,
+            address.offset,
+            address.length,
+            address.routing_slot,
+        ))
+        .is_some()
+}
+
 fn compact_page_addresses<'a>(
     page_store: &LocalPageStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
+    model_id: &str,
     addresses: impl IntoIterator<Item = &'a mut PageAddress>,
-    rewritten_page_refs: &mut usize,
+    rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     for address in addresses {
+        let cold_page = !page_memory_resident(cache, shard_id, address);
         let bytes = read_page_bytes(cache, page_store, shard_id, address).ok_or_else(|| {
             Status::error(
                 "page_compaction_failed",
@@ -10247,7 +10404,7 @@ fn compact_page_addresses<'a>(
             ),
             bytes,
         );
-        *rewritten_page_refs += 1;
+        rewrite_stats.record(model_id, cold_page);
     }
     Ok(())
 }
@@ -10256,12 +10413,14 @@ fn compact_feature_page_addresses(
     page_store: &LocalPageStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
+    model_id: &str,
     series: &mut BTreeMap<u64, PageAddress>,
-    rewritten_page_refs: &mut usize,
+    rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     let unique_addresses = unique_feature_page_addresses(series);
     let mut rewritten = HashMap::<PageAddress, PageAddress>::new();
     for old_address in unique_addresses {
+        let cold_page = !page_memory_resident(cache, shard_id, &old_address);
         let bytes =
             read_page_bytes(cache, page_store, shard_id, &old_address).ok_or_else(|| {
                 Status::error(
@@ -10283,7 +10442,7 @@ fn compact_feature_page_addresses(
             bytes,
         );
         rewritten.insert(old_address, new_address);
-        *rewritten_page_refs += 1;
+        rewrite_stats.record(model_id, cold_page);
     }
     for address in series.values_mut() {
         if let Some(new_address) = rewritten.get(address) {
@@ -13664,11 +13823,26 @@ mod tests {
                 .ok
         );
         assert_eq!(engine.live_page_segment_ids(1), vec![0]);
+        engine.cache().clear_memory_for_test();
 
         let report = engine.compact_shard_pages(1).unwrap();
         assert_eq!(report.previous_page_segment_id, 0);
         assert_eq!(report.compacted_page_segment_id, 1);
         assert_eq!(report.rewritten_page_refs, 2);
+        assert_eq!(report.cold_page_rewrite_refs, 2);
+        assert!(report.object_page_pack_group_count >= 2);
+        assert!(report.model_rewrite_policies.iter().any(|policy| {
+            policy.model_id == "string"
+                && policy.rewritten_page_refs == 1
+                && policy.cold_page_rewrite_refs == 1
+                && policy.object_page_pack_group_count >= 1
+        }));
+        assert!(report.model_rewrite_policies.iter().any(|policy| {
+            policy.model_id == "hash"
+                && policy.rewritten_page_refs == 1
+                && policy.cold_page_rewrite_refs == 1
+                && policy.object_page_pack_group_count >= 1
+        }));
         assert_eq!(report.stale_page_segment_ids, vec![0]);
         assert_eq!(report.before.live_page_segment_count, 1);
         assert_eq!(report.before.total_page_count, 3);
@@ -13771,6 +13945,14 @@ mod tests {
             let shard = shards.get_mut(&1).expect("loaded shard");
             let address = shard.strings.get_mut("owned").expect("string address");
             address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
+            for slot in shard.slot_index.slots.values_mut() {
+                for page in slot.page_refs.values_mut() {
+                    if page.object_key == "owned" && page.model_id == "string" {
+                        page.address.object_id =
+                            Some(page.address.object_id.unwrap_or_default().wrapping_add(1));
+                    }
+                }
+            }
         }
 
         let recovery = engine.storage_recovery_report(1);
@@ -18990,12 +19172,24 @@ mod tests {
             assert!(policy.total_segment_pages >= policy.live_page_refs);
             assert!(policy.stale_density_basis_points <= 10_000);
             assert!(policy.tombstone_density_basis_points <= 10_000);
+            assert!(policy.cold_page_rewrite_eligible_refs >= policy.live_page_refs);
+            assert!(!policy.compaction_action.is_empty());
+            if matches!(model_id, "string" | "hash" | "set") {
+                assert!(policy.object_page_packing_enabled);
+                assert!(policy.object_page_pack_group_count >= 1);
+            }
         }
         assert!(report
             .after
             .model_policies
             .iter()
             .any(|policy| policy.model_id == "feature"
+                && policy.layout_policy == "timestamped_chunked_pages"));
+        assert!(report
+            .model_rewrite_policies
+            .iter()
+            .any(|policy| policy.model_id == "feature"
+                && policy.rewritten_page_refs >= 1
                 && policy.layout_policy == "timestamped_chunked_pages"));
     }
 
@@ -19309,7 +19503,17 @@ mod tests {
             .expect("string compaction policy should exist");
         assert!(string_policy.stale_page_estimate > 0);
         assert!(string_policy.stale_density_basis_points > 0);
+        assert_eq!(
+            string_policy.compaction_action,
+            "rewrite_live_drop_tombstones"
+        );
         assert!(compact.rewritten_page_refs > 0);
+        assert!(compact
+            .model_rewrite_policies
+            .iter()
+            .any(|policy| policy.model_id == "string"
+                && policy.stale_density_basis_points > 0
+                && policy.tombstone_density_basis_points > 0));
     }
 
     // shared-corpus: storage_merged_dump_load_restart_interruption
