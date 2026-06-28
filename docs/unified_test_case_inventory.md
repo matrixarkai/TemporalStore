@@ -76,13 +76,13 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 164
-total steps: 326
-executable shared behavior cases: 164
-executable shared behavior steps: 326
-C++ existing-test/static parity surfaces: 186
+total cases: 165
+total steps: 327
+executable shared behavior cases: 165
+executable shared behavior steps: 327
+C++ existing-test/static parity surfaces: 187
 C++ adapter coverage families: 9
-C++ required source/test/harness paths: 190 unique paths
+C++ required source/test/harness paths: 191 unique paths
 required command kinds: 64
 required response kinds: 20
 ```
@@ -275,6 +275,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |
 | `control_cpp_server_service_alias_surface` | Rust-executable/C++-static gate for data-node C++ `ServerService` alias routes over the Rust-native migration surface. |
 | `control_metaserver_scheduler_lifecycle_workflow` | Rust-executable/C++-static gate for metaserver scheduler-issued load/reload/unload token behavior. |
+| `control_multi_proxy_topology_churn_scale` | Rust-executable/C++-static scale gate for two proxies converging after metaserver topology churn and stale cached route recovery. |
 | `ingestion_kafka_offset_ledger` | Rust-executable/C++-static gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
 | `ingestion_kafka_rebalance_backpressure` | Rust-executable/C++-static gate for Kafka consumer-group rebalance and backpressure behavior. |
 | `ingestion_flink_checkpoint_lifecycle` | Rust-executable/C++-static gate for Flink checkpoint precommit/commit/abort behavior. |

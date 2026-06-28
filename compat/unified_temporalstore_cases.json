@@ -4149,7 +4149,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
-              "docs/proxy_vs_cpp.md"
+              "docs/rust_control_plane_cpp_parity_25_cycle_plan.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust proxy_operational_surface_aliases_cover_cpp_admin_config_heartbeat_status -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
@@ -5652,6 +5652,26 @@
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "multi_proxy_convergence_quarantine_shared"
+        }
+      ]
+    },
+    {
+      "name": "control_multi_proxy_topology_churn_scale",
+      "shard_id": 62,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust scale case for two Rust proxy instances converging through metaserver topology move churn while both proxies invalidate stale cached routes and recover onto the moved backend; backend quarantine/recovery remains covered by control_multi_proxy_convergence_and_quarantine.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/proxy_vs_cpp.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_multi_proxy_converges_under_topology_churn_stale_cache_and_recovery -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "suite": "cpp_proxy_control_plane_parity"
+          },
+          "name": "multi_proxy_topology_churn_stale_cache_recovery_scale_shared"
         }
       ]
     },
@@ -7808,6 +7828,7 @@
       "context_embeddings_summaries_l0_l1_pipeline",
       "context_compression_secondary_index_query_debug_flow",
       "control_multi_proxy_convergence_and_quarantine",
+      "control_multi_proxy_topology_churn_scale",
       "control_scheduler_token_stale_rejection",
       "control_datanode_lifecycle_restart_recovery",
       "control_client_retry_budget_topology_refresh",
