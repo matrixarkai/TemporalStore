@@ -12,7 +12,9 @@ pub mod golden;
 pub mod reports;
 
 mod constants;
+mod object_manager;
 mod set_index_serde;
+mod slot_store;
 mod state;
 
 use self::constants::*;
@@ -16862,6 +16864,104 @@ mod tests {
             .any(|page| { page.model_id == "risk" && page.object_key == "risk:cpc:risk-key" }));
     }
 
+    // shared-corpus: storage_object_manager_slotstore_runtime_authority
+    #[test]
+    fn storage_object_manager_and_slotstore_runtime_modules_are_authoritative() {
+        let engine = TemporalEngine::default();
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 94,
+            load_version: 7,
+            local_node_id: Some(4),
+            shard_uri: "local://table/shard-94".to_string(),
+            start_routing_slot: 100,
+            end_routing_slot: 110,
+            readonly: false,
+            table_name: "runtime_authority_table".to_string(),
+        });
+        for command in [
+            Command::StringSet {
+                key: "runtime-string".to_string(),
+                value: b"value".to_vec(),
+            },
+            Command::HashSet {
+                key: "runtime-hash".to_string(),
+                field: "field".to_string(),
+                value: b"hash".to_vec(),
+            },
+            Command::FeatureAppend {
+                key: "runtime-feature".to_string(),
+                points: vec![
+                    FeaturePoint {
+                        timestamp_ms: 1,
+                        value: b"one".to_vec(),
+                    },
+                    FeaturePoint {
+                        timestamp_ms: 2,
+                        value: b"two".to_vec(),
+                    },
+                ],
+            },
+            Command::ContextWriteEvent {
+                tenant_hash: 94,
+                node_hash: 940,
+                event: ContextEvent {
+                    event_id_hash: 9_400,
+                    event_time_ms: 123,
+                    kind: 1,
+                    event_type: 2,
+                    actor_hash: 3,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 1.0,
+                    importance: 0.8,
+                    text: "runtime authority context event".to_string(),
+                    source_ref: "local://runtime-authority".to_string(),
+                    related_node_hashes: vec![940],
+                    compact_attrs: vec![1, 2, 3],
+                },
+                first_write_only: false,
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 94,
+                        command,
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&94).expect("shard should exist");
+        let object_manager = object_manager::runtime_report(shard);
+        let slot_store = slot_store::runtime_report(shard);
+        let physical = engine.storage_physical_index_report(94);
+
+        assert!(object_manager.object_manager_runtime_module);
+        assert!(object_manager.slot_index_authority);
+        assert_eq!(object_manager.missing_object_owner_refs, 0);
+        assert_eq!(
+            object_manager.live_page_ref_count,
+            physical.page_index_count
+        );
+        assert!(object_manager.live_object_count >= 4);
+        assert!(slot_store.slot_store_runtime_module);
+        assert!(slot_store.slot_index_authority);
+        assert_eq!(slot_store.page_ref_count, physical.page_index_count);
+        assert_eq!(slot_store.slot_count, physical.slot_count);
+        assert!(slot_store.dirty_slot_count > 0);
+        assert_eq!(
+            slot_store.empty_slots
+                + slot_store.single_object_slots
+                + slot_store.single_page_object_slots
+                + slot_store.multi_page_object_slots
+                + slot_store.multi_object_slots,
+            slot_store.slot_count
+        );
+    }
+
     // shared-corpus: storage_slot_layout_transitions
     #[test]
     fn storage_slot_layout_transitions_cover_growth_compaction_delete_dump_load_restart() {
@@ -19006,7 +19106,7 @@ mod tests {
         assert!(report.merged_dump_load_policy.production_slice_ready);
     }
 
-    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_gc_eviction_cold_reads
     #[test]
     fn storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact() {
         let dir = tempfile::tempdir().unwrap();

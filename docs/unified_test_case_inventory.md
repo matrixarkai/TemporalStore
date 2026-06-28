@@ -76,10 +76,10 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 170
-total steps: 332
-executable shared behavior cases: 170
-executable shared behavior steps: 332
+total cases: 171
+total steps: 333
+executable shared behavior cases: 171
+executable shared behavior steps: 333
 C++ existing-test/static parity surfaces: 194
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
@@ -111,7 +111,9 @@ storage/cache recovery cases and Context pipeline model cases. The storage famil
 `storage_slot_first_physical_index`, which validates Rust's C++-style
 `Index -> SlotNode -> PageIndex` authority for mixed page-backed product-model writes,
 including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` packed-size
-evidence while keeping C++ execution as a shared-corpus adapter target. It also includes
+evidence while keeping C++ execution as a shared-corpus adapter target. The
+`storage_object_manager_slotstore_runtime_authority` case now verifies the named
+ObjectManager/SlotStore runtime authority modules against the same physical index. It also includes
 `storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
 across single-page object, multi-object, multi-page object, delete, compaction, slot
 dump/load, and restart. `storage_model_layout_compaction_policies` covers
@@ -196,6 +198,7 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after memory eviction and restart. |
+| `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index. |
 | `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies PageAddress-driven disk cache and persistent page-store fallback after memory eviction. |
 | `storage_tombstone_compaction` | Rust verifies tombstoned object reporting and model-layout compaction policy evidence. |
 | `storage_stale_page_density_compaction` | Rust verifies stale page estimate and density evidence for compaction decisions. |
@@ -304,6 +307,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_multi_proxy_convergence_and_quarantine` | Rust-executable/C++-static gate for multi-proxy convergence, backend quarantine, recovery probing, and stale-cache comparison. |
 | `control_scheduler_token_stale_rejection` | Rust-executable/C++-static gate for metaserver scheduler-issued lifecycle tokens and stale generation rejection. |
 | `control_datanode_lifecycle_restart_recovery` | Rust-executable/C++-static gate for data-node lifecycle, snapshot restore, and restart diagnostics. |
+| `control_client_cpp_partition_set_route_cache` | Rust-executable/C++-static gate for direct SDK C++ partition-set/member/version route-cache hierarchy. |
 | `control_client_retry_budget_topology_refresh` | Rust-executable/C++-static gate for client retry budgets, topology refresh, stale route invalidation, and no duplicate unsafe writes. |
 | `control_client_metasync_outage_churn_stress` | Rust-executable/C++-static gate for MetaSyncer jitter/backoff/deadline behavior under metaserver outage and topology churn. |
 | `control_client_pipeline_batch_partial_timeout_contract` | Rust-executable/C++-static gate for ordered batching, partial failures, retry-safe versus unsafe writes, and timeout budget propagation. |

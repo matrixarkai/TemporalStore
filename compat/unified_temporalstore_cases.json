@@ -3037,6 +3037,23 @@
       ]
     },
     {
+      "name": "storage_object_manager_slotstore_runtime_authority",
+      "shard_id": 94,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage exposes named ObjectManager and SlotStore runtime modules over the native slot/object/page authority, and validates their live object/page/slot counts against the physical index report.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_object_manager_and_slotstore_runtime_modules_are_authoritative"
+          },
+          "name": "rust_storage_object_manager_slotstore_runtime_authority",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_slot_layout_transitions",
       "shard_id": 51,
       "steps": [
