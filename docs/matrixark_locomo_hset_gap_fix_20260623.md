@@ -73,6 +73,37 @@ embedding/understanding mode: deterministic hash/rules for backend parity
 
 This patch fixes the original larger-batch `hset` timeout enough for the official 2-conversation / 100-question LOCOMO slice to pass on both backends.
 
+## Rust Timestamped Page Perf Follow-Up
+
+The Rust engine now removes two avoidable packed timestamped-page costs that affected the same
+Feature/Sequence/Context-style ingestion and retrieval paths used by LOCOMO and LongMemEval replay:
+
+- page chunk planning no longer serializes the whole growing candidate page after every point; it
+  uses incremental JSON size accounting and serializes only final page chunks;
+- `FeatureQuery` and `FeatureQueryFiltered` decode each unique packed page once per scan instead of
+  rereading/redecoding the same page for every timestamp mapped to that page.
+
+Focused validation:
+
+```text
+cargo test -p temporalstore-rust feature_ --lib -- --test-threads=1 --nocapture
+```
+
+Result: 19 focused feature/storage tests passed, including
+`feature_query_decodes_each_packed_page_once_per_scan`, which cold-invalidates the cache and verifies
+one page-store read for a 64-timestamp packed page query.
+
+Quick release scale validation:
+
+```text
+cargo run --release -p temporalstore-rust --bin scale_harness -- \
+  --nodes 3 --string-ops 20 --hash-ops 5 --sequence-keys 1 --sequence-len 30 \
+  --scale-events 1 --failover-every 10 --read-sample-every 5 --compare-shared-store false
+```
+
+Captured result: replication healthy, max replica lag `0`, one failover, one scale event,
+write QPS `18.41`, p95 write latency `39.8 ms`, p95 replica-read latency `5.154 ms`.
+
 Follow-up async-oplog validation now shows the all-conversation / 100-question C++ run completes on a single local data node when storage async mode is enabled:
 
 - `TEMPORALSTORE_STORAGE_ASYNC=true`

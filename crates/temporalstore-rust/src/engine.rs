@@ -6467,16 +6467,18 @@ fn execute_on_shard(
                     .features
                     .get(&key)
                     .map(|series| {
+                        let mut page_cache = HashMap::new();
                         series
                             .range(start_ms..=end_ms)
                             .take(count.unwrap_or(5000))
                             .filter_map(|(timestamp_ms, address)| {
-                                read_feature_point(
+                                read_feature_point_cached(
                                     cache,
                                     page_store,
                                     shard_id,
                                     *timestamp_ms,
                                     address,
+                                    &mut page_cache,
                                 )
                             })
                             .collect()
@@ -6497,21 +6499,29 @@ fn execute_on_shard(
                 .features
                 .get(&key)
                 .map(|series| {
+                    let mut page_cache = HashMap::new();
                     series
                         .range(start_ms..=end_ms)
                         .take(limit)
                         .filter_map(|(timestamp_ms, address)| {
-                            read_feature_point(cache, page_store, shard_id, *timestamp_ms, address)
-                                .and_then(|point| {
-                                    let row = SequenceFeatureRow::decode_cpp_feature_value(
-                                        point.timestamp_ms,
-                                        &point.value,
-                                    )?;
-                                    filters
-                                        .iter()
-                                        .all(|filter| sequence_filter_matches(&row, filter))
-                                        .then_some(point)
-                                })
+                            read_feature_point_cached(
+                                cache,
+                                page_store,
+                                shard_id,
+                                *timestamp_ms,
+                                address,
+                                &mut page_cache,
+                            )
+                            .and_then(|point| {
+                                let row = SequenceFeatureRow::decode_cpp_feature_value(
+                                    point.timestamp_ms,
+                                    &point.value,
+                                )?;
+                                filters
+                                    .iter()
+                                    .all(|filter| sequence_filter_matches(&row, filter))
+                                    .then_some(point)
+                            })
                         })
                         .collect()
                 })
@@ -10524,6 +10534,22 @@ fn encode_feature_page(points: &[FeaturePoint]) -> Vec<u8> {
     bytes
 }
 
+fn empty_feature_page_encoded_len() -> usize {
+    FEATURE_PAGE_MAGIC.len()
+        + serde_json::to_vec(&PackedFeaturePage {
+            version: 1,
+            points: Vec::new(),
+        })
+        .map(|bytes| bytes.len())
+        .unwrap_or_default()
+}
+
+fn feature_point_encoded_len(point: &FeaturePoint) -> usize {
+    serde_json::to_vec(point)
+        .map(|bytes| bytes.len())
+        .unwrap_or_default()
+}
+
 fn append_timestamped_kv_pages(
     cache: &MultiLayerCache,
     page_store: &LocalPageStore,
@@ -10559,15 +10585,23 @@ fn append_timestamped_kv_pages(
 fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<FeaturePoint>> {
     let mut chunks = Vec::new();
     let mut current = Vec::new();
+    let empty_page_len = empty_feature_page_encoded_len();
+    let mut current_encoded_len = empty_page_len;
 
     for point in points {
-        current.push(point);
-        let encoded_len = encode_feature_page(&current).len();
-        if encoded_len > TIMESTAMPED_KV_PAGE_TARGET_BYTES && current.len() > 1 {
-            let overflow = current.pop().expect("current chunk is non-empty");
+        let point_encoded_len = feature_point_encoded_len(&point);
+        let next_encoded_len = current_encoded_len
+            .saturating_add(point_encoded_len)
+            .saturating_add(if current.is_empty() { 0 } else { 1 });
+        if next_encoded_len > TIMESTAMPED_KV_PAGE_TARGET_BYTES && !current.is_empty() {
             chunks.push(current);
-            current = vec![overflow];
+            current = Vec::new();
+            current_encoded_len = empty_page_len;
         }
+        current_encoded_len = current_encoded_len
+            .saturating_add(point_encoded_len)
+            .saturating_add(if current.is_empty() { 0 } else { 1 });
+        current.push(point);
     }
 
     if !current.is_empty() {
@@ -10622,6 +10656,46 @@ fn read_feature_point(
             value: bytes,
         }),
         PackedFeaturePageDecode::Corrupt(_) => None,
+    }
+}
+
+fn read_feature_point_cached(
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    timestamp_ms: u64,
+    address: &PageAddress,
+    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+) -> Option<FeaturePoint> {
+    if let Some(points) = packed_page_cache.get(address) {
+        return points
+            .as_ref()
+            .and_then(|points| {
+                points
+                    .iter()
+                    .find(|point| point.timestamp_ms == timestamp_ms)
+            })
+            .cloned();
+    }
+
+    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    match decode_feature_page_strict(&bytes) {
+        PackedFeaturePageDecode::Packed(points) => {
+            let selected = points
+                .iter()
+                .find(|point| point.timestamp_ms == timestamp_ms)
+                .cloned();
+            packed_page_cache.insert(address.clone(), Some(points));
+            selected
+        }
+        PackedFeaturePageDecode::Legacy => Some(FeaturePoint {
+            timestamp_ms,
+            value: bytes,
+        }),
+        PackedFeaturePageDecode::Corrupt(_) => {
+            packed_page_cache.insert(address.clone(), None);
+            None
+        }
     }
 }
 
@@ -14846,6 +14920,58 @@ mod tests {
             },
         });
         assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
+    }
+
+    #[test]
+    fn feature_query_decodes_each_packed_page_once_per_scan() {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let points = (0..64)
+            .map(|index| FeaturePoint {
+                timestamp_ms: 1_000 + index,
+                value: format!("v-{index}").into_bytes(),
+            })
+            .collect::<Vec<_>>();
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: "packed-query-cache".to_string(),
+                points: points.clone(),
+            },
+        });
+        assert!(response.status.ok);
+
+        let addresses = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let series = shards
+                .get(&1)
+                .and_then(|shard| shard.features.get("packed-query-cache"))
+                .expect("feature series should exist");
+            unique_timestamped_kv_page_addresses(series)
+        };
+        assert_eq!(
+            addresses.len(),
+            1,
+            "test workload should fit in one packed page"
+        );
+        let _ = engine.cache.invalidate_shard(1);
+        let reads_before = engine.page_store().stats().reads;
+        let query = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureQuery {
+                key: "packed-query-cache".to_string(),
+                start_ms: 1_000,
+                end_ms: 1_100,
+                count: None,
+            },
+        });
+        let reads_after = engine.page_store().stats().reads;
+        assert_eq!(query.response, CommandResponse::FeaturePoints { points });
+        assert_eq!(
+            reads_after.saturating_sub(reads_before),
+            addresses.len() as u64,
+            "query should read/decode each unique packed page once, not once per timestamp"
+        );
     }
 
     #[test]
