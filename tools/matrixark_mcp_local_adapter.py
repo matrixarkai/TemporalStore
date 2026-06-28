@@ -1711,7 +1711,7 @@ class MatrixArkLocalAdapter:
                         "parse_warnings": record.get("parse_warnings", []),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": record.get("scope", {}),
+                        "scope": candidate_access_scope(record),
                         "updated_at_ms": record.get("updated_at_ms", record.get("created_at_ms", 0)),
                     }
                 )
@@ -1729,7 +1729,7 @@ class MatrixArkLocalAdapter:
                         "allowed_tools": record.get("allowed_tools", []),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": record.get("scope", {}),
+                        "scope": candidate_access_scope(record),
                         "updated_at_ms": record.get("updated_at_ms", 0),
                     }
                 )
@@ -1766,7 +1766,7 @@ class MatrixArkLocalAdapter:
                         "source_locator": record.get("source_locator", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
-                        "scope": record.get("scope", {}),
+                        "scope": candidate_access_scope(record),
                         "updated_at_ms": record.get("updated_at_ms", 0),
                     }
                 )
@@ -1781,7 +1781,7 @@ class MatrixArkLocalAdapter:
                         "selected_ref_count": len(record.get("selected_refs", [])) if record_type == "context_pack_audit" else record.get("selected_ref_count", 0),
                         "dropped_ref_count": len(dropped_refs.get("refs", [])) if record_type == "context_pack_audit" and isinstance(dropped_refs, dict) else record.get("dropped_ref_count", 0),
                         "quality_warnings": record.get("quality_warnings", []) if record_type == "context_pack_audit" else {"count": record.get("quality_warning_count", 0)},
-                        "scope": record.get("scope", {}),
+                        "scope": candidate_access_scope(record),
                         "created_at_ms": record.get("created_at_ms", 0),
                     }
                 )
@@ -1867,13 +1867,13 @@ class MatrixArkLocalAdapter:
                 "parse_warnings": record.get("parse_warnings", []),
                 "parse_warning_count": record.get("parse_warning_count", 0),
                 "async_parent_summary_required": bool(record.get("async_parent_summary_required", False)),
-                "access_scope": record.get("access_scope", registry_access_scope(record.get("scope", {}))),
+                "access_scope": record.get("access_scope", candidate_access_scope(record)),
                 "deployment_scope": record.get("deployment_scope", "local"),
                 "import_task_hash": record.get("import_task_hash", 0),
                 "token_estimate": record.get("token_estimate", 0),
                 "node_hash": record.get("node_hash", 0),
                 "node_path": record.get("node_path", []),
-                "scope": record.get("scope", {}),
+                "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", 0),
             }
             if len(resources) >= limit:
@@ -1922,11 +1922,11 @@ class MatrixArkLocalAdapter:
                 "permissions": record.get("permissions", record.get("metadata", {}).get("permissions", [])),
                 "inputs": record.get("inputs", record.get("metadata", {}).get("inputs", [])),
                 "outputs": record.get("outputs", record.get("metadata", {}).get("outputs", [])),
-                "access_scope": record.get("access_scope", registry_access_scope(record.get("scope", {}))),
+                "access_scope": record.get("access_scope", candidate_access_scope(record)),
                 "deployment_scope": record.get("deployment_scope", "local"),
                 "node_hash": record.get("node_hash", 0),
                 "node_path": record.get("node_path", []),
-                "scope": record.get("scope", {}),
+                "scope": candidate_access_scope(record),
                 "updated_at_ms": control.get("updated_at_ms", record.get("updated_at_ms", 0)),
             }
             if len(skills) >= limit:
@@ -4259,7 +4259,7 @@ class MatrixArkLocalAdapter:
         for manifest in reversed(records):
             if manifest.get("record_type") != "resource_manifest":
                 continue
-            if not scope_matches(manifest.get("scope", {}), scope):
+            if not scope_matches(candidate_access_scope(manifest), scope):
                 continue
             try:
                 resource_hash_key = int(manifest.get("resource_hash") or 0)
@@ -4666,7 +4666,7 @@ class MatrixArkLocalAdapter:
                             "summary_type": summary_type,
                             "access_decision": "allowed_by_registry_scope_before_scoring",
                             "access_scope": candidate_access_scope(record),
-                            "scope": record.get("scope", {}),
+                            "scope": candidate_access_scope(record),
                             "updated_at_ms": record.get("updated_at_ms", now_ms()),
                             "text": clip_context_text(text),
                             "recall_path": "primary_summary",
@@ -4816,7 +4816,7 @@ class MatrixArkLocalAdapter:
                 "source_chunk_hash": record.get("source_chunk_hash"),
                 "source_ref": record.get("source_ref", ""),
                 "metadata": record.get("metadata", {}),
-                "scope": record.get("scope", {}),
+                "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
                 "text": clip_context_text(text),
             }
@@ -4891,7 +4891,7 @@ class MatrixArkLocalAdapter:
                 "topic": record.get("topic", ""),
                 "coordinate_tuples": record.get("coordinate_tuples", []),
                 "non_contiguous": record.get("non_contiguous", False),
-                "scope": record.get("scope", {}),
+                "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("updated_at_ms", now_ms()),
                 "text": clip_context_text(str(record.get("summary_text", ""))),
             }
@@ -5020,7 +5020,7 @@ class MatrixArkLocalAdapter:
                         "deployment_scope": record.get("deployment_scope", "local"),
                         "citation": citation,
                         "metadata": metadata,
-                        "scope": record.get("scope", {}),
+                        "scope": candidate_access_scope(record),
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
                         "text": clip_context_text(text),
                         "recall_path": "primary_resource_skill",
@@ -5063,7 +5063,7 @@ class MatrixArkLocalAdapter:
                 "source_event_ids": record.get("source_event_ids", []),
                 "source_start_ms": record.get("source_start_ms"),
                 "source_end_ms": record.get("source_end_ms"),
-                "scope": record.get("scope", {}),
+                "scope": candidate_access_scope(record),
                 "updated_at_ms": record.get("compressed_time_ms", record.get("updated_at_ms", now_ms())),
                 "text": clip_context_text(text),
             }
