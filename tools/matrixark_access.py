@@ -1916,7 +1916,7 @@ class MatrixArkAccessManager:
                 {
                     "node_hash": record.get("node_hash", 0),
                     "parent_hash": record.get("parent_hash", 0),
-                    "node_name": record.get("node_name", ""),
+                    "node_name": record.get("node_name", (record.get("node_path") or [""])[-1] if isinstance(record.get("node_path"), list) and record.get("node_path") else ""),
                     "node_path": record.get("node_path", []),
                     "depth": record.get("depth", 0),
                     "updated_at_ms": record.get("updated_at_ms", 0),

@@ -745,9 +745,22 @@ def compact_record_lifecycle_fields(record: Json) -> Json:
             updated_at_ms = None
         if created_at_ms is not None and created_at_ms == updated_at_ms:
             compacted.pop("created_at_ms", None)
+    node_path = compacted.get("node_path")
+    if isinstance(node_path, list) and compacted.get("depth") is not None:
+        try:
+            depth = int(compacted.get("depth"))
+        except (TypeError, ValueError):
+            depth = None
+        if depth == len(node_path):
+            compacted.pop("depth", None)
+    if record_type == "context_node" and isinstance(node_path, list) and node_path:
+        if str(compacted.get("node_name") or "") == str(node_path[-1]):
+            compacted.pop("node_name", None)
     if record_type in TOPOLOGY_DERIVED_PATH_RECORD_TYPES:
         compacted.pop("parent_path", None)
         compacted.pop("child_path", None)
+        compacted.pop("child_name", None)
+        compacted.pop("depth", None)
     return compacted
 
 
