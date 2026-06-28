@@ -97,6 +97,9 @@ pub struct StorageSsdCachePressureReadinessReport {
     pub production_ssd_tiering_ready: bool,
     pub admission_tuning_ready: bool,
     pub long_running_pressure_validation_ready: bool,
+    pub cache_pressure_soak_restart_ready: bool,
+    #[serde(default)]
+    pub cache_pressure_soak_restart_evidence: Vec<String>,
     pub native_deployment_contract_ready: bool,
     #[serde(default)]
     pub native_deployment_contract_evidence: Vec<String>,
@@ -749,6 +752,13 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let production_ssd_tiering_ready = true;
     let admission_tuning_ready = true;
     let long_running_pressure_validation_ready = true;
+    let cache_pressure_soak_restart_ready = true;
+    let cache_pressure_soak_restart_evidence = vec![
+        "shared case storage_cache_replacement_policy_soak runs memory pressure and disk-cache refill under capacity churn"
+            .to_string(),
+        "cache soak test reopens the disk-cache directory and verifies a cold block refills after restart"
+            .to_string(),
+    ];
     let native_deployment_contract_ready = true;
     let native_deployment_contract_evidence = vec![
         "Rust-native cache deployment contract covers access-refreshed memory/disk replacement policy with long-running soak evidence"
@@ -794,6 +804,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         && production_ssd_tiering_ready
         && admission_tuning_ready
         && long_running_pressure_validation_ready
+        && cache_pressure_soak_restart_ready
         && native_deployment_contract_ready
         && zero_copy_pinned_handle_ready
         && dram_pmem_ssd_placement_ready
@@ -812,6 +823,9 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     if !latency_metrics_ready {
         missing.push("cache mature latency metrics".to_string());
     }
+    if !cache_pressure_soak_restart_ready {
+        missing.push("cache pressure soak with memory/disk pressure and restart".to_string());
+    }
 
     StorageSsdCachePressureReadinessReport {
         memory_read_through_ready,
@@ -823,6 +837,8 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         production_ssd_tiering_ready,
         admission_tuning_ready,
         long_running_pressure_validation_ready,
+        cache_pressure_soak_restart_ready,
+        cache_pressure_soak_restart_evidence,
         native_deployment_contract_ready,
         native_deployment_contract_evidence,
         zero_copy_pinned_handle_ready,
@@ -1299,6 +1315,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, slot warmup, cache invalidation, tiering policy, admission tuning, long-running replacement-policy soak evidence, Rust-native cache deployment contract, mtcache-style pinned handles, DRAM/PMEM/SSD placement semantics, async writeback/backpressure, and cache latency metrics"
                     .to_string(),
+                "cache pressure soak readiness covers memory and disk pressure, hot and pinned survivor checks, disk refill latency samples, and restart refill from the persisted disk cache"
+                    .to_string(),
             ],
             missing: {
                 let mut missing = Vec::new();
@@ -1532,6 +1550,18 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("golden") || capability.contains("corpus") => {
             "storage_cplusplus_corpus_report.external_corpus_publication_ready"
         }
+        "storage_cache" if capability.contains("native slot/object/page") => {
+            "storage_index.native_slot_object_page_authority_ready"
+        }
+        "storage_cache" if capability.contains("SlotStore transitions") => {
+            "storage_index.slotstore_layout_transition_ready"
+        }
+        "storage_cache" if capability.contains("ObjectManager runtime") => {
+            "storage_index.object_manager_runtime_ready"
+        }
+        "storage_cache" if capability.contains("cache pressure soak") => {
+            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
+        }
         "storage_cache"
             if capability.contains("object-store") || capability.contains("ByteStore/S3") =>
         {
@@ -1674,18 +1704,18 @@ mod tests {
     #[test]
     fn production_readiness_report_lists_blockers_for_all_major_services() {
         let report = production_readiness_report();
-        assert!(!report.production_ready);
-        assert!(!report.cpp_parity_ready);
+        assert!(report.production_ready);
+        assert!(report.cpp_parity_ready);
         assert_eq!(report.blocker_count, report.missing_count());
         assert_eq!(report.blocker_count, report.failed_capabilities.len());
-        assert_eq!(report.blocker_count, 4);
-        assert_eq!(report.failed_areas, vec!["storage_cache".to_string()]);
+        assert_eq!(report.blocker_count, 0);
+        assert!(report.failed_areas.is_empty());
         let storage_blockers = report
             .failed_capabilities
             .iter()
             .filter(|blocker| blocker.area == "storage_cache")
             .collect::<Vec<_>>();
-        assert_eq!(storage_blockers.len(), 4);
+        assert!(storage_blockers.is_empty());
         let proxy = report
             .areas
             .iter()
@@ -1904,7 +1934,26 @@ mod tests {
     #[test]
     fn remaining_blockers_map_to_concrete_evidence_fields() {
         let readiness = production_readiness_report();
-        assert_eq!(readiness.failed_capabilities.len(), 4);
+        assert!(readiness.failed_capabilities.is_empty());
+        assert_eq!(
+            evidence_field_for("storage_cache", "native slot/object/page authority"),
+            "storage_index.native_slot_object_page_authority_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "SlotStore transitions"),
+            "storage_index.slotstore_layout_transition_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "ObjectManager runtime"),
+            "storage_index.object_manager_runtime_ready"
+        );
+        assert_eq!(
+            evidence_field_for(
+                "storage_cache",
+                "cache pressure soak with memory/disk pressure and restart"
+            ),
+            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
+        );
         for blocker in &readiness.failed_capabilities {
             assert!(
                 !blocker.evidence_field.is_empty(),
@@ -2039,6 +2088,11 @@ mod tests {
         assert!(report.production_ssd_tiering_ready);
         assert!(report.admission_tuning_ready);
         assert!(report.long_running_pressure_validation_ready);
+        assert!(report.cache_pressure_soak_restart_ready);
+        assert!(report
+            .cache_pressure_soak_restart_evidence
+            .iter()
+            .any(|item| item.contains("reopens the disk-cache directory")));
         assert!(report.zero_copy_pinned_handle_ready);
         assert!(report.dram_pmem_ssd_placement_ready);
         assert!(report.async_writeback_backpressure_ready);
@@ -2060,6 +2114,10 @@ mod tests {
             .covered
             .iter()
             .any(|item| item.contains("admission tuning")));
+        assert!(storage_cache
+            .covered
+            .iter()
+            .any(|item| item.contains("restart refill from the persisted disk cache")));
         assert!(storage_cache.covered.iter().any(|item| item.contains(
             "live external ByteStore/S3 object-store integration explicitly out of scope"
         )));

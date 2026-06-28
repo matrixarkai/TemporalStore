@@ -188,6 +188,12 @@ harness evidence:
 - Local cache pressure coverage is now explicit in the readiness gate: memory read-through, disk
   block cache, admission/eviction counters, slot warmup, cache invalidation, SSD tiering policy,
   admission tuning, and long-running pressure validation evidence are covered.
+- Storage readiness evidence maps the C++ parity storage internals to concrete fields:
+  `storage_index.native_slot_object_page_authority_ready`,
+  `storage_index.slotstore_layout_transition_ready`, and
+  `storage_index.object_manager_runtime_ready`. Cache pressure soak evidence is tracked separately
+  as `storage_cache_mtcache.cache_pressure_soak_restart_ready`, including memory/disk pressure and
+  restart refill from the persisted disk cache.
 - ByteStore/S3 live backend integration tied to follower cursors and Raft snapshots.
 
 The local gate now writes one combined proof envelope:
