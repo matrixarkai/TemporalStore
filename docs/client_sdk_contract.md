@@ -98,8 +98,11 @@ tests or validators:
 - topology sync and route invalidation are covered by MetaSyncer, topology-version refresh,
   stale-route invalidation, C++ partition-set/member/version route-cache tests, proxy route
   refresh, and route-quarantine tests.
+- MetaSyncer production behavior is covered by deadline-limited topology calls, exponential backoff with deterministic jitter, metaserver outage survival, and topology-version route churn refresh tests.
 - retry budgets are covered by separate read/write retry-budget tests, including the no-duplicate
   unsafe write retry path.
+- pipeline parity is covered by ordered batch execution, per-command partial-failure preservation,
+  retry-safe versus unsafe write classification, and timeout-budget propagation tests.
 - admission policy is covered by readonly, write-disabled, not-serving, drop-percent, and degraded
   proxy/client preflight tests.
 - migration docs are validated by `tools/validate_sdk_contract.py` and readiness tests that require
