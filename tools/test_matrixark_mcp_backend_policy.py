@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import threading
 import unittest
 
@@ -19,6 +20,26 @@ class _NativeAppendClient:
 
     def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
         self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
+
+
+class _CandidateCacheClient:
+    def __init__(self, records: list[dict]) -> None:
+        self.records = records
+        self.batch_hget_calls = 0
+
+    def get_string(self, key: str) -> str:
+        if key.endswith(":record_count"):
+            return str(len(self.records))
+        return ""
+
+    def batch_hget(self, entries) -> list[dict]:
+        self.batch_hget_calls += 1
+        rows = []
+        for index, entry in enumerate(entries):
+            if index >= len(self.records):
+                continue
+            rows.append({"key": entry["key"], "field": entry["field"], "value": json.dumps(self.records[index])})
+        return rows
 
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
@@ -92,6 +113,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._shard_size = 1024
         adapter._index_cache = None
         adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
         adapter._entry_count_cache = None
         adapter._legacy_index_mode = False
         adapter._records_lock = threading.RLock()
@@ -119,6 +142,59 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         keys = {entry["key"] for entry in call["entries"]}
         self.assertIn("matrixark:test:native-append:records:000000", keys)
         self.assertTrue(any("context_event_by_ingestion_time" in key for key in keys))
+
+    def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
+        records = [
+            {
+                "record_type": "context_event",
+                "event_id_hash": 1,
+                "tenant_id": "tenant_a",
+                "user_id": "user_a",
+                "scope": {"tenant_id": "tenant_a", "user_id": "user_a"},
+                "text": "approval happened",
+            },
+            {
+                "record_type": "context_pack_audit",
+                "tenant_id": "tenant_a",
+                "user_id": "user_a",
+                "scope": {"tenant_id": "tenant_a", "user_id": "user_a"},
+            },
+            {
+                "record_type": "context_event",
+                "event_id_hash": 2,
+                "tenant_id": "tenant_b",
+                "user_id": "user_b",
+                "scope": {"tenant_id": "tenant_b", "user_id": "user_b"},
+                "text": "wrong scope",
+            },
+        ]
+        client = _CandidateCacheClient(records)
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:candidate-cache"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._metrics_lock = threading.RLock()
+
+        scope = {"tenant_id": "tenant_a", "user_id": "user_a"}
+        first = adapter.retrieval_records(scope=scope)
+        second = adapter.retrieval_records(scope=scope)
+
+        self.assertEqual(client.batch_hget_calls, 1)
+        self.assertFalse(first["scan_stats"]["candidate_cache_hit"])
+        self.assertTrue(second["scan_stats"]["candidate_cache_hit"])
+        self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
+        self.assertEqual(second["scan_stats"]["dropped_type"], 1)
+        self.assertEqual(second["scan_stats"]["dropped_scope"], 1)
 
     def test_direct_readiness_reports_metaserver_failure(self) -> None:
         adapter = _direct_adapter_for_readiness(metaserver="127.0.0.1:1")

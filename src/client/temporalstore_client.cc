@@ -434,6 +434,46 @@ Status TemporalStoreClient::HDel(const std::string& key, const std::string& fiel
     return impl_->ExecuteRaw(Module::HASH, ::bcache2::hash2::DEL, key, request, &response, true);
 }
 
+Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
+                                                        const std::string& count_key,
+                                                        const std::string& count_value) {
+    RETURN_IF_STATUS_ERROR(CheckInitialized());
+    if (entries.empty() && count_key.empty()) {
+        return Status::InvalidArgument("entries is empty");
+    }
+    for (const auto& entry : entries) {
+        RETURN_IF_STATUS_ERROR(ValidateNotEmpty(entry.key, "entry.key"));
+        RETURN_IF_STATUS_ERROR(ValidateNotEmpty(entry.field, "entry.field"));
+        RETURN_IF_STATUS_ERROR(ValidateSize(entry.key.size(), impl_->options.max_key_bytes, "entry.key"));
+        RETURN_IF_STATUS_ERROR(
+            ValidateSize(entry.field.size(), impl_->options.max_key_bytes, "entry.field"));
+        RETURN_IF_STATUS_ERROR(
+            ValidateSize(entry.value.size(), impl_->options.max_value_bytes, "entry.value"));
+    }
+    if (!count_key.empty()) {
+        RETURN_IF_STATUS_ERROR(ValidateSize(count_key.size(), impl_->options.max_key_bytes, "count_key"));
+        RETURN_IF_STATUS_ERROR(
+            ValidateSize(count_value.size(), impl_->options.max_value_bytes, "count_value"));
+    }
+    return impl_->WithRetry(true, [&]() {
+        std::unique_ptr<Pipeline> pipeline;
+        Pipeline* raw_pipeline = nullptr;
+        RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
+        pipeline.reset(raw_pipeline);
+        for (const auto& entry : entries) {
+            RETURN_IF_STATUS_ERROR(pipeline->HSet(entry.key, entry.field, entry.value));
+        }
+        if (!count_key.empty()) {
+            RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));
+        }
+        const std::vector<Status> statuses = pipeline->Sync();
+        for (const auto& status : statuses) {
+            RETURN_IF_STATUS_ERROR(status);
+        }
+        return Status::OK();
+    });
+}
+
 Status TemporalStoreClient::SAdd(const std::string& key, const std::string& member) {
     RETURN_IF_STATUS_ERROR(CheckInitialized());
     RETURN_IF_STATUS_ERROR(ValidateNotEmpty(key, "key"));

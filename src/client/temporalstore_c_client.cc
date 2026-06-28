@@ -416,19 +416,20 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
     }
     bcache2::Status status = CheckClient(client);
     if (status.ok()) {
+        std::vector<bcache2::client::HashEntry> batch;
+        batch.reserve(entry_count);
         for (size_t i = 0; i < entry_count; ++i) {
             const temporalstore_hash_entry_t& entry = entries[i];
-            status = client->impl->HSet(entry.key ? entry.key : "",
-                                        entry.field ? entry.field : "",
-                                        entry.value ? entry.value : "");
-            if (!status.ok()) {
-                break;
-            }
+            batch.push_back(bcache2::client::HashEntry{
+                entry.key ? entry.key : "",
+                entry.field ? entry.field : "",
+                entry.value ? entry.value : "",
+            });
         }
-    }
-    if (status.ok() && count_key != nullptr && count_key[0] != '\0' &&
-        count_value != nullptr) {
-        status = client->impl->PutString(count_key, count_value);
+        status = client->impl->MatrixArkBatchAppendRecords(
+            batch,
+            (count_key != nullptr && count_key[0] != '\0') ? count_key : "",
+            count_value != nullptr ? count_value : "");
     }
     return Finish(status, error_message);
 }

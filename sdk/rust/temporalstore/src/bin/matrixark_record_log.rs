@@ -649,21 +649,17 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             {
                 return Err("missing entries".to_string());
             }
-            for entry in &entries {
-                client
-                    .hset(
-                        entry.key,
-                        entry.field,
-                        entry.value,
-                    )
-                    .map_err(|err| err.to_string())?;
-            }
+            let compact_entries: Vec<(&str, &str, &str)> = entries
+                .iter()
+                .map(|entry| (entry.key, entry.field, entry.value))
+                .collect();
+            let count_key = command.key.as_deref().filter(|value| !value.is_empty());
+            let count_value = command.value.as_deref().filter(|value| !value.is_empty());
+            client
+                .matrixark_batch_append_records(&compact_entries, count_key, count_value)
+                .map_err(|err| err.to_string())?;
             let mut written = entries.len();
-            if let (Some(key), Some(value)) = (
-                command.key.as_deref().filter(|value| !value.is_empty()),
-                command.value.as_deref().filter(|value| !value.is_empty()),
-            ) {
-                client.put_string(key, value).map_err(|err| err.to_string())?;
+            if count_key.is_some() && count_value.is_some() {
                 written += 1;
             }
             Ok(json!({"ok": true, "written": written, "append_api": command.op}))
