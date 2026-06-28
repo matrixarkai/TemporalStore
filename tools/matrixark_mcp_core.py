@@ -86,6 +86,7 @@ SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDE
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
 MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
 MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
+MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION", "128"))
 DEFAULT_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 HARD_MAX_CHILDREN_SCORED_PER_PARENT = int(os.environ.get("MATRIXARK_HARD_MAX_CHILDREN_SCORED_PER_PARENT", "100000"))
 SECONDARY_INDEX_PRIORITY_PREFIXES = (
@@ -2731,6 +2732,30 @@ def limited_index_terms(terms: list[str], *, limit: int) -> list[str]:
             key=lambda item: (secondary_index_priority(item[1]), item[0]),
         )
     ][:capped_limit]
+
+
+def new_secondary_index_budget(limit: int | None = None) -> Json:
+    configured_limit = MAX_SECONDARY_INDEX_RECORDS_PER_OPERATION if limit is None else int(limit)
+    return {"limit": max(0, configured_limit), "emitted": 0, "dropped": 0}
+
+
+def take_secondary_index_terms(terms: list[str], budget: Json) -> list[str]:
+    unique_terms = ordered_unique([term for term in terms if term])
+    limit = max(0, int(budget.get("limit", 0)))
+    emitted = max(0, int(budget.get("emitted", 0)))
+    remaining = max(0, limit - emitted)
+    selected = unique_terms[:remaining]
+    budget["emitted"] = emitted + len(selected)
+    budget["dropped"] = max(0, int(budget.get("dropped", 0))) + max(0, len(unique_terms) - len(selected))
+    return selected
+
+
+def secondary_index_budget_summary(budget: Json) -> Json:
+    return {
+        "index_total_cap": max(0, int(budget.get("limit", 0))),
+        "index_emitted_count": max(0, int(budget.get("emitted", 0))),
+        "index_dropped_by_total_cap_count": max(0, int(budget.get("dropped", 0))),
+    }
 
 
 RESOURCE_FACT_KEYWORDS = re.compile(

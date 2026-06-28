@@ -2620,6 +2620,7 @@ class MatrixArkLocalAdapter:
             index_write_count = 0
             index_candidate_count = 0
             index_dropped_by_cap_count = 0
+            secondary_index_budget = new_secondary_index_budget()
             resource_kind = "skill" if skill_hash is not None else "resource"
             resource_l0_text = summarize_text(
                 summarize_resource_chunks(parsed_chunks, raw_uri=raw_uri, resource_kind=resource_kind),
@@ -2666,7 +2667,7 @@ class MatrixArkLocalAdapter:
                 source_hash=resource_summary_hash,
                 dirty_reason=f"{resource_kind}_update",
             )
-            resource_indexes = ordered_unique(
+            raw_resource_indexes = ordered_unique(
                 [
                     context_index_name("source_type", envelope["kind"]),
                     context_index_name("resource_type", resource_type or parsed_chunks[0].metadata.get("resource_type", "txt")),
@@ -2681,6 +2682,8 @@ class MatrixArkLocalAdapter:
                     else []
                 )
             )
+            index_candidate_count += len(raw_resource_indexes)
+            resource_indexes = take_secondary_index_terms(raw_resource_indexes, secondary_index_budget)
             for index_name in resource_indexes:
                 index_write_count += 1
                 self.append(
@@ -2882,6 +2885,7 @@ class MatrixArkLocalAdapter:
                     limit=MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
                 )
                 index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_chunk_index_terms if term])) - len(chunk_index_terms))
+                chunk_index_terms = take_secondary_index_terms(chunk_index_terms, secondary_index_budget)
                 for index_name in chunk_index_terms:
                     index_write_count += 1
                     self.append(
@@ -3007,6 +3011,7 @@ class MatrixArkLocalAdapter:
                     index_candidate_count += len([term for term in raw_fact_index_terms if term])
                     fact_index_terms = limited_index_terms(raw_fact_index_terms, limit=MAX_INDEX_TERMS_PER_RESOURCE_FACT)
                     index_dropped_by_cap_count += max(0, len(ordered_unique([term for term in raw_fact_index_terms if term])) - len(fact_index_terms))
+                    fact_index_terms = take_secondary_index_terms(fact_index_terms, secondary_index_budget)
                     for index_name in fact_index_terms:
                         index_write_count += 1
                         resource_fact_records.append(
@@ -3037,6 +3042,7 @@ class MatrixArkLocalAdapter:
                 "index_candidate_count": index_candidate_count,
                 "index_write_count": index_write_count,
                 "index_dropped_by_cap_count": index_dropped_by_cap_count,
+                **secondary_index_budget_summary(secondary_index_budget),
                 "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
                 "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
                 "parse_warning_count": len(parse_warnings),
@@ -3079,6 +3085,7 @@ class MatrixArkLocalAdapter:
                     "index_candidate_count": index_candidate_count,
                     "index_write_count": index_write_count,
                     "index_dropped_by_cap_count": index_dropped_by_cap_count,
+                    **secondary_index_budget_summary(secondary_index_budget),
                     "index_cap_per_chunk": MAX_INDEX_TERMS_PER_RESOURCE_CHUNK,
                     "index_cap_per_fact": MAX_INDEX_TERMS_PER_RESOURCE_FACT,
                     "summary_dirty_hashes": resource_dirty_hashes,
@@ -3565,7 +3572,9 @@ class MatrixArkLocalAdapter:
                 "updated_at_ms": envelope["ingestion_time_ms"],
             }
         )
-        for index_name in extraction["indexes"]:
+        secondary_index_budget = new_secondary_index_budget()
+        batch_index_terms = take_secondary_index_terms(list(extraction["indexes"]), secondary_index_budget)
+        for index_name in batch_index_terms:
             records_to_append.append(
                 {
                     "record_type": "context_index",
@@ -3593,7 +3602,8 @@ class MatrixArkLocalAdapter:
                     "entities": len(entity_hashes),
                     "segments": len(segment_hashes),
                     "summaries": 1,
-                    "indexes": len(extraction["indexes"]),
+                    "indexes": len(batch_index_terms),
+                    **secondary_index_budget_summary(secondary_index_budget),
                 },
                 "mode": extraction["mode"],
                 "derive_from_existing_events": derive_from_existing_events,
@@ -3642,7 +3652,8 @@ class MatrixArkLocalAdapter:
             "summary_hash": summary_hash,
             "summary_refresh": summary_refresh,
             "node_materialization": node_materialization,
-            "indexes_written": len(extraction["indexes"]),
+            "indexes_written": len(batch_index_terms),
+            **secondary_index_budget_summary(secondary_index_budget),
             "one_pass": True,
             "threshold_messages": threshold,
         }
