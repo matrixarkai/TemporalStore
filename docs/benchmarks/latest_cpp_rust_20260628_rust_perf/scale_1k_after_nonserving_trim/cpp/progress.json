@@ -1,0 +1,13 @@
+{
+  "backend": "temporalstore-direct",
+  "batch_size": 20,
+  "batches": 50,
+  "elapsed_sec": 34.86,
+  "events_requested": 1000,
+  "ingest_mode": "batch",
+  "last_error": "",
+  "message_qps_so_far": 28.686,
+  "messages_ingested": 1000,
+  "report_json": "docs/benchmarks/latest_cpp_rust_20260628_rust_perf/scale_1k_after_nonserving_trim/cpp/scale_report.json",
+  "status": "passed"
+}
