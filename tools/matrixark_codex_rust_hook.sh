@@ -16,6 +16,10 @@ export MATRIXARK_HOOK_AUTOSTART_CPP="${MATRIXARK_HOOK_AUTOSTART_CPP:-1}"
 
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
   for candidate in \
+    "$ROOT/target/release/matrixark_rust_proxy" \
+    "$ROOT/target/debug/matrixark_rust_proxy" \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
+    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy" \
     "$ROOT/target/release/matrixark_record_log" \
     "$ROOT/target/debug/matrixark_record_log" \
     "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
@@ -26,7 +30,7 @@ if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
     fi
   done
 fi
-export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log}"
+export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy}"
 
 for libdir in \
   "$ROOT/output-ubuntu22/release/sdk/lib" \
@@ -53,8 +57,8 @@ if [[ "$MATRIXARK_HOOK_AUTOSTART_CPP" == "1" ]]; then
 fi
 
 if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_CLI" ]]; then
-  CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}" cargo build --release -p temporalstore-rust --bin matrixark_record_log >/dev/null
-  export MATRIXARK_TEMPORALSTORE_RUST_CLI="$ROOT/target/release/matrixark_record_log"
+  CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-$ROOT/target}" cargo build --release -p temporalstore-rust --bin matrixark_rust_proxy >/dev/null
+  export MATRIXARK_TEMPORALSTORE_RUST_CLI="$ROOT/target/release/matrixark_rust_proxy"
 fi
 
 if python3 "$ROOT/tools/matrixark_codex_hook.py" "$@"; then

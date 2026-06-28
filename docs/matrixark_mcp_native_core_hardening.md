@@ -53,7 +53,8 @@ separate from production-performance parity claims.
 
 Rust:
 
-- `matrixark_record_log --serve` is the long-lived production path.
+- `matrixark_rust_proxy --serve` is the long-lived production path.
+- `matrixark_record_log --serve` is retained only as a compatibility/debug alias.
 - Single-shot record-log CLI is debug-only.
 - Batch append/read: `batch_hset` / `batch_hget`.
 - Prefix/hash scan fast path: `scan_hash` / `hgetall`.

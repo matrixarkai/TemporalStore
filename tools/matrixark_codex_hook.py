@@ -550,6 +550,10 @@ def build_server(args: argparse.Namespace):
         rust_proxy = args.rust_proxy or args.rust_cli
         if not rust_proxy:
             for candidate in [
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_rust_proxy",
+                args.repo_root / "target" / "release" / "matrixark_rust_proxy",
+                args.repo_root / "target" / "debug" / "matrixark_rust_proxy",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_rust_proxy",
                 args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "debug" / "matrixark_record_log",
@@ -572,6 +576,10 @@ def build_server(args: argparse.Namespace):
         rust_proxy = args.rust_proxy or args.rust_cli
         if not rust_proxy:
             for candidate in [
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_rust_proxy",
+                args.repo_root / "target" / "release" / "matrixark_rust_proxy",
+                args.repo_root / "target" / "debug" / "matrixark_rust_proxy",
+                args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "debug" / "matrixark_rust_proxy",
                 args.repo_root / "sdk" / "rust" / "temporalstore" / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "release" / "matrixark_record_log",
                 args.repo_root / "target" / "debug" / "matrixark_record_log",

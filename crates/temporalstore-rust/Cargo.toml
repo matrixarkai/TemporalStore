@@ -30,6 +30,14 @@ tonic-build = "0.12"
 default = ["temporal-raft-engine"]
 temporal-raft-engine = []
 
+[[bin]]
+name = "matrixark_rust_proxy"
+path = "src/bin/matrixark_rust_proxy.rs"
+
+[[bin]]
+name = "matrixark_record_log"
+path = "src/bin/matrixark_record_log.rs"
+
 [dev-dependencies]
 async-trait = "0.1"
 tempfile = "=3.10.1"

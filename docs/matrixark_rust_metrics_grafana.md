@@ -1,7 +1,8 @@
 # MatrixArk Rust Metrics For Grafana
 
 The Rust MatrixArk record-log bridge now emits Prometheus-compatible metrics for
-the long-lived `matrixark_record_log --serve` path.
+the long-lived `matrixark_rust_proxy --serve` path. The legacy
+`matrixark_record_log` name is a compatibility/debug alias.
 
 ## Metrics Surface
 

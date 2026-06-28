@@ -7,14 +7,14 @@ into the Rust TemporalStore proxy or Rust direct SDK path.
 
 The Rust crate exposes one production proxy binary:
 
-- `matrixark_record_log`
+- `matrixark_rust_proxy`
 
-MatrixArk should run `matrixark_record_log --serve` for the Rust proxy path, or
+MatrixArk should run `matrixark_rust_proxy --serve` for the Rust proxy path, or
 use `temporalstore-rust-direct` for the Rust direct SDK bridge. Both avoid the
 old process-per-operation CLI path.
 
 ```bash
-sdk/rust/temporalstore/target/release/matrixark_record_log --serve
+sdk/rust/temporalstore/target/release/matrixark_rust_proxy --serve
 ```
 
 Python MCP owns:
@@ -62,7 +62,7 @@ Start MatrixArk with the Rust backend:
 python3 tools/matrixark_mcp_server.py \
   --line-json \
   --backend temporalstore-rust \
-  --rust-proxy sdk/rust/temporalstore/target/release/matrixark_record_log \
+  --rust-proxy sdk/rust/temporalstore/target/release/matrixark_rust_proxy \
   --metaserver 127.0.0.1:18000 \
   --namespace deploy_ns \
   --table deploy_table \
