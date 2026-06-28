@@ -3331,7 +3331,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust StorageManager uses a reusable phase executor and exposes admin/metrics parity fields for last run time, duration, selected slots, skipped reason, errors, reclaimed bytes, compacted pages, WAL/index-log floors, retention blockers, and pressure before/after.",
+            "description": "Rust StorageManager uses a reusable phase executor and exposes admin plus Prometheus metrics parity fields for last run time, duration, selected slots, skipped reason, errors, reclaimed bytes, compacted pages, WAL/index-log floors, retention blockers, pressure before/after, and last pressure snapshot.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",

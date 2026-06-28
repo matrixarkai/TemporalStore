@@ -632,6 +632,7 @@ struct DataNodeRuntimeInner {
     lifecycle_tokens: Mutex<HashMap<(ShardId, String), SchedulerLifecycleToken>>,
     lifecycle_snapshot_path: Option<PathBuf>,
     lifecycle_persistence: Mutex<DataNodeLifecyclePersistenceReport>,
+    last_storage_manager_cycle: Mutex<Option<StorageManagerCycleReport>>,
     next_job_id: AtomicU64,
 }
 
@@ -923,6 +924,7 @@ impl DataNodeRuntime {
                 lifecycle_snapshot_path.as_ref(),
             )),
             lifecycle_snapshot_path,
+            last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -935,6 +937,14 @@ impl DataNodeRuntime {
 
     pub fn engine(&self) -> TemporalEngine {
         self.inner.engine.clone()
+    }
+
+    pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {
+        self.inner
+            .last_storage_manager_cycle
+            .lock()
+            .expect("last storage manager cycle lock poisoned")
+            .clone()
     }
 
     #[cfg(test)]
@@ -983,6 +993,7 @@ impl DataNodeRuntime {
                 lifecycle_snapshot_path.as_ref(),
             )),
             lifecycle_snapshot_path,
+            last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2760,6 +2771,10 @@ fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> DataNodeTask
             } else {
                 Status::error("storage_manager_failed", report.errors.join(";"))
             };
+            *inner
+                .last_storage_manager_cycle
+                .lock()
+                .expect("last storage manager cycle lock poisoned") = Some(report.clone());
             inner
                 .stats
                 .lock()

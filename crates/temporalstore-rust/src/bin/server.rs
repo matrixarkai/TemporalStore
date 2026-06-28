@@ -12,7 +12,7 @@ use temporalstore_rust::context_workflow::{
     ContextModelProviderConfig, ContextRetrieveRequest,
 };
 use temporalstore_rust::data_node::{DataNodeLifecycleSnapshot, DataNodeTopologyValidationReport};
-use temporalstore_rust::engine::reports::StorageManagerCycleRequest;
+use temporalstore_rust::engine::reports::{StorageManagerCycleReport, StorageManagerCycleRequest};
 use temporalstore_rust::engine::TemporalEngine;
 use temporalstore_rust::http::{
     get_json_with_options, json_response, parse_json, post_json, serve, HttpRequest,
@@ -2108,6 +2108,7 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         ("dump", stats.dump_runs),
         ("compaction", stats.compaction_runs),
         ("gc", stats.gc_runs),
+        ("storage_manager", stats.storage_manager_runs),
     ] {
         out.push_str("temporalstore_data_node_runtime_jobs_total{kind=\"");
         out.push_str(kind);
@@ -2181,6 +2182,262 @@ fn append_runtime_metrics(out: &mut String, runtime: &DataNodeRuntime) {
         out.push_str(&value.to_string());
         out.push('\n');
     }
+    if let Some(report) = runtime.last_storage_manager_cycle_report() {
+        append_storage_manager_cycle_metrics(out, &report);
+    }
+}
+
+fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManagerCycleReport) {
+    out.push_str("# HELP temporalstore_storage_manager_pressure Last StorageManager pressure snapshot by shard and signal.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_pressure gauge\n");
+    let pressure = &report.pressure_snapshot;
+    for (signal, value) in [
+        ("dirty_slots", pressure.dirty_slot_count as u64),
+        ("undumped_wal_records", pressure.undumped_wal_records),
+        ("wal_bytes", pressure.wal_bytes),
+        ("index_log_bytes", pressure.index_log_bytes),
+        ("stale_page_bytes", pressure.stale_page_bytes),
+        ("live_page_bytes", pressure.live_page_bytes),
+        (
+            "page_segment_stale_density_basis_points",
+            pressure.page_segment_stale_density_basis_points,
+        ),
+        ("memory_cache_bytes", pressure.memory_cache_bytes),
+        ("disk_cache_bytes", pressure.disk_cache_bytes),
+        (
+            "memory_cache_pressure_score",
+            pressure.memory_cache_pressure_score,
+        ),
+        (
+            "expired_slot_object_scan_debt",
+            pressure.expired_slot_object_scan_debt as u64,
+        ),
+        (
+            "delayed_destroy_segments",
+            pressure.delayed_destroy_segment_count as u64,
+        ),
+        ("delayed_destroy_bytes", pressure.delayed_destroy_bytes),
+        (
+            "follower_cursor_retention_blockers",
+            pressure.follower_cursor_retention_blockers as u64,
+        ),
+        (
+            "raft_snapshot_retention_blockers",
+            pressure.raft_snapshot_retention_blockers as u64,
+        ),
+        (
+            "compaction_debt_models",
+            pressure.compaction_debt_model_count as u64,
+        ),
+        ("compaction_debt_score", pressure.compaction_debt_score),
+        ("total_pressure_score", pressure.total_pressure_score),
+    ] {
+        out.push_str("temporalstore_storage_manager_pressure{shard_id=\"");
+        out.push_str(&report.shard_id.to_string());
+        out.push_str("\",signal=\"");
+        out.push_str(signal);
+        out.push_str("\"} ");
+        out.push_str(&value.to_string());
+        out.push('\n');
+    }
+
+    out.push_str("# HELP temporalstore_storage_manager_phase_enabled Last StorageManager phase enabled state.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_enabled gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_applied Last StorageManager phase applied state.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_applied gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_skipped Last StorageManager phase skipped state.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_skipped gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_duration_ms Last StorageManager phase duration.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_duration_ms gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_pressure Last StorageManager phase pressure counters by kind.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_pressure gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_work Last StorageManager phase work counters by kind.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_work gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_bytes Last StorageManager phase bytes by kind.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_bytes gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_floors Last StorageManager phase retention floors by kind.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_floors gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_errors Last StorageManager phase error count.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_errors gauge\n");
+
+    for stage in &report.stages {
+        append_storage_manager_phase_bool(
+            out,
+            "temporalstore_storage_manager_phase_enabled",
+            report.shard_id,
+            &stage.stage,
+            stage.enabled,
+        );
+        append_storage_manager_phase_bool(
+            out,
+            "temporalstore_storage_manager_phase_applied",
+            report.shard_id,
+            &stage.stage,
+            stage.applied,
+        );
+        append_storage_manager_phase_bool(
+            out,
+            "temporalstore_storage_manager_phase_skipped",
+            report.shard_id,
+            &stage.stage,
+            stage.skipped,
+        );
+        append_storage_manager_phase_value(
+            out,
+            "temporalstore_storage_manager_phase_duration_ms",
+            report.shard_id,
+            &stage.stage,
+            stage.duration_ms,
+        );
+        for (kind, value) in [
+            ("score", stage.pressure_score),
+            ("threshold", stage.pressure_threshold),
+            ("before", stage.pressure_before),
+            ("after", stage.pressure_after),
+            ("retention_blockers", stage.retention_blockers as u64),
+            ("eviction_before", stage.eviction_pressure_before),
+            ("eviction_after", stage.eviction_pressure_after),
+        ] {
+            append_storage_manager_phase_kind_value(
+                out,
+                "temporalstore_storage_manager_phase_pressure",
+                report.shard_id,
+                &stage.stage,
+                kind,
+                value,
+            );
+        }
+        for (kind, value) in [
+            ("candidates", stage.candidate_count as u64),
+            ("skipped", stage.skipped_count as u64),
+            ("selected_slots", stage.selected_slots.len() as u64),
+            (
+                "selected_page_segments",
+                stage.selected_page_segment_ids.len() as u64,
+            ),
+            ("dirty_slots", stage.dirty_slot_count as u64),
+            ("dumped_slots", stage.dumped_slot_count as u64),
+            ("wal_records_removed", stage.wal_records_removed as u64),
+            (
+                "index_log_records_removed",
+                stage.index_log_records_removed as u64,
+            ),
+            (
+                "expired_records_removed",
+                stage.expired_records_removed as u64,
+            ),
+            ("cache_entries_removed", stage.cache_entries_removed as u64),
+            ("dropped_objects", stage.dropped_object_count as u64),
+            (
+                "page_segments_reclaimed",
+                stage.page_segments_reclaimed as u64,
+            ),
+            ("pages_compacted", stage.pages_compacted as u64),
+            ("rewritten_page_refs", stage.rewritten_page_refs as u64),
+            ("manifest_pruned", stage.manifest_pruned_count as u64),
+            ("metrics_slots", stage.metrics_slot_count as u64),
+            ("metrics_page_refs", stage.metrics_page_ref_count),
+        ] {
+            append_storage_manager_phase_kind_value(
+                out,
+                "temporalstore_storage_manager_phase_work",
+                report.shard_id,
+                &stage.stage,
+                kind,
+                value,
+            );
+        }
+        for (kind, value) in [
+            ("before", stage.before_bytes),
+            ("after", stage.after_bytes),
+            ("live", stage.live_bytes),
+            ("stale", stage.stale_bytes),
+            ("reclaimed", stage.bytes_reclaimed),
+            ("page_reclaimed", stage.page_bytes_reclaimed),
+            ("cache_disk_removed", stage.cache_disk_bytes_removed),
+        ] {
+            append_storage_manager_phase_kind_value(
+                out,
+                "temporalstore_storage_manager_phase_bytes",
+                report.shard_id,
+                &stage.stage,
+                kind,
+                value,
+            );
+        }
+        for (kind, value) in [
+            ("wal", stage.wal_floor_sequence),
+            ("index_log", stage.index_log_floor_sequence),
+            ("retain_from_wal", stage.retain_from_wal_sequence),
+            (
+                "retain_from_index_log",
+                stage.retain_from_index_log_sequence,
+            ),
+        ] {
+            append_storage_manager_phase_kind_value(
+                out,
+                "temporalstore_storage_manager_phase_floors",
+                report.shard_id,
+                &stage.stage,
+                kind,
+                value,
+            );
+        }
+        append_storage_manager_phase_value(
+            out,
+            "temporalstore_storage_manager_phase_errors",
+            report.shard_id,
+            &stage.stage,
+            stage.errors.len() as u64,
+        );
+    }
+}
+
+fn append_storage_manager_phase_bool(
+    out: &mut String,
+    name: &str,
+    shard_id: u64,
+    phase: &str,
+    value: bool,
+) {
+    append_storage_manager_phase_value(out, name, shard_id, phase, u64::from(value));
+}
+
+fn append_storage_manager_phase_value(
+    out: &mut String,
+    name: &str,
+    shard_id: u64,
+    phase: &str,
+    value: u64,
+) {
+    out.push_str(name);
+    out.push_str("{shard_id=\"");
+    out.push_str(&shard_id.to_string());
+    out.push_str("\",phase=\"");
+    out.push_str(phase);
+    out.push_str("\"} ");
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn append_storage_manager_phase_kind_value(
+    out: &mut String,
+    name: &str,
+    shard_id: u64,
+    phase: &str,
+    kind: &str,
+    value: u64,
+) {
+    out.push_str(name);
+    out.push_str("{shard_id=\"");
+    out.push_str(&shard_id.to_string());
+    out.push_str("\",phase=\"");
+    out.push_str(phase);
+    out.push_str("\",kind=\"");
+    out.push_str(kind);
+    out.push_str("\"} ");
+    out.push_str(&value.to_string());
+    out.push('\n');
 }
 
 fn append_ingestion_metrics(out: &mut String, engine: &TemporalEngine) {
@@ -2460,6 +2717,58 @@ mod tests {
             root.join(format!("{role}-pages")),
             root.join(format!("{role}-index")),
         )
+    }
+
+    // shared-corpus: storage_manager_metrics_admin_phase_reports
+    #[test]
+    fn storage_manager_cycle_prometheus_exposes_phase_and_pressure_metrics() {
+        let dir = tempdir().unwrap();
+        let engine = test_engine(dir.path(), "engine");
+        engine.load_shard(73);
+        let write = engine.execute(ExecuteRequest {
+            shard_id: 73,
+            command: Command::StringSet {
+                key: "storage-manager:metrics".to_string(),
+                value: b"phase-pressure".to_vec(),
+            },
+        });
+        assert!(write.status.ok, "{write:?}");
+
+        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 73,
+            max_dump_slots_per_round: 4,
+            warm_cache: true,
+            ..StorageManagerCycleRequest::default()
+        });
+        assert!(report.completed, "{report:?}");
+
+        let mut metrics = String::new();
+        append_storage_manager_cycle_metrics(&mut metrics, &report);
+        assert!(metrics.contains("# TYPE temporalstore_storage_manager_pressure gauge"));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_pressure{shard_id=\"73\",signal=\"dirty_slots\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_pressure{shard_id=\"73\",signal=\"wal_bytes\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_pressure{shard_id=\"73\",signal=\"follower_cursor_retention_blockers\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_phase_enabled{shard_id=\"73\",phase=\"prepare\"} 1"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_phase_work{shard_id=\"73\",phase=\"reclaim_oplog\",kind=\"wal_records_removed\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_phase_pressure{shard_id=\"73\",phase=\"evict\",kind=\"eviction_before\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_phase_floors{shard_id=\"73\",phase=\"index_gc\",kind=\"index_log\"}"
+        ));
+        assert!(metrics.contains(
+            "temporalstore_storage_manager_phase_bytes{shard_id=\"73\",phase=\"reclaim_page\",kind=\"reclaimed\"}"
+        ));
     }
 
     #[test]
