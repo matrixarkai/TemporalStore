@@ -43,6 +43,7 @@ class MatrixArkLocalAdapter:
     def _init_local_runtime_state(self) -> None:
         self.event_log.parent.mkdir(parents=True, exist_ok=True)
         self._write_batch_local = threading.local()
+        self._event_log_lock = threading.RLock()
         self._resource_import_worker_count = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_WORKERS", "2")))
         self._resource_import_queue_max = max(1, int(os.environ.get("MATRIXARK_RESOURCE_IMPORT_QUEUE_MAX", "64")))
         self._resource_import_queue: thread_queue.Queue[Json] = thread_queue.Queue(maxsize=self._resource_import_queue_max)
@@ -130,9 +131,10 @@ class MatrixArkLocalAdapter:
         records = materialize_serving_records(record)
         if self._queue_batched_records(records):
             return
-        with self.event_log.open("a", encoding="utf-8") as handle:
-            for item in records:
-                handle.write(json.dumps(item, separators=(",", ":")) + "\n")
+        with self._event_log_lock:
+            with self.event_log.open("a", encoding="utf-8") as handle:
+                for item in records:
+                    handle.write(json.dumps(item, separators=(",", ":")) + "\n")
         self._update_latest_entity_cache(records)
 
     def append_many(self, records: list[Json]) -> None:
@@ -141,9 +143,10 @@ class MatrixArkLocalAdapter:
             return
         if self._queue_batched_records(records):
             return
-        with self.event_log.open("a", encoding="utf-8") as handle:
-            for record in records:
-                handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        with self._event_log_lock:
+            with self.event_log.open("a", encoding="utf-8") as handle:
+                for record in records:
+                    handle.write(json.dumps(record, separators=(",", ":")) + "\n")
         self._update_latest_entity_cache(records)
 
     def _update_latest_entity_cache(self, records: list[Json]) -> None:
@@ -322,11 +325,12 @@ class MatrixArkLocalAdapter:
         if not self.event_log.exists():
             return []
         records = []
-        with self.event_log.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if line:
-                    records.append(json.loads(line))
+        with self._event_log_lock:
+            with self.event_log.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        records.append(json.loads(line))
         return records
 
     def retrieval_records(
