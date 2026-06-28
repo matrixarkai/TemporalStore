@@ -1,0 +1,13 @@
+{
+  "backend": "temporalstore-rust",
+  "batch_size": 20,
+  "batches": 50,
+  "elapsed_sec": 0.701,
+  "events_requested": 1000,
+  "ingest_mode": "batch",
+  "last_error": "",
+  "message_qps_so_far": 1427.395,
+  "messages_ingested": 1000,
+  "report_json": "docs/benchmarks/latest_cpp_rust_20260628_cpp_batch_append_1k/rust/scale_report.json",
+  "status": "passed"
+}

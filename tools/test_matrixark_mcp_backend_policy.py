@@ -3139,10 +3139,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         start = source.index("int temporalstore_matrixark_batch_append_records")
         end = source.index("int temporalstore_smembers", start)
         body = source[start:end]
+        implementation = (repo / "src/client/temporalstore_client.cc").read_text()
+        impl_start = implementation.index("Status TemporalStoreClient::MatrixArkBatchAppendRecords")
+        impl_end = implementation.index("Status TemporalStoreClient::SAdd", impl_start)
+        impl_body = implementation[impl_start:impl_end]
 
         self.assertIn("MatrixArkBatchAppendRecords", body)
+        self.assertIn("ExecuteRawBatch", implementation)
+        self.assertIn("ExecuteRawBatch", impl_body)
         self.assertNotIn("->HSet(", body)
         self.assertNotIn("->PutString(", body)
+        self.assertNotIn("->HSet(", impl_body)
+        self.assertNotIn("->PutString(", impl_body)
+        self.assertNotIn("PutString(count_key", impl_body)
 
     def test_rust_matrixark_append_uses_native_proxy_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
