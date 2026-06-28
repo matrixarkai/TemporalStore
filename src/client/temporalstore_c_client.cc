@@ -8,6 +8,7 @@
 #include <cctype>
 #include <ctime>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
@@ -137,7 +138,7 @@ bcache2::Status ReadMatrixArkServingCount(bcache2::client::TemporalStoreClient* 
                                           const std::string& count_key,
                                           std::string* count_text) {
     bcache2::Status status = impl->GetString(count_key + ":serving", count_text);
-    if (status.ok()) {
+    if (status.ok() && count_text != nullptr && !count_text->empty()) {
         return status;
     }
     return impl->GetString(count_key, count_text);
@@ -651,6 +652,113 @@ void DecodeMatrixArkPayload(const std::string& value, std::vector<std::string>* 
     }
 }
 
+struct MatrixArkScopedRecordScan {
+    std::vector<std::string> record_jsons;
+    uint64_t scanned_records = 0;
+    uint64_t dropped_by_type = 0;
+    uint64_t dropped_by_scope = 0;
+    bool cache_hit = false;
+};
+
+struct MatrixArkScopedRecordScanCacheEntry {
+    std::vector<std::string> record_jsons;
+    uint64_t scanned_records = 0;
+    uint64_t dropped_by_type = 0;
+    uint64_t dropped_by_scope = 0;
+};
+
+std::mutex g_matrixark_scoped_scan_cache_mu;
+std::unordered_map<std::string, MatrixArkScopedRecordScanCacheEntry> g_matrixark_scoped_scan_cache;
+
+std::string MatrixArkScopedScanCacheKey(
+    const std::string& count_key, const std::string& record_hash_key, size_t shard_size,
+    uint64_t serving_count, const std::unordered_set<std::string>& allowed_types,
+    const rapidjson::Value* scope) {
+    std::vector<std::string> sorted_types(allowed_types.begin(), allowed_types.end());
+    std::sort(sorted_types.begin(), sorted_types.end());
+    std::ostringstream key;
+    key << count_key << "|" << record_hash_key << "|" << shard_size << "|" << serving_count << "|";
+    for (const auto& type : sorted_types) {
+        key << type << ",";
+    }
+    key << "|";
+    if (scope != nullptr && scope->IsObject()) {
+        key << JsonStringify(*scope);
+    }
+    return key.str();
+}
+
+bcache2::Status LoadMatrixArkScopedServingRecords(
+    bcache2::client::TemporalStoreClient* impl, const std::string& count_key,
+    const std::string& record_hash_key, size_t shard_size, uint64_t serving_count,
+    const std::unordered_set<std::string>& allowed_types, const rapidjson::Value* scope,
+    MatrixArkScopedRecordScan* out) {
+    if (out == nullptr) {
+        return NullError("scoped_record_scan");
+    }
+    *out = MatrixArkScopedRecordScan();
+    const std::string cache_key = MatrixArkScopedScanCacheKey(
+        count_key, record_hash_key, shard_size, serving_count, allowed_types, scope);
+    {
+        std::lock_guard<std::mutex> guard(g_matrixark_scoped_scan_cache_mu);
+        const auto it = g_matrixark_scoped_scan_cache.find(cache_key);
+        if (it != g_matrixark_scoped_scan_cache.end()) {
+            out->record_jsons = it->second.record_jsons;
+            out->scanned_records = it->second.scanned_records;
+            out->dropped_by_type = it->second.dropped_by_type;
+            out->dropped_by_scope = it->second.dropped_by_scope;
+            out->cache_hit = true;
+            return bcache2::Status::OK();
+        }
+    }
+
+    const uint64_t max_shard = serving_count == 0 ? 0 : (serving_count - 1) / shard_size;
+    for (uint64_t shard = 0; shard <= max_shard; ++shard) {
+        char suffix[32];
+        std::snprintf(suffix, sizeof(suffix), ":%06llu", static_cast<unsigned long long>(shard));
+        std::vector<std::pair<std::string, std::string>> fields;
+        bcache2::Status status = impl->HGetAll(record_hash_key + suffix, &fields);
+        if (!status.ok()) {
+            return status;
+        }
+        for (const auto& pair : fields) {
+            std::vector<std::string> decoded;
+            DecodeMatrixArkPayload(pair.second, &decoded);
+            for (const auto& record_json : decoded) {
+                rapidjson::Document record;
+                if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
+                    continue;
+                }
+                ++out->scanned_records;
+                std::string record_type = JsonStringMember(record, "record_type");
+                if (!allowed_types.empty() && allowed_types.find(record_type) == allowed_types.end()) {
+                    ++out->dropped_by_type;
+                    continue;
+                }
+                if (!ScopeMatches(record, scope)) {
+                    ++out->dropped_by_scope;
+                    continue;
+                }
+                out->record_jsons.push_back(record_json);
+            }
+        }
+    }
+
+    MatrixArkScopedRecordScanCacheEntry entry;
+    entry.record_jsons = out->record_jsons;
+    entry.scanned_records = out->scanned_records;
+    entry.dropped_by_type = out->dropped_by_type;
+    entry.dropped_by_scope = out->dropped_by_scope;
+    {
+        std::lock_guard<std::mutex> guard(g_matrixark_scoped_scan_cache_mu);
+        if (g_matrixark_scoped_scan_cache.size() >= 8) {
+            g_matrixark_scoped_scan_cache.clear();
+        }
+        g_matrixark_scoped_scan_cache[cache_key] = std::move(entry);
+    }
+    return bcache2::Status::OK();
+}
+
 bcache2::Status MatrixArkScanCandidatesNative(
     bcache2::client::TemporalStoreClient* impl, const std::string& count_key,
     const std::string& record_hash_key, size_t shard_size, const std::string& request_json,
@@ -698,41 +806,13 @@ bcache2::Status MatrixArkScanCandidatesNative(
     }
     const rapidjson::Value* scope = JsonObjectMember(request, "scope");
     auto secondary_groups = SecondaryGroups(request);
-    std::vector<std::string> record_jsons;
-    uint64_t scanned_records = 0;
-    uint64_t dropped_by_type = 0;
-    uint64_t dropped_by_scope = 0;
-    uint64_t max_shard = count == 0 ? 0 : (count - 1) / shard_size;
-    for (uint64_t shard = 0; shard <= max_shard; ++shard) {
-        char suffix[32];
-        std::snprintf(suffix, sizeof(suffix), ":%06llu", static_cast<unsigned long long>(shard));
-        std::vector<std::pair<std::string, std::string>> fields;
-        status = impl->HGetAll(record_hash_key + suffix, &fields);
-        if (!status.ok()) {
-            return status;
-        }
-        for (const auto& pair : fields) {
-            std::vector<std::string> decoded;
-            DecodeMatrixArkPayload(pair.second, &decoded);
-            for (const auto& record_json : decoded) {
-                rapidjson::Document record;
-                if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
-                    continue;
-                }
-                ++scanned_records;
-                std::string record_type = JsonStringMember(record, "record_type");
-                if (!allowed_types.empty() && allowed_types.find(record_type) == allowed_types.end()) {
-                    ++dropped_by_type;
-                    continue;
-                }
-                if (!ScopeMatches(record, scope)) {
-                    ++dropped_by_scope;
-                    continue;
-                }
-                record_jsons.push_back(record_json);
-            }
-        }
+    MatrixArkScopedRecordScan scan;
+    status = LoadMatrixArkScopedServingRecords(
+        impl, count_key, record_hash_key, shard_size, count, allowed_types, scope, &scan);
+    if (!status.ok()) {
+        return status;
     }
+    const std::vector<std::string>& record_jsons = scan.record_jsons;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
     std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
@@ -804,10 +884,11 @@ bcache2::Status MatrixArkScanCandidatesNative(
     stats.AddMember("native_secondary_index_prefilter", !secondary_groups.empty(), alloc);
     stats.AddMember("native_pack_assembly", false, alloc);
     stats.AddMember("pack_assembly_location", "caller_or_context_pack_api", alloc);
-    stats.AddMember("scanned_records", scanned_records, alloc);
+    stats.AddMember("scanned_records", scan.scanned_records, alloc);
     stats.AddMember("returned_records", records.Size(), alloc);
-    stats.AddMember("dropped_by_type", dropped_by_type, alloc);
-    stats.AddMember("dropped_by_scope", dropped_by_scope, alloc);
+    stats.AddMember("dropped_by_type", scan.dropped_by_type, alloc);
+    stats.AddMember("dropped_by_scope", scan.dropped_by_scope, alloc);
+    stats.AddMember("native_scan_record_cache_hit", scan.cache_hit, alloc);
     stats.AddMember("secondary_index_groups_supplied", static_cast<uint64_t>(secondary_groups.size()), alloc);
     stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
@@ -866,41 +947,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     std::unordered_set<std::string> allowed(allowed_types.begin(), allowed_types.end());
     const rapidjson::Value* scope = JsonObjectMember(request, "scope");
     auto secondary_groups = SecondaryGroups(request);
-    std::vector<std::string> record_jsons;
-    uint64_t scanned_records = 0;
-    uint64_t dropped_by_type = 0;
-    uint64_t dropped_by_scope = 0;
-    uint64_t max_shard = count == 0 ? 0 : (count - 1) / shard_size;
-    for (uint64_t shard = 0; shard <= max_shard; ++shard) {
-        char suffix[32];
-        std::snprintf(suffix, sizeof(suffix), ":%06llu", static_cast<unsigned long long>(shard));
-        std::vector<std::pair<std::string, std::string>> fields;
-        status = impl->HGetAll(record_hash_key + suffix, &fields);
-        if (!status.ok()) {
-            return status;
-        }
-        for (const auto& pair : fields) {
-            std::vector<std::string> decoded;
-            DecodeMatrixArkPayload(pair.second, &decoded);
-            for (const auto& record_json : decoded) {
-                rapidjson::Document record;
-                if (record.Parse(record_json.c_str()).HasParseError() || !record.IsObject()) {
-                    continue;
-                }
-                ++scanned_records;
-                std::string record_type = JsonStringMember(record, "record_type");
-                if (!scan_allowed.empty() && scan_allowed.find(record_type) == scan_allowed.end()) {
-                    ++dropped_by_type;
-                    continue;
-                }
-                if (!ScopeMatches(record, scope)) {
-                    ++dropped_by_scope;
-                    continue;
-                }
-                record_jsons.push_back(record_json);
-            }
-        }
+    MatrixArkScopedRecordScan scan;
+    status = LoadMatrixArkScopedServingRecords(
+        impl, count_key, record_hash_key, shard_size, count, scan_allowed, scope, &scan);
+    if (!status.ok()) {
+        return status;
     }
+    const std::vector<std::string>& record_jsons = scan.record_jsons;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_ref;
     std::unordered_map<uint64_t, std::unordered_set<std::string>> terms_by_node;
     std::unordered_map<std::string, std::unordered_set<std::string>> terms_by_batch;
@@ -1193,10 +1246,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     scan_stats.AddMember("native_prefix_scan", true, alloc);
     scan_stats.AddMember("native_secondary_index_prefilter", true, alloc);
     scan_stats.AddMember("native_pack_assembly", true, alloc);
-    scan_stats.AddMember("scanned_records", scanned_records, alloc);
+    scan_stats.AddMember("scanned_records", scan.scanned_records, alloc);
     scan_stats.AddMember("returned_records", static_cast<uint64_t>(scored.size()), alloc);
-    scan_stats.AddMember("dropped_by_type", dropped_by_type, alloc);
-    scan_stats.AddMember("dropped_by_scope", dropped_by_scope, alloc);
+    scan_stats.AddMember("dropped_by_type", scan.dropped_by_type, alloc);
+    scan_stats.AddMember("dropped_by_scope", scan.dropped_by_scope, alloc);
+    scan_stats.AddMember("native_scan_record_cache_hit", scan.cache_hit, alloc);
     scan_stats.AddMember("secondary_index_dropped_candidate_count", secondary_dropped, alloc);
     scan_stats.AddMember("secondary_index_matched_candidate_count", secondary_matched, alloc);
     recall.AddMember("scan_stats", scan_stats, alloc);
