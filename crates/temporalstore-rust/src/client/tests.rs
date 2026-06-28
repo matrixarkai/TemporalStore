@@ -1174,6 +1174,173 @@ fn client_meta_sync_report_tracks_success_and_table_errors() {
         .contains(&"meta_sync_table_errors".to_string()));
 }
 
+// shared-corpus: control_client_metasync_outage_churn_stress
+#[test]
+fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() {
+    let meta_addr = free_local_addr();
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let meta_addr_for_listener = meta_addr.clone();
+    let attempts_for_listener = std::sync::Arc::clone(&attempts);
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/meta/topology_version") => json_response(
+                    200,
+                    &crate::meta::TopologyVersionReport {
+                        status: Status::ok(),
+                        current_topology_version: 40,
+                        old_topology_version: 0,
+                        unchanged: false,
+                        server_count: 1,
+                        proxy_count: 0,
+                        table_count: 1,
+                        shard_route_count: 1,
+                        normal_servers: 1,
+                        frozen_servers: 0,
+                        dropped_servers: 0,
+                        normal_proxies: 0,
+                        frozen_proxies: 0,
+                        dropped_proxies: 0,
+                        normal_tables: 1,
+                        frozen_tables: 0,
+                        dropped_tables: 0,
+                        changed_tables: Vec::new(),
+                        events: Vec::new(),
+                        event_history_truncated: false,
+                    },
+                ),
+                ("POST", "/tables/topology") => {
+                    let attempt =
+                        attempts_for_listener.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt < 2 {
+                        return json_response(
+                            200,
+                            &TableTopologyResponse {
+                                status: Status::error("metaserver_unavailable", "outage"),
+                                table: None,
+                                partitions: Vec::new(),
+                                unchanged: false,
+                            },
+                        );
+                    }
+                    json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 91,
+                                namespace: "ns".to_string(),
+                                table_name: "churn".to_string(),
+                                state: crate::meta::MetaEntityState::Normal,
+                                topology_version: 40,
+                                first_shard_id: 40,
+                                shard_count: 1,
+                                replica_count: 1,
+                                use_cpp_partition_ids: false,
+                                partition_version: 0,
+                                serving_options: crate::meta::TableServingOptions::default(),
+                            }),
+                            partitions: vec![TablePartition {
+                                shard_id: 40,
+                                start_slot: 0,
+                                end_slot: 1_073_741_823,
+                                primary: Some("127.0.0.1:27440".to_string()),
+                                replicas: vec!["127.0.0.1:27440".to_string()],
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        meta_addr: Some(meta_addr),
+        meta_sync_interval_ms: 50,
+        topo_error_retry_interval_ms: 5,
+        meta_sync_deadline_ms: 7,
+        meta_sync_jitter_percent: 50,
+        ..ClientOptions::default()
+    });
+    client.open_table(
+        "ns",
+        "churn",
+        TableOptions {
+            first_shard_id: 10,
+            shard_count: 1,
+            ..TableOptions::default()
+        },
+    );
+
+    std::thread::sleep(Duration::from_millis(80));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let first_error = client
+        .meta_sync_report()
+        .tables
+        .into_iter()
+        .find(|table| table.table == "ns/churn")
+        .unwrap();
+    assert_eq!(first_error.consecutive_errors, 1);
+    assert_eq!(first_error.last_error, "outage");
+    let first_delay = first_error
+        .next_sync_after_unix_ms
+        .saturating_sub(first_error.last_error_unix_ms);
+    assert!((5..=8).contains(&first_delay));
+
+    std::thread::sleep(Duration::from_millis(12));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let second_error = client
+        .meta_sync_report()
+        .tables
+        .into_iter()
+        .find(|table| table.table == "ns/churn")
+        .unwrap();
+    assert_eq!(second_error.consecutive_errors, 2);
+    let second_delay = second_error
+        .next_sync_after_unix_ms
+        .saturating_sub(second_error.last_error_unix_ms);
+    assert!((10..=15).contains(&second_delay));
+
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let success = client
+        .meta_sync_report()
+        .tables
+        .into_iter()
+        .find(|table| table.table == "ns/churn")
+        .unwrap();
+    assert_eq!(success.consecutive_errors, 0);
+    assert_eq!(success.last_topology_version, 40);
+    assert!(success.next_sync_after_unix_ms > success.last_success_unix_ms);
+    let table = client.cached_table("ns", "churn").unwrap();
+    assert_eq!(table.options().first_shard_id, 40);
+    assert_eq!(client.topology_cache_report().max_topology_version, 40);
+}
+
 #[test]
 fn client_applies_metaserver_table_serving_options() {
     let meta_addr = free_local_addr();
@@ -1952,6 +2119,112 @@ fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
     assert!(client
         .cached_table("ns".to_string(), "tbl".to_string())
         .is_none());
+}
+
+// shared-corpus: control_client_pipeline_batch_partial_timeout_contract
+#[test]
+fn pipeline_batches_partial_failures_and_timeout_budget_contract() {
+    let proxy_addr = free_local_addr();
+    let batch_requests = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let batch_requests_for_server = std::sync::Arc::clone(&batch_requests);
+    let proxy_addr_for_listener = proxy_addr.clone();
+    std::thread::spawn(move || {
+        serve(&proxy_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/batch_execute") => {
+                    batch_requests_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let req = parse_json::<BatchExecuteRequest>(&request.body).unwrap();
+                    assert_eq!(req.commands.len(), 3);
+                    json_response(
+                        200,
+                        &BatchExecuteResponse {
+                            status: Status::ok(),
+                            responses: vec![
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                                ExecuteResponse {
+                                    status: Status::error("partial_failure", "field rejected"),
+                                    response: CommandResponse::Empty,
+                                },
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(b"after-partial".to_vec()),
+                                    },
+                                },
+                            ],
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&proxy_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr,
+        max_retries: 0,
+        ..ClientOptions::default()
+    });
+    let table = client.open_table(
+        "ns",
+        "pipe",
+        TableOptions {
+            connect_timeout_ms: 200,
+            io_timeout_ms: 250,
+            max_write_retries: 0,
+            retry_backoff_ms: 0,
+            ..TableOptions::default()
+        },
+    );
+    let http_options = table.http_options_for_test();
+    assert_eq!(http_options.connect_timeout_ms, 200);
+    assert_eq!(http_options.io_timeout_ms, 250);
+    assert_eq!(http_options.max_retries, 0);
+
+    let mut pipeline = table.pipeline();
+    pipeline.set("pipe-key", b"value".to_vec());
+    pipeline.hset("pipe-key", "field", b"value".to_vec());
+    pipeline.get("pipe-key");
+    let response = pipeline.sync().unwrap();
+    assert!(response.status.ok);
+    assert_eq!(response.responses.len(), 3);
+    assert!(response.responses[0].status.ok);
+    assert_eq!(response.responses[1].status.code, "partial_failure");
+    assert_eq!(
+        response.responses[2].response,
+        CommandResponse::Bytes {
+            value: Some(b"after-partial".to_vec())
+        }
+    );
+    assert_eq!(
+        batch_requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "unsafe write batches must not be retried without explicit write budget"
+    );
+
+    let unsafe_write_retry = classify_cpp_retry_decision(
+        &Status::error("retry_later", "possibly applied"),
+        true,
+        0,
+        1,
+        false,
+    );
+    assert!(unsafe_write_retry.retryable);
+    assert!(!unsafe_write_retry.would_retry);
+    let stale_route_retry = classify_cpp_retry_decision(
+        &Status::error("meta_changed", "not applied"),
+        true,
+        0,
+        1,
+        false,
+    );
+    assert!(stale_route_retry.safe_budget_free_write_retry);
+    assert!(stale_route_retry.would_retry);
 }
 
 fn key_for_shard(table: &TemporalStoreTable, shard_id: ShardId) -> String {

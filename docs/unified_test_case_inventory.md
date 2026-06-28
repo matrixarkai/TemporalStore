@@ -76,11 +76,11 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 167
-total steps: 329
-executable shared behavior cases: 167
-executable shared behavior steps: 329
-C++ existing-test/static parity surfaces: 191
+total cases: 169
+total steps: 331
+executable shared behavior cases: 169
+executable shared behavior steps: 331
+C++ existing-test/static parity surfaces: 193
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 191 unique paths
 required command kinds: 64
@@ -425,9 +425,9 @@ Yes. Current Rust-local attributed test count is:
 
 ```text
 Rust attributed tests: 565
-shared-corpus marked Rust tests: 76
-shared corpus cases: 167
-shared corpus steps: 329
+shared-corpus marked Rust tests: 78
+shared corpus cases: 169
+shared corpus steps: 331
 C++ existing-test surfaces: 185
 ```
 

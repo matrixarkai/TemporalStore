@@ -5778,6 +5778,46 @@
       ]
     },
     {
+      "name": "control_client_metasync_outage_churn_stress",
+      "shard_id": 64,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust MetaSyncer production behavior case for per-table deadline propagation, exponential backoff with jitter, metaserver outage survival, and topology-version route refresh after churn.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/client/tests.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "client_metasync_outage_churn_stress_shared"
+        }
+      ]
+    },
+    {
+      "name": "control_client_pipeline_batch_partial_timeout_contract",
+      "shard_id": 64,
+      "steps": [
+        {
+          "command": {
+            "description": "Shared C++/Rust pipeline case for ordered batching, per-command partial failures, retry-safe versus unsafe write classification, and timeout budget propagation into request HTTP options.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/client/retry.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust pipeline_batches_partial_failures_and_timeout_budget_contract -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "client_pipeline_batch_partial_timeout_shared"
+        }
+      ]
+    },
+    {
       "name": "ingestion_kafka_consumer_group_runtime_rebalance",
       "shard_id": 65,
       "steps": [
@@ -7876,6 +7916,8 @@
       "control_scheduler_token_stale_rejection",
       "control_datanode_lifecycle_restart_recovery",
       "control_client_retry_budget_topology_refresh",
+      "control_client_metasync_outage_churn_stress",
+      "control_client_pipeline_batch_partial_timeout_contract",
       "cross_storage_control_agent_parity",
       "ingestion_kafka_consumer_group_runtime_rebalance",
       "ingestion_flink_checkpoint_restart_failover",

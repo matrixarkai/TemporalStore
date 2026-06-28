@@ -67,6 +67,8 @@ pub struct ClientOptions {
     pub route_cache_ttl_ms: u64,
     pub meta_sync_interval_ms: u64,
     pub topo_error_retry_interval_ms: u64,
+    pub meta_sync_deadline_ms: u64,
+    pub meta_sync_jitter_percent: u8,
     pub local_location: String,
     pub drop_percent: u8,
 }
@@ -86,6 +88,15 @@ impl ClientOptions {
             max_retries: self.max_retries,
         }
     }
+
+    fn meta_sync_http_options(&self) -> HttpRequestOptions {
+        let mut options = self.http_options();
+        if self.meta_sync_deadline_ms > 0 {
+            options.io_timeout_ms = options.io_timeout_ms.min(self.meta_sync_deadline_ms);
+            options.connect_timeout_ms = options.connect_timeout_ms.min(self.meta_sync_deadline_ms);
+        }
+        options
+    }
 }
 
 impl Default for ClientOptions {
@@ -103,6 +114,8 @@ impl Default for ClientOptions {
             route_cache_ttl_ms: 1_000,
             meta_sync_interval_ms: 10 * 60 * 1_000,
             topo_error_retry_interval_ms: 5_000,
+            meta_sync_deadline_ms: 200,
+            meta_sync_jitter_percent: 20,
             local_location: String::new(),
             drop_percent: 0,
         }
@@ -740,7 +753,7 @@ impl TemporalStoreClient {
                 table_name: table_name.clone(),
                 old_topology_version: 0,
             },
-            self.inner.options.http_options(),
+            self.inner.options.meta_sync_http_options(),
         ) {
             Ok(topology) => topology,
             Err(err) => {
@@ -906,7 +919,7 @@ impl TemporalStoreClient {
             &TopologyVersionRequest {
                 old_topology_version: 0,
             },
-            self.inner.options.http_options(),
+            self.inner.options.meta_sync_http_options(),
         )
         .ok()?;
         topology
@@ -931,7 +944,7 @@ impl TemporalStoreClient {
             &TopologyVersionRequest {
                 old_topology_version,
             },
-            self.inner.options.http_options(),
+            self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
             self.inner
@@ -1033,7 +1046,7 @@ impl TemporalStoreClient {
             &TopologyVersionRequest {
                 old_topology_version,
             },
-            self.inner.options.http_options(),
+            self.inner.options.meta_sync_http_options(),
         )?;
         if !topology.status.ok {
             return Err(ClientError::Status(topology.status.message));
@@ -1544,8 +1557,12 @@ impl TemporalStoreClient {
             });
         state.sync_generation = state.sync_generation.saturating_add(1);
         state.last_success_unix_ms = now;
-        state.next_sync_after_unix_ms =
-            now.saturating_add(self.inner.options.meta_sync_interval_ms);
+        state.next_sync_after_unix_ms = now.saturating_add(meta_sync_jittered_delay_ms(
+            self.inner.options.meta_sync_interval_ms,
+            self.inner.options.meta_sync_jitter_percent,
+            &table_combine_name(namespace, table_name),
+            state.sync_generation,
+        ));
         state.last_topology_version = topology_version;
         state.consecutive_errors = 0;
         state.last_error.clear();
@@ -1579,9 +1596,14 @@ impl TemporalStoreClient {
             .inner
             .options
             .topo_error_retry_interval_ms
-            .saturating_mul(state.consecutive_errors.max(1))
+            .saturating_mul(1_u64 << state.consecutive_errors.saturating_sub(1).min(10))
             .min(self.inner.options.meta_sync_interval_ms.max(1));
-        state.next_sync_after_unix_ms = now.saturating_add(backoff_ms);
+        state.next_sync_after_unix_ms = now.saturating_add(meta_sync_jittered_delay_ms(
+            backoff_ms,
+            self.inner.options.meta_sync_jitter_percent,
+            &table_combine_name(namespace, table_name),
+            state.consecutive_errors,
+        ));
         state.last_error = error.to_string();
     }
 
@@ -3457,6 +3479,11 @@ impl TemporalStoreTable {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn http_options_for_test(&self) -> HttpRequestOptions {
+        self.http_options()
+    }
+
     fn refresh_table_topology_after_status(&self) {
         if self.client.inner.options.meta_addr.is_none() {
             return;
@@ -3617,6 +3644,21 @@ fn partition_end_slot(offset: u64, shard_count: u64) -> u64 {
         return 0;
     }
     (slot_count.saturating_mul(offset.saturating_add(1)) / shard_count).saturating_sub(1)
+}
+
+fn meta_sync_jittered_delay_ms(
+    base_ms: u64,
+    jitter_percent: u8,
+    table_key: &str,
+    generation: u64,
+) -> u64 {
+    let base_ms = base_ms.max(1);
+    let jitter_bound = base_ms.saturating_mul(jitter_percent.min(100) as u64) / 100;
+    if jitter_bound == 0 {
+        return base_ms;
+    }
+    let seed = format!("{table_key}:{generation}");
+    base_ms.saturating_add(stable_key_hash(&seed) % jitter_bound.saturating_add(1))
 }
 
 fn topology_event_affects_routes(event: &crate::meta::TopologyChangeEvent) -> bool {
