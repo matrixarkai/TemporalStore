@@ -605,6 +605,8 @@ HOT_SERVING_RECORD_TYPES = {
     "context_embedding",
 }
 COMPACT_SCOPE_RECORD_TYPES = HOT_SERVING_RECORD_TYPES | {
+    "context_node",
+    "context_child_ref",
     "context_summary",
     "context_summary_dirty",
     "context_compression_event",
@@ -615,6 +617,11 @@ COMPACT_SCOPE_RECORD_TYPES = HOT_SERVING_RECORD_TYPES | {
     "skill_registry",
     "skill_registry_update",
 }
+COMPACT_TIMESTAMP_RECORD_TYPES = COMPACT_SCOPE_RECORD_TYPES | {
+    "session_buffer_event",
+    "matrixark_async_pipeline_task",
+}
+TOPOLOGY_DERIVED_PATH_RECORD_TYPES = {"context_child_ref"}
 NODE_PATH_HEAVY_RECORD_TYPES = {
     "context_event",
     "context_entity",
@@ -724,6 +731,30 @@ def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: An
     return record
 
 
+def compact_record_lifecycle_fields(record: Json) -> Json:
+    record_type = str(record.get("record_type") or "")
+    if record_type not in COMPACT_TIMESTAMP_RECORD_TYPES:
+        return record
+    compacted = dict(record)
+    if compacted.get("created_at_ms") is not None and compacted.get("updated_at_ms") is not None:
+        try:
+            created_at_ms = int(compacted.get("created_at_ms"))
+            updated_at_ms = int(compacted.get("updated_at_ms"))
+        except (TypeError, ValueError):
+            created_at_ms = None
+            updated_at_ms = None
+        if created_at_ms is not None and created_at_ms == updated_at_ms:
+            compacted.pop("created_at_ms", None)
+    if record_type in TOPOLOGY_DERIVED_PATH_RECORD_TYPES:
+        compacted.pop("parent_path", None)
+        compacted.pop("child_path", None)
+    return compacted
+
+
+def compact_storage_record(record: Json) -> Json:
+    return compact_record_lifecycle_fields(compact_record_scope(record))
+
+
 def materialize_serving_records(record: Json) -> list[Json]:
     """Split bulky provider/debug fields from hot serving records.
 
@@ -731,7 +762,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
     rows keep provider payloads, raw extraction details, old entity patches, and
     full path context without forcing every hot read to load them.
     """
-    record = compact_record_scope(attach_context_event_time_key(attach_storage_route(record)))
+    record = compact_storage_record(attach_context_event_time_key(attach_storage_route(record)))
     record_type = str(record.get("record_type") or "")
     if record_type not in HOT_SERVING_RECORD_TYPES:
         return [record]
