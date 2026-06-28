@@ -132,6 +132,17 @@ const rapidjson::Value* JsonObjectMember(const rapidjson::Value& value, const ch
     return &value[name];
 }
 
+
+bcache2::Status ReadMatrixArkServingCount(bcache2::client::TemporalStoreClient* impl,
+                                          const std::string& count_key,
+                                          std::string* count_text) {
+    bcache2::Status status = impl->GetString(count_key + ":serving", count_text);
+    if (status.ok()) {
+        return status;
+    }
+    return impl->GetString(count_key, count_text);
+}
+
 std::unordered_set<std::string> QueryTerms(const std::string& query) {
     std::unordered_set<std::string> terms;
     std::string token;
@@ -664,7 +675,7 @@ bcache2::Status MatrixArkScanCandidatesNative(
         return bcache2::Status::InvalidArgument("request_json must be a JSON object");
     }
     std::string count_text;
-    bcache2::Status status = impl->GetString(count_key, &count_text);
+    bcache2::Status status = ReadMatrixArkServingCount(impl, count_key, &count_text);
     if (!status.ok()) {
         return status;
     }
@@ -829,7 +840,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         return bcache2::Status::InvalidArgument("request_json must be a JSON object");
     }
     std::string count_text;
-    bcache2::Status status = impl->GetString(count_key, &count_text);
+    bcache2::Status status = ReadMatrixArkServingCount(impl, count_key, &count_text);
     if (!status.ok()) {
         return status;
     }
@@ -947,7 +958,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     struct ScoredRecord {
         double score;
         uint64_t tokens;
-        std::string json;
+        std::string record_type;
+        std::string context_class;
+        std::string text;
+        uint64_t node_hash;
+        std::string cross_session_key;
+        std::string source_ref_json;
         std::string session_continuity;
         double continuity_boost;
         double cross_session_rerank_boost;
@@ -1002,7 +1018,21 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         score += cross_session_rerank_boost;
         score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
         if (score >= min_similarity_score) {
-            scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost, cross_session_rerank_boost});
+            std::string source_ref_json;
+            if (record.HasMember("source_ref")) {
+                source_ref_json = JsonStringify(record["source_ref"]);
+            }
+            scored.push_back({score,
+                              TokenEstimate(text),
+                              record_type,
+                              context_class,
+                              text,
+                              NodeHash(record),
+                              CrossSessionKey(record),
+                              source_ref_json,
+                              continuity,
+                              continuity_boost,
+                              cross_session_rerank_boost});
         }
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
@@ -1043,16 +1073,12 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
             ++dropped_over_budget;
             continue;
         }
-        rapidjson::Document record;
-        if (record.Parse(item.json.c_str()).HasParseError() || !record.IsObject()) {
-            continue;
-        }
-        std::string record_type = JsonStringMember(record, "record_type");
-        std::string context_class = ContextClassName(record);
+        const std::string& record_type = item.record_type;
+        const std::string& context_class = item.context_class;
         bool is_cross_session = item.session_continuity == "cross_session";
         bool is_entity_bridge = is_cross_session && context_class == "entity";
         bool is_cross_session_raw_evidence = is_cross_session && (record_type == "context_event" || record_type == "context_segment");
-        std::string cross_key = is_cross_session ? CrossSessionKey(record) : "";
+        std::string cross_key = is_cross_session ? item.cross_session_key : "";
         if (is_cross_session && !cross_policy.enabled) {
             ++dropped_cross_budget;
             continue;
@@ -1088,13 +1114,11 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         }
         rapidjson::Value ref(rapidjson::kObjectType);
         selected_counts[context_class] += 1;
-        uint64_t node_hash = NodeHash(record);
-        if (node_hash != 0) {
-            selected_nodes.insert(node_hash);
+        if (item.node_hash != 0) {
+            selected_nodes.insert(item.node_hash);
         }
-        std::string text = CandidateText(record);
         ref.AddMember("ref_type", rapidjson::Value(context_class.c_str(), alloc), alloc);
-        ref.AddMember("text", rapidjson::Value(text.c_str(), alloc), alloc);
+        ref.AddMember("text", rapidjson::Value(item.text.c_str(), alloc), alloc);
         ref.AddMember("token_estimate", item.tokens, alloc);
         ref.AddMember("score", item.score, alloc);
         ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
@@ -1103,10 +1127,13 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         const char* continuity_reason = item.session_continuity == "same_session" ? "same-session continuity" : (item.session_continuity == "cross_session" ? "cross-session memory bridge" : "session-neutral context");
         ref.AddMember("continuity_reason", rapidjson::Value(continuity_reason, alloc), alloc);
         ref.AddMember("selection_reason", "native_cpp_score_pack", alloc);
-        if (record.HasMember("source_ref")) {
-            rapidjson::Value copied;
-            copied.CopyFrom(record["source_ref"], alloc);
-            ref.AddMember("source_ref", copied, alloc);
+        if (!item.source_ref_json.empty()) {
+            rapidjson::Document source_ref;
+            if (!source_ref.Parse(item.source_ref_json.c_str()).HasParseError()) {
+                rapidjson::Value copied;
+                copied.CopyFrom(source_ref, alloc);
+                ref.AddMember("source_ref", copied, alloc);
+            }
         }
         selected.PushBack(ref, alloc);
     }
