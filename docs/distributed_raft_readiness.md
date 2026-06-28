@@ -113,9 +113,13 @@ The Rust code currently has:
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
 - ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
   match/next index, append request/accept/reject counters, inflight bytes/entries,
-  append/reorder queue depth, reorder accept/release/reject counters, snapshot send/install
-  state, snapshot send attempt/complete/failure counters, snapshot send elapsed/timeout counters, snapshot install
-  start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
+  append queue depth/max depth, active apply backpressure, memory replicate-byte backpressure,
+  oversized-log rejection, out-of-order append handling, append/reorder queue depth, reorder
+  accept/release/reject counters, snapshot send/install state, snapshot send
+  attempt/complete/failure counters, snapshot send elapsed/timeout counters, snapshot install
+  start/complete/reject/rollback counters, install received/total chunks, install progress,
+  chunk retry, rate-limit, membership-change snapshot evidence, compacted-log rejoin evidence,
+  retry/backpressure counters,
   leader-transfer target state, request/accept/reject/complete counters, and
   elapsed/timeout counters,
   offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
@@ -128,11 +132,15 @@ The Rust code currently has:
   `wal_segment_lifecycle`, and `admin_status_surface`. The same fields are now exposed through the standalone Raft node and
   raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
   process path. Append request construction now enforces configured in-flight entry/byte limits and
-  rejects saturated peer pipelines with explicit backpressure. Append receive now rejects batches
-  that exceed the configured reorder window and records accepted/released/rejected entries.
+  rejects saturated peer pipelines with explicit backpressure. Top-level proposal paths record
+  oversized-log and memory-byte rejections even when the command is rejected before append fanout.
+  Append receive now rejects batches that exceed configured apply-batch bytes or reorder windows,
+  records out-of-order append rejection, and records accepted/released/rejected entries.
   Snapshot sender construction now
-  rejects concurrent single-shot or chunked transfers for the same peer and increments the peer
-  snapshot backpressure counter. Per-peer pipeline, snapshot lifecycle, and read-safety state is
+  rejects concurrent single-shot or chunked transfers for the same peer, records chunk rate-limit
+  pressure, records install progress and duplicate chunk retries, and keeps rollback diagnostics
+  for membership-change snapshots and follower rejoin after compacted logs. Per-peer pipeline,
+  snapshot lifecycle, and read-safety state is
   maintained as runtime state and persisted through the local WAL restore path, instead of being only
   reconstructed at report time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
   C++ ByteRaft FFI.

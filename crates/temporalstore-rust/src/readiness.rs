@@ -1637,6 +1637,41 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "raft_replication" if capability.contains("healed_follower_catchup_missing") => {
             "raft_admin_report.healed_follower_caught_up"
         }
+        "raft_replication" if capability.contains("apply_backpressure_not_enforced") => {
+            "raft_admin_report.apply_backpressure_enforced"
+        }
+        "raft_replication" if capability.contains("memory_replicate_bytes_not_enforced") => {
+            "raft_admin_report.memory_replicate_bytes_enforced"
+        }
+        "raft_replication" if capability.contains("oversized_log_rejection_missing") => {
+            "raft_admin_report.oversized_log_rejection_present"
+        }
+        "raft_replication" if capability.contains("out_of_order_append_handling_missing") => {
+            "raft_admin_report.out_of_order_append_handling_present"
+        }
+        "raft_replication" if capability.contains("snapshot_rate_limit_missing") => {
+            "raft_admin_report.snapshot_rate_limit_present"
+        }
+        "raft_replication" if capability.contains("snapshot_retry_backpressure_missing") => {
+            "raft_admin_report.snapshot_retry_backpressure_present"
+        }
+        "raft_replication" if capability.contains("snapshot_install_progress_missing") => {
+            "raft_admin_report.snapshot_install_progress_present"
+        }
+        "raft_replication" if capability.contains("snapshot_install_rollback_missing") => {
+            "raft_admin_report.snapshot_install_rollback_present"
+        }
+        "raft_replication" if capability.contains("snapshot_membership_change_missing") => {
+            "raft_admin_report.snapshot_membership_change_present"
+        }
+        "raft_replication"
+            if capability.contains("snapshot_rejoin_after_compacted_log_missing") =>
+        {
+            "raft_admin_report.snapshot_rejoin_after_compacted_log_present"
+        }
+        "raft_replication" if capability.contains("snapshot sender/downloader lifecycle") => {
+            "raft_admin_report.snapshot_sender_downloader_lifecycle_present"
+        }
         _ => "readiness_evidence.unspecified",
     }
 }

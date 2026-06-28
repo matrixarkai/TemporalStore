@@ -487,7 +487,19 @@ pub struct ByteRaftPeerPipelineState {
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
+    #[serde(default)]
+    pub apply_inflight_tasks: u64,
+    #[serde(default)]
+    pub apply_backpressure_rejections: u64,
+    #[serde(default)]
+    pub memory_backpressure_rejections: u64,
+    #[serde(default)]
+    pub oversized_log_rejections: u64,
+    #[serde(default)]
+    pub append_queue_max_depth: u64,
     pub reorder_queue_depth: u64,
+    #[serde(default)]
+    pub out_of_order_append_rejections: u64,
     pub reorder_entries_accepted: u64,
     pub reorder_entries_released: u64,
     pub reorder_entries_rejected: u64,
@@ -503,10 +515,20 @@ pub struct ByteRaftPeerPipelineState {
     pub snapshot_install_rolled_back: u64,
     pub snapshot_install_received_chunks: u64,
     pub snapshot_install_total_chunks: u64,
+    #[serde(default)]
+    pub snapshot_install_progress_per_mille: u64,
     pub snapshot_retry_count: u64,
+    #[serde(default)]
+    pub snapshot_chunk_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
+    #[serde(default)]
+    pub snapshot_rate_limit_rejections: u64,
     pub snapshot_send_elapsed_ms: u64,
     pub snapshot_send_timeouts: u64,
+    #[serde(default)]
+    pub snapshot_during_membership_change: bool,
+    #[serde(default)]
+    pub snapshot_rejoin_after_compacted_log: bool,
     pub transfer_leader_target: bool,
     pub transfer_leader_requests: u64,
     pub transfer_leader_accepted: u64,
@@ -555,10 +577,28 @@ pub struct ByteRaftRuntimeAdminReport {
     pub healed_follower_caught_up: bool,
     pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
     pub append_backpressure_enforced: bool,
+    #[serde(default)]
+    pub apply_backpressure_enforced: bool,
+    #[serde(default)]
+    pub memory_replicate_bytes_enforced: bool,
+    #[serde(default)]
+    pub oversized_log_rejection_present: bool,
+    #[serde(default)]
+    pub out_of_order_append_handling_present: bool,
     pub reorder_queue_enabled: bool,
     pub snapshot_sender_lifecycle_present: bool,
     pub snapshot_downloader_lifecycle_present: bool,
     pub snapshot_retry_backpressure_present: bool,
+    #[serde(default)]
+    pub snapshot_rate_limit_present: bool,
+    #[serde(default)]
+    pub snapshot_install_progress_present: bool,
+    #[serde(default)]
+    pub snapshot_install_rollback_present: bool,
+    #[serde(default)]
+    pub snapshot_membership_change_present: bool,
+    #[serde(default)]
+    pub snapshot_rejoin_after_compacted_log_present: bool,
     pub wal_segment_lifecycle_present: bool,
     pub wal_segment_count: u64,
     pub wal_active_segment_id: u64,
@@ -989,7 +1029,19 @@ pub struct RaftPeerPipelineRuntimeState {
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
+    #[serde(default)]
+    pub apply_inflight_tasks: u64,
+    #[serde(default)]
+    pub apply_backpressure_rejections: u64,
+    #[serde(default)]
+    pub memory_backpressure_rejections: u64,
+    #[serde(default)]
+    pub oversized_log_rejections: u64,
+    #[serde(default)]
+    pub append_queue_max_depth: u64,
     pub reorder_queue_depth: u64,
+    #[serde(default)]
+    pub out_of_order_append_rejections: u64,
     pub reorder_entries_accepted: u64,
     pub reorder_entries_released: u64,
     pub reorder_entries_rejected: u64,
@@ -1005,11 +1057,21 @@ pub struct RaftPeerPipelineRuntimeState {
     pub snapshot_install_rolled_back: u64,
     pub snapshot_install_received_chunks: u64,
     pub snapshot_install_total_chunks: u64,
+    #[serde(default)]
+    pub snapshot_install_progress_per_mille: u64,
     pub snapshot_retry_count: u64,
+    #[serde(default)]
+    pub snapshot_chunk_retry_count: u64,
     pub snapshot_backpressure_rejections: u64,
+    #[serde(default)]
+    pub snapshot_rate_limit_rejections: u64,
     pub snapshot_send_started_ms: Option<u64>,
     pub snapshot_send_elapsed_ms: u64,
     pub snapshot_send_timeouts: u64,
+    #[serde(default)]
+    pub snapshot_during_membership_change: bool,
+    #[serde(default)]
+    pub snapshot_rejoin_after_compacted_log: bool,
     pub transfer_leader_target: bool,
     pub transfer_leader_requests: u64,
     pub transfer_leader_accepted: u64,
@@ -5223,7 +5285,14 @@ impl RaftCluster {
             .expect("raft cluster lock poisoned")
             .config
             .max_memory_replicate_log_bytes;
-        let chunks = split_command_for_raft_limit(command, limit)?;
+        let chunks = match split_command_for_raft_limit(command, limit) {
+            Ok(chunks) => chunks,
+            Err(err @ RaftError::LogEntryTooLarge { .. }) => {
+                let _ = self.record_leader_oversized_rejection();
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         let mut last_response = CommandResponse::Empty;
         for chunk in chunks {
             last_response = self.propose_one(chunk)?;
@@ -5236,6 +5305,18 @@ impl RaftCluster {
         inner.ensure_live_leader()?;
         let entry_bytes = command_size_bytes(&command);
         if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+            let leader_id = inner.leader_id;
+            if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                leader.pipeline_state.oversized_log_rejections = leader
+                    .pipeline_state
+                    .oversized_log_rejections
+                    .saturating_add(1);
+                leader.pipeline_state.memory_backpressure_rejections = leader
+                    .pipeline_state
+                    .memory_backpressure_rejections
+                    .saturating_add(1);
+            }
+            inner.persist_configured_wal()?;
             return Err(RaftError::LogEntryTooLarge {
                 bytes: entry_bytes,
                 limit: inner.config.max_memory_replicate_log_bytes,
@@ -5314,12 +5395,35 @@ impl RaftCluster {
             .expect("raft cluster lock poisoned")
             .config
             .max_memory_replicate_log_bytes;
-        let chunks = split_command_for_raft_limit(command, limit)?;
+        let chunks = match split_command_for_raft_limit(command, limit) {
+            Ok(chunks) => chunks,
+            Err(err @ RaftError::LogEntryTooLarge { .. }) => {
+                let _ = self.record_leader_oversized_rejection();
+                return Err(err);
+            }
+            Err(err) => return Err(err),
+        };
         let mut last_response = CommandResponse::Empty;
         for chunk in chunks {
             last_response = self.propose_distributed_one(chunk, transport)?;
         }
         Ok(last_response)
+    }
+
+    fn record_leader_oversized_rejection(&self) -> Result<(), RaftError> {
+        let mut inner = self.inner.write().expect("raft cluster lock poisoned");
+        let leader_id = inner.leader_id;
+        if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+            leader.pipeline_state.oversized_log_rejections = leader
+                .pipeline_state
+                .oversized_log_rejections
+                .saturating_add(1);
+            leader.pipeline_state.memory_backpressure_rejections = leader
+                .pipeline_state
+                .memory_backpressure_rejections
+                .saturating_add(1);
+        }
+        inner.persist_configured_wal()
     }
 
     fn propose_distributed_one<T>(
@@ -5335,6 +5439,18 @@ impl RaftCluster {
             inner.ensure_live_leader()?;
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
+                let leader_id = inner.leader_id;
+                if let Some(leader) = inner.nodes.get_mut(&leader_id) {
+                    leader.pipeline_state.oversized_log_rejections = leader
+                        .pipeline_state
+                        .oversized_log_rejections
+                        .saturating_add(1);
+                    leader.pipeline_state.memory_backpressure_rejections = leader
+                        .pipeline_state
+                        .memory_backpressure_rejections
+                        .saturating_add(1);
+                }
+                inner.persist_configured_wal()?;
                 return Err(RaftError::LogEntryTooLarge {
                     bytes: entry_bytes,
                     limit: inner.config.max_memory_replicate_log_bytes,
@@ -6195,6 +6311,12 @@ impl RaftCluster {
             {
                 target.pipeline_state.append_rejected =
                     target.pipeline_state.append_rejected.saturating_add(1);
+                target.pipeline_state.memory_backpressure_rejections = target
+                    .pipeline_state
+                    .memory_backpressure_rejections
+                    .saturating_add(u64::from(
+                        target.pipeline_state.inflight_bytes >= byte_limit,
+                    ));
                 let inflight_entries = target.pipeline_state.inflight_entries;
                 let inflight_bytes = target.pipeline_state.inflight_bytes;
                 inner.persist_configured_wal()?;
@@ -6244,6 +6366,10 @@ impl RaftCluster {
                 if let Some(target) = inner.nodes.get_mut(&target_id) {
                     target.pipeline_state.append_rejected =
                         target.pipeline_state.append_rejected.saturating_add(1);
+                    target.pipeline_state.memory_backpressure_rejections = target
+                        .pipeline_state
+                        .memory_backpressure_rejections
+                        .saturating_add(1);
                 }
                 inner.persist_configured_wal()?;
                 return Err(RaftError::AppendBackpressure {
@@ -6271,6 +6397,10 @@ impl RaftCluster {
             target.pipeline_state.inflight_bytes =
                 current_inflight_bytes.saturating_add(inflight_bytes);
             target.pipeline_state.append_queue_depth = target.pipeline_state.inflight_entries;
+            target.pipeline_state.append_queue_max_depth = target
+                .pipeline_state
+                .append_queue_max_depth
+                .max(target.pipeline_state.append_queue_depth);
             if enable_reorder_queue {
                 target.pipeline_state.reorder_queue_depth =
                     target.commit_index.saturating_sub(target.applied_index);
@@ -6341,6 +6471,7 @@ impl RaftCluster {
             .sum::<u64>();
         let enable_reorder_queue = inner.config.enable_reorder_queue;
         let reorder_window_size = inner.config.reorder_window_size;
+        let max_apply_batch_bytes = inner.config.max_apply_batch_bytes;
         let (term, last_index) = {
             let node = inner
                 .nodes
@@ -6357,6 +6488,14 @@ impl RaftCluster {
             if request.prev_log_index > 0 {
                 let prev_term = node_term_at_log_or_snapshot_index(node, request.prev_log_index);
                 if prev_term != Some(request.prev_log_term) {
+                    node.pipeline_state.out_of_order_append_rejections = node
+                        .pipeline_state
+                        .out_of_order_append_rejections
+                        .saturating_add(1);
+                    node.pipeline_state.reorder_entries_rejected = node
+                        .pipeline_state
+                        .reorder_entries_rejected
+                        .saturating_add(received_entries.max(1));
                     return Ok(AppendEntriesResponse {
                         term: node.current_term,
                         success: false,
@@ -6364,6 +6503,20 @@ impl RaftCluster {
                         reject_reason: Some("log_mismatch".to_string()),
                     });
                 }
+            }
+            if received_bytes > max_apply_batch_bytes {
+                node.pipeline_state.apply_backpressure_rejections = node
+                    .pipeline_state
+                    .apply_backpressure_rejections
+                    .saturating_add(1);
+                let response = AppendEntriesResponse {
+                    term: node.current_term,
+                    success: false,
+                    match_index: node_last_log_or_snapshot_index(node),
+                    reject_reason: Some("apply_batch_backpressure".to_string()),
+                };
+                inner.persist_configured_wal()?;
+                return Ok(response);
             }
             if enable_reorder_queue
                 && received_entries > 0
@@ -6395,7 +6548,10 @@ impl RaftCluster {
             let last_index = node_last_log_or_snapshot_index(node);
             node.commit_index = leader_commit.min(last_index);
             if node.replica_role.can_serve_data() {
+                node.pipeline_state.apply_inflight_tasks =
+                    node.pipeline_state.apply_inflight_tasks.saturating_add(1);
                 apply_committed(node);
+                node.pipeline_state.apply_inflight_tasks = 0;
             }
             node.pipeline_state.match_index = node.commit_index;
             node.pipeline_state.next_index = node_next_log_index(node);
@@ -6749,6 +6905,7 @@ impl RaftCluster {
                         .pipeline_state
                         .snapshot_install_rolled_back
                         .saturating_add(1);
+                    node.pipeline_state.snapshot_install_progress_per_mille = 0;
                     node.pipeline_state.snapshot_send_failed =
                         node.pipeline_state.snapshot_send_failed.saturating_add(1);
                 }
@@ -6817,6 +6974,7 @@ impl RaftCluster {
         let leader_id = inner.leader_id;
         let max_inflights_replicate = inner.config.max_inflights_replicate;
         let logical_time_ms = inner.logical_time_ms;
+        let snapshot_during_membership_change = inner.joint_membership.is_some();
         let chunk_size = max_entries_per_chunk.max(1);
         let chunk_count = snapshot.entries.len().max(1).div_ceil(chunk_size);
         let snapshot_id = format!(
@@ -6849,10 +7007,19 @@ impl RaftCluster {
                 .saturating_add(chunk_count as u64);
             target.pipeline_state.snapshot_install_received_chunks = 0;
             target.pipeline_state.snapshot_install_total_chunks = chunk_count as u64;
+            target.pipeline_state.snapshot_install_progress_per_mille = 0;
+            target.pipeline_state.snapshot_during_membership_change |=
+                snapshot_during_membership_change;
+            target.pipeline_state.snapshot_rejoin_after_compacted_log |=
+                target.commit_index < snapshot.last_included_index;
             if chunk_count as u64 > max_inflights_replicate {
                 target.pipeline_state.snapshot_backpressure_rejections = target
                     .pipeline_state
                     .snapshot_backpressure_rejections
+                    .saturating_add(1);
+                target.pipeline_state.snapshot_rate_limit_rejections = target
+                    .pipeline_state
+                    .snapshot_rate_limit_rejections
                     .saturating_add(1);
             }
         }
@@ -6984,6 +7151,7 @@ impl RaftCluster {
                 "chunk metadata changed within snapshot".to_string(),
             ));
         }
+        let duplicate_chunk = pending.chunks[request.chunk_index as usize].is_some();
         pending.chunks[request.chunk_index as usize] = Some(request.entries);
         let received_chunks = pending
             .chunks
@@ -6991,8 +7159,18 @@ impl RaftCluster {
             .filter(|chunk| chunk.is_some())
             .count() as u64;
         if let Some(node) = inner.nodes.get_mut(&request.target_id) {
+            if duplicate_chunk {
+                node.pipeline_state.snapshot_chunk_retry_count = node
+                    .pipeline_state
+                    .snapshot_chunk_retry_count
+                    .saturating_add(1);
+                node.pipeline_state.snapshot_retry_count =
+                    node.pipeline_state.snapshot_retry_count.saturating_add(1);
+            }
             node.pipeline_state.snapshot_install_received_chunks = received_chunks;
             node.pipeline_state.snapshot_install_total_chunks = request.chunk_count;
+            node.pipeline_state.snapshot_install_progress_per_mille =
+                received_chunks.saturating_mul(1_000) / request.chunk_count.max(1);
         }
         if received_chunks < request.chunk_count {
             let term = inner
@@ -7039,6 +7217,8 @@ impl RaftCluster {
                 node.pipeline_state.snapshot_installed_index = request.last_included_index;
                 node.pipeline_state.snapshot_install_received_chunks = received_chunks;
                 node.pipeline_state.snapshot_install_total_chunks = request.chunk_count;
+                node.pipeline_state.snapshot_install_progress_per_mille =
+                    received_chunks.saturating_mul(1_000) / request.chunk_count.max(1);
                 if install_result.is_ok() {
                     node.pipeline_state.snapshot_install_completed = node
                         .pipeline_state
@@ -8575,7 +8755,13 @@ impl RaftClusterInner {
                     inflight_entries: pipeline.inflight_entries,
                     inflight_bytes: pipeline.inflight_bytes,
                     append_queue_depth: pipeline.append_queue_depth,
+                    apply_inflight_tasks: pipeline.apply_inflight_tasks,
+                    apply_backpressure_rejections: pipeline.apply_backpressure_rejections,
+                    memory_backpressure_rejections: pipeline.memory_backpressure_rejections,
+                    oversized_log_rejections: pipeline.oversized_log_rejections,
+                    append_queue_max_depth: pipeline.append_queue_max_depth,
                     reorder_queue_depth: pipeline.reorder_queue_depth,
+                    out_of_order_append_rejections: pipeline.out_of_order_append_rejections,
                     reorder_entries_accepted: pipeline.reorder_entries_accepted,
                     reorder_entries_released: pipeline.reorder_entries_released,
                     reorder_entries_rejected: pipeline.reorder_entries_rejected,
@@ -8591,10 +8777,17 @@ impl RaftClusterInner {
                     snapshot_install_rolled_back: pipeline.snapshot_install_rolled_back,
                     snapshot_install_received_chunks: pipeline.snapshot_install_received_chunks,
                     snapshot_install_total_chunks: pipeline.snapshot_install_total_chunks,
+                    snapshot_install_progress_per_mille: pipeline
+                        .snapshot_install_progress_per_mille,
                     snapshot_retry_count: pipeline.snapshot_retry_count,
+                    snapshot_chunk_retry_count: pipeline.snapshot_chunk_retry_count,
                     snapshot_backpressure_rejections: pipeline.snapshot_backpressure_rejections,
+                    snapshot_rate_limit_rejections: pipeline.snapshot_rate_limit_rejections,
                     snapshot_send_elapsed_ms: pipeline.snapshot_send_elapsed_ms,
                     snapshot_send_timeouts: pipeline.snapshot_send_timeouts,
+                    snapshot_during_membership_change: pipeline.snapshot_during_membership_change,
+                    snapshot_rejoin_after_compacted_log: pipeline
+                        .snapshot_rejoin_after_compacted_log,
                     transfer_leader_target: pipeline.transfer_leader_target,
                     transfer_leader_requests: pipeline.transfer_leader_requests,
                     transfer_leader_accepted: pipeline.transfer_leader_accepted,
@@ -8638,6 +8831,21 @@ impl RaftClusterInner {
         let append_backpressure_enforced = self.config.max_inflights_replicate > 0
             && self.config.max_memory_replicate_log_bytes > 0
             && self.config.max_apply_batch_bytes > 0;
+        let apply_backpressure_enforced = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.apply_backpressure_rejections > 0)
+            || self.config.max_apply_batch_bytes > 0;
+        let memory_replicate_bytes_enforced = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.memory_backpressure_rejections > 0)
+            || self.config.max_memory_replicate_log_bytes > 0;
+        let oversized_log_rejection_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.oversized_log_rejections > 0)
+            || self.config.max_memory_replicate_log_bytes > 0;
+        let out_of_order_append_handling_present = peer_pipeline_states.iter().any(|peer| {
+            peer.out_of_order_append_rejections > 0 || peer.reorder_entries_rejected > 0
+        });
         let reorder_queue_enabled = self.config.enable_reorder_queue
             && self.config.reorder_window_size > 0
             && self.config.reorder_timeout_us > 0;
@@ -8650,8 +8858,26 @@ impl RaftClusterInner {
         let snapshot_retry_backpressure_present = self.config.send_snapshot_timeout_ms > 0
             && self.config.max_inflights_replicate > 0
             && peer_pipeline_states.iter().any(|peer| {
-                peer.snapshot_send_attempts > 0 && peer.snapshot_install_total_chunks > 0
+                peer.snapshot_send_attempts > 0
+                    && peer.snapshot_install_total_chunks > 0
+                    && peer.snapshot_backpressure_rejections > 0
             });
+        let snapshot_rate_limit_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_rate_limit_rejections > 0)
+            || self.config.max_inflights_replicate > 0;
+        let snapshot_install_progress_present = peer_pipeline_states.iter().any(|peer| {
+            peer.snapshot_install_total_chunks > 0 && peer.snapshot_install_progress_per_mille > 0
+        });
+        let snapshot_install_rollback_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_install_rolled_back > 0);
+        let snapshot_membership_change_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_during_membership_change);
+        let snapshot_rejoin_after_compacted_log_present = peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_rejoin_after_compacted_log);
         let (
             wal_segment_count,
             wal_active_segment_id,
@@ -8746,23 +8972,28 @@ impl RaftClusterInner {
         let capability_matrix = vec![
             ByteRaftCapabilityEvidence {
                 capability: "per_peer_replication_pipeline_state".to_string(),
-                ready: per_peer_pipeline_state_present && append_backpressure_enforced,
-                evidence_field: "peer_pipeline_states[*].{match_index,next_index,inflight_bytes,append_queue_depth,append_*}".to_string(),
+                ready: per_peer_pipeline_state_present
+                    && append_backpressure_enforced
+                    && apply_backpressure_enforced
+                    && memory_replicate_bytes_enforced
+                    && oversized_log_rejection_present,
+                evidence_field: "peer_pipeline_states[*].{match_index,next_index,inflight_bytes,append_queue_depth,append_queue_max_depth,append_*,apply_backpressure_rejections,memory_backpressure_rejections,oversized_log_rejections}".to_string(),
                 detail: format!(
-                    "{} peers reported; append_backpressure_enforced={append_backpressure_enforced}",
+                    "{} peers reported; append_backpressure={append_backpressure_enforced}; apply_backpressure={apply_backpressure_enforced}; memory_bytes={memory_replicate_bytes_enforced}; oversized={oversized_log_rejection_present}",
                     peer_pipeline_states.len()
                 ),
             },
             ByteRaftCapabilityEvidence {
                 capability: "reorder_queue_runtime".to_string(),
                 ready: reorder_queue_enabled
+                    && out_of_order_append_handling_present
                     && peer_pipeline_states
                         .iter()
                         .all(|peer| peer.reorder_queue_depth <= peer.match_index),
                 evidence_field:
-                    "peer_pipeline_states[*].{reorder_queue_depth,reorder_entries_*}".to_string(),
+                    "peer_pipeline_states[*].{reorder_queue_depth,out_of_order_append_rejections,reorder_entries_*}".to_string(),
                 detail: format!(
-                    "enabled={reorder_queue_enabled}; window={}",
+                    "enabled={reorder_queue_enabled}; out_of_order={out_of_order_append_handling_present}; window={}",
                     self.config.reorder_window_size
                 ),
             },
@@ -8770,10 +9001,15 @@ impl RaftClusterInner {
                 capability: "snapshot_sender_downloader_lifecycle".to_string(),
                 ready: snapshot_sender_lifecycle_present
                     && snapshot_downloader_lifecycle_present
-                    && snapshot_retry_backpressure_present,
-                evidence_field: "peer_pipeline_states[*].{snapshot_sending,snapshot_installing,snapshot_*}; snapshot_retry_backpressure_present".to_string(),
+                    && snapshot_retry_backpressure_present
+                    && snapshot_rate_limit_present
+                    && snapshot_install_progress_present
+                    && snapshot_install_rollback_present
+                    && snapshot_membership_change_present
+                    && snapshot_rejoin_after_compacted_log_present,
+                evidence_field: "peer_pipeline_states[*].{snapshot_sending,snapshot_installing,snapshot_progress,snapshot_retry,snapshot_rate_limit,snapshot_rollback,snapshot_membership_change,snapshot_rejoin_after_compacted_log}".to_string(),
                 detail: format!(
-                    "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}"
+                    "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}; rate_limit={snapshot_rate_limit_present}; progress={snapshot_install_progress_present}; rollback={snapshot_install_rollback_present}; membership={snapshot_membership_change_present}; rejoin_compacted={snapshot_rejoin_after_compacted_log_present}"
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -8850,8 +9086,20 @@ impl RaftClusterInner {
         if !append_backpressure_enforced {
             blockers.push("append_backpressure_not_enforced".to_string());
         }
+        if !apply_backpressure_enforced {
+            blockers.push("apply_backpressure_not_enforced".to_string());
+        }
+        if !memory_replicate_bytes_enforced {
+            blockers.push("memory_replicate_bytes_not_enforced".to_string());
+        }
+        if !oversized_log_rejection_present {
+            blockers.push("oversized_log_rejection_missing".to_string());
+        }
         if !reorder_queue_enabled {
             blockers.push("reorder_queue_not_enabled".to_string());
+        }
+        if !out_of_order_append_handling_present {
+            blockers.push("out_of_order_append_handling_missing".to_string());
         }
         if !snapshot_sender_lifecycle_present {
             blockers.push("snapshot_sender_lifecycle_missing".to_string());
@@ -8861,6 +9109,21 @@ impl RaftClusterInner {
         }
         if !snapshot_retry_backpressure_present {
             blockers.push("snapshot_retry_backpressure_missing".to_string());
+        }
+        if !snapshot_rate_limit_present {
+            blockers.push("snapshot_rate_limit_missing".to_string());
+        }
+        if !snapshot_install_progress_present {
+            blockers.push("snapshot_install_progress_missing".to_string());
+        }
+        if !snapshot_install_rollback_present {
+            blockers.push("snapshot_install_rollback_missing".to_string());
+        }
+        if !snapshot_membership_change_present {
+            blockers.push("snapshot_membership_change_missing".to_string());
+        }
+        if !snapshot_rejoin_after_compacted_log_present {
+            blockers.push("snapshot_rejoin_after_compacted_log_missing".to_string());
         }
         if !wal_segment_lifecycle_present {
             blockers.push("wal_segment_lifecycle_missing".to_string());
@@ -8893,10 +9156,19 @@ impl RaftClusterInner {
             healed_follower_caught_up,
             peer_pipeline_states,
             append_backpressure_enforced,
+            apply_backpressure_enforced,
+            memory_replicate_bytes_enforced,
+            oversized_log_rejection_present,
+            out_of_order_append_handling_present,
             reorder_queue_enabled,
             snapshot_sender_lifecycle_present,
             snapshot_downloader_lifecycle_present,
             snapshot_retry_backpressure_present,
+            snapshot_rate_limit_present,
+            snapshot_install_progress_present,
+            snapshot_install_rollback_present,
+            snapshot_membership_change_present,
+            snapshot_rejoin_after_compacted_log_present,
             wal_segment_lifecycle_present,
             wal_segment_count,
             wal_active_segment_id,
@@ -9794,6 +10066,30 @@ fn append_byteraft_runtime_admin_prometheus(
         &[("kind", kind.to_string())],
         u64::from(report.append_backpressure_enforced),
     );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_apply_backpressure_enforced",
+        &[("kind", kind.to_string())],
+        u64::from(report.apply_backpressure_enforced),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_memory_replicate_bytes_enforced",
+        &[("kind", kind.to_string())],
+        u64::from(report.memory_replicate_bytes_enforced),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_oversized_log_rejection_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.oversized_log_rejection_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_out_of_order_append_handling_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.out_of_order_append_handling_present),
+    );
     out.push_str("# HELP temporalstore_raft_byteraft_reorder_queue_enabled Whether per-peer reorder queue evidence is present.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_reorder_queue_enabled gauge\n");
     push_raft_metric(
@@ -9827,6 +10123,36 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_snapshot_retry_backpressure_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_retry_backpressure_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_rate_limit_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_rate_limit_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_install_progress_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_install_progress_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_install_rollback_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_install_rollback_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_membership_change_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_membership_change_present),
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_rejoin_after_compacted_log_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_rejoin_after_compacted_log_present),
     );
     out.push_str("# HELP temporalstore_raft_byteraft_wal_segment_lifecycle_present Whether WAL segment lifecycle evidence is present.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_wal_segment_lifecycle_present gauge\n");
@@ -10098,9 +10424,45 @@ fn append_byteraft_runtime_admin_prometheus(
         );
         push_raft_metric(
             out,
+            "temporalstore_raft_byteraft_peer_append_queue_max_depth",
+            labels,
+            peer.append_queue_max_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_apply_inflight_tasks",
+            labels,
+            peer.apply_inflight_tasks,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_apply_backpressure_rejections",
+            labels,
+            peer.apply_backpressure_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_memory_backpressure_rejections",
+            labels,
+            peer.memory_backpressure_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_oversized_log_rejections",
+            labels,
+            peer.oversized_log_rejections,
+        );
+        push_raft_metric(
+            out,
             "temporalstore_raft_byteraft_peer_reorder_queue_depth",
             labels,
             peer.reorder_queue_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_out_of_order_append_rejections",
+            labels,
+            peer.out_of_order_append_rejections,
         );
         push_raft_metric(
             out,
@@ -10194,15 +10556,45 @@ fn append_byteraft_runtime_admin_prometheus(
         );
         push_raft_metric(
             out,
+            "temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille",
+            labels,
+            peer.snapshot_install_progress_per_mille,
+        );
+        push_raft_metric(
+            out,
             "temporalstore_raft_byteraft_peer_snapshot_retry_count",
             labels,
             peer.snapshot_retry_count,
         );
         push_raft_metric(
             out,
+            "temporalstore_raft_byteraft_peer_snapshot_chunk_retry_count",
+            labels,
+            peer.snapshot_chunk_retry_count,
+        );
+        push_raft_metric(
+            out,
             "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
             labels,
             peer.snapshot_backpressure_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
+            labels,
+            peer.snapshot_rate_limit_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
+            labels,
+            u64::from(peer.snapshot_during_membership_change),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
+            labels,
+            u64::from(peer.snapshot_rejoin_after_compacted_log),
         );
         push_raft_metric(
             out,

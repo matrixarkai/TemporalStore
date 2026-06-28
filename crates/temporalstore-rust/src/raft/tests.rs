@@ -2218,6 +2218,82 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
             },
         )
         .unwrap();
+    assert!(matches!(
+        cluster.propose(Command::StringSet {
+            key: "byteraft-admin-oversized".to_string(),
+            value: vec![b'x'; 64 * 1024],
+        }),
+        Err(RaftError::LogEntryTooLarge { .. })
+    ));
+    let out_of_order = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 91,
+        term: 1,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 999,
+        prev_log_term: 1,
+        entries: Vec::new(),
+        leader_commit: cluster.commit_index(1).unwrap(),
+    };
+    let out_of_order_response = cluster.receive_append_entries(out_of_order).unwrap();
+    assert!(!out_of_order_response.success);
+    assert_eq!(
+        out_of_order_response.reject_reason.as_deref(),
+        Some("log_mismatch")
+    );
+    let apply_backpressure = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 91,
+        term: 1,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: cluster.commit_index(3).unwrap(),
+        prev_log_term: 1,
+        entries: vec![RaftLogEntry {
+            term: 1,
+            index: cluster.commit_index(3).unwrap() + 1,
+            shard_id: 91,
+            command: Command::StringSet {
+                key: "byteraft-admin-apply-backpressure".to_string(),
+                value: vec![b'y'; 96 * 1024],
+            },
+        }],
+        leader_commit: cluster.commit_index(3).unwrap() + 1,
+    };
+    let apply_backpressure_response = cluster.receive_append_entries(apply_backpressure).unwrap();
+    assert!(!apply_backpressure_response.success);
+    assert_eq!(
+        apply_backpressure_response.reject_reason.as_deref(),
+        Some("apply_batch_backpressure")
+    );
+    cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "byteraft-admin-joint-snapshot-lag".to_string(),
+            value: b"joint-lag".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+    let mut snapshot_chunks = cluster.build_install_snapshot_chunks(3, 1).unwrap();
+    assert!(!snapshot_chunks.is_empty());
+    let first_chunk = cluster
+        .receive_install_snapshot_chunk(snapshot_chunks[0].clone())
+        .unwrap();
+    assert!(first_chunk.success);
+    if snapshot_chunks.len() > 1 {
+        let duplicate = cluster
+            .receive_install_snapshot_chunk(snapshot_chunks[0].clone())
+            .unwrap();
+        assert!(duplicate.success);
+        snapshot_chunks[1].last_included_index += 1;
+        assert!(matches!(
+            cluster.receive_install_snapshot_chunk(snapshot_chunks[1].clone()),
+            Err(RaftError::InvalidSnapshotChunk(_))
+        ));
+    }
+    cluster.abort_joint_consensus().unwrap();
 
     let report = cluster.byteraft_runtime_admin_report();
     assert!(report.ready, "{:?}", report.blockers);
@@ -2233,10 +2309,19 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.minority_partition_rejected_writes);
     assert!(report.healed_follower_caught_up);
     assert!(report.append_backpressure_enforced);
+    assert!(report.apply_backpressure_enforced);
+    assert!(report.memory_replicate_bytes_enforced);
+    assert!(report.oversized_log_rejection_present);
+    assert!(report.out_of_order_append_handling_present);
     assert!(report.reorder_queue_enabled);
     assert!(report.snapshot_sender_lifecycle_present);
     assert!(report.snapshot_downloader_lifecycle_present);
     assert!(report.snapshot_retry_backpressure_present);
+    assert!(report.snapshot_rate_limit_present);
+    assert!(report.snapshot_install_progress_present);
+    assert!(report.snapshot_install_rollback_present);
+    assert!(report.snapshot_membership_change_present);
+    assert!(report.snapshot_rejoin_after_compacted_log_present);
     assert!(report.wal_segment_lifecycle_present);
     assert!(report.pre_vote_enforced);
     assert!(report.election_controls_enforced);
@@ -2267,6 +2352,26 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report
         .peer_pipeline_states
         .iter()
+        .any(|peer| peer.append_queue_max_depth > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.apply_backpressure_rejections > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.memory_backpressure_rejections > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.oversized_log_rejections > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.out_of_order_append_rejections > 0));
+    assert!(report
+        .peer_pipeline_states
+        .iter()
         .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
     assert!(report.peer_pipeline_states.iter().any(|peer| {
         peer.peer_id == 2
@@ -2276,6 +2381,15 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
             && peer.snapshot_install_completed > 0
             && peer.snapshot_install_received_chunks == 1
             && peer.snapshot_install_total_chunks == 1
+    }));
+    assert!(report.peer_pipeline_states.iter().any(|peer| {
+        peer.peer_id == 3
+            && peer.snapshot_install_progress_per_mille > 0
+            && peer.snapshot_chunk_retry_count > 0
+            && peer.snapshot_rate_limit_rejections > 0
+            && peer.snapshot_install_rolled_back > 0
+            && peer.snapshot_during_membership_change
+            && peer.snapshot_rejoin_after_compacted_log
     }));
 
     let metrics = cluster.prometheus_metrics();
@@ -2296,6 +2410,11 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_accepted"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_rejected"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_max_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_backpressure_rejections"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_memory_backpressure_rejections"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_oversized_log_rejections"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_out_of_order_append_rejections"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_accepted"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_released"));
@@ -2310,6 +2429,15 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_rolled_back"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
+    assert!(
+        metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille")
+    );
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_chunk_retry_count"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_during_membership_change"));
+    assert!(
+        metrics.contains("temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log")
+    );
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_requests"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_accepted"));

@@ -894,11 +894,14 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - WAL-backed data Raft clusters now persist installed snapshot payload and snapshot-index floor in WAL records, so a restarted replica can recover trimmed pre-snapshot state without replaying old log entries.
 - Rust now emits a `ByteRaftRuntimeAdminReport` from the Raft process path. It makes the
   ByteRaft-derived runtime fields executable instead of only documented: per-peer match/next index,
-  append request/accept/reject counters, inflight bytes/entries, append and reorder queue depth,
-  reorder accept/release/reject counters,
+  append request/accept/reject counters, inflight bytes/entries, append queue depth/max depth,
+  active apply backpressure, memory replicate-byte backpressure, oversized-log rejection,
+  out-of-order append handling, append and reorder queue depth, reorder accept/release/reject counters,
   snapshot sender/downloader lifecycle state, snapshot send attempt/complete/failure counters,
   snapshot send elapsed/timeout counters,
-  snapshot install start/complete/reject/rollback counters, install received/total chunks, retry/backpressure counters,
+  snapshot install start/complete/reject/rollback counters, install received/total chunks, install
+  progress, chunk retry, rate-limit, membership-change snapshot evidence, compacted-log rejoin
+  evidence, retry/backpressure counters,
   leader-transfer target state, request/accept/reject/complete counters, and
   elapsed/timeout counters,
   offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
@@ -909,11 +912,15 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
   output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
   read-safety gauges for scrape-based operator parity. Append request construction now enforces
   configured in-flight entry/byte limits, rejects saturated peer pipelines with explicit
-  backpressure, and records the outcome in per-peer counters. Append receive now rejects batches
-  that exceed the configured reorder window and records accepted/released/rejected entries.
+  backpressure, and records the outcome in per-peer counters. Top-level proposal paths record
+  oversized-log and memory-byte rejections even when a command is rejected before append fanout.
+  Append receive now rejects batches that exceed configured apply-batch bytes or reorder windows,
+  records out-of-order append rejection, and records accepted/released/rejected entries.
   Snapshot sender construction now
-  rejects concurrent single-shot or chunked transfers for the same peer and records snapshot
-  backpressure; successful, failed, rejected, and rolled-back snapshot lifecycle outcomes are
+  rejects concurrent single-shot or chunked transfers for the same peer, records snapshot
+  backpressure and chunk rate-limit pressure, tracks install progress plus duplicate chunk retries,
+  and preserves rollback diagnostics for membership-change snapshots and follower rejoin after
+  compacted logs; successful, failed, rejected, and rolled-back snapshot lifecycle outcomes are
   counted per peer. WAL segment lifecycle evidence now includes per-segment valid record counts and
   sequence bounds, plus aggregate byte and retained-record gauges. The report now also carries a
   `capability_matrix` with explicit rows and evidence-field names for per-peer pipeline state,
