@@ -4885,6 +4885,15 @@ def compact_context_pack_for_serving(pack: Json, *, include_debug: bool = False)
     if include_debug:
         return pack
     compact = dict(pack)
+    serving_aliases = {
+        "context_pack_id": "pack_id",
+        "context_pack_assembly": "assembly",
+        "context_pack_cache_hit": "cache_hit",
+    }
+    for source, target in serving_aliases.items():
+        if compact.get(source) not in (None, "", [], {}):
+            compact[target] = compact.get(source)
+        compact.pop(source, None)
     compact["selected_refs"] = compact_context_pack_refs(list(compact.get("selected_refs", [])), include_debug=False)
     compact["remote_context_refs"] = compact_context_pack_refs(list(compact.get("remote_context_refs", compact.get("selected_refs", []))), include_debug=False)
     compact["dropped_refs"] = compact_dropped_refs_for_context_pack(compact.get("dropped_refs", {}), include_debug=False)

@@ -589,8 +589,12 @@ TOOLS: list[Json] = [
         "description": "Replay locally captured MatrixArk events for a context pack.",
         "inputSchema": {
             "type": "object",
-            "required": ["context_pack_id"],
-            "properties": {"context_pack_id": {"type": "string"}, "scope": SCOPE_SCHEMA, "api_key": API_KEY_SCHEMA},
+            "properties": {
+                "context_pack_id": {"type": "string"},
+                "pack_id": {"type": "string"},
+                "scope": SCOPE_SCHEMA,
+                "api_key": API_KEY_SCHEMA,
+            },
         },
     },
     {
