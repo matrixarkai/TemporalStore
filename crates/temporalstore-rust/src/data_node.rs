@@ -413,6 +413,59 @@ pub struct StorageManagerResponse {
     pub report: StorageManagerCycleReport,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerRuntimeOptions {
+    pub interval_ms: u64,
+    pub jitter_percent: u8,
+    pub initial_backoff_ms: u64,
+    pub max_backoff_ms: u64,
+    pub request: StorageManagerCycleRequest,
+    pub controller: RequestController,
+}
+
+impl Default for StorageManagerRuntimeOptions {
+    fn default() -> Self {
+        Self {
+            interval_ms: 1_000,
+            jitter_percent: 20,
+            initial_backoff_ms: 250,
+            max_backoff_ms: 5_000,
+            request: StorageManagerCycleRequest {
+                max_dump_slots_per_round: 16,
+                warm_cache: true,
+                ..StorageManagerCycleRequest::default()
+            },
+            controller: RequestController { timeout_ms: 30_000 },
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerRuntimeReport {
+    pub running: bool,
+    pub paused: bool,
+    pub stopped: bool,
+    pub interval_ms: u64,
+    pub jitter_percent: u8,
+    pub current_backoff_ms: u64,
+    pub last_delay_ms: u64,
+    pub rounds_attempted: u64,
+    pub rounds_submitted: u64,
+    pub rounds_skipped_paused: u64,
+    pub rounds_skipped_pending: u64,
+    pub submit_failures: u64,
+    pub last_job_id: Option<u64>,
+    pub last_status: Option<Status>,
+    pub phase_prepare_enabled: bool,
+    pub phase_wal_reclaim_enabled: bool,
+    pub phase_expire_enabled: bool,
+    pub phase_evict_enabled: bool,
+    pub phase_page_gc_enabled: bool,
+    pub phase_compaction_enabled: bool,
+    pub phase_index_gc_enabled: bool,
+    pub bounded_max_dump_slots_per_round: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct DataNodeRuntime {
     inner: Arc<DataNodeRuntimeInner>,
@@ -439,6 +492,14 @@ pub struct StorageLifecycleScheduler {
 #[derive(Debug)]
 pub struct StorageManagerScheduler {
     stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+#[derive(Debug)]
+pub struct StorageManagerRuntime {
+    stop: Arc<AtomicBool>,
+    paused: Arc<AtomicBool>,
+    report: Arc<Mutex<StorageManagerRuntimeReport>>,
     handle: Option<JoinHandle<()>>,
 }
 
@@ -506,6 +567,48 @@ impl StorageManagerScheduler {
 }
 
 impl Drop for StorageManagerScheduler {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl StorageManagerRuntime {
+    pub fn pause(&self) {
+        self.paused.store(true, Ordering::Relaxed);
+        self.report
+            .lock()
+            .expect("runtime report lock poisoned")
+            .paused = true;
+    }
+
+    pub fn resume(&self) {
+        self.paused.store(false, Ordering::Relaxed);
+        self.report
+            .lock()
+            .expect("runtime report lock poisoned")
+            .paused = false;
+    }
+
+    pub fn report(&self) -> StorageManagerRuntimeReport {
+        self.report
+            .lock()
+            .expect("runtime report lock poisoned")
+            .clone()
+    }
+
+    pub fn stop(mut self) -> StorageManagerRuntimeReport {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+        self.report()
+    }
+}
+
+impl Drop for StorageManagerRuntime {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(handle) = self.handle.take() {
@@ -1399,6 +1502,98 @@ impl DataNodeRuntime {
         });
         StorageManagerScheduler {
             stop,
+            handle: Some(handle),
+        }
+    }
+
+    pub fn start_storage_manager_runtime(
+        &self,
+        options: StorageManagerRuntimeOptions,
+    ) -> StorageManagerRuntime {
+        let runtime = self.clone();
+        let stop = Arc::new(AtomicBool::new(false));
+        let paused = Arc::new(AtomicBool::new(false));
+        let report = Arc::new(Mutex::new(storage_manager_runtime_initial_report(&options)));
+        let thread_stop = Arc::clone(&stop);
+        let thread_paused = Arc::clone(&paused);
+        let thread_report = Arc::clone(&report);
+        let handle = thread::spawn(move || {
+            let mut round = 0u64;
+            let mut current_backoff_ms = options.initial_backoff_ms;
+            loop {
+                let delay_ms =
+                    storage_manager_runtime_delay_ms(&options, round, current_backoff_ms);
+                {
+                    let mut report = thread_report
+                        .lock()
+                        .expect("storage manager runtime report lock poisoned");
+                    report.last_delay_ms = delay_ms;
+                    report.current_backoff_ms = current_backoff_ms;
+                }
+                if sleep_until_storage_manager_runtime_round(&thread_stop, delay_ms) {
+                    break;
+                }
+                if thread_stop.load(Ordering::Relaxed) {
+                    break;
+                }
+                round = round.saturating_add(1);
+                if thread_paused.load(Ordering::Relaxed) {
+                    let mut report = thread_report
+                        .lock()
+                        .expect("storage manager runtime report lock poisoned");
+                    report.rounds_skipped_paused = report.rounds_skipped_paused.saturating_add(1);
+                    report.paused = true;
+                    continue;
+                }
+                {
+                    let mut report = thread_report
+                        .lock()
+                        .expect("storage manager runtime report lock poisoned");
+                    report.paused = false;
+                    report.rounds_attempted = report.rounds_attempted.saturating_add(1);
+                }
+                let should_submit = !runtime
+                    .inner
+                    .queue
+                    .lock()
+                    .expect("runtime queue lock poisoned")
+                    .has_pending_storage_manager(options.request.shard_id);
+                if !should_submit {
+                    let mut report = thread_report
+                        .lock()
+                        .expect("storage manager runtime report lock poisoned");
+                    report.rounds_skipped_pending = report.rounds_skipped_pending.saturating_add(1);
+                    continue;
+                }
+                let submitted = runtime
+                    .submit_storage_manager_cycle(options.request.clone(), options.controller);
+                let mut report = thread_report
+                    .lock()
+                    .expect("storage manager runtime report lock poisoned");
+                report.last_job_id = Some(submitted.job_id);
+                report.last_status = Some(submitted.status.clone());
+                if submitted.status.ok {
+                    report.rounds_submitted = report.rounds_submitted.saturating_add(1);
+                    current_backoff_ms = options.initial_backoff_ms;
+                } else {
+                    report.submit_failures = report.submit_failures.saturating_add(1);
+                    current_backoff_ms = storage_manager_runtime_next_backoff_ms(
+                        current_backoff_ms,
+                        options.initial_backoff_ms,
+                        options.max_backoff_ms,
+                    );
+                }
+            }
+            let mut report = thread_report
+                .lock()
+                .expect("storage manager runtime report lock poisoned");
+            report.running = false;
+            report.stopped = true;
+        });
+        StorageManagerRuntime {
+            stop,
+            paused,
+            report,
             handle: Some(handle),
         }
     }
@@ -2869,6 +3064,73 @@ fn now_ms() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
+}
+
+fn storage_manager_runtime_initial_report(
+    options: &StorageManagerRuntimeOptions,
+) -> StorageManagerRuntimeReport {
+    StorageManagerRuntimeReport {
+        running: true,
+        paused: false,
+        stopped: false,
+        interval_ms: options.interval_ms,
+        jitter_percent: options.jitter_percent,
+        current_backoff_ms: options.initial_backoff_ms,
+        last_delay_ms: options.interval_ms,
+        phase_prepare_enabled: options.request.enable_prepare,
+        phase_wal_reclaim_enabled: options.request.enable_oplog_reclaim,
+        phase_expire_enabled: options.request.enable_expire,
+        phase_evict_enabled: options.request.enable_evict,
+        phase_page_gc_enabled: options.request.enable_page_reclaim,
+        phase_compaction_enabled: options.request.enable_page_compaction,
+        phase_index_gc_enabled: options.request.enable_index_gc,
+        bounded_max_dump_slots_per_round: options.request.max_dump_slots_per_round,
+        ..StorageManagerRuntimeReport::default()
+    }
+}
+
+fn storage_manager_runtime_delay_ms(
+    options: &StorageManagerRuntimeOptions,
+    round: u64,
+    current_backoff_ms: u64,
+) -> u64 {
+    let base = options.interval_ms.max(1).max(current_backoff_ms);
+    let jitter_bound = base.saturating_mul(options.jitter_percent.min(100) as u64) / 100;
+    if jitter_bound == 0 {
+        return base;
+    }
+    let seed = options
+        .request
+        .shard_id
+        .wrapping_mul(1_099_511_628_211)
+        .wrapping_add(round.wrapping_mul(1_469_598_103_934_665_603));
+    base.saturating_add(seed % jitter_bound.saturating_add(1))
+}
+
+fn storage_manager_runtime_next_backoff_ms(
+    current_backoff_ms: u64,
+    initial_backoff_ms: u64,
+    max_backoff_ms: u64,
+) -> u64 {
+    let floor = initial_backoff_ms.max(1);
+    let ceiling = max_backoff_ms.max(floor);
+    if current_backoff_ms < floor {
+        floor
+    } else {
+        current_backoff_ms.saturating_mul(2).min(ceiling)
+    }
+}
+
+fn sleep_until_storage_manager_runtime_round(stop: &AtomicBool, delay_ms: u64) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(delay_ms.max(1));
+    while Instant::now() < deadline {
+        if stop.load(Ordering::Relaxed) {
+            return true;
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        thread::sleep(remaining.min(Duration::from_millis(10)));
+    }
+    stop.load(Ordering::Relaxed)
 }
 
 pub fn distributed_admission_decision(

@@ -72,7 +72,8 @@ pub use data_node::{
     DataNodeRuntime, DataNodeRuntimeOptions, DataNodeRuntimeStats, DataNodeShardLifecycleState,
     DataNodeTaskKind, DataNodeTaskOutput, DataNodeTaskStatus, DirtyObjectInfo, DumpShardRequest,
     DumpShardResponse, GcRequest, GcResponse, RequestController, ShardWorkerInfo,
-    StorageLifecycleResponse, StorageLifecycleScheduler,
+    StorageLifecycleResponse, StorageLifecycleScheduler, StorageManagerRuntime,
+    StorageManagerRuntimeOptions, StorageManagerRuntimeReport,
 };
 pub use e2e::{
     AsyncStorageJournal, EndToEndWorkflow, EndToEndWorkflowOptions, KillSwitches, RaftWriteMode,

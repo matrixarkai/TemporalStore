@@ -26,6 +26,7 @@ REQUIRED_CASES = {
     "storage_stale_page_density_compaction": "stale page density compaction",
     "storage_merged_dump_load_restart_interruption": "merged dump/load interruption",
     "storage_gc_eviction_cold_reads": "GC plus eviction under cold reads",
+    "storage_manager_continuous_background_runtime": "continuous StorageManager background runtime",
     "storage_risk_context_page_backed_parity": "Risk/Context page-backed parity",
     "control_multi_proxy_topology_churn_scale": "multi-proxy convergence scale",
     "control_client_cpp_partition_set_route_cache": "direct SDK partition-set route cache",
@@ -36,6 +37,7 @@ REQUIRED_CASES = {
 REQUIRED_DOC_PHRASES = [
     "ObjectManager/SlotStore runtime authority modules",
     "storage_object_manager_slotstore_runtime_authority",
+    "storage_manager_continuous_background_runtime",
     "control_multi_proxy_topology_churn_scale",
     "control_client_cpp_partition_set_route_cache",
     "control_client_pipeline_batch_partial_timeout_contract",

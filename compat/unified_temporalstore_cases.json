@@ -3207,6 +3207,23 @@
       ]
     },
     {
+      "name": "storage_manager_continuous_background_runtime",
+      "shard_id": 66,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManagerRuntime continuously runs the C++ phase order through the bounded data-node background queue with jitter, backoff, pause/resume, stop, per-phase enable flags, and bounded work per round.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags"
+          },
+          "name": "rust_storage_manager_continuous_background_runtime",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
