@@ -957,6 +957,106 @@ fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
     }
 }
 
+fn cross_session_key(record: &Value) -> String {
+    record_scope_string(record, "session_id")
+        .or_else(|| record_scope_string(record, "scope_key"))
+        .or_else(|| record_node_hash(record).map(|node| format!("node:{node}")))
+        .unwrap_or_else(|| "unknown_cross_session".to_string())
+}
+
+#[derive(Clone, Debug)]
+struct CrossSessionPolicy {
+    enabled: bool,
+    budget_ratio: f64,
+    budget_tokens: u64,
+    max_budget_tokens: u64,
+    max_sessions: u64,
+    max_candidates: u64,
+    min_entity_bridge_refs: u64,
+    parallelism: u64,
+}
+
+fn parse_cross_session_policy(
+    request: &Value,
+    scope: Option<&Value>,
+    remote_budget: u64,
+    question_type: &str,
+) -> CrossSessionPolicy {
+    let default_enabled = scope.map(session_scope_mode) == Some("prefer") && remote_budget > 0;
+    let config = request
+        .get("cross_session")
+        .filter(|value| value.is_object());
+    let mut budget_ratio = if matches!(question_type, "current_state" | "latest") {
+        0.45
+    } else {
+        0.35
+    };
+    if let Some(value) = config
+        .and_then(|cfg| cfg.get("budget_ratio"))
+        .and_then(Value::as_f64)
+    {
+        budget_ratio = value.clamp(0.0, 1.0);
+    }
+    let max_budget_tokens = config
+        .and_then(|cfg| cfg.get("max_budget_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(4096);
+    let mut computed = (remote_budget as f64 * budget_ratio) as u64;
+    if remote_budget >= 1200 && computed > 0 {
+        computed = computed.max(512);
+    }
+    let enabled = config
+        .and_then(|cfg| cfg.get("enabled"))
+        .and_then(Value::as_bool)
+        .unwrap_or(default_enabled)
+        && default_enabled;
+    let mut budget_tokens = config
+        .and_then(|cfg| cfg.get("budget_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(computed);
+    let mut max_sessions = config
+        .and_then(|cfg| cfg.get("max_sessions"))
+        .and_then(Value::as_u64)
+        .unwrap_or(8);
+    let mut max_candidates = config
+        .and_then(|cfg| cfg.get("max_candidates"))
+        .and_then(Value::as_u64)
+        .unwrap_or(64);
+    let mut min_entity_bridge_refs = config
+        .and_then(|cfg| cfg.get("min_entity_bridge_refs"))
+        .and_then(Value::as_u64)
+        .unwrap_or(3);
+    let mut parallelism = config
+        .and_then(|cfg| cfg.get("parallelism"))
+        .and_then(Value::as_u64)
+        .unwrap_or(4)
+        .max(1);
+    if !enabled {
+        budget_tokens = 0;
+        max_sessions = 0;
+        max_candidates = 0;
+        min_entity_bridge_refs = 0;
+        parallelism = 0;
+    } else {
+        let cap = if max_budget_tokens == 0 {
+            remote_budget
+        } else {
+            max_budget_tokens
+        };
+        budget_tokens = budget_tokens.min(remote_budget).min(cap);
+    }
+    CrossSessionPolicy {
+        enabled,
+        budget_ratio,
+        budget_tokens,
+        max_budget_tokens,
+        max_sessions,
+        max_candidates,
+        min_entity_bridge_refs,
+        parallelism,
+    }
+}
+
 fn record_ref_hash(record: &Value) -> Option<String> {
     for field in ["ref_hash", "chunk_hash", "section_hash", "skill_hash"] {
         if let Some(value) = record.get(field) {
@@ -1323,8 +1423,26 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         .unwrap_or(4000);
     let max_refs = json_field(&request, &["ranking", "max_selected_refs"])
         .and_then(Value::as_u64)
-        .unwrap_or(48)
+        .unwrap_or(24)
         .max(1);
+    let max_global_candidates = json_field(&request, &["ranking", "max_global_candidates"])
+        .and_then(Value::as_u64)
+        .unwrap_or(512)
+        .max(1);
+    let min_similarity_score = json_field(&request, &["ranking", "min_similarity_score"])
+        .and_then(Value::as_f64)
+        .unwrap_or(0.20)
+        .clamp(0.0, 1.0);
+    let budget_fill_policy = json_field(&request, &["ranking", "budget_fill_policy"])
+        .and_then(Value::as_str)
+        .filter(|policy| *policy == "quality_first" || *policy == "force_fill")
+        .unwrap_or("quality_first")
+        .to_string();
+    let question_type = request
+        .get("question_type")
+        .and_then(Value::as_str)
+        .unwrap_or("fact")
+        .to_string();
     let mut scan_command = command.clone();
     scan_command.scope = request
         .get("scope")
@@ -1375,6 +1493,12 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         .cloned()
         .unwrap_or_default();
     let scope_for_continuity = scan_command.scope.clone();
+    let cross_policy = parse_cross_session_policy(
+        &request,
+        scope_for_continuity.as_ref(),
+        remote_budget,
+        &question_type,
+    );
     let mut scored: Vec<(f64, Value, String, f64)> = records
         .into_iter()
         .filter(|record| {
@@ -1413,6 +1537,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             score += continuity_boost_value;
             (score, record, session_continuity, continuity_boost_value)
         })
+        .filter(|(score, _, _, _)| *score >= min_similarity_score)
         .collect();
     scored.sort_by(|left, right| {
         right
@@ -1420,23 +1545,76 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             .partial_cmp(&left.0)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
+    if scored.len() > max_global_candidates as usize {
+        scored.truncate(max_global_candidates as usize);
+    }
     let mut selected = Vec::new();
     let mut selected_counts: HashMap<String, u64> = HashMap::new();
     let mut selected_nodes: HashSet<u64> = HashSet::new();
     let mut dropped_over_budget = 0_u64;
+    let mut dropped_cross_budget = 0_u64;
+    let mut dropped_cross_session_cap = 0_u64;
+    let mut dropped_cross_candidate_cap = 0_u64;
     let mut used_tokens = 0_u64;
+    let mut cross_used_tokens = 0_u64;
+    let mut cross_selected_refs = 0_u64;
+    let mut entity_bridge_selected_refs = 0_u64;
+    let mut selected_cross_sessions: HashSet<String> = HashSet::new();
     for (score, record, session_continuity, continuity_boost_value) in scored {
         if selected.len() as u64 >= max_refs {
             break;
         }
         let text = candidate_text(&record);
         let tokens = token_estimate(&text);
+        let context_class = context_class_name(&record);
+        let is_cross_session = session_continuity == "cross_session";
+        let is_entity_bridge = is_cross_session && context_class == "entity";
+        let cross_key = if is_cross_session {
+            cross_session_key(&record)
+        } else {
+            String::new()
+        };
+        if is_cross_session && !cross_policy.enabled {
+            dropped_cross_budget += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_candidates > 0
+            && cross_selected_refs >= cross_policy.max_candidates
+        {
+            dropped_cross_candidate_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.max_sessions > 0
+            && !selected_cross_sessions.contains(&cross_key)
+            && selected_cross_sessions.len() as u64 >= cross_policy.max_sessions
+        {
+            dropped_cross_session_cap += 1;
+            continue;
+        }
+        if is_cross_session
+            && cross_policy.budget_tokens > 0
+            && cross_used_tokens + tokens > cross_policy.budget_tokens
+            && !(is_entity_bridge && entity_bridge_selected_refs < cross_policy.min_entity_bridge_refs)
+        {
+            dropped_cross_budget += 1;
+            continue;
+        }
         if used_tokens + tokens > remote_budget {
             dropped_over_budget += 1;
             continue;
         }
         used_tokens += tokens;
-        *selected_counts.entry(context_class_name(&record)).or_default() += 1;
+        if is_cross_session {
+            cross_used_tokens += tokens;
+            cross_selected_refs += 1;
+            selected_cross_sessions.insert(cross_key);
+            if is_entity_bridge {
+                entity_bridge_selected_refs += 1;
+            }
+        }
+        *selected_counts.entry(context_class).or_default() += 1;
         if let Some(node_hash) = record_node_hash(&record) {
             selected_nodes.insert(node_hash);
         }
@@ -1464,7 +1642,15 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         "selected_refs": selected,
         "dropped_refs": {
             "over_budget": dropped_over_budget,
-            "reason_counts": {"over_budget": dropped_over_budget}
+            "cross_session_budget": dropped_cross_budget,
+            "cross_session_session_cap": dropped_cross_session_cap,
+            "cross_session_candidate_cap": dropped_cross_candidate_cap,
+            "reason_counts": {
+                "over_budget": dropped_over_budget,
+                "cross_session_budget": dropped_cross_budget,
+                "cross_session_session_cap": dropped_cross_session_cap,
+                "cross_session_candidate_cap": dropped_cross_candidate_cap
+            }
         },
         "used_context_tokens": used_tokens,
         "used_remote_context_tokens": used_tokens,
@@ -1486,12 +1672,36 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "backend_role": "scan_filter_score_pack"
             },
             "scan_stats": scan_stats,
+            "ranking": {
+                "min_similarity_score": min_similarity_score,
+                "max_global_candidates": max_global_candidates,
+                "max_selected_refs": max_refs,
+                "budget_fill_policy": budget_fill_policy,
+                "quality_first_budget_underfill_allowed": budget_fill_policy == "quality_first"
+            },
             "session_continuity": {
                 "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("only"),
                 "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
                 "same_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session")).count(),
-                "cross_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session")).count(),
-                "entity_bridge_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session") && item.get("ref_type").and_then(Value::as_str) == Some("entity")).count()
+                "cross_session_selected_ref_count": cross_selected_refs,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs
+            },
+            "cross_session": {
+                "enabled": cross_policy.enabled,
+                "mode": if cross_policy.enabled { "prefer" } else { "disabled" },
+                "budget_ratio": cross_policy.budget_ratio,
+                "budget_tokens": cross_policy.budget_tokens,
+                "remote_budget_tokens": remote_budget,
+                "max_budget_tokens": cross_policy.max_budget_tokens,
+                "max_sessions": cross_policy.max_sessions,
+                "max_candidates": cross_policy.max_candidates,
+                "parallelism": cross_policy.parallelism,
+                "selected_tokens": cross_used_tokens,
+                "selected_ref_count": cross_selected_refs,
+                "selected_session_count": selected_cross_sessions.len() as u64,
+                "entity_bridge_selected_ref_count": entity_bridge_selected_refs,
+                "strategy": "same_session_first_entity_bridge_then_bounded_cross_session",
+                "budget_guidance": "default cross-session budget is 35% of MatrixArk remote budget, 45% for current-state/latest queries, capped by max_budget_tokens"
             },
             "tree_traversal": {
                 "enabled": true,
