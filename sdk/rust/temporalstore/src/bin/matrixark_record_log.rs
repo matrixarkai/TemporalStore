@@ -749,12 +749,9 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
             }
         }
         "matrixark_append_records" | "matrixark_batch_append_records" => {
-            let expanded = expanded_hash_entries(command);
-            stats.records_written = expanded.len() as u64;
-            stats.bytes_written = expanded
-                .iter()
-                .map(|(_, _, value)| value.len() as u64)
-                .sum();
+            let (records, bytes) = hash_entry_stats(command);
+            stats.records_written = records;
+            stats.bytes_written = bytes;
             if command
                 .key
                 .as_ref()
@@ -889,6 +886,26 @@ fn required(value: Option<String>, name: &str) -> Result<String, String> {
     value
         .filter(|item| !item.is_empty())
         .ok_or_else(|| format!("missing {name}"))
+}
+
+fn hash_entry_stats(command: &Command) -> (u64, u64) {
+    let mut records = 0_u64;
+    let mut bytes = 0_u64;
+    if let Some(entries) = &command.entries {
+        for entry in entries {
+            if let Some(value) = entry.value.as_ref() {
+                records += 1;
+                bytes += value.len() as u64;
+            }
+        }
+    }
+    if let Some(entries) = &command.entries_compact {
+        for CompactHashEntry(_, _, value) in entries {
+            records += 1;
+            bytes += value.len() as u64;
+        }
+    }
+    (records, bytes)
 }
 
 fn expanded_hash_entries(command: &Command) -> Vec<(String, String, String)> {
@@ -2035,11 +2052,11 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         ]);
     }
     let scan = scan_matrixark_candidates(client, &scan_command)?;
+    let empty_records = Vec::new();
     let records = scan
         .get("records")
         .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .unwrap_or(&empty_records);
     let scope_for_continuity = scan_command.scope.clone();
     let cross_policy = parse_cross_session_policy(
         &request,
@@ -2047,8 +2064,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         remote_budget,
         &question_type,
     );
-    let mut scored: Vec<(f64, Value, String, f64, f64)> = records
-        .into_iter()
+    let mut scored: Vec<(f64, &Value, String, f64, f64)> = records
+        .iter()
         .filter(|record| {
             matches!(
                 record
@@ -2065,7 +2082,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             ) && !candidate_text(record).is_empty()
         })
         .map(|record| {
-            let text = candidate_text(&record);
+            let text = candidate_text(record);
             let mut score = sparse_query_score(&query_terms, &text);
             if matches!(
                 record.get("record_type").and_then(Value::as_str),
@@ -2079,14 +2096,14 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             ) {
                 score += 0.06;
             }
-            let context_class = context_class_name(&record);
+            let context_class = context_class_name(record);
             let session_continuity =
-                session_continuity_status(&record, scope_for_continuity.as_ref());
+                session_continuity_status(record, scope_for_continuity.as_ref());
             let continuity_boost_value =
-                continuity_boost(&record, &context_class, &session_continuity);
+                continuity_boost(record, &context_class, &session_continuity);
             score += continuity_boost_value;
             let cross_session_rerank_boost_value = cross_session_rerank_boost(
-                &record,
+                record,
                 &context_class,
                 &session_continuity,
                 &question_type,
@@ -2135,9 +2152,9 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         if selected.len() as u64 >= max_refs {
             break;
         }
-        let text = candidate_text(&record);
+        let text = candidate_text(record);
         let tokens = token_estimate(&text);
-        let context_class = context_class_name(&record);
+        let context_class = context_class_name(record);
         let is_cross_session = session_continuity == "cross_session";
         let record_type = record
             .get("record_type")
@@ -2147,7 +2164,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         let is_cross_session_raw_evidence =
             is_cross_session && matches!(record_type, "context_event" | "context_segment");
         let cross_key = if is_cross_session {
-            cross_session_key(&record)
+            cross_session_key(record)
         } else {
             String::new()
         };
@@ -2204,11 +2221,11 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             }
         }
         *selected_counts.entry(context_class).or_default() += 1;
-        if let Some(node_hash) = record_node_hash(&record) {
+        if let Some(node_hash) = record_node_hash(record) {
             selected_nodes.insert(node_hash);
         }
         selected.push(pack_ref_from_record(
-            &record,
+            record,
             score,
             "native_rust_proxy_score_pack",
             &session_continuity,
