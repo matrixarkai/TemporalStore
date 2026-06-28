@@ -1559,6 +1559,21 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "storage_cache" if capability.contains("ObjectManager runtime") => {
             "storage_index.object_manager_runtime_ready"
         }
+        "storage_cache" if capability.contains("model-aware compaction") => {
+            "storage_compaction.model_layout_policy_ready"
+        }
+        "storage_cache" if capability.contains("merged dump/load recovery") => {
+            "storage_dump_load.merged_recovery_ready"
+        }
+        "storage_cache" if capability.contains("StorageManager phase loop") => {
+            "storage_manager.phase_loop_ready"
+        }
+        "storage_cache" if capability.contains("GC/eviction pressure validation") => {
+            "storage_manager.gc_eviction_pressure_ready"
+        }
+        "storage_cache" if capability.contains("cache soak status") => {
+            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
+        }
         "storage_cache" if capability.contains("cache pressure soak") => {
             "storage_cache_mtcache.cache_pressure_soak_restart_ready"
         }
@@ -1946,6 +1961,26 @@ mod tests {
         assert_eq!(
             evidence_field_for("storage_cache", "ObjectManager runtime"),
             "storage_index.object_manager_runtime_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "model-aware compaction"),
+            "storage_compaction.model_layout_policy_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "merged dump/load recovery"),
+            "storage_dump_load.merged_recovery_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "StorageManager phase loop"),
+            "storage_manager.phase_loop_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "GC/eviction pressure validation"),
+            "storage_manager.gc_eviction_pressure_ready"
+        );
+        assert_eq!(
+            evidence_field_for("storage_cache", "cache soak status"),
+            "storage_cache_mtcache.cache_pressure_soak_restart_ready"
         );
         assert_eq!(
             evidence_field_for(
