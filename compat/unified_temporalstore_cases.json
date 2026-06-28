@@ -3110,7 +3110,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust storage reloads cold and hot object ownership through the native slot/object/page index, proving the object manager path survives memory eviction and process restart.",
+            "description": "Rust storage reloads cold and hot object ownership through the native slot/object/page index, proving logical model maps are secondary views and the object manager path survives memory eviction and process restart.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
@@ -3127,7 +3127,7 @@
       "steps": [
         {
           "command": {
-            "description": "Rust uses PageAddress metadata to refill from persistent page storage and disk cache after memory eviction, then validates restart lookup through the slot-first index.",
+            "description": "Rust clears the logical string map, then uses SlotStore PageAddress metadata to refill from persistent page storage and disk cache after memory eviction, and validates restart lookup through the slot-first index.",
             "kind": "existing_test",
             "mode": "rust",
             "suite": "cpp_storage_parity",
