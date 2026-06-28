@@ -1395,21 +1395,35 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("content_hash", compact.get("metadata", {}))
         self.assertEqual(compact["metadata"], {"unit_kind": "pdf_page", "relative_path": "docs/gpu.pdf", "page": 2})
 
-    def test_context_pack_serving_top_level_uses_compact_aliases(self) -> None:
+    def test_context_pack_serving_top_level_omits_operational_cache_fields(self) -> None:
         compact = mcp.compact_context_pack_for_serving({
             "context_pack_id": "pack-123",
             "context_pack_assembly": "native_cpp_direct",
             "context_pack_cache_hit": False,
+            "cache_hit": False,
+            "cache_hit_used": False,
+            "native_pack_assembly": True,
+            "raw_records_returned": False,
+            "python_hot_path_records": 0,
+            "scan_count": 42,
             "selected_refs": [],
             "remote_context_refs": [],
         })
 
         self.assertEqual(compact["pack_id"], "pack-123")
-        self.assertEqual(compact["assembly"], "native_cpp_direct")
-        self.assertFalse(compact["cache_hit"])
-        self.assertNotIn("context_pack_id", compact)
-        self.assertNotIn("context_pack_assembly", compact)
-        self.assertNotIn("context_pack_cache_hit", compact)
+        for field in [
+            "assembly",
+            "cache_hit",
+            "cache_hit_used",
+            "context_pack_id",
+            "context_pack_assembly",
+            "context_pack_cache_hit",
+            "native_pack_assembly",
+            "raw_records_returned",
+            "python_hot_path_records",
+            "scan_count",
+        ]:
+            self.assertNotIn(field, compact)
 
     def test_context_pack_serving_omits_duplicate_and_operational_fields(self) -> None:
         ref = {"ref_type": "event", "text": "Alice approved the GPU request."}
@@ -1445,6 +1459,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "partial_context_pack": False,
             "packing_policy": "question_type_aware:fact",
             "requested_max_context_tokens": 1000,
+            "context_pack_cache_hit": True,
+            "cache_hit": True,
+            "cache_hit_used": True,
+            "context_pack_assembly": "native_cpp_direct",
+            "assembly": "native_cpp_direct",
+            "native_pack_assembly": True,
+            "raw_records_returned": False,
+            "python_hot_path_records": 0,
+            "scan_count": 50,
+            "selected_ref_count": 1,
+            "dropped_ref_count": 0,
         })
 
         self.assertEqual(compact["selected_refs"], [{"ref_type": "event", "text": "Alice approved the GPU request."}])
@@ -1469,6 +1494,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "partial_context_pack",
             "packing_policy",
             "requested_max_context_tokens",
+            "context_pack_cache_hit",
+            "cache_hit",
+            "cache_hit_used",
+            "context_pack_assembly",
+            "assembly",
+            "native_pack_assembly",
+            "raw_records_returned",
+            "python_hot_path_records",
+            "scan_count",
+            "selected_ref_count",
+            "dropped_ref_count",
         ]:
             self.assertNotIn(field, compact)
         self.assertEqual(compact.get("recall"), {"temporal": "latest"})
