@@ -16,6 +16,10 @@ if [[ -n "${MATRIXARK_TEMPORALSTORE_RUST_CLI:-}" ]]; then
 else
   RUST_CLI=""
   for candidate in \
+    "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
+    "${ROOT}/target/release/matrixark_rust_proxy" \
+    "${ROOT}/target/debug/matrixark_rust_proxy" \
+    "${ROOT}/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy" \
     "${ROOT}/sdk/rust/temporalstore/target/release/matrixark_record_log" \
     "${ROOT}/target/release/matrixark_record_log" \
     "${ROOT}/target/debug/matrixark_record_log" \
@@ -25,7 +29,7 @@ else
       break
     fi
   done
-  RUST_CLI="${RUST_CLI:-${ROOT}/target/release/matrixark_record_log}"
+  RUST_CLI="${RUST_CLI:-${ROOT}/target/release/matrixark_rust_proxy}"
 fi
 
 while [[ $# -gt 0 ]]; do

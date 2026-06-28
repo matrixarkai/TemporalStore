@@ -68,7 +68,7 @@ Latest lightweight backend-parity run timing:
 - C++ TemporalStore path: about `610 ms` after local deployment readiness.
 - Rust TemporalStore path: about `444 ms` after local deployment readiness.
 
-The Rust MCP path now keeps `matrixark_record_log --serve` alive as a persistent JSON-lines process and reuses the Rust SDK client internally. That removes the old process-per-operation bottleneck where Rust took about `6.6 s` on the lightweight parity run and about `35.7 s` on the feature-parity run.
+The Rust MCP path now keeps `matrixark_rust_proxy --serve` alive as a persistent JSON-lines process and reuses the Rust SDK client internally. The legacy `matrixark_record_log` binary name remains a compatibility/debug alias. This removes the old process-per-operation bottleneck where Rust took about `6.6 s` on the lightweight parity run and about `35.7 s` on the feature-parity run.
 
 ## C++ vs Rust Comparison
 
@@ -99,7 +99,7 @@ The next Rust parity gap is production packaging, not correctness:
 
 ```text
 Current Rust MCP path:
-MatrixArk MCP -> persistent matrixark_record_log --serve process -> Rust SDK -> TemporalStore
+MatrixArk MCP -> persistent matrixark_rust_proxy --serve process -> Rust SDK -> TemporalStore
 
 Future production option:
 MatrixArk MCP -> Rust proxy or Python-callable Rust binding -> Rust SDK -> TemporalStore

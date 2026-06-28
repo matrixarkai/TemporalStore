@@ -9,7 +9,7 @@ selection chooses which TemporalStore record-log adapter owns persistence.
 | Backend | TemporalStore path | Purpose |
 | --- | --- | --- |
 | `temporalstore-direct` | C++ TemporalStore SDK | C++ thread compatibility path. |
-| `temporalstore-rust` | Rust proxy `matrixark_record_log --serve` | Rust-native Codex integration path. |
+| `temporalstore-rust` | Rust proxy `matrixark_rust_proxy --serve` | Rust-native Codex integration path. |
 | `temporalstore-rust-direct` | Long-lived Rust direct SDK bridge | Embedded/local Rust parity path matching the C++ direct SDK contract. |
 | `local` | JSONL file | Local diagnostic path only. |
 
@@ -65,8 +65,8 @@ tools/run_matrixark_mcp_server.sh \
   --table deploy_table
 ```
 
-The Rust launcher builds `matrixark_record_log` when needed and passes its path
-through `MATRIXARK_TEMPORALSTORE_RUST_CLI`, which is what the shared MCP server
+The Rust launcher builds `matrixark_rust_proxy` when needed and passes its path
+through `MATRIXARK_TEMPORALSTORE_RUST_PROXY`, which is what the shared MCP server
 expects for the `temporalstore-rust` and `temporalstore-rust-direct` adapters.
 Use `temporalstore-rust` for the production gateway/proxy path. Use
 `temporalstore-rust-direct` when validating embedded/local parity with the C++
@@ -125,7 +125,7 @@ calls fail closed with a structured error instead of creating partial state.
 Fast local checks:
 
 ```bash
-cargo test -p temporalstore-rust --bin matrixark_record_log -- --test-threads=1
+cargo test -p temporalstore-rust --bin matrixark_rust_proxy -- --test-threads=1
 python3 tools/validate_codex_mcp_parity.py
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 ```
@@ -134,10 +134,10 @@ Direct Rust CLI smoke:
 
 ```bash
 printf '%s' '{"op":"health","namespace":"deploy_ns","table":"deploy_table"}' |
-  cargo run -q -p temporalstore-rust --bin matrixark_record_log
+  cargo run -q -p temporalstore-rust --bin matrixark_rust_proxy
 printf '%s' '{"op":"hgetall","key":"matrixark:mcp:records"}' |
   MATRIXARK_TEMPORALSTORE_RUST_ROOT=/tmp/matrixark-rust-codex \
-  cargo run -q -p temporalstore-rust --bin matrixark_record_log
+  cargo run -q -p temporalstore-rust --bin matrixark_rust_proxy
 ```
 
 Manual JSON-RPC smoke:
@@ -165,7 +165,7 @@ Expected result:
 
 - `initialize` returns `serverInfo.name = matrixark-context`.
 - `tools/list` includes the MatrixArk context tools listed above.
-- The Rust backend fails closed if `matrixark_record_log` cannot be built or
+- The Rust backend fails closed if `matrixark_rust_proxy` cannot be built or
   launched.
 - In `temporalstore-rust-direct` mode, backend metrics report
   `sdk_mode=direct_sdk`, `storage_mode=rust-direct-sdk-bridge`, and

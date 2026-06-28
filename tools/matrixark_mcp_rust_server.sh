@@ -19,6 +19,10 @@ if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" && -n "${MATRIXARK_TEMPORALST
 fi
 if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" ]]; then
   for candidate in \
+    "$ROOT/target/release/matrixark_rust_proxy" \
+    "$ROOT/target/debug/matrixark_rust_proxy" \
+    "$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy" \
+    "$ROOT/sdk/rust/temporalstore/target/debug/matrixark_rust_proxy" \
     "$ROOT/target/release/matrixark_record_log" \
     "$ROOT/target/debug/matrixark_record_log" \
     "$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log" \
@@ -29,7 +33,7 @@ if [[ -z "${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-}" ]]; then
     fi
   done
 fi
-export MATRIXARK_TEMPORALSTORE_RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_record_log}"
+export MATRIXARK_TEMPORALSTORE_RUST_PROXY="${MATRIXARK_TEMPORALSTORE_RUST_PROXY:-$ROOT/sdk/rust/temporalstore/target/release/matrixark_rust_proxy}"
 export MATRIXARK_TEMPORALSTORE_RUST_CLI="${MATRIXARK_TEMPORALSTORE_RUST_CLI:-$MATRIXARK_TEMPORALSTORE_RUST_PROXY}"
 export LD_LIBRARY_PATH="$ROOT/output-ubuntu22/release/sdk/lib:${LD_LIBRARY_PATH:-}"
 
@@ -56,8 +60,8 @@ fi
 
 if [[ ! -x "$MATRIXARK_TEMPORALSTORE_RUST_PROXY" ]]; then
   echo "MatrixArk MCP Rust: building Rust proxy at $MATRIXARK_TEMPORALSTORE_RUST_PROXY" >&2
-  cargo build --release -p temporalstore-rust --bin matrixark_record_log >&2
-  export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$ROOT/target/release/matrixark_record_log"
+  cargo build --release -p temporalstore-rust --bin matrixark_rust_proxy >&2
+  export MATRIXARK_TEMPORALSTORE_RUST_PROXY="$ROOT/target/release/matrixark_rust_proxy"
   export MATRIXARK_TEMPORALSTORE_RUST_CLI="$MATRIXARK_TEMPORALSTORE_RUST_PROXY"
 fi
 
