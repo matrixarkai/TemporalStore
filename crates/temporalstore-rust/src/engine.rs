@@ -1975,7 +1975,7 @@ impl TemporalEngine {
             purge_delayed_destroy: request.enable_page_reclaim,
             prune_slot_dump_manifests: request.enable_index_gc,
             roll_forward_slot_dump_installs: request.enable_index_gc,
-            follower_replay_cursors: Vec::new(),
+            follower_replay_cursors: request.follower_replay_cursors.clone(),
             invalidate_cache: request.enable_evict,
             warm_cache: request.warm_cache,
         };
@@ -2005,6 +2005,107 @@ impl TemporalEngine {
             .stale_page_segment_ids
             .len()
             .saturating_sub(reclaim_candidate_count);
+        let log_pressure = self.storage_log_compatibility_report(request.shard_id);
+        let cache_pressure = self.storage_cache_inspection_report(request.shard_id);
+        let page_segment_total_bytes = reclaim_live_bytes.saturating_add(reclaim_stale_bytes);
+        let page_segment_stale_density_basis_points = if page_segment_total_bytes == 0 {
+            0
+        } else {
+            reclaim_stale_bytes.saturating_mul(10_000) / page_segment_total_bytes
+        };
+        let delayed_destroy_segment_count = plan.delayed_destroy_page_segment_ids.len();
+        let delayed_destroy_bytes = plan
+            .reclaim_candidates
+            .iter()
+            .filter(|candidate| candidate.reason == "delayed_destroy")
+            .map(|candidate| candidate.physical_bytes)
+            .sum::<u64>();
+        let expired_slot_object_scan_debt = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&request.shard_id)
+            .map(|shard| shard.expires_at_ms.len())
+            .unwrap_or_default();
+        let compaction_utility = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&request.shard_id)
+            .map(|shard| compaction_utility_report(&self.page_store, shard))
+            .unwrap_or_default();
+        let compaction_debt_model_count = compaction_utility
+            .model_policies
+            .iter()
+            .filter(|policy| {
+                policy.stale_page_estimate > 0
+                    || policy.stale_density_basis_points > 0
+                    || policy.tombstone_density_basis_points > 0
+            })
+            .count()
+            .max(usize::from(page_segment_stale_density_basis_points > 0));
+        let compaction_debt_score = compaction_utility
+            .model_policies
+            .iter()
+            .map(|policy| {
+                policy
+                    .stale_page_estimate
+                    .saturating_add(policy.stale_density_basis_points)
+                    .saturating_add(policy.tombstone_density_basis_points)
+            })
+            .sum::<u64>()
+            .saturating_add(compaction_utility.stale_page_estimate)
+            .saturating_add(reclaim_stale_bytes)
+            .saturating_add(page_segment_stale_density_basis_points);
+        let retention_prune_plan = self.slot_dump_manifest_prune_plan_with_follower_cursors(
+            request.shard_id,
+            request.follower_replay_cursors.clone(),
+        );
+        let manifest_retention_blockers = retention_prune_plan
+            .follower_blocks
+            .len()
+            .saturating_add(retention_prune_plan.raft_snapshot_blocks.len());
+        let memory_cache_pressure_score = cache_pressure
+            .stats
+            .memory_bytes
+            .saturating_add(cache_pressure.stats.pinned_bytes)
+            .saturating_add(cache_pressure.stats.async_writeback_queue_bytes)
+            .saturating_add(cache_pressure.stats.async_writeback_queue_depth);
+        let total_pressure_score = plan
+            .dirty_slots
+            .len()
+            .saturating_add(expired_slot_object_scan_debt)
+            .saturating_add(delayed_destroy_segment_count)
+            .saturating_add(compaction_debt_model_count) as u64
+            + plan.undumped_oplog_records
+            + log_pressure.oplog_bytes
+            + log_pressure.index_log_bytes
+            + reclaim_stale_bytes
+            + cache_pressure.stats.disk_bytes
+            + memory_cache_pressure_score
+            + delayed_destroy_bytes
+            + manifest_retention_blockers as u64
+            + compaction_debt_score;
+        let pressure_signals = StorageManagerPressureSignals {
+            dirty_slot_count: plan.dirty_slots.len(),
+            undumped_wal_records: plan.undumped_oplog_records,
+            wal_bytes: log_pressure.oplog_bytes,
+            index_log_bytes: log_pressure.index_log_bytes,
+            stale_page_bytes: reclaim_stale_bytes,
+            live_page_bytes: reclaim_live_bytes,
+            page_segment_stale_density_basis_points,
+            memory_cache_bytes: cache_pressure.stats.memory_bytes,
+            disk_cache_bytes: cache_pressure.stats.disk_bytes,
+            memory_cache_pressure_score,
+            expired_slot_object_scan_debt,
+            delayed_destroy_segment_count,
+            delayed_destroy_bytes,
+            follower_cursor_retention_blockers: retention_prune_plan.follower_blocks.len(),
+            raft_snapshot_retention_blockers: retention_prune_plan.raft_snapshot_blocks.len(),
+            compaction_debt_model_count,
+            compaction_debt_score,
+            total_pressure_score,
+        };
         let mut stages = Vec::new();
         let mut errors = Vec::new();
         stages.push(StorageManagerStageReport {
@@ -2018,14 +2119,12 @@ impl TemporalEngine {
                 "prepare disabled".to_string()
             },
             selected_page_segment_ids: plan.live_page_segment_ids.clone(),
-            pressure_signal: "dirty_slots+undumped_wal_records+stale_page_bytes".to_string(),
-            pressure_score: plan.dirty_slots.len() as u64
-                + plan.undumped_oplog_records
-                + reclaim_stale_bytes,
+            pressure_signal:
+                "dirty_slots+wal_bytes+index_log_bytes+stale_density+cache_pressure+expire_debt+delayed_destroy+retention_blockers+model_compaction_debt"
+                    .to_string(),
+            pressure_score: pressure_signals.total_pressure_score,
             pressure_threshold: 1,
-            pressure_triggered: !plan.dirty_slots.is_empty()
-                || plan.undumped_oplog_records > 0
-                || reclaim_stale_bytes > 0,
+            pressure_triggered: pressure_signals.total_pressure_score > 0,
             candidate_count: reclaim_candidate_count,
             skipped_count: reclaim_skipped_count,
             before_bytes: slot_physical_bytes,
@@ -2098,8 +2197,11 @@ impl TemporalEngine {
                 "dumped selected dirty slots and advanced reclaimable log boundary".to_string()
             },
             selected_slots: plan.selected_dump_slots.clone(),
-            pressure_signal: "undumped_wal_records".to_string(),
-            pressure_score: plan.undumped_oplog_records,
+            pressure_signal: "undumped_wal_records+wal_bytes+index_log_bytes".to_string(),
+            pressure_score: pressure_signals
+                .undumped_wal_records
+                .saturating_add(pressure_signals.wal_bytes)
+                .saturating_add(pressure_signals.index_log_bytes),
             pressure_threshold: request.min_undumped_oplog_records,
             pressure_triggered: request.enable_oplog_reclaim
                 && !plan.dump_delayed
@@ -2132,16 +2234,17 @@ impl TemporalEngine {
             } else {
                 "expire disabled".to_string()
             },
-            pressure_signal: "expired_logical_records".to_string(),
+            pressure_signal: "expired_slot_object_scan_debt".to_string(),
             pressure_score: expiry_report
                 .as_ref()
                 .map(|report| report.expired_records_removed as u64)
-                .unwrap_or_default(),
+                .unwrap_or(pressure_signals.expired_slot_object_scan_debt as u64),
             pressure_threshold: 1,
-            pressure_triggered: expiry_report
-                .as_ref()
-                .map(|report| report.expired_records_removed > 0)
-                .unwrap_or(false),
+            pressure_triggered: pressure_signals.expired_slot_object_scan_debt > 0
+                || expiry_report
+                    .as_ref()
+                    .map(|report| report.expired_records_removed > 0)
+                    .unwrap_or(false),
             before_bytes: slot_logical_bytes,
             after_bytes: slot_logical_bytes,
             expired_records_removed: expiry_report
@@ -2168,18 +2271,28 @@ impl TemporalEngine {
             } else {
                 "evict disabled".to_string()
             },
-            pressure_signal: "cache_entries+disk_cache_bytes".to_string(),
-            pressure_score: lifecycle_report
-                .as_ref()
-                .map(|report| report.cache_entries_removed as u64 + report.cache_disk_bytes_removed)
-                .unwrap_or_default(),
+            pressure_signal: "memory_cache_pressure+disk_cache_bytes+async_writeback_backlog"
+                .to_string(),
+            pressure_score: pressure_signals
+                .memory_cache_pressure_score
+                .saturating_add(pressure_signals.disk_cache_bytes)
+                .saturating_add(
+                    lifecycle_report
+                        .as_ref()
+                        .map(|report| {
+                            report.cache_entries_removed as u64 + report.cache_disk_bytes_removed
+                        })
+                        .unwrap_or_default(),
+                ),
             pressure_threshold: 1,
-            pressure_triggered: lifecycle_report
-                .as_ref()
-                .map(|report| {
-                    report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
-                })
-                .unwrap_or(false),
+            pressure_triggered: pressure_signals.memory_cache_pressure_score > 0
+                || pressure_signals.disk_cache_bytes > 0
+                || lifecycle_report
+                    .as_ref()
+                    .map(|report| {
+                        report.cache_entries_removed > 0 || report.cache_disk_bytes_removed > 0
+                    })
+                    .unwrap_or(false),
             before_bytes: lifecycle_report
                 .as_ref()
                 .map(|report| report.cache_disk_bytes_removed)
@@ -2214,8 +2327,11 @@ impl TemporalEngine {
                 "reclaimed delayed-destroy page segments selected by stale-byte pressure"
                     .to_string()
             },
-            pressure_signal: "stale_page_bytes".to_string(),
-            pressure_score: reclaim_stale_bytes,
+            pressure_signal: "stale_page_bytes+delayed_destroy_backlog+stale_density".to_string(),
+            pressure_score: pressure_signals
+                .stale_page_bytes
+                .saturating_add(pressure_signals.delayed_destroy_bytes)
+                .saturating_add(pressure_signals.page_segment_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: request.enable_page_reclaim && !plan.reclaim_candidates.is_empty(),
             candidate_count: reclaim_candidate_count,
@@ -2259,7 +2375,8 @@ impl TemporalEngine {
             } else {
                 "index GC disabled".to_string()
             },
-            pressure_signal: "obsolete_manifests+install_markers".to_string(),
+            pressure_signal:
+                "obsolete_manifests+install_markers+follower_cursor_retention_blockers".to_string(),
             pressure_score: lifecycle_report
                 .as_ref()
                 .map(|report| {
@@ -2270,7 +2387,9 @@ impl TemporalEngine {
                         .unwrap_or_default()
                         + report.install_roll_forward_reports.len()
                 })
-                .unwrap_or_default() as u64,
+                .unwrap_or_default() as u64
+                + pressure_signals.follower_cursor_retention_blockers as u64
+                + pressure_signals.raft_snapshot_retention_blockers as u64,
             pressure_threshold: 1,
             pressure_triggered: request.enable_index_gc
                 && lifecycle_report
@@ -2342,13 +2461,10 @@ impl TemporalEngine {
             } else {
                 "rewrote live model page references into a fresh compacted segment".to_string()
             },
-            pressure_signal: "stale_segment_density+live_segment_count".to_string(),
-            pressure_score: reclaim_stale_bytes
-                + if plan.live_page_segment_ids.len() > 1 {
-                    plan.live_page_segment_ids.len() as u64
-                } else {
-                    0
-                },
+            pressure_signal: "model_layout_compaction_debt+stale_segment_density".to_string(),
+            pressure_score: pressure_signals
+                .compaction_debt_score
+                .saturating_add(pressure_signals.page_segment_stale_density_basis_points),
             pressure_threshold: 1,
             pressure_triggered: should_compact,
             candidate_count: plan.stale_page_segment_ids.len(),
@@ -2437,6 +2553,7 @@ impl TemporalEngine {
             cxx_stage_order,
             completed: errors.is_empty(),
             production_parity_slice,
+            pressure_signals,
             stages,
             plan,
             merged_dump_load_policy,
@@ -18210,6 +18327,19 @@ mod tests {
         assert!(blocked
             .reasons
             .contains(&"follower_cursor_blocks_prune".to_string()));
+        let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            dry_run: true,
+            follower_replay_cursors: vec![lagging_cursor.clone()],
+            ..StorageManagerCycleRequest::default()
+        });
+        assert_eq!(cycle.pressure_signals.follower_cursor_retention_blockers, 1);
+        let index_gc = cycle
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "index_gc")
+            .expect("index_gc stage");
+        assert!(index_gc.pressure_score >= 1);
 
         let caught_up = engine.slot_dump_manifest_prune_plan_with_follower_cursors(
             1,
@@ -19044,7 +19174,7 @@ mod tests {
         assert!(engine.cache().stats().puts >= 1);
     }
 
-    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_manager_real_pressure_signals
     #[test]
     fn storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run() {
         let dir = tempfile::tempdir().unwrap();
@@ -19088,6 +19218,10 @@ mod tests {
         );
         assert_eq!(report.stages.len(), report.cxx_stage_order.len());
         assert!(report.plan.dirty_slots.len() >= 1);
+        assert!(report.pressure_signals.dirty_slot_count >= 1);
+        assert!(report.pressure_signals.wal_bytes > 0);
+        assert!(report.pressure_signals.index_log_bytes > 0);
+        assert!(report.pressure_signals.total_pressure_score > 0);
         let prepare = report
             .stages
             .iter()
@@ -19095,10 +19229,13 @@ mod tests {
             .expect("prepare stage");
         assert_eq!(
             prepare.pressure_signal,
-            "dirty_slots+undumped_wal_records+stale_page_bytes"
+            "dirty_slots+wal_bytes+index_log_bytes+stale_density+cache_pressure+expire_debt+delayed_destroy+retention_blockers+model_compaction_debt"
         );
         assert!(prepare.pressure_triggered, "{report:#?}");
-        assert!(prepare.pressure_score >= 1, "{report:#?}");
+        assert_eq!(
+            prepare.pressure_score,
+            report.pressure_signals.total_pressure_score
+        );
         assert_eq!(engine.list_slot_dump_manifests(1).len(), before_manifests);
         assert!(report.lifecycle_report.is_none());
         assert!(report.compaction_report.is_none());
@@ -19106,7 +19243,7 @@ mod tests {
         assert!(report.merged_dump_load_policy.production_slice_ready);
     }
 
-    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_gc_eviction_cold_reads
+    // shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure storage_gc_eviction_cold_reads storage_manager_real_pressure_signals
     #[test]
     fn storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact() {
         let dir = tempfile::tempdir().unwrap();
@@ -19163,6 +19300,22 @@ mod tests {
             report.merged_dump_load_policy.production_slice_ready,
             "{report:#?}"
         );
+        assert!(report.pressure_signals.dirty_slot_count >= 1);
+        assert!(report.pressure_signals.undumped_wal_records >= 1);
+        assert!(report.pressure_signals.wal_bytes > 0);
+        assert!(report.pressure_signals.index_log_bytes > 0);
+        assert!(report.pressure_signals.stale_page_bytes > 0);
+        assert!(
+            report
+                .pressure_signals
+                .page_segment_stale_density_basis_points
+                > 0
+        );
+        assert!(report.pressure_signals.memory_cache_pressure_score > 0);
+        assert!(report.pressure_signals.expired_slot_object_scan_debt >= 1);
+        assert!(report.pressure_signals.compaction_debt_model_count >= 1);
+        assert!(report.pressure_signals.compaction_debt_score > 0);
+        assert!(report.pressure_signals.total_pressure_score > 0);
         assert!(report.merged_dump_load_policy.manifest_checksum_validated);
         assert!(report.merged_dump_load_policy.manifest_generation_validated);
         assert!(report.merged_dump_load_policy.sequence_boundaries_validated);
@@ -19183,7 +19336,10 @@ mod tests {
             .find(|stage| stage.stage == "reclaim_oplog")
             .expect("reclaim_oplog stage");
         assert!(reclaim_oplog.dumped_slot_count >= 1, "{report:#?}");
-        assert_eq!(reclaim_oplog.pressure_signal, "undumped_wal_records");
+        assert_eq!(
+            reclaim_oplog.pressure_signal,
+            "undumped_wal_records+wal_bytes+index_log_bytes"
+        );
         assert!(reclaim_oplog.pressure_triggered, "{report:#?}");
         let expire = report
             .stages
@@ -19191,7 +19347,7 @@ mod tests {
             .find(|stage| stage.stage == "expire")
             .expect("expire stage");
         assert_eq!(expire.expired_records_removed, 1, "{report:#?}");
-        assert_eq!(expire.pressure_signal, "expired_logical_records");
+        assert_eq!(expire.pressure_signal, "expired_slot_object_scan_debt");
         assert!(expire.pressure_triggered, "{report:#?}");
         let evict = report
             .stages
@@ -19199,7 +19355,10 @@ mod tests {
             .find(|stage| stage.stage == "evict")
             .expect("evict stage");
         assert!(evict.cache_entries_removed >= 1, "{report:#?}");
-        assert_eq!(evict.pressure_signal, "cache_entries+disk_cache_bytes");
+        assert_eq!(
+            evict.pressure_signal,
+            "memory_cache_pressure+disk_cache_bytes+async_writeback_backlog"
+        );
         assert!(evict.pressure_triggered, "{report:#?}");
         let reclaim_page = report
             .stages
@@ -19207,7 +19366,10 @@ mod tests {
             .find(|stage| stage.stage == "reclaim_page")
             .expect("reclaim_page stage");
         assert!(reclaim_page.page_segments_reclaimed >= 1, "{report:#?}");
-        assert_eq!(reclaim_page.pressure_signal, "stale_page_bytes");
+        assert_eq!(
+            reclaim_page.pressure_signal,
+            "stale_page_bytes+delayed_destroy_backlog+stale_density"
+        );
         assert!(reclaim_page.candidate_count >= reclaim_page.page_segments_reclaimed);
         let index_gc = report
             .stages
@@ -19216,7 +19378,7 @@ mod tests {
             .expect("index_gc stage");
         assert_eq!(
             index_gc.pressure_signal,
-            "obsolete_manifests+install_markers"
+            "obsolete_manifests+install_markers+follower_cursor_retention_blockers"
         );
         let compact = report
             .stages
@@ -19225,7 +19387,7 @@ mod tests {
             .expect("compact stage");
         assert_eq!(
             compact.pressure_signal,
-            "stale_segment_density+live_segment_count"
+            "model_layout_compaction_debt+stale_segment_density"
         );
         let metrics = report
             .stages

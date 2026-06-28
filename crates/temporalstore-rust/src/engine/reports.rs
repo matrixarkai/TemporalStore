@@ -682,6 +682,8 @@ pub struct StorageManagerCycleRequest {
     pub min_undumped_oplog_records: u64,
     #[serde(default)]
     pub warm_cache: bool,
+    #[serde(default)]
+    pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
 }
 
 impl Default for StorageManagerCycleRequest {
@@ -699,6 +701,7 @@ impl Default for StorageManagerCycleRequest {
             max_dump_slots_per_round: 0,
             min_undumped_oplog_records: 0,
             warm_cache: false,
+            follower_replay_cursors: Vec::new(),
         }
     }
 }
@@ -769,12 +772,36 @@ pub struct StorageManagerStageReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageManagerPressureSignals {
+    pub dirty_slot_count: usize,
+    pub undumped_wal_records: u64,
+    pub wal_bytes: u64,
+    pub index_log_bytes: u64,
+    pub stale_page_bytes: u64,
+    pub live_page_bytes: u64,
+    pub page_segment_stale_density_basis_points: u64,
+    pub memory_cache_bytes: u64,
+    pub disk_cache_bytes: u64,
+    pub memory_cache_pressure_score: u64,
+    pub expired_slot_object_scan_debt: usize,
+    pub delayed_destroy_segment_count: usize,
+    pub delayed_destroy_bytes: u64,
+    pub follower_cursor_retention_blockers: usize,
+    pub raft_snapshot_retention_blockers: usize,
+    pub compaction_debt_model_count: usize,
+    pub compaction_debt_score: u64,
+    pub total_pressure_score: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageManagerCycleReport {
     pub shard_id: ShardId,
     pub dry_run: bool,
     pub cxx_stage_order: Vec<String>,
     pub completed: bool,
     pub production_parity_slice: bool,
+    #[serde(default)]
+    pub pressure_signals: StorageManagerPressureSignals,
     pub stages: Vec<StorageManagerStageReport>,
     pub plan: StorageLifecyclePlan,
     #[serde(default)]
