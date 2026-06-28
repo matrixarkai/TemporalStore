@@ -734,21 +734,18 @@ impl TemporalEngine {
             .export_index_bytes(shard_id)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         let index_sha256 = sha256_hex_bytes(&index_bytes);
+        let dump_index_state = serde_json::from_slice::<ShardState>(&index_bytes)
+            .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         let created_unix_ms = now_ms();
         let manifest_id = format!("{shard_id}-{index_log_sequence}-{created_unix_ms}");
         let parent_manifest_id = latest_slot_dump_manifest_at(&self.index_dir, shard_id)
             .map(|manifest| manifest.manifest_id);
-        let object_lifecycle = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&shard_id)
-            .map(|shard| {
-                storage_object_lifecycle_report_for_slots(shard_id, shard, &selected_slots, |key| {
-                    self.routing_slot_for_key(shard_id, key)
-                })
-            })
-            .unwrap_or_default();
+        let object_lifecycle = storage_object_lifecycle_report_for_slots(
+            shard_id,
+            &dump_index_state,
+            &selected_slots,
+            |key| self.routing_slot_for_key(shard_id, key),
+        );
         let mut manifest = SlotDumpManifest {
             version: 3,
             shard_id,
@@ -7613,6 +7610,7 @@ fn upsert_slot_index_page(
         {
             slot.object_ids.remove(&object_id);
         }
+        update_slot_layout(slot);
     }
     let slot = shard
         .slot_index
@@ -7640,6 +7638,38 @@ fn upsert_slot_index_page(
             log_backed: entry.log_backed,
         },
     );
+    update_slot_layout(slot);
+}
+
+fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
+    match (object_count, page_ref_count) {
+        (0, _) => SlotLayoutState::Empty,
+        (1, 0) => SlotLayoutState::SingleObject,
+        (_, 0) => SlotLayoutState::Empty,
+        (1, 1) => SlotLayoutState::SinglePageObject,
+        (1, _) => SlotLayoutState::MultiPageObject,
+        _ => SlotLayoutState::MultiObject,
+    }
+}
+
+fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
+    match layout {
+        SlotLayoutState::Empty => "empty",
+        SlotLayoutState::SingleObject => "single_object",
+        SlotLayoutState::SinglePageObject => "single_page_object",
+        SlotLayoutState::MultiPageObject => "multi_page_object",
+        SlotLayoutState::MultiObject => "multi_object",
+    }
+}
+
+fn update_slot_layout(slot: &mut SlotNodeIndex) {
+    slot.object_ids = slot
+        .page_refs
+        .values()
+        .filter(|page| !page.deleted)
+        .map(|page| page.object_id)
+        .collect();
+    slot.layout = classify_slot_layout(slot.object_ids.len(), slot.page_refs.len());
 }
 
 fn rebuild_slot_first_index(
@@ -7686,6 +7716,7 @@ fn rebuild_slot_first_index(
                 log_backed: entry.log_backed,
             },
         );
+        update_slot_layout(slot);
     }
     shard.slot_index = slot_index;
 }
@@ -7938,6 +7969,7 @@ fn storage_physical_index_report(
                 *routing_slot,
                 StoragePhysicalSlotNode {
                     routing_slot: *routing_slot,
+                    layout: "empty".to_string(),
                     dirty: summary.dirty_object_count > 0,
                     meta_loaded: true,
                     loading: false,
@@ -7970,6 +8002,7 @@ fn storage_physical_index_report(
             .entry(routing_slot)
             .or_insert(StoragePhysicalSlotNode {
                 routing_slot,
+                layout: "empty".to_string(),
                 meta_loaded: true,
                 in_memory: true,
                 cpp_packed_slot_node_len: CPP_PACKED_SLOT_NODE_SIZE,
@@ -8006,6 +8039,14 @@ fn storage_physical_index_report(
                 .then(left.page_segment_id.cmp(&right.page_segment_id))
                 .then(left.offset.cmp(&right.offset))
         });
+        let object_count = slot
+            .page_indexes
+            .iter()
+            .filter_map(|page| page.object_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        slot.layout = slot_layout_name(classify_slot_layout(object_count, slot.page_indexes.len()))
+            .to_string();
         slot.cpp_packed_slot_node_len = CPP_PACKED_SLOT_NODE_SIZE;
         slot.cpp_packed_slot_node_hex = hex::encode(cpp_packed_slot_node_bytes(slot));
     }
@@ -16520,6 +16561,149 @@ mod tests {
         assert!(page_indexes
             .iter()
             .any(|page| { page.model_id == "risk" && page.object_key == "risk:cpc:risk-key" }));
+    }
+
+    // shared-corpus: storage_slot_layout_transitions
+    #[test]
+    fn storage_slot_layout_transitions_cover_growth_compaction_delete_dump_load_restart() {
+        fn single_slot_layout(engine: &TemporalEngine, shard_id: ShardId) -> String {
+            let report = engine.storage_physical_index_report(shard_id);
+            let non_empty_slots = report
+                .slot_nodes
+                .iter()
+                .filter(|slot| !slot.page_indexes.is_empty())
+                .collect::<Vec<_>>();
+            assert_eq!(non_empty_slots.len(), 1, "{report:?}");
+            non_empty_slots[0].layout.clone()
+        }
+
+        fn load_single_slot_shard(engine: &TemporalEngine) {
+            engine.load_shard_with(LoadShardRequest {
+                shard_id: 51,
+                load_version: 1,
+                local_node_id: Some(1),
+                shard_uri: "local://slot-layout/shard-51".to_string(),
+                start_routing_slot: 7,
+                end_routing_slot: 7,
+                readonly: false,
+                table_name: "slot_layout_table".to_string(),
+            });
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let pages_dir = dir.path().join("pages");
+        let indexes_dir = dir.path().join("indexes");
+        let points = (0..10)
+            .map(|offset| FeaturePoint {
+                timestamp_ms: 10_000 + offset,
+                value: vec![b'a' + offset as u8; 10 * 1024],
+            })
+            .collect::<Vec<_>>();
+
+        {
+            let engine = TemporalEngine::with_local_dirs(
+                8 * 1024 * 1024,
+                cache_dir.clone(),
+                pages_dir.clone(),
+                indexes_dir.clone(),
+            );
+            load_single_slot_shard(&engine);
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 51,
+                        command: Command::StringSet {
+                            key: "slot-layout-a".to_string(),
+                            value: b"v1".to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert_eq!(single_slot_layout(&engine, 51), "single_page_object");
+
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 51,
+                        command: Command::StringSet {
+                            key: "slot-layout-b".to_string(),
+                            value: b"v2".to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert_eq!(single_slot_layout(&engine, 51), "multi_object");
+
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 51,
+                        command: Command::CommonDelete {
+                            key: "slot-layout-b".to_string(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert_eq!(single_slot_layout(&engine, 51), "single_page_object");
+
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 51,
+                        command: Command::CommonDelete {
+                            key: "slot-layout-a".to_string(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 51,
+                        command: Command::FeatureAppend {
+                            key: "slot-layout-feature".to_string(),
+                            points: points.clone(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert_eq!(single_slot_layout(&engine, 51), "multi_page_object");
+
+            let compact_report = engine.compact_shard_pages(51).unwrap();
+            assert!(compact_report.rewritten_page_refs > 0);
+            assert_eq!(single_slot_layout(&engine, 51), "multi_page_object");
+
+            let manifest = engine.create_slot_dump_manifest(51, [7]).unwrap();
+            assert_eq!(manifest.slot_ids, vec![7]);
+            engine.validate_slot_dump_manifest(&manifest).unwrap();
+            engine.install_slot_dump_manifest(&manifest).unwrap();
+            assert_eq!(single_slot_layout(&engine, 51), "multi_page_object");
+        }
+
+        let restored =
+            TemporalEngine::with_local_dirs(8 * 1024 * 1024, cache_dir, pages_dir, indexes_dir);
+        load_single_slot_shard(&restored);
+        assert_eq!(single_slot_layout(&restored, 51), "multi_page_object");
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 51,
+                    command: Command::FeatureQuery {
+                        key: "slot-layout-feature".to_string(),
+                        start_ms: 0,
+                        end_ms: 20_000,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints { points }
+        );
     }
 
     #[test]

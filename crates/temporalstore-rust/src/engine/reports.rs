@@ -278,6 +278,7 @@ pub struct StoragePhysicalPageIndex {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePhysicalSlotNode {
     pub routing_slot: u32,
+    pub layout: String,
     pub dirty: bool,
     pub meta_loaded: bool,
     pub loading: bool,
