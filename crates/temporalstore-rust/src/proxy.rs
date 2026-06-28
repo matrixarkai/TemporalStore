@@ -2209,6 +2209,188 @@ mod tests {
         );
     }
 
+    // shared-corpus: control_multi_proxy_topology_churn_scale
+    #[test]
+    fn proxy_multi_proxy_converges_under_topology_churn_stale_cache_and_recovery() {
+        let dir_a = tempfile::tempdir().unwrap();
+        let engine_a = TemporalEngine::with_local_dirs(
+            1024,
+            dir_a.path().join("cache"),
+            dir_a.path().join("pages"),
+            dir_a.path().join("indexes"),
+        );
+        engine_a.load_shard(1);
+        start_server(test_addr(18_340), engine_a.clone());
+
+        let dir_b = tempfile::tempdir().unwrap();
+        let engine_b = TemporalEngine::with_local_dirs(
+            1024,
+            dir_b.path().join("cache"),
+            dir_b.path().join("pages"),
+            dir_b.path().join("indexes"),
+        );
+        engine_b.load_shard(1);
+        start_server(test_addr(18_341), engine_b.clone());
+
+        let meta = crate::meta::SingleNodeMeta::default();
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_340),
+            node_id: 1,
+            location: "zone-a".to_string(),
+            binary_version: "v-a".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_340),
+        });
+        start_meta_service(test_addr(18_342), meta.clone());
+        wait_for_http(&test_addr(18_340));
+        wait_for_http(&test_addr(18_341));
+        wait_for_http(&test_addr(18_342));
+
+        let proxy_a = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_342),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 50,
+            io_timeout_ms: 200,
+            ..ProxyOptions::default()
+        });
+        let proxy_b = ProxyService::new(ProxyOptions {
+            meta_addr: test_addr(18_342),
+            route_cache_ttl_ms: 60_000,
+            connect_timeout_ms: 50,
+            io_timeout_ms: 200,
+            ..ProxyOptions::default()
+        });
+
+        for (proxy, key, value) in [
+            (&proxy_a, "proxy-a-before", b"a-before".to_vec()),
+            (&proxy_b, "proxy-b-before", b"b-before".to_vec()),
+        ] {
+            assert!(
+                proxy
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: key.to_string(),
+                            value,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert_eq!(proxy.info().route_cache_size, 1);
+        }
+
+        meta.register_server(crate::meta::RegisterServerRequest {
+            server_addr: test_addr(18_341),
+            node_id: 2,
+            location: "zone-b".to_string(),
+            binary_version: "v-b".to_string(),
+        });
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: test_addr(18_341),
+        });
+
+        assert!(
+            proxy_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "proxy-a-after".to_string(),
+                        value: b"a-after".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        proxy_b
+            .client()
+            .insert_cached_route_for_test(1, "127.0.0.1:1");
+        assert!(
+            proxy_b
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "proxy-b-after".to_string(),
+                        value: b"b-after".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "proxy-a-before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"a-before".to_vec())
+            }
+        );
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "proxy-b-before".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"b-before".to_vec())
+            }
+        );
+        for (key, value) in [
+            ("proxy-a-after", b"a-after".to_vec()),
+            ("proxy-b-after", b"b-after".to_vec()),
+        ] {
+            assert_eq!(
+                engine_b
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string(),
+                        },
+                    })
+                    .response,
+                CommandResponse::Bytes { value: Some(value) }
+            );
+        }
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "proxy-a-after".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None }
+        );
+
+        let preflight_a = proxy_a.preflight_report();
+        assert!(!preflight_a.topology_cache_stale, "{preflight_a:?}");
+        assert_eq!(preflight_a.client.topology_cache.route_count, 1);
+        assert!(preflight_a.client.route_refreshes >= 2, "{preflight_a:?}");
+        let route_a = preflight_a.client.topology_cache.routes.first().unwrap();
+        assert_eq!(route_a.primary_addr, test_addr(18_341));
+
+        let preflight_b = proxy_b.preflight_report();
+        assert!(!preflight_b.topology_cache_stale, "{preflight_b:?}");
+        assert_eq!(preflight_b.client.topology_cache.route_count, 1);
+        assert!(preflight_b.client.route_refreshes >= 2, "{preflight_b:?}");
+        let route_b = preflight_b.client.topology_cache.routes.first().unwrap();
+        assert_eq!(route_b.primary_addr, test_addr(18_341));
+    }
+
     #[test]
     fn proxy_preflight_reports_degraded_bad_request_state() {
         let proxy = ProxyService::new(ProxyOptions {

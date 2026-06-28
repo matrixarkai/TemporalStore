@@ -48,6 +48,8 @@ Rust now has a reusable `ProxyService`:
 - client-owned route cache with TTL
 - client-owned route refresh after backend error
 - client-owned backend failure pool behavior with continuous-failure windows and cached-backend bypass
+- two-proxy topology churn scale coverage: both proxy instances converge after a metaserver shard
+  move, stale cached routes are invalidated, and the moved backend receives new writes
 - HTTP connect/read/write timeout options
 - HTTP retry options
 - proxy stats:
