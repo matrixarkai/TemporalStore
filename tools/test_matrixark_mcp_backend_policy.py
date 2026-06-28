@@ -3167,6 +3167,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn('"native_append": true', implementation)
         self.assertIn("entries_compact", implementation)
         self.assertIn("expanded_hash_entries", implementation)
+        self.assertNotIn("put_string(&serving_count_key", implementation)
+        self.assertNotIn("value_contains_serving_context_record", implementation)
 
         self.assertIn('"scan_hash" =>', implementation)
         self.assertIn("client.hgetall", implementation)
@@ -3338,6 +3340,8 @@ class MatrixArkRustProxyAliasPolicyTest(unittest.TestCase):
         self.assertEqual(metrics["matrixark_append_write_path"], "rust_proxy_matrixark_batch_runtime_default")
         self.assertFalse(metrics["matrixark_batch_uses_forced_sync_durable_writes"])
         self.assertTrue(metrics["matrixark_native_batch_append_available"])
+        self.assertTrue(metrics["matrixark_batch_append_uses_existing_batch_execute"])
+        self.assertEqual(metrics["matrixark_batch_append_existing_batch_execute_source"], "temporalstore_matrixark_batch_append_records")
         self.assertFalse(metrics["matrixark_append_uses_per_record_hset"])
         self.assertFalse(metrics["matrixark_append_uses_generic_batch_hset_fallback"])
         self.assertTrue(metrics["separate_proxy_lanes"])

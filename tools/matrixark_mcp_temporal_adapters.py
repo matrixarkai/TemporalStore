@@ -170,6 +170,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         from temporalstore import Client, Options, ProxyClient, ProxyOptions  # type: ignore
 
         proxy_endpoint = os.environ.get("MATRIXARK_TEMPORALSTORE_CPP_PROXY_ENDPOINT", "").strip()
+        force_generic_batch_fallback = os.environ.get("MATRIXARK_FORCE_GENERIC_BATCH_HSET_FALLBACK", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
         self._cpp_proxy_endpoint = proxy_endpoint
         if proxy_endpoint:
             proxy_options = ProxyOptions(
@@ -196,11 +202,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 getattr(getattr(self._client, "_native", None), "has_matrixark_batch_append_records", False)
             )
             self._matrixark_append_write_path = (
-                "native_c_api_hash_mset_grouped"
+                "cpp_direct_existing_batch_execute_raw_batch_mset"
                 if self._matrixark_native_batch_append_available
                 else "fallback_python_batch_hset_loop"
             )
+        if force_generic_batch_fallback:
+            self._matrixark_native_batch_append_available = False
+            self._matrixark_append_write_path = "forced_fallback_python_batch_hset_loop"
         self._matrixark_append_uses_per_record_hset = not self._matrixark_native_batch_append_available
+        self._matrixark_batch_append_uses_existing_batch_execute = bool(
+            self._matrixark_native_batch_append_available
+            and self._matrixark_append_write_path == "cpp_direct_existing_batch_execute_raw_batch_mset"
+        )
         self._matrixark_proxy_mode = bool(proxy_endpoint)
         # C++ has a native CONTEXT extension (WRITE_EVENT / WRITE_EXTRACTED_EVENT)
         # but the generic JSON record-log adapter still persists through the
@@ -3720,6 +3733,15 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
         self._record_hash_key = f"{self._storage_prefix}:records"
         self._index_key = f"{self._storage_prefix}:record_index"
         self._count_key = f"{self._storage_prefix}:record_count"
+        self._matrixark_native_batch_append_available = True
+        self._matrixark_append_write_path = (
+            "rust_direct_sdk_matrixark_batch_append_records"
+            if sdk_mode in {"direct-sdk", "direct_sdk", "native-binding", "rust-direct"}
+            else "rust_proxy_matrixark_batch_runtime_default"
+        )
+        self._matrixark_append_uses_per_record_hset = False
+        self._matrixark_batch_append_uses_existing_batch_execute = True
+        self._matrixark_batch_append_existing_batch_execute_source = "temporalstore_matrixark_batch_append_records"
         self._shard_size = DIRECT_RECORD_LOG_SHARD_SIZE
         self._index_cache: list[str] | None = None
         self._records_cache: list[Json] | None = None
