@@ -64,6 +64,14 @@ Rust now has a reusable `ProxyService`:
 - `/proxy/cpp_migration_contract` and `/ProxyService/GetCppMigrationContract` expose the migration
   contract, including topology-version invalidation, admission policy, route quarantine, and
   heartbeat/config behavior preservation
+- `/proxy/operational_surface` and `/ProxyService/GetOperationalSurface` compare the C++ proxy
+  admin/config/heartbeat/status surface one by one against Rust-native replacement routes
+- `/proxy/ports` and `/ProxyService/GetPorts` expose the Rust listen/announce port shape matching
+  the C++ `GetListenPort`/`GetAnnouncePort` operational use case
+- `/proxy/consul_names` and `/ProxyService/GetConsulNames` expose deterministic Rust service
+  registry names while keeping legacy Consul out of scope
+- `/proxy/notify_stop` and `/ProxyService/NotifyStop` mark local service-discovery state stopped;
+  metaserver proxy freeze/drop APIs remain the Rust production drain/remove path
 
 The Rust `proxy` binary now delegates to `ProxyService` and supports:
 
@@ -84,6 +92,9 @@ this pass. The production replacement is:
 - tonic `temporalstore.v1.ProxyService` streaming/callback shape.
 - Existing topology-version invalidation, admission policy, backend quarantine/recovery, and
   heartbeat/config readiness behavior remain preserved.
+- Operational JSON aliases for C++ admin/config/heartbeat/status workflows: `GetInfo`,
+  `GetConfig`, `UpdateConfig`, `Heartbeat`, `Preflight`, `GetPolicy`, `GetPorts`,
+  `GetConsulNames`, `NotifyStop`, `GetOperationalSurface`, and `Metrics`.
 
 This decision is tracked in code through `ProxyCppMigrationContract` and readiness fields. The
 readiness gate can therefore distinguish "decision documented and Rust-native replacement ready"
@@ -96,10 +107,10 @@ Rust proxy is still not a C++ proxy drop-in:
 - no legacy C++ RPC server
 - no legacy framed parser
 - no legacy C++ framed request/response wire compatibility
-- no command-specific legacy framed method aliases such as `Get`, `Set`, `FeatureAdd`, `RiskHset`,
-  `HMGet`, `HMSet`, `HGetAll`, and `HLen`
+- no legacy framed method compatibility; Rust exposes JSON aliases for `Get`, `Set`, `FeatureAdd`,
+  `RiskHset`, `HMGet`, `HMSet`, `HGetAll`, and `HLen` instead
 - no full C++ partition-set topology/slot router beyond the open-source table topology path
-- no consul registration
+- no live Consul registration; Rust exposes deterministic service-registry name/status reports
 - no proxy location/VDC/CMDB integration
 
 The current Rust proxy is an HTTP/JSON proxy plus Rust-native tonic `ProxyService` streaming/callback
