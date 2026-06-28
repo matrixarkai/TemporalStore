@@ -3224,6 +3224,23 @@
       ]
     },
     {
+      "name": "storage_manager_real_pressure_signals",
+      "shard_id": 67,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust StorageManager cycle reports and scores work from actual dirty slot count, WAL/index-log bytes, stale page density, cache pressure, expiry scan debt, delayed-destroy backlog, follower retention blockers, and model-layout compaction debt.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact"
+          },
+          "name": "rust_storage_manager_real_pressure_signals",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
