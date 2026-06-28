@@ -3258,6 +3258,23 @@
       ]
     },
     {
+      "name": "storage_manager_expire_cursor_scan_limits",
+      "shard_id": 69,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust expire phase uses C++-style hot/cold scan cursors, per-round limits, load-on-expire only when needed, and reports scanned, expired, skipped, and loaded-for-expire metrics.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "expiry_sweep_uses_hot_cursors_limits_and_cold_load_policy"
+          },
+          "name": "rust_storage_manager_expire_cursor_scan_limits",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_risk_context_page_backed_parity",
       "shard_id": 65,
       "steps": [
