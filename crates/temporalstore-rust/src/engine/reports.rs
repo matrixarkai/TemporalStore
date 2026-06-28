@@ -590,6 +590,37 @@ pub struct StorageLifecycleReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageWalReclaimPlan {
+    pub shard_id: ShardId,
+    pub safe_to_reclaim: bool,
+    pub durable_slot_generation_frontier_oplog_sequence: u64,
+    pub durable_slot_generation_frontier_index_log_sequence: u64,
+    pub retain_from_oplog_sequence: u64,
+    pub retain_from_index_log_sequence: u64,
+    pub current_oplog_sequence: u64,
+    pub current_index_log_sequence: u64,
+    pub covered_slot_count: usize,
+    pub uncovered_slot_count: usize,
+    pub follower_cursor_block_count: usize,
+    pub raft_snapshot_block_count: usize,
+    pub missing_slot_generations: Vec<u32>,
+    pub retained_manifest_ids: Vec<String>,
+    pub blocker_reasons: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageWalReclaimReport {
+    pub plan: StorageWalReclaimPlan,
+    pub applied: bool,
+    pub oplog_records_removed: usize,
+    pub index_log_records_removed: usize,
+    pub oplog_bytes_before: u64,
+    pub oplog_bytes_after: u64,
+    pub index_log_bytes_before: u64,
+    pub index_log_bytes_after: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageCacheWarmupReport {
     pub shard_id: ShardId,
     pub selected_slots: Vec<u32>,
@@ -684,6 +715,8 @@ pub struct StorageManagerCycleRequest {
     pub warm_cache: bool,
     #[serde(default)]
     pub follower_replay_cursors: Vec<SlotDumpFollowerReplayCursor>,
+    #[serde(default)]
+    pub raft_snapshot_refs: Vec<SlotDumpRaftSnapshotRef>,
 }
 
 impl Default for StorageManagerCycleRequest {
@@ -702,6 +735,7 @@ impl Default for StorageManagerCycleRequest {
             min_undumped_oplog_records: 0,
             warm_cache: false,
             follower_replay_cursors: Vec::new(),
+            raft_snapshot_refs: Vec::new(),
         }
     }
 }
@@ -747,6 +781,14 @@ pub struct StorageManagerStageReport {
     pub undumped_oplog_records: u64,
     #[serde(default)]
     pub dumped_slot_count: usize,
+    #[serde(default)]
+    pub wal_records_removed: usize,
+    #[serde(default)]
+    pub index_log_records_removed: usize,
+    #[serde(default)]
+    pub retain_from_wal_sequence: u64,
+    #[serde(default)]
+    pub retain_from_index_log_sequence: u64,
     #[serde(default)]
     pub expired_records_removed: usize,
     #[serde(default)]
@@ -812,6 +854,8 @@ pub struct StorageManagerCycleReport {
     pub expiry_report: Option<ShardExpirySweepReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_report: Option<ShardCompactionReport>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wal_reclaim_report: Option<StorageWalReclaimReport>,
     #[serde(default)]
     pub errors: Vec<String>,
 }
