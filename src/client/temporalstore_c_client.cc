@@ -227,7 +227,10 @@ std::string SessionScopeMode(const rapidjson::Value& query_scope) {
     if (mode.empty()) {
         mode = JsonStringMember(query_scope, "session_scope");
     }
-    return mode == "prefer" || mode == "preferred" || mode == "soft" || mode == "continuity" ? "prefer" : "only";
+    if (mode == "only" || mode == "strict") {
+        return "only";
+    }
+    return "prefer";
 }
 
 bool ScopeKeyMatchesQuery(const std::string& record_scope_key, const rapidjson::Value& query_scope) {
@@ -318,6 +321,29 @@ double ContinuityBoost(const std::string& record_type, const std::string& contex
     if (status == "cross_session") {
         if (record_type == "context_entity" || context_class == "resource_fact") return 0.11;
         if (record_type == "context_event" || record_type == "context_segment" || record_type == "context_compression_event") return 0.06;
+    }
+    return 0.0;
+}
+
+double TypePriorityBoost(const std::string& record_type, const std::string& context_class,
+                         const std::string& question_type) {
+    if (record_type == "skill_section") {
+        return question_type == "procedure" || question_type == "evidence" ? 0.42 : 0.34;
+    }
+    if (record_type == "resource_chunk") {
+        return question_type == "evidence" || question_type == "fact" ? 0.20 : 0.12;
+    }
+    if (context_class == "resource_fact") {
+        return 0.18;
+    }
+    if (record_type == "context_entity") {
+        return question_type == "current_state" ? 0.24 : 0.12;
+    }
+    if (record_type == "context_event" || record_type == "context_segment") {
+        return 0.10;
+    }
+    if (record_type == "context_summary") {
+        return question_type == "broad" || question_type == "exploration" ? 0.12 : 0.0;
     }
     return 0.0;
 }
@@ -808,8 +834,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
             score += 0.06;
         }
         std::string continuity = SessionContinuityStatus(record, scope);
-        double continuity_boost = ContinuityBoost(record_type, ContextClassName(record), continuity);
+        std::string context_class = ContextClassName(record);
+        double continuity_boost = ContinuityBoost(record_type, context_class, continuity);
         score += continuity_boost;
+        score += TypePriorityBoost(record_type, context_class, JsonStringMember(request, "question_type"));
         scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost});
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });

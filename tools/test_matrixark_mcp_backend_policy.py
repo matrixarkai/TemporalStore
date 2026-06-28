@@ -2624,6 +2624,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("def matrixark_scan_candidates", python_sdk)
         self.assertIn("has_matrixark_scan_candidates", python_sdk)
 
+    def test_cpp_native_session_scope_defaults_to_cross_session_prefer(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+
+        self.assertIn('if (mode == "only" || mode == "strict")', source)
+        self.assertIn('return "prefer";', source)
+        self.assertIn('SessionScopeMode(query_scope) == "only"', source)
+        self.assertIn('SessionScopeMode(*scope) == "prefer"', source)
+        self.assertNotIn(' ? "prefer" : "only"', source)
+
+    def test_cpp_native_pack_prioritizes_leaf_records_over_summaries(self) -> None:
+        repo = Path(__file__).resolve().parents[1]
+        source = (repo / "src/client/temporalstore_c_client.cc").read_text()
+
+        self.assertIn("TypePriorityBoost", source)
+        self.assertIn('record_type == "skill_section"', source)
+        self.assertIn('record_type == "resource_chunk"', source)
+        self.assertIn('record_type == "context_summary"', source)
+        self.assertIn('score += TypePriorityBoost', source)
+
     def test_proxy_contract_exposes_matrixark_native_hot_path(self) -> None:
         repo = Path(__file__).resolve().parents[1]
         openapi = (repo / "sdk/proxy/openapi.yaml").read_text()
