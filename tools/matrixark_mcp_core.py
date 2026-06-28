@@ -507,6 +507,18 @@ def parse_scope_key(scope_key: str) -> dict[str, int]:
     return parsed
 
 
+def session_scope_mode(query_scope: Json) -> str:
+    mode = str(
+        query_scope.get("_session_scope")
+        or query_scope.get("session_scope")
+        or query_scope.get("_session_filter_mode")
+        or "only"
+    ).strip().lower()
+    if mode in {"prefer", "preferred", "soft", "continuity"}:
+        return "prefer"
+    return "only"
+
+
 def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_keys: set[str]) -> bool:
     record_parts = parse_scope_key(record_scope_key)
     tenant_hash = int(query_scope.get("tenant_hash") or 0)
@@ -3650,12 +3662,14 @@ def score_recall_candidate(candidate: Json, ranking: Json, *, reference_time_ms:
         half_life_ms=half_life_ms,
     )
     s_busi = business_score_for_candidate(candidate, type_weights)
-    final_score = final_recall_score(origin_score, s_time, s_busi, weights)
+    continuity_boost = session_continuity_boost(candidate, str(candidate.get("question_type") or candidate.get("packing_policy") or "fact"))
+    final_score = clamp01(final_recall_score(origin_score, s_time, s_busi, weights) + continuity_boost)
     return {
         **candidate,
         "origin_score": origin_score,
         "time_score": s_time,
         "business_score": s_busi,
+        "continuity_boost": round(continuity_boost, 6),
         "final_score": final_score,
         "score": final_score,
         "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
@@ -3789,7 +3803,7 @@ def question_type_ref_boost(candidate: Json, question_type: str) -> float:
 
 def packing_sort_key(candidate: Json, question_type: str) -> tuple[float, float, float]:
     score = float(candidate.get("score", 0.0))
-    boosted = clamp01(score + question_type_ref_boost(candidate, question_type))
+    boosted = clamp01(score + question_type_ref_boost(candidate, question_type) + session_continuity_boost(candidate, question_type))
     token_efficiency = boosted / max(1, token_count(str(candidate.get("text", ""))))
     if candidate.get("ref_type") == "compression" and question_type in {"fact", "current_state", "multi_hop"}:
         source_count = len(candidate.get("source_event_ids", []) or [])
@@ -4335,6 +4349,9 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "source_end_ms",
         "source_event_ids",
         "summary_type",
+        "session_continuity",
+        "continuity_boost",
+        "continuity_reason",
     ]
     metadata_keep_fields = [
         "unit_kind",
@@ -4664,8 +4681,9 @@ def scope_matches(record_scope: Json, query_scope: Json) -> bool:
             continue
         if key in {"user_id", "user_hash"} and "user_id" not in explicit_keys:
             continue
-        if key in {"session_id", "session_hash"} and "session_id" not in explicit_keys:
-            continue
+        if key in {"session_id", "session_hash"}:
+            if "session_id" not in explicit_keys or session_scope_mode(query_scope) == "prefer":
+                continue
         if record_scope.get(key) != value:
             return False
     return True
@@ -4690,3 +4708,39 @@ def candidate_access_scope(record: Json) -> Json:
 def access_scope_matches_before_scoring(record: Json, query_scope: Json) -> bool:
     """Gate candidate eligibility before semantic scoring."""
     return scope_matches(candidate_access_scope(record), query_scope)
+
+
+def session_continuity_status(record_scope: Json, query_scope: Json) -> str:
+    query_session = str(query_scope.get("session_id") or "")
+    if not query_session:
+        return "unscoped"
+    record_session = str(record_scope.get("session_id") or "")
+    if record_session == query_session:
+        return "same_session"
+    record_key = str(record_scope.get("scope_key") or "")
+    query_session_hash = int(query_scope.get("session_hash") or 0)
+    if record_key and query_session_hash and parse_scope_key(record_key).get("s") == query_session_hash:
+        return "same_session"
+    if record_session or record_key:
+        return "cross_session"
+    return "unscoped"
+
+
+def session_continuity_boost(candidate: Json, question_type: str) -> float:
+    status = str(candidate.get("session_continuity") or "")
+    ref_type = str(candidate.get("ref_type") or "")
+    context_class = str(candidate.get("context_class") or ref_type)
+    if status == "same_session":
+        if ref_type in {"event", "segment"}:
+            return 0.16
+        if ref_type == "summary":
+            return 0.12
+        if ref_type == "entity":
+            return 0.10
+        return 0.08
+    if status == "cross_session":
+        if ref_type == "entity" or context_class in {"resource_entity_fact", "resource_fact"}:
+            return 0.11
+        if question_type in {"multi_hop", "current_state"} and ref_type in {"event", "segment", "compression"}:
+            return 0.06
+    return 0.0

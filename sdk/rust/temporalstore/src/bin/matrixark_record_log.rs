@@ -850,6 +850,18 @@ fn record_scope_value<'a>(record: &'a Value) -> Option<&'a Value> {
     json_field(record, &["envelope", "scope"]).filter(|value| value.is_object())
 }
 
+fn session_scope_mode(query: &Value) -> &str {
+    match query
+        .get("_session_scope")
+        .or_else(|| query.get("session_scope"))
+        .and_then(Value::as_str)
+        .unwrap_or("only")
+    {
+        "prefer" | "preferred" | "soft" | "continuity" => "prefer",
+        _ => "only",
+    }
+}
+
 fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
     let Some(query) = query_scope.filter(|value| value.is_object()) else {
         return true;
@@ -875,15 +887,74 @@ fn scope_matches_record(record: &Value, query_scope: Option<&Value>) -> bool {
             return false;
         }
     }
-    if let Some(query_session) = query.get("session_id").filter(|value| !value.is_null()) {
-        if query_session.as_str() != Some("")
-            && record_scope.get("session_id") != Some(query_session)
-            && record.get("session_id") != Some(query_session)
-        {
-            return false;
+    if session_scope_mode(query) == "only" {
+        if let Some(query_session) = query.get("session_id").filter(|value| !value.is_null()) {
+            if query_session.as_str() != Some("")
+                && record_scope.get("session_id") != Some(query_session)
+                && record.get("session_id") != Some(query_session)
+            {
+                return false;
+            }
         }
     }
     true
+}
+
+fn record_scope_string(record: &Value, field: &str) -> Option<String> {
+    for source in [record_scope_value(record), record.get("scope")] {
+        if let Some(value) = source
+            .and_then(|scope| scope.get(field))
+            .and_then(Value::as_str)
+            .filter(|text| !text.is_empty())
+        {
+            return Some(value.to_string());
+        }
+    }
+    record
+        .get(field)
+        .and_then(Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
+fn session_continuity_status(record: &Value, query_scope: Option<&Value>) -> String {
+    let Some(query) = query_scope else {
+        return "unscoped".to_string();
+    };
+    let Some(query_session) = query.get("session_id").and_then(Value::as_str).filter(|text| !text.is_empty()) else {
+        return "unscoped".to_string();
+    };
+    if record_scope_string(record, "session_id").as_deref() == Some(query_session) {
+        return "same_session".to_string();
+    }
+    let has_sessionish_scope = record_scope_string(record, "scope_key").is_some() || record_scope_string(record, "session_id").is_some();
+    if has_sessionish_scope {
+        "cross_session".to_string()
+    } else {
+        "unscoped".to_string()
+    }
+}
+
+fn continuity_boost(record: &Value, context_class: &str, status: &str) -> f64 {
+    let record_type = record.get("record_type").and_then(Value::as_str).unwrap_or("");
+    match status {
+        "same_session" => match record_type {
+            "context_event" | "context_segment" => 0.16,
+            "context_summary" => 0.12,
+            "context_entity" => 0.10,
+            _ => 0.08,
+        },
+        "cross_session" => {
+            if record_type == "context_entity" || context_class == "resource_fact" {
+                0.11
+            } else if matches!(record_type, "context_event" | "context_segment" | "context_compression_event") {
+                0.06
+            } else {
+                0.0
+            }
+        }
+        _ => 0.0,
+    }
 }
 
 fn record_ref_hash(record: &Value) -> Option<String> {
@@ -1209,9 +1280,14 @@ fn context_class_name(record: &Value) -> String {
     }
 }
 
-fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
+fn pack_ref_from_record(record: &Value, score: f64, reason: &str, session_continuity: &str, continuity_boost_value: f64) -> Value {
     let ref_type = context_class_name(record);
     let text = candidate_text(record);
+    let continuity_reason = match session_continuity {
+        "same_session" => "same-session continuity",
+        "cross_session" => "cross-session memory bridge",
+        _ => "session-neutral context",
+    };
     json!({
         "ref_type": ref_type,
         "ref_hash": record_ref_hash(record).unwrap_or_else(|| record.get("record_id").and_then(Value::as_str).unwrap_or("").to_string()),
@@ -1220,6 +1296,9 @@ fn pack_ref_from_record(record: &Value, score: f64, reason: &str) -> Value {
         "text": text,
         "token_estimate": token_estimate(&candidate_text(record)),
         "score": (score * 1000000.0).round() / 1000000.0,
+        "session_continuity": session_continuity,
+        "continuity_boost": (continuity_boost_value * 1000000.0).round() / 1000000.0,
+        "continuity_reason": continuity_reason,
         "selection_reason": reason,
         "source_ref": record.get("source_ref").cloned().unwrap_or(Value::Null),
     })
@@ -1295,7 +1374,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
-    let mut scored: Vec<(f64, Value)> = records
+    let scope_for_continuity = scan_command.scope.clone();
+    let mut scored: Vec<(f64, Value, String, f64)> = records
         .into_iter()
         .filter(|record| {
             matches!(
@@ -1327,7 +1407,11 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             ) {
                 score += 0.06;
             }
-            (score, record)
+            let context_class = context_class_name(&record);
+            let session_continuity = session_continuity_status(&record, scope_for_continuity.as_ref());
+            let continuity_boost_value = continuity_boost(&record, &context_class, &session_continuity);
+            score += continuity_boost_value;
+            (score, record, session_continuity, continuity_boost_value)
         })
         .collect();
     scored.sort_by(|left, right| {
@@ -1341,7 +1425,7 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
     let mut selected_nodes: HashSet<u64> = HashSet::new();
     let mut dropped_over_budget = 0_u64;
     let mut used_tokens = 0_u64;
-    for (score, record) in scored {
+    for (score, record, session_continuity, continuity_boost_value) in scored {
         if selected.len() as u64 >= max_refs {
             break;
         }
@@ -1360,6 +1444,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
             &record,
             score,
             "native_rust_proxy_score_pack",
+            &session_continuity,
+            continuity_boost_value,
         ));
     }
     let context_pack_id = format!("rust-native-{}-{}", unix_ms(), selected.len());
@@ -1400,6 +1486,13 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
                 "backend_role": "scan_filter_score_pack"
             },
             "scan_stats": scan_stats,
+            "session_continuity": {
+                "mode": scan_command.scope.as_ref().map(session_scope_mode).unwrap_or("only"),
+                "policy": "same-session continuity first; entity state bridges cross-session memory; cross-session evidence remains eligible under account/tenant/user scope",
+                "same_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("same_session")).count(),
+                "cross_session_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session")).count(),
+                "entity_bridge_selected_ref_count": selected.iter().filter(|item| item.get("session_continuity").and_then(Value::as_str) == Some("cross_session") && item.get("ref_type").and_then(Value::as_str) == Some("entity")).count()
+            },
             "tree_traversal": {
                 "enabled": true,
                 "native_backend": true,

@@ -222,6 +222,14 @@ std::string CandidateScopeKey(const rapidjson::Value& record) {
     return "";
 }
 
+std::string SessionScopeMode(const rapidjson::Value& query_scope) {
+    std::string mode = JsonStringMember(query_scope, "_session_scope");
+    if (mode.empty()) {
+        mode = JsonStringMember(query_scope, "session_scope");
+    }
+    return mode == "prefer" || mode == "preferred" || mode == "soft" || mode == "continuity" ? "prefer" : "only";
+}
+
 bool ScopeKeyMatchesQuery(const std::string& record_scope_key, const rapidjson::Value& query_scope) {
     if (record_scope_key.empty()) {
         return true;
@@ -243,7 +251,7 @@ bool ScopeKeyMatchesQuery(const std::string& record_scope_key, const rapidjson::
             }
         }
     }
-    if (ScopeKeyExplicit(query_scope, "session_id")) {
+    if (ScopeKeyExplicit(query_scope, "session_id") && SessionScopeMode(query_scope) == "only") {
         uint64_t session_hash = JsonUintMember(query_scope, "session_hash", 0);
         if (session_hash != 0) {
             auto it = record_parts.find("s");
@@ -253,6 +261,65 @@ bool ScopeKeyMatchesQuery(const std::string& record_scope_key, const rapidjson::
         }
     }
     return true;
+}
+
+std::string RecordScopeString(const rapidjson::Value& record, const char* field) {
+    const rapidjson::Value* record_scope = JsonObjectMember(record, "scope");
+    const rapidjson::Value* access_scope = JsonObjectMember(record, "access_scope");
+    const rapidjson::Value* metadata = JsonObjectMember(record, "metadata");
+    const rapidjson::Value* metadata_access = metadata == nullptr ? nullptr : JsonObjectMember(*metadata, "access_scope");
+    const rapidjson::Value* scopes[] = {&record, access_scope, metadata_access, record_scope};
+    for (const rapidjson::Value* candidate_scope : scopes) {
+        if (candidate_scope == nullptr || !candidate_scope->IsObject()) {
+            continue;
+        }
+        std::string value = JsonStringMember(*candidate_scope, field);
+        if (!value.empty()) {
+            return value;
+        }
+    }
+    return "";
+}
+
+std::string SessionContinuityStatus(const rapidjson::Value& record, const rapidjson::Value* scope) {
+    if (scope == nullptr || !scope->IsObject()) {
+        return "unscoped";
+    }
+    std::string query_session = JsonStringMember(*scope, "session_id");
+    if (query_session.empty()) {
+        return "unscoped";
+    }
+    std::string record_session = RecordScopeString(record, "session_id");
+    if (!record_session.empty() && record_session == query_session) {
+        return "same_session";
+    }
+    std::string record_scope_key = CandidateScopeKey(record);
+    uint64_t query_session_hash = JsonUintMember(*scope, "session_hash", 0);
+    if (!record_scope_key.empty() && query_session_hash != 0) {
+        auto parts = ParseScopeKey(record_scope_key);
+        auto it = parts.find("s");
+        if (it != parts.end() && it->second == query_session_hash) {
+            return "same_session";
+        }
+    }
+    if (!record_session.empty() || !record_scope_key.empty()) {
+        return "cross_session";
+    }
+    return "unscoped";
+}
+
+double ContinuityBoost(const std::string& record_type, const std::string& context_class, const std::string& status) {
+    if (status == "same_session") {
+        if (record_type == "context_event" || record_type == "context_segment") return 0.16;
+        if (record_type == "context_summary") return 0.12;
+        if (record_type == "context_entity") return 0.10;
+        return 0.08;
+    }
+    if (status == "cross_session") {
+        if (record_type == "context_entity" || context_class == "resource_fact") return 0.11;
+        if (record_type == "context_event" || record_type == "context_segment" || record_type == "context_compression_event") return 0.06;
+    }
+    return 0.0;
 }
 
 bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope) {
@@ -277,6 +344,9 @@ bool ScopeMatches(const rapidjson::Value& record, const rapidjson::Value* scope)
             continue;
         }
         if ((field_name == "account_id" || field_name == "tenant_id" || field_name == "user_id" || field_name == "session_id") && !ScopeKeyExplicit(*scope, field)) {
+            continue;
+        }
+        if (field_name == "session_id" && SessionScopeMode(*scope) == "prefer") {
             continue;
         }
         if ((field_name == "team" || field_name == "project" || field_name == "agent_name") && !ScopeKeyExplicit(*scope, field)) {
@@ -694,7 +764,7 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
     if (const rapidjson::Value* ranking = JsonObjectMember(request, "ranking")) {
         max_refs = std::max<uint64_t>(1, JsonUintMember(*ranking, "max_selected_refs", max_refs));
     }
-    struct ScoredRecord { double score; uint64_t tokens; std::string json; };
+    struct ScoredRecord { double score; uint64_t tokens; std::string json; std::string session_continuity; double continuity_boost; };
     std::vector<ScoredRecord> scored;
     uint64_t secondary_dropped = 0;
     uint64_t secondary_matched = 0;
@@ -737,7 +807,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         } else if (record_type == "context_compression_event") {
             score += 0.06;
         }
-        scored.push_back({score, TokenEstimate(text), record_json});
+        std::string continuity = SessionContinuityStatus(record, scope);
+        double continuity_boost = ContinuityBoost(record_type, ContextClassName(record), continuity);
+        score += continuity_boost;
+        scored.push_back({score, TokenEstimate(text), record_json, continuity, continuity_boost});
     }
     std::sort(scored.begin(), scored.end(), [](const auto& a, const auto& b) { return a.score > b.score; });
 
@@ -788,6 +861,10 @@ bcache2::Status MatrixArkRetrieveContextPackNative(
         ref.AddMember("text", rapidjson::Value(text.c_str(), alloc), alloc);
         ref.AddMember("token_estimate", item.tokens, alloc);
         ref.AddMember("score", item.score, alloc);
+        ref.AddMember("session_continuity", rapidjson::Value(item.session_continuity.c_str(), alloc), alloc);
+        ref.AddMember("continuity_boost", item.continuity_boost, alloc);
+        const char* continuity_reason = item.session_continuity == "same_session" ? "same-session continuity" : (item.session_continuity == "cross_session" ? "cross-session memory bridge" : "session-neutral context");
+        ref.AddMember("continuity_reason", rapidjson::Value(continuity_reason, alloc), alloc);
         ref.AddMember("selection_reason", "native_cpp_score_pack", alloc);
         if (record.HasMember("source_ref")) {
             rapidjson::Value copied;
