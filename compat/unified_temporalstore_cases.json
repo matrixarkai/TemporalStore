@@ -3020,6 +3020,23 @@
       ]
     },
     {
+      "name": "storage_slot_layout_transitions",
+      "shard_id": 51,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage models C++ SlotStore-style slot layout transitions across single-page object, multi-object, multi-page object, delete, compaction, slot dump/load, and restart.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_slot_layout_transitions_cover_growth_compaction_delete_dump_load_restart"
+          },
+          "name": "rust_storage_slot_layout_transitions_match_slotstore_contract",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [

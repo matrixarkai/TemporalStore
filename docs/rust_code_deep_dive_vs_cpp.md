@@ -102,8 +102,12 @@ rebuilding ownership from product maps when the slot index is present. Core
 object writes for string/hash/set/Risk now register PageIndex entries into the
 slot index at write time; model-map reconciliation remains a repair/migration
 fallback for delete/trim/rewrite operations and still-migrating timestamped or
-context families. The report also emits C++-size packed evidence bytes for the
-17-byte `PageIndex` and 24-byte `SlotNode` layouts. Rust still keeps
+context families. Slot nodes now carry C++ SlotStore-style layout state
+(`empty`, `single_object`, `single_page_object`, `multi_page_object`,
+`multi_object`) and the shared case `storage_slot_layout_transitions` verifies
+growth, delete, compaction, slot dump/load, and restart transitions. The report
+also emits C++-size packed evidence bytes for the 17-byte `PageIndex` and
+24-byte `SlotNode` layouts. Rust still keeps
 Rust-native in-memory structs rather than adopting C++ ABI-packed internals,
 and product read maps remain the API lookup layer during migration, but Risk
 now participates in the same page-backed ownership, recovery, compaction, and

@@ -111,7 +111,10 @@ storage/cache recovery cases and Context pipeline model cases. The storage famil
 `storage_slot_first_physical_index`, which validates Rust's C++-style
 `Index -> SlotNode -> PageIndex` authority for mixed page-backed product-model writes,
 including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` packed-size
-evidence while keeping C++ execution as a shared-corpus adapter target.
+evidence while keeping C++ execution as a shared-corpus adapter target. It also includes
+`storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
+across single-page object, multi-object, multi-page object, delete, compaction, slot
+dump/load, and restart.
 
 Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
@@ -402,11 +405,11 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 551
-shared-corpus marked Rust tests: 56
-shared corpus cases: 151
-shared corpus steps: 313
-C++ existing-test surfaces: 180
+Rust attributed tests: 562
+shared-corpus marked Rust tests: 66
+shared corpus cases: 153
+shared corpus steps: 315
+C++ existing-test surfaces: 185
 ```
 
 The detailed reduction split and new-test guard live in

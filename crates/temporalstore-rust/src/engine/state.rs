@@ -60,6 +60,8 @@ pub(super) struct SlotFirstIndex {
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub(super) struct SlotNodeIndex {
     pub(super) routing_slot: u32,
+    #[serde(default)]
+    pub(super) layout: SlotLayoutState,
     pub(super) dirty: bool,
     pub(super) meta_loaded: bool,
     pub(super) loading: bool,
@@ -69,6 +71,16 @@ pub(super) struct SlotNodeIndex {
     pub(super) last_dump_sequence: u64,
     pub(super) object_ids: BTreeSet<u64>,
     pub(super) page_refs: BTreeMap<String, PageIndexEntry>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub(super) enum SlotLayoutState {
+    #[default]
+    Empty,
+    SingleObject,
+    SinglePageObject,
+    MultiPageObject,
+    MultiObject,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
