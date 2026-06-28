@@ -366,7 +366,10 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertTrue(event["storage_route"]["background_write"])
         self.assertEqual("ack_after_memory_append", event["storage_route"]["write_ack_policy"])
         self.assertEqual("context_node", event["context_event_parent_type"])
-        self.assertEqual(event["node_id"], event["context_event_parent_hash"])
+        self.assertNotIn("node_id", event)
+        self.assertEqual(event["node_hash"], event["context_event_parent_hash"])
+        self.assertNotIn("parent_type", event)
+        self.assertNotIn("parent_hash", event)
         self.assertIn("context_event:context_node:", event["context_event_key"])
         self.assertRegex(event["event_time_key"], r"^\d{20}:\d+$")
 
