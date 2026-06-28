@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufRead, Read, Write};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use serde::Deserialize;
@@ -542,6 +543,117 @@ struct CommandStats {
     records_read: u64,
     bytes_written: u64,
     bytes_read: u64,
+}
+
+#[derive(Clone, Debug)]
+struct ScanRecordCacheEntry {
+    records: Arc<Vec<Value>>,
+    scanned_records: u64,
+}
+
+#[derive(Clone, Debug)]
+struct FilteredScanCacheEntry {
+    records: Vec<Value>,
+    scanned_records: u64,
+    dropped_by_type: u64,
+    dropped_by_scope: u64,
+    selected_node_dropped: u64,
+    secondary_dropped: u64,
+    secondary_matched: u64,
+    node_path_filter_count: usize,
+}
+
+static SCAN_RECORD_CACHE: OnceLock<Mutex<HashMap<String, ScanRecordCacheEntry>>> = OnceLock::new();
+static FILTERED_SCAN_CACHE: OnceLock<Mutex<HashMap<String, FilteredScanCacheEntry>>> = OnceLock::new();
+
+fn scan_record_cache() -> &'static Mutex<HashMap<String, ScanRecordCacheEntry>> {
+    SCAN_RECORD_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn filtered_scan_cache() -> &'static Mutex<HashMap<String, FilteredScanCacheEntry>> {
+    FILTERED_SCAN_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn max_scan_record_cache_entries() -> usize {
+    std::env::var("MATRIXARK_RUST_SCAN_RECORD_CACHE_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8)
+}
+
+fn max_filtered_scan_cache_entries() -> usize {
+    std::env::var("MATRIXARK_RUST_FILTERED_SCAN_CACHE_ENTRIES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(32)
+}
+
+fn scan_record_cache_key(record_hash_key: &str, shard_size: u64, count: u64) -> String {
+    format!("{record_hash_key}\u{1f}{shard_size}\u{1f}{count}")
+}
+
+fn filtered_scan_cache_key(
+    raw_cache_key: &str,
+    allowed_types: &HashSet<String>,
+    selected_nodes: &HashSet<u64>,
+    secondary_groups: &[Vec<String>],
+    scope: Option<&Value>,
+) -> String {
+    let mut types: Vec<&str> = allowed_types.iter().map(String::as_str).collect();
+    types.sort_unstable();
+    let mut nodes: Vec<u64> = selected_nodes.iter().copied().collect();
+    nodes.sort_unstable();
+    let scope_text = scope
+        .and_then(|value| serde_json::to_string(value).ok())
+        .unwrap_or_default();
+    let secondary_text = serde_json::to_string(secondary_groups).unwrap_or_default();
+    format!(
+        "{raw_cache_key}\u{1e}types={}\u{1e}nodes={:?}\u{1e}scope={scope_text}\u{1e}secondary={secondary_text}",
+        types.join(","),
+        nodes
+    )
+}
+
+fn get_scan_record_cache(key: &str) -> Option<ScanRecordCacheEntry> {
+    scan_record_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(key).cloned())
+}
+
+fn put_scan_record_cache(key: String, entry: ScanRecordCacheEntry) {
+    let Ok(mut cache) = scan_record_cache().lock() else {
+        return;
+    };
+    let max_entries = max_scan_record_cache_entries();
+    if cache.len() >= max_entries && !cache.contains_key(&key) {
+        if let Some(first_key) = cache.keys().next().cloned() {
+            cache.remove(&first_key);
+        }
+    }
+    cache.insert(key, entry);
+}
+
+fn get_filtered_scan_cache(key: &str) -> Option<FilteredScanCacheEntry> {
+    filtered_scan_cache()
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(key).cloned())
+}
+
+fn put_filtered_scan_cache(key: String, entry: FilteredScanCacheEntry) {
+    let Ok(mut cache) = filtered_scan_cache().lock() else {
+        return;
+    };
+    let max_entries = max_filtered_scan_cache_entries();
+    if cache.len() >= max_entries && !cache.contains_key(&key) {
+        if let Some(first_key) = cache.keys().next().cloned() {
+            cache.remove(&first_key);
+        }
+    }
+    cache.insert(key, entry);
 }
 
 fn unix_ms() -> u128 {
@@ -1308,6 +1420,52 @@ fn record_node_hash(record: &Value) -> Option<u64> {
     record.get("node_hash").and_then(Value::as_u64)
 }
 
+fn node_path_for_record<'a>(
+    record: &'a Value,
+    node_paths_by_hash: &'a HashMap<u64, Vec<String>>,
+) -> Option<Vec<String>> {
+    if let Some(path) = record.get("node_path").and_then(Value::as_array) {
+        let values: Vec<String> = path
+            .iter()
+            .filter_map(Value::as_str)
+            .filter(|text| !text.is_empty())
+            .map(str::to_string)
+            .collect();
+        if !values.is_empty() {
+            return Some(values);
+        }
+    }
+    record_node_hash(record).and_then(|node_hash| node_paths_by_hash.get(&node_hash).cloned())
+}
+
+fn query_node_path_filters(query_scope: Option<&Value>) -> Vec<String> {
+    let Some(scope) = query_scope.filter(|value| value.is_object()) else {
+        return Vec::new();
+    };
+    ["team", "project"]
+        .iter()
+        .filter_map(|key| scope.get(*key).and_then(Value::as_str))
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn node_path_matches_filters(
+    record: &Value,
+    filters: &[String],
+    node_paths_by_hash: &HashMap<u64, Vec<String>>,
+) -> bool {
+    if filters.is_empty() {
+        return true;
+    }
+    let Some(path) = node_path_for_record(record, node_paths_by_hash) else {
+        return false;
+    };
+    filters
+        .iter()
+        .all(|required| path.iter().any(|part| part == required))
+}
+
 fn record_index_terms(
     record: &Value,
     index_terms_by_batch: &HashMap<String, HashSet<String>>,
@@ -1410,6 +1568,10 @@ fn decode_matrixark_payload(value: &str) -> Vec<Value> {
     }
 }
 
+fn serving_count_key(count_key: &str) -> String {
+    format!("{count_key}:serving")
+}
+
 fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value, String> {
     let count_key = required(command.count_key.clone(), "count_key")?;
     let record_hash_key = required(command.record_hash_key.clone(), "record_hash_key")?;
@@ -1418,6 +1580,10 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         .get_string(&count_key)
         .map_err(|err| err.to_string())?;
     let count = count_text.parse::<u64>().unwrap_or(0);
+    let serving_count_text = client
+        .get_string(&serving_count_key(&count_key))
+        .unwrap_or_default();
+    let serving_count = serving_count_text.parse::<u64>().unwrap_or(count);
     let allowed_types: HashSet<String> = command
         .record_types
         .clone()
@@ -1431,47 +1597,143 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
         .into_iter()
         .collect();
     let secondary_groups = command.secondary_index_groups.clone().unwrap_or_default();
-    let max_shard = if count == 0 {
-        0
+    let cache_key = scan_record_cache_key(&record_hash_key, shard_size, serving_count);
+    let filtered_cache_key = filtered_scan_cache_key(
+        &cache_key,
+        &allowed_types,
+        &selected_nodes,
+        &secondary_groups,
+        command.scope.as_ref(),
+    );
+    if let Some(entry) = get_filtered_scan_cache(&filtered_cache_key) {
+        let returned_records = entry.records.len();
+        let dropped_ref_count = entry.dropped_by_type
+            + entry.dropped_by_scope
+            + entry.selected_node_dropped
+            + entry.secondary_dropped;
+        return Ok(json!({
+            "ok": true,
+            "count": returned_records,
+            "records": entry.records,
+            "native_candidate_prefilter": true,
+            "scan_count": entry.scanned_records,
+            "cache_hit": true,
+            "cache_hit_used": true,
+            "selected_ref_count": 0,
+            "dropped_ref_count": dropped_ref_count,
+            "scan_stats": {
+                "execution_mode": "rust_proxy_native_candidate_prefilter",
+                "native_prefix_scan": true,
+                "native_scan_record_cache_hit": true,
+                "native_filtered_scan_cache_hit": true,
+                "native_scan_record_cache_keyed_by_count": true,
+                "native_scan_record_cache_key_kind": "serving_count",
+                "native_secondary_index_prefilter": !secondary_groups.is_empty(),
+                "native_node_path_scope_prefilter": entry.node_path_filter_count > 0,
+                "native_node_path_scope_filter_count": entry.node_path_filter_count,
+                "scanned_records": entry.scanned_records,
+                "total_record_count": count,
+                "serving_record_watermark": serving_count,
+                "returned_records": returned_records,
+                "dropped_by_type": entry.dropped_by_type,
+                "dropped_by_scope": entry.dropped_by_scope,
+                "selected_node_dropped_candidate_count": entry.selected_node_dropped,
+                "secondary_index_groups_supplied": secondary_groups.len(),
+                "secondary_index_matched_candidate_count": entry.secondary_matched,
+                "secondary_index_dropped_candidate_count": entry.secondary_dropped,
+                "native_pack_assembly": false,
+                "pack_assembly_location": "python_reference_packer",
+                "next_native_gap": "C++/Rust ContextPack scoring and budget assembly APIs"
+            }
+        }));
+    }
+    let mut cache_hit = false;
+    let (records_source, scanned_records): (Arc<Vec<Value>>, u64) = if let Some(entry) = get_scan_record_cache(&cache_key) {
+        cache_hit = true;
+        (entry.records, entry.scanned_records)
     } else {
-        (count - 1) / shard_size
+        let max_shard = if count == 0 {
+            0
+        } else {
+            (count - 1) / shard_size
+        };
+        let mut scanned_records = 0_u64;
+        let mut records = Vec::new();
+        for shard in 0..=max_shard {
+            let key = format!("{}:{:06}", record_hash_key, shard);
+            for (_field, value) in client.hgetall(&key).map_err(|err| err.to_string())? {
+                for record in decode_matrixark_payload(&value) {
+                    scanned_records += 1;
+                    records.push(record);
+                }
+            }
+        }
+        let records_source = Arc::new(records);
+        put_scan_record_cache(
+            cache_key,
+            ScanRecordCacheEntry {
+                records: Arc::clone(&records_source),
+                scanned_records,
+            },
+        );
+        (records_source, scanned_records)
     };
-    let mut scanned_records = 0_u64;
     let mut dropped_by_type = 0_u64;
     let mut dropped_by_scope = 0_u64;
     let mut selected_node_dropped = 0_u64;
-    let mut records = Vec::new();
-    for shard in 0..=max_shard {
-        let key = format!("{}:{:06}", record_hash_key, shard);
-        for (_field, value) in client.hgetall(&key).map_err(|err| err.to_string())? {
-            for record in decode_matrixark_payload(&value) {
-                scanned_records += 1;
-                let record_type = record
-                    .get("record_type")
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
-                    dropped_by_type += 1;
-                    continue;
-                }
-                if !scope_matches_record(&record, command.scope.as_ref()) {
-                    dropped_by_scope += 1;
-                    continue;
-                }
-                if !selected_nodes.is_empty() {
-                    let keep_index = matches!(record_type, "context_index" | "context_embedding");
-                    let keep_node = record_node_hash(&record)
-                        .map(|node| selected_nodes.contains(&node))
-                        .unwrap_or(false);
-                    if !keep_index && !keep_node {
-                        selected_node_dropped += 1;
-                        continue;
-                    }
-                }
-                records.push(record);
+    let mut node_paths_by_hash: HashMap<u64, Vec<String>> = HashMap::new();
+    for record in records_source.iter() {
+        if record.get("record_type").and_then(Value::as_str) != Some("context_node") {
+            continue;
+        }
+        if let (Some(node_hash), Some(path)) = (
+            record_node_hash(record),
+            record.get("node_path").and_then(Value::as_array),
+        ) {
+            let values: Vec<String> = path
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|text| !text.is_empty())
+                .map(str::to_string)
+                .collect();
+            if !values.is_empty() {
+                node_paths_by_hash.insert(node_hash, values);
             }
         }
     }
+    let node_path_filters = query_node_path_filters(command.scope.as_ref());
+    let records = records_source
+        .iter()
+        .filter_map(|record| {
+        let record_type = record
+            .get("record_type")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if !allowed_types.is_empty() && !allowed_types.contains(record_type) {
+            dropped_by_type += 1;
+            return None;
+        }
+        if !scope_matches_record(record, command.scope.as_ref()) {
+            dropped_by_scope += 1;
+            return None;
+        }
+        if !node_path_matches_filters(record, &node_path_filters, &node_paths_by_hash) {
+            dropped_by_scope += 1;
+            return None;
+        }
+        if !selected_nodes.is_empty() {
+            let keep_index = matches!(record_type, "context_index" | "context_embedding");
+            let keep_node = record_node_hash(record)
+                .map(|node| selected_nodes.contains(&node))
+                .unwrap_or(false);
+            if !keep_index && !keep_node {
+                selected_node_dropped += 1;
+                return None;
+            }
+        }
+        Some(record.clone())
+    })
+    .collect::<Vec<_>>();
 
     let mut index_terms_by_batch: HashMap<String, HashSet<String>> = HashMap::new();
     let mut index_terms_by_node: HashMap<u64, HashSet<String>> = HashMap::new();
@@ -1534,20 +1796,42 @@ fn scan_matrixark_candidates(client: &Client, command: &Command) -> Result<Value
 
     let dropped_ref_count =
         dropped_by_type + dropped_by_scope + selected_node_dropped + secondary_dropped;
+    put_filtered_scan_cache(
+        filtered_cache_key,
+        FilteredScanCacheEntry {
+            records: filtered.clone(),
+            scanned_records,
+            dropped_by_type,
+            dropped_by_scope,
+            selected_node_dropped,
+            secondary_dropped,
+            secondary_matched,
+            node_path_filter_count: node_path_filters.len(),
+        },
+    );
     Ok(json!({
         "ok": true,
         "count": filtered.len(),
         "records": filtered,
         "native_candidate_prefilter": true,
         "scan_count": scanned_records,
-        "cache_hit": false,
+        "cache_hit": cache_hit,
+        "cache_hit_used": cache_hit,
         "selected_ref_count": 0,
         "dropped_ref_count": dropped_ref_count,
         "scan_stats": {
             "execution_mode": "rust_proxy_native_candidate_prefilter",
             "native_prefix_scan": true,
+            "native_scan_record_cache_hit": cache_hit,
+            "native_filtered_scan_cache_hit": false,
+            "native_scan_record_cache_keyed_by_count": true,
+            "native_scan_record_cache_key_kind": "serving_count",
             "native_secondary_index_prefilter": !secondary_groups.is_empty(),
+            "native_node_path_scope_prefilter": !node_path_filters.is_empty(),
+            "native_node_path_scope_filter_count": node_path_filters.len(),
             "scanned_records": scanned_records,
+            "total_record_count": count,
+            "serving_record_watermark": serving_count,
             "returned_records": filtered.len(),
             "dropped_by_type": dropped_by_type,
             "dropped_by_scope": dropped_by_scope,
@@ -2052,6 +2336,14 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         + dropped_cross_session_cap
         + dropped_cross_candidate_cap
         + scan_dropped_count;
+    let scan_cache_hit = scan_stats
+        .get("native_filtered_scan_cache_hit")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        || scan_stats
+            .get("native_scan_record_cache_hit")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
     Ok(json!({
         "ok": true,
         "count": selected.len(),
@@ -2059,7 +2351,8 @@ fn retrieve_context_pack_native(client: &Client, command: &Command) -> Result<Va
         "raw_records_returned": false,
         "python_hot_path_records": 0,
         "scan_count": scan_stats.get("scanned_records").and_then(Value::as_u64).unwrap_or(0),
-        "cache_hit": false,
+        "cache_hit": scan_cache_hit,
+        "cache_hit_used": scan_cache_hit,
         "selected_ref_count": selected.len(),
         "dropped_ref_count": dropped_ref_count,
         "context_pack": pack,
