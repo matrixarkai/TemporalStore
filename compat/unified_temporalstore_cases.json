@@ -4295,15 +4295,14 @@
         {
           "command": {
             "description": "Shared C++/Rust client routing case for C++ partition-set hierarchy in the Rust route cache: table id, member partition ids, partition version, slot ranges, primary/replica members, topology version, and preflight evidence.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "client_cpp_partition_set_route_cache",
             "required_paths": [
               "crates/temporalstore-rust/src/client.rs",
               "src/common/partition_id_type.h",
               "src/common/test/partition_id_test.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust client_route_cache_preserves_cpp_partition_set_member_version_hierarchy -- --test-threads=1",
             "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "scenario": "partition_set_member_version_route_cache",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_cpp_partition_set_route_cache_shared"
@@ -6225,13 +6224,12 @@
         {
           "command": {
             "description": "Shared control-plane case for client read/write retry budgets, topology refresh on version changes, stale route invalidation, and no duplicate unsafe writes.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "client_retry_budget_topology_refresh",
             "required_paths": [
               "src/client/table_client.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust client_retries_cpp_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "read_retry_write_single_shot_topology_safe_retry",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_retry_budget_topology_refresh_shared"
@@ -6264,13 +6262,12 @@
         {
           "command": {
             "description": "Shared C++/Rust pipeline case for ordered batching, per-command partial failures, retry-safe versus unsafe write classification, and timeout budget propagation into request HTTP options.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "client_pipeline_batch_partial_timeout",
             "required_paths": [
               "crates/temporalstore-rust/src/client/retry.rs"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust pipeline_batches_partial_failures_and_timeout_budget_contract -- --test-threads=1",
             "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "scenario": "ordered_batch_partial_failure_timeout_budget",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_pipeline_batch_partial_timeout_shared"
@@ -6284,13 +6281,12 @@
         {
           "command": {
             "description": "Shared C++/Rust client placement/routing case for deployment placement hooks, location-affine secondary reads, and primary-only write routing.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "client_deployment_placement_routing",
             "required_paths": [
               "crates/temporalstore-rust/src/client/routing.rs"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_primary -- --test-threads=1",
             "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "scenario": "location_affine_secondary_reads_primary_only_writes",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_deployment_placement_routing_hooks_shared"
@@ -8497,7 +8493,11 @@
       "redis_feature_module_flow",
       "object_store_backend_detect",
       "proxy_topology_churn_convergence",
+      "client_cpp_partition_set_route_cache",
+      "client_retry_budget_topology_refresh",
       "client_metasync_outage_churn",
+      "client_pipeline_batch_partial_timeout",
+      "client_deployment_placement_routing",
       "raft_membership_op"
     ],
     "required_raft_case_names": [
