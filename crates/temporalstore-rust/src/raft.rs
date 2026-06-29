@@ -951,6 +951,20 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub snapshot_compaction_rejoin_observed: bool,
     #[serde(default)]
     pub storage_log_idempotent_replay_observed: bool,
+    #[serde(default)]
+    pub admin_status_surface_observed: bool,
+    #[serde(default)]
+    pub per_peer_match_next_index_observed: bool,
+    #[serde(default)]
+    pub per_peer_inflight_and_append_queue_observed: bool,
+    #[serde(default)]
+    pub per_peer_snapshot_state_observed: bool,
+    #[serde(default)]
+    pub transfer_target_status_observed: bool,
+    #[serde(default)]
+    pub prevote_election_counters_observed: bool,
+    #[serde(default)]
+    pub wal_first_last_index_observed: bool,
     pub recovered_after_restart: bool,
     #[serde(default)]
     pub restart_recovery_validated: bool,

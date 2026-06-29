@@ -749,6 +749,13 @@ def validate_byteraft_process_semantics(
             "snapshot_chunking_observed",
             "snapshot_compaction_rejoin_observed",
             "storage_log_idempotent_replay_observed",
+            "admin_status_surface_observed",
+            "per_peer_match_next_index_observed",
+            "per_peer_inflight_and_append_queue_observed",
+            "per_peer_snapshot_state_observed",
+            "transfer_target_status_observed",
+            "prevote_election_counters_observed",
+            "wal_first_last_index_observed",
         ]:
             require(
                 rollout.get(field) is True,
