@@ -106,11 +106,15 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 "used_context_tokens": 10,
             }
         )
+        self.assertNotIn("selected_refs", pack)
+        self.assertIn("selected_ref_groups", pack)
         self.assertEqual("same_session", pack["context_groups"]["session_continuity"]["default"])
         self.assertEqual(2, pack["context_groups"]["session_continuity"]["counts"]["same_session"])
-        self.assertNotIn("session_continuity", pack["selected_refs"][0])
-        self.assertNotIn("session_continuity", pack["selected_refs"][1])
-        self.assertEqual("cross_session", pack["selected_refs"][2]["session_continuity"])
+        event_group = next(group for group in pack["selected_ref_groups"] if group["ref_type"] == "event")
+        summary_group = next(group for group in pack["selected_ref_groups"] if group["ref_type"] == "summary")
+        self.assertNotIn("ref_type", event_group["refs"][0])
+        self.assertNotIn("session_continuity", event_group["refs"][0])
+        self.assertEqual("cross_session", summary_group["refs"][0]["session_continuity"])
 
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):

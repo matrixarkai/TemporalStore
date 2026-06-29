@@ -3731,6 +3731,45 @@ def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str =
     return [serving_ref_for_pack(ref, default_session_continuity=default_session_continuity) for ref in refs]
 
 
+def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+    groups: dict[tuple[str, str], Json] = {}
+    order: list[tuple[str, str]] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        ref_type = str(ref.get("ref_type") or "")
+        context_class = str(ref.get("context_class") or ref_type)
+        key = (ref_type, context_class)
+        if key not in groups:
+            groups[key] = {"ref_type": ref_type, "count": 0, "refs": []}
+            if context_class and context_class != ref_type:
+                groups[key]["context_class"] = context_class
+            order.append(key)
+        item = serving_ref_for_pack(ref, default_session_continuity=default_session_continuity)
+        item.pop("ref_type", None)
+        if item.get("context_class") == context_class:
+            item.pop("context_class", None)
+        groups[key]["refs"].append(item)
+        groups[key]["count"] += 1
+    return [groups[key] for key in order]
+
+
+def selected_ref_count_from_pack(pack: Json) -> int:
+    refs = pack.get("selected_refs")
+    if isinstance(refs, list):
+        return len(refs)
+    groups = pack.get("selected_ref_groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("refs", [])
+            total += int(group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
+    return 0
+
+
 def compact_context_pack_for_serving(pack: Json) -> Json:
     """Strip planner/audit/debug fields from the default returned ContextPack.
 
@@ -3743,8 +3782,6 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
         "context_pack_id",
         "context_sources_order",
         "local_context_refs",
-        "selected_refs",
-        "remote_context_refs",
         "selected_ref_counts",
         "context_assembly_policy",
         "used_context_tokens",
@@ -3763,11 +3800,7 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list):
         default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        compact["selected_refs"] = serving_refs_for_pack(
-            selected_refs,
-            default_session_continuity=default_session_continuity,
-        )
-        compact["remote_context_refs"] = compact["selected_refs"]
+        compact["selected_ref_groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
         continuity_counts = session_continuity_counts(selected_refs)
         if continuity_counts:
             compact["context_groups"] = {

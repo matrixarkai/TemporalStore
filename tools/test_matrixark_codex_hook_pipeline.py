@@ -284,7 +284,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "full",
                 },
             )
-            ref_types = {str(ref.get("ref_type")) for ref in pack["selected_refs"]}
+            ref_types = {str(group.get("ref_type")) for group in pack["selected_ref_groups"]}
             self.assertIn("event", ref_types)
             self.assertIn("resource_chunk", ref_types)
             self.assertIn("skill_section", ref_types)
