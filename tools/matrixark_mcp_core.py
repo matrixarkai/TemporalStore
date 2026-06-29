@@ -2486,17 +2486,14 @@ def extract_resource_fact_value(text: str, fact_type: str) -> str:
 
 
 def resource_fact_entity_name(schema: Json, value: str, chunk_metadata: Json, raw_uri: str) -> str:
-    anchor = str(
-        chunk_metadata.get("heading")
-        or chunk_metadata.get("heading_slug")
-        or chunk_metadata.get("relative_path")
-        or chunk_metadata.get("source_ref")
-        or raw_uri
-    )[:80]
     prefix = str(schema.get("entity_prefix") or schema.get("entity_type") or "fact")
-    if value and value != anchor:
-        return f"{prefix}:{anchor}:{value[:60]}"
-    return f"{prefix}:{anchor}"
+    semantic_value = summarize_text(str(value or "").strip(), limit=80).strip()
+    if semantic_value:
+        return f"{prefix}:{semantic_value}"
+    heading = str(chunk_metadata.get("heading") or chunk_metadata.get("heading_slug") or "").strip()
+    if heading:
+        return f"{prefix}:{summarize_text(heading, limit=80)}"
+    return prefix
 
 
 def resource_extraction_mode(envelope: Json) -> str:

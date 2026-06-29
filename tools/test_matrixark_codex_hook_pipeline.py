@@ -245,6 +245,20 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(resource_chunks)
             self.assertTrue(all(record.get("resource_hash") for record in resource_chunks))
             self.assertFalse(any(record.get("raw_uri") or record.get("source_ref") for record in resource_chunks))
+            resource_entities = [
+                record
+                for record in records
+                if record.get("record_type") == "context_entity"
+                and str(record.get("entity_type") or "").startswith("resource_")
+            ]
+            self.assertTrue(resource_entities)
+            self.assertFalse(
+                any(
+                    "/" in str(record.get("entity_name") or "")
+                    or "\\" in str(record.get("entity_name") or "")
+                    for record in resource_entities
+                )
+            )
             self.assertFalse(
                 any(
                     record.get("record_type") == "context_index"
