@@ -75,6 +75,7 @@ MATRIXARK_REQUIRE_BACKEND_READY = os.environ.get("MATRIXARK_REQUIRE_BACKEND_READ
 BACKEND_READINESS_CONNECT_TIMEOUT_MS = int(os.environ.get("MATRIXARK_BACKEND_READINESS_CONNECT_TIMEOUT_MS", "1000"))
 
 MAX_SECONDARY_INDEX_TERMS_PER_RECORD = int(os.environ.get("MATRIXARK_MAX_SECONDARY_INDEX_TERMS_PER_RECORD", "10"))
+SECONDARY_INDEX_POSTING_BUCKET_MS = int(os.environ.get("MATRIXARK_SECONDARY_INDEX_POSTING_BUCKET_MS", "60000"))
 MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK", "6"))
 MAX_INDEX_TERMS_PER_RESOURCE_CHUNK = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_CHUNK", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
 MAX_INDEX_TERMS_PER_RESOURCE_FACT = int(os.environ.get("MATRIXARK_MAX_INDEX_TERMS_PER_RESOURCE_FACT", str(MAX_SECONDARY_INDEX_TERMS_PER_RECORD)))
@@ -642,11 +643,129 @@ def materialize_serving_records(record: Json) -> list[Json]:
     return [debug_record, serving]
 
 
+def context_index_timestamp_key(record: Json) -> int:
+    for field in ("timestamp_key_ms", "updated_at_ms", "created_at_ms", "event_time_ms"):
+        try:
+            value = int(record.get(field) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return now_ms()
+
+
+def context_index_posting_bucket(timestamp_ms: int) -> int:
+    bucket_ms = max(1, int(SECONDARY_INDEX_POSTING_BUCKET_MS))
+    return int(timestamp_ms) - (int(timestamp_ms) % bucket_ms)
+
+
+def context_index_data_model(record: Json) -> str:
+    explicit = str(record.get("data_model") or "").strip()
+    if explicit:
+        return explicit
+    ref_type = str(record.get("ref_type") or "").strip()
+    if ref_type:
+        return ref_type
+    if record.get("batch_id_hash") is not None:
+        return "context_batch_commit"
+    if record.get("summary_hash") is not None:
+        return "context_summary"
+    if record.get("chunk_hash") is not None:
+        return "resource_chunk"
+    if record.get("skill_hash") is not None or record.get("section_hash") is not None:
+        return "skill"
+    return "context"
+
+
+def context_index_ref_hashes(record: Json) -> list[int]:
+    values: list[Any] = []
+    raw_refs = record.get("ref_hashes")
+    if isinstance(raw_refs, list):
+        values.extend(raw_refs)
+    for field in (
+        "ref_hash",
+        "event_id_hash",
+        "chunk_hash",
+        "section_hash",
+        "skill_hash",
+        "resource_hash",
+        "summary_hash",
+        "batch_id_hash",
+    ):
+        if record.get(field) is not None:
+            values.append(record.get(field))
+    refs: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        try:
+            ref_hash = int(value)
+        except (TypeError, ValueError):
+            continue
+        if ref_hash and ref_hash not in seen:
+            seen.add(ref_hash)
+            refs.append(ref_hash)
+    return refs
+
+
+def compact_context_index_postings(records: list[Json]) -> list[Json]:
+    postings: dict[tuple[str, str, Any, str, int], Json] = {}
+    posting_positions: dict[tuple[str, str, Any, str, int], int] = {}
+    output: list[Json] = []
+    for record in records:
+        if record.get("record_type") != "context_index":
+            output.append(record)
+            continue
+        index_name = str(record.get("index_name") or "").strip()
+        if not index_name:
+            continue
+        timestamp_key_ms = context_index_posting_bucket(context_index_timestamp_key(record))
+        scope_key = str(record.get("scope_key") or "")
+        if not scope_key:
+            scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+            scope_key = canonical_scope_key(scope) if scope else ""
+        node_hash = record.get("node_hash") or record.get("node_id") or 0
+        data_model = context_index_data_model(record)
+        key = (index_name, scope_key, node_hash, data_model, timestamp_key_ms)
+        ref_hashes = context_index_ref_hashes(record)
+        if key not in postings:
+            posting: Json = {
+                "record_type": "context_index",
+                "data_model": data_model,
+                "index_name": index_name,
+                "timestamp_key_ms": timestamp_key_ms,
+                "node_hash": node_hash,
+                "node_id": node_hash,
+                "scope_key": scope_key,
+                "ref_hashes": ref_hashes,
+                "posting_count": len(ref_hashes),
+                "updated_at_ms": context_index_timestamp_key(record),
+            }
+            postings[key] = posting
+            posting_positions[key] = len(output)
+            output.append(posting)
+            continue
+        posting = postings[key]
+        existing_refs = context_index_ref_hashes(posting)
+        seen = set(existing_refs)
+        for ref_hash in ref_hashes:
+            if ref_hash not in seen:
+                existing_refs.append(ref_hash)
+                seen.add(ref_hash)
+        posting["ref_hashes"] = existing_refs
+        posting["posting_count"] = len(existing_refs)
+        posting["updated_at_ms"] = max(
+            int(posting.get("updated_at_ms") or 0),
+            context_index_timestamp_key(record),
+        )
+        output[posting_positions[key]] = posting
+    return output
+
+
 def materialize_serving_record_batch(records: list[Json]) -> list[Json]:
     materialized: list[Json] = []
     for record in records:
         materialized.extend(materialize_serving_records(record))
-    return materialized
+    return compact_context_index_postings(materialized)
 
 
 def enrich_scope_with_identity(scope: Json, identity: Json) -> Json:

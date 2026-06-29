@@ -291,7 +291,7 @@ DATA_MODEL_ROWS = [
     {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc. Full raw_uri lives on ResourceManifest; chunks carry resource_hash plus source_locator.", "important_fields": "chunk_hash, resource_hash, source_locator, text, token_estimate, unit_kind, page_number, heading_slug"},
     {"model": "ContextSummary", "purpose": "L0/L1 node/resource summary used for preview and tree traversal.", "important_fields": "summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes"},
     {"model": "ContextEmbedding", "purpose": "Vector stored separately for summaries, chunks, events, entities, and resources.", "important_fields": "embedding_type, ref_type, ref_hash, model, dim, vector"},
-    {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "index_name, index_value, ref_type, ref_hash, node_hash, chunk_hash"},
+    {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "data_model, index_name, timestamp_key_ms, ref_hashes, node_hash"},
     {"model": "ContextPackAudit", "purpose": "Explains selected/dropped refs, scores, token costs, warnings, and replay path.", "important_fields": "context_pack_id, selected_refs, dropped_refs, used_context_tokens, quality_warnings"},
 ]
 
@@ -463,7 +463,7 @@ def write_outputs(
         "",
         "## Secondary Indexes",
         "",
-        markdown_table(by_type["context_index"], ["index_name", "ref_type", "ref_hash", "chunk_hash", "node_path"], limit=120),
+        markdown_table(by_type["context_index"], ["data_model", "index_name", "timestamp_key_ms", "ref_hashes", "node_hash"], limit=120),
         "",
         "## Retrieval Scan",
         "",
@@ -562,7 +562,7 @@ def write_outputs(
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
     <section class="section"><h2>Embedding Models</h2>{records_table(embedding_models, ['model', 'embedding_count'])}</section>
     <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per embedding_type/ref_type/ref_hash. Historical refresh rows stay in audit/debug logs.</p>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'dim', 'preview'])}</section>
-    <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['index_name', 'ref_type', 'ref_hash', 'chunk_hash', 'node_path'])}</section>
+    <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['data_model', 'index_name', 'timestamp_key_ms', 'ref_hashes', 'node_hash'])}</section>
     <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Query understanding runs first, then scope and secondary-index filters, then ContextNode L0/L1 summary embeddings choose the folders. MatrixArk fetches leaf segments, events, entities, resource chunks, and skill sections from selected nodes before final packing.</p><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
     <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(replay_result, indent=2, sort_keys=True)[:30000])}</pre></section>
     <section class="section"><h2>Raw Trace JSON</h2><p><a href="./matrixark_message_resource_debug_trace.json">Open JSON artifact</a></p></section>

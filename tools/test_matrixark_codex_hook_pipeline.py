@@ -102,6 +102,11 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertIn("context_index", record_types)
             self.assertIn("session_buffer_event", record_types)
             self.assertIn("context_summary_dirty", record_types)
+            index_records = [record for record in records if record.get("record_type") == "context_index"]
+            self.assertTrue(index_records)
+            self.assertTrue(all("timestamp_key_ms" in record for record in index_records))
+            self.assertTrue(all(isinstance(record.get("ref_hashes"), list) for record in index_records))
+            self.assertTrue(all("index_hash" not in record for record in index_records))
 
     def test_async_resource_import_uses_bounded_worker_queue(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir, mock.patch.dict(

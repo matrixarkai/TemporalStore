@@ -44,7 +44,14 @@ def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
     if record_type == "context_embedding":
         return (record_type, record.get("embedding_type"), record.get("ref_type"), record.get("ref_hash"))
     if record_type == "context_index":
-        return (record_type, record.get("index_hash") or (record.get("index_name"), record.get("ref_type"), record.get("ref_hash")))
+        return (
+            record_type,
+            record.get("index_name"),
+            record.get("scope_key") or canonical_scope_key(record.get("scope", {})) if isinstance(record.get("scope", {}), dict) else record.get("scope_key"),
+            record.get("node_hash") or record.get("node_id"),
+            record.get("data_model") or record.get("ref_type"),
+            record.get("timestamp_key_ms") or record.get("updated_at_ms"),
+        )
     if record_type == "context_entity":
         return (record_type, record.get("entity_hash"))
     if record_type == "context_summary_dirty":
@@ -176,7 +183,7 @@ class MatrixArkLocalAdapter:
                 pass
 
     def append(self, record: Json) -> None:
-        records = materialize_serving_records(record)
+        records = materialize_serving_record_batch([record])
         if self._queue_batched_records(records):
             return
         with self._event_log_lock:
@@ -2932,21 +2939,22 @@ class MatrixArkLocalAdapter:
                     context_index_name("source_type", envelope["kind"]),
                 ]
             )
+            event_index_records: list[Json] = []
             for index_name in event_index_terms:
-                self.append(
+                event_index_records.append(
                     {
                         "record_type": "context_index",
                         "index_name": index_name,
-                        "index_hash": stable_hash(f"{index_name}:{event_id_hash}"),
+                        "data_model": "context_event",
                         "ref_type": "event",
-                        "ref_hash": event_id_hash,
-                        "event_id_hash": event_id_hash,
+                        "ref_hashes": [event_id_hash],
                         "node_hash": node_hash,
-                        "node_path": node_path,
                         "scope": envelope["scope"],
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            if event_index_records:
+                self.append_many(event_index_records)
             self.append_session_buffer_event(envelope=envelope, event_id_hash=event_id_hash, node_hash=node_hash, node_path=node_path, hook=hook)
             summary_refresh = self.append_node_summary_embeddings(
                 node_path=node_path,
@@ -3840,17 +3848,23 @@ class MatrixArkLocalAdapter:
             if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
                 index_name = str(record.get("index_name", ""))
                 if index_name:
-                    index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
-                    ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                    ref_hashes = context_index_ref_hashes(record)
+                    if record.get("batch_id_hash") is not None:
+                        index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
                     node_hash_for_index = record.get("node_hash")
                     try:
                         index_terms_by_node_for_prefilter.setdefault(int(node_hash_for_index), []).append(index_name)
                     except (TypeError, ValueError):
                         pass
-                    if ref_hash is not None:
-                        index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                    if ref_hashes:
+                        for ref_hash in ref_hashes:
+                            index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
                     else:
-                        index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
+                        ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                        if ref_hash is not None:
+                            index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                        else:
+                            index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
             if record_type == "context_summary" and scope_matches(candidate_access_scope(record), scope):
                 summary_type = str(record.get("summary_type", ""))
                 if summary_type in {"node_l0", "node_l1", "batch_l0", "session_l0"}:
