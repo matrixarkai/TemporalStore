@@ -20195,6 +20195,142 @@ mod tests {
         );
     }
 
+    // shared-corpus: storage_merged_dump_load_lifecycle storage_model_layout_compaction_policies storage_merged_dump_load_restart_interruption
+    #[test]
+    fn storage_merged_dump_load_and_compaction_recover_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache-a");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(512, cache_dir.clone(), &page_dir, &index_dir);
+        engine.load_shard_with(LoadShardRequest {
+            shard_id: 93,
+            load_version: 10,
+            local_node_id: Some(1),
+            shard_uri: "local://merged-compaction/shard-93".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: 3,
+            readonly: false,
+            table_name: "merged_compaction_table".to_string(),
+        });
+
+        let mut expected = BTreeMap::new();
+        for idx in 0..16 {
+            let key = format!("merged-recovery-{idx}");
+            let value = format!("value-{idx}-v1").into_bytes();
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 93,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            let value = format!("value-{idx}-v2").into_bytes();
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 93,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: value.clone(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            expected.insert(key, value);
+        }
+
+        let source_a = engine.create_slot_dump_manifest(93, [0, 1]).unwrap();
+        let source_b = engine.create_slot_dump_manifest(93, [2, 3]).unwrap();
+        let merged = engine
+            .create_merged_slot_dump_manifest(
+                93,
+                [0, 1, 2, 3],
+                vec![source_a.manifest_id.clone(), source_b.manifest_id.clone()],
+                Some(11),
+            )
+            .unwrap();
+        let preflight = engine.slot_dump_install_preflight_report(&merged);
+        assert!(preflight.install_safe, "{preflight:#?}");
+        let install = engine.install_merged_slot_dump_manifest(&merged);
+        assert!(install.installed, "{install:#?}");
+        assert!(install.rollback_marker_written);
+        assert!(install.commit_marker_written);
+        assert_eq!(install.status_code, "ok");
+        assert_eq!(
+            install.load_version_handoff,
+            Some(SlotDumpLoadVersionHandoff {
+                previous_load_version: 10,
+                next_load_version: 11,
+                applied: true,
+            })
+        );
+
+        let compact = engine.compact_shard_pages(93).unwrap();
+        assert!(
+            compact.rewritten_page_refs >= expected.len(),
+            "{compact:#?}"
+        );
+        assert!(compact.after.live_page_refs >= expected.len() as u64);
+        let post_compact_recovery = engine.storage_recovery_boundary_report(93);
+        assert!(
+            post_compact_recovery.corrupt_page_segment_ids.is_empty(),
+            "{post_compact_recovery:#?}"
+        );
+        assert!(
+            post_compact_recovery.stale_index_page_refs.is_empty(),
+            "{post_compact_recovery:#?}"
+        );
+
+        let restarted =
+            TemporalEngine::with_local_dirs(512, dir.path().join("cache-b"), &page_dir, &index_dir);
+        restarted.load_shard_with(LoadShardRequest {
+            shard_id: 93,
+            load_version: 11,
+            local_node_id: Some(1),
+            shard_uri: "local://merged-compaction/shard-93".to_string(),
+            start_routing_slot: 0,
+            end_routing_slot: 3,
+            readonly: false,
+            table_name: "merged_compaction_table".to_string(),
+        });
+        for (key, value) in expected {
+            let response = restarted.execute(ExecuteRequest {
+                shard_id: 93,
+                command: Command::StringGet { key },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes { value: Some(value) },
+                "{response:?}"
+            );
+        }
+        let restarted_recovery = restarted.storage_recovery_boundary_report(93);
+        assert!(
+            restarted_recovery.corrupt_page_segment_ids.is_empty(),
+            "{restarted_recovery:#?}"
+        );
+        assert!(
+            restarted_recovery.stale_index_page_refs.is_empty(),
+            "{restarted_recovery:#?}"
+        );
+        assert_eq!(
+            restarted
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&93)
+                .map(|info| info.load_version),
+            Some(11)
+        );
+    }
+
     // shared-corpus: storage_risk_context_page_backed_parity
     #[test]
     fn storage_risk_and_context_page_backed_restart_parity() {
@@ -22235,6 +22371,186 @@ mod tests {
             CommandResponse::Bytes { value: None },
             "expired record should stay removed after StorageManager eviction and GC"
         );
+    }
+
+    // shared-corpus: storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal
+    #[test]
+    fn storage_manager_pressure_loop_scales_gc_eviction_and_cold_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache-a");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(192, cache_dir.clone(), &page_dir, &index_dir);
+        engine.load_shard(7);
+
+        let mut expected = BTreeMap::new();
+        for idx in 0..40 {
+            let key = format!("pressure-scale-{idx}");
+            let first = vec![idx as u8; 96];
+            let second = vec![(idx + 1) as u8; 128];
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 7,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: first,
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 7,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: second.clone(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            expected.insert(key.clone(), second);
+            if idx % 3 == 0 {
+                let _ = engine.execute(ExecuteRequest {
+                    shard_id: 7,
+                    command: Command::StringGet { key },
+                });
+            }
+        }
+        for idx in 0..6 {
+            let key = format!("pressure-expire-{idx}");
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 7,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: b"expire".to_vec(),
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 7,
+                        command: Command::CommonExpire { key, ttl_ms: 0 },
+                    })
+                    .status
+                    .ok
+            );
+        }
+
+        let compact_before = engine.compact_shard_pages(7).unwrap();
+        assert!(
+            compact_before.rewritten_page_refs >= expected.len(),
+            "{compact_before:#?}"
+        );
+        assert!(
+            compact_before.before.stale_page_estimate > 0,
+            "{compact_before:#?}"
+        );
+
+        let mut saw_gc = false;
+        let mut saw_eviction = false;
+        let mut saw_index_gc = false;
+        let mut saw_compaction = false;
+        let mut last_report = None;
+        for round in 0..3 {
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 7,
+                max_dump_slots_per_round: 128,
+                warm_cache: round == 0,
+                eviction_memory_pressure_threshold: 1,
+                eviction_batch_limit: 8,
+                max_expire_hot_slots_per_round: 32,
+                max_expire_cold_slots_per_round: 32,
+                load_cold_slots_for_expire: true,
+                index_gc_index_log_bytes_threshold: 1,
+                index_gc_usage_ratio_trigger_basis_points: 1,
+                index_gc_max_entries_per_round: 16,
+                ..StorageManagerCycleRequest::default()
+            });
+            assert!(report.completed, "{report:#?}");
+            assert!(
+                report.pressure_signals.total_pressure_score > 0,
+                "{report:#?}"
+            );
+            assert_eq!(report.pressure_snapshot, report.pressure_signals);
+            saw_gc |= report
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "reclaim_page" && stage.page_segments_reclaimed > 0);
+            saw_eviction |= report
+                .eviction_report
+                .as_ref()
+                .map(|eviction| {
+                    eviction.cache_entries_removed > 0 || !eviction.selected_victims.is_empty()
+                })
+                .unwrap_or(false);
+            saw_index_gc |= report
+                .index_gc_report
+                .as_ref()
+                .map(|index_gc| index_gc.records_removed > 0)
+                .unwrap_or(false);
+            saw_compaction |= report
+                .compaction_report
+                .as_ref()
+                .map(|compaction| compaction.rewritten_page_refs > 0)
+                .unwrap_or(false);
+            last_report = Some(report);
+        }
+        let last_report = last_report.expect("at least one manager report");
+        assert!(saw_gc, "{last_report:#?}");
+        assert!(saw_eviction, "{last_report:#?}");
+        assert!(saw_index_gc, "{last_report:#?}");
+        assert!(saw_compaction, "{last_report:#?}");
+
+        engine.cache().clear_memory_for_test();
+        engine.cache().invalidate_shard(7).unwrap();
+        for idx in [0usize, 7, 19, 33, 39] {
+            let key = format!("pressure-scale-{idx}");
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 7,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: expected.get(&key).cloned()
+                },
+                "cold read should survive StorageManager GC/eviction pressure: {response:?}"
+            );
+        }
+
+        let restarted =
+            TemporalEngine::with_local_dirs(192, dir.path().join("cache-b"), &page_dir, &index_dir);
+        restarted.load_shard(7);
+        for idx in [2usize, 11, 23, 34] {
+            let key = format!("pressure-scale-{idx}");
+            let response = restarted.execute(ExecuteRequest {
+                shard_id: 7,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert_eq!(
+                response.response,
+                CommandResponse::Bytes {
+                    value: expected.get(&key).cloned()
+                },
+                "restart should preserve cold reads after StorageManager scale pass: {response:?}"
+            );
+        }
+        let boundary = restarted.storage_recovery_boundary_report(7);
+        assert!(boundary.stale_index_page_refs.is_empty(), "{boundary:#?}");
+        assert!(
+            boundary.corrupt_page_segment_ids.is_empty(),
+            "{boundary:#?}"
+        );
+        assert_eq!(boundary.object_lifecycle.missing_owner_page_refs, 0);
     }
 
     // shared-corpus: storage_manager_index_gc_thresholds_recovery
