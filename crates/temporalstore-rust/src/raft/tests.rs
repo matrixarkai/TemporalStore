@@ -2872,6 +2872,12 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         healed_follower_catchup_observed: true,
         per_peer_pipeline_state_observed: true,
         append_pipeline_state_observed: true,
+        replicate_inflight_limits_observed: true,
+        max_replicate_bytes_observed: true,
+        oversized_log_rejection_observed: true,
+        apply_batch_backpressure_observed: true,
+        append_queue_depth_observed: true,
+        replication_pressure_counters_observed: true,
         snapshot_lifecycle_observed: true,
         wal_segment_lifecycle_observed: true,
         wal_segment_release_rules_observed: true,
@@ -2948,6 +2954,30 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["replicate_inflight_limits_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["max_replicate_bytes_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["oversized_log_rejection_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["apply_batch_backpressure_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["append_queue_depth_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["replication_pressure_counters_observed"],
         true
     );
     assert_eq!(

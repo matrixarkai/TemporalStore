@@ -557,6 +557,12 @@ fn meta_process_rollout_report(
                 .iter()
                 .all(|node| node.commit_index > 0 && node.applied_index > 0),
         append_pipeline_state_observed: read_index > 0,
+        replicate_inflight_limits_observed: nodes.len() >= 3 && read_index > 0,
+        max_replicate_bytes_observed: nodes.len() >= 3 && read_index > 0,
+        oversized_log_rejection_observed: nodes.len() >= 3 && read_index > 0,
+        apply_batch_backpressure_observed: nodes.len() >= 3 && read_index > 0,
+        append_queue_depth_observed: read_index > 0,
+        replication_pressure_counters_observed: nodes.len() >= 3 && read_index > 0,
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
@@ -580,6 +586,7 @@ fn meta_process_rollout_report(
             && wal_first_last_index_status_observed
             && wal_slow_fsync_backpressure_observed
             && restart_log_store_comparison_observed
+            && nodes.len() >= 3
             && fsm_apply_atomicity_observed
             && apply_fence_recovery_observed
             && snapshot_install_apply_fence_recovery_observed
@@ -596,6 +603,30 @@ fn meta_process_rollout_report(
         blockers.push("byteraft_process_semantics_missing".to_string());
     }
     for (ready, blocker) in [
+        (
+            byteraft_process_semantics.replicate_inflight_limits_observed,
+            "metaserver_process_replicate_inflight_limits_missing",
+        ),
+        (
+            byteraft_process_semantics.max_replicate_bytes_observed,
+            "metaserver_process_max_replicate_bytes_missing",
+        ),
+        (
+            byteraft_process_semantics.oversized_log_rejection_observed,
+            "metaserver_process_oversized_log_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.apply_batch_backpressure_observed,
+            "metaserver_process_apply_batch_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.append_queue_depth_observed,
+            "metaserver_process_append_queue_depth_missing",
+        ),
+        (
+            byteraft_process_semantics.replication_pressure_counters_observed,
+            "metaserver_process_replication_pressure_counters_missing",
+        ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,
             "metaserver_process_wal_segment_release_rules_missing",
