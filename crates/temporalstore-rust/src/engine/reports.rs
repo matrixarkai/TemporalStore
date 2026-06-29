@@ -443,6 +443,8 @@ pub struct ObjectManagerRuntimeReport {
     pub dirty_slot_count: u64,
     pub max_dirty_generation: u64,
     pub layout_transition_count: u64,
+    #[serde(default)]
+    pub layout_states: Vec<SlotLayoutStateCount>,
     pub object_page_count: u64,
     pub packed_timestamped_page_count: u64,
     pub multi_page_object_count: u64,
@@ -889,6 +891,8 @@ pub struct StorageCacheWarmupReport {
     pub skipped_page_refs: usize,
     pub already_cached_page_refs: usize,
     pub page_store_reads: usize,
+    #[serde(default)]
+    pub block_store_reads: usize,
     pub warmed_page_refs: usize,
     pub failed_page_refs: usize,
     pub warmed_bytes: u64,
@@ -1379,6 +1383,8 @@ pub struct StorageProductionReadinessReport {
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
     pub page_store_bytes_written: u64,
+    #[serde(default)]
+    pub block_store_bytes_written: u64,
     pub boundary: StorageRecoveryBoundaryReport,
     pub object_lifecycle: StorageObjectLifecycleReport,
     #[serde(default)]

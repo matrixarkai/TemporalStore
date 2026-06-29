@@ -8,7 +8,7 @@ use std::sync::{
     mpsc, Arc, Mutex, RwLock,
 };
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -4822,9 +4822,19 @@ impl RaftCluster {
             });
         }
         drop(tx);
+        let replication_deadline = Instant::now() + Duration::from_secs(5);
         while replicated < required {
-            let Ok((target_id, result)) = rx.recv() else {
+            let remaining = replication_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
                 break;
+            }
+            let Ok((target_id, result)) =
+                rx.recv_timeout(remaining.min(Duration::from_millis(250)))
+            else {
+                if Instant::now() >= replication_deadline {
+                    break;
+                }
+                continue;
             };
             match result {
                 Ok(response) if response.success && response.match_index >= entry.index => {

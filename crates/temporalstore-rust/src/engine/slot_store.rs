@@ -4,8 +4,8 @@ use crate::cache::MultiLayerCache;
 use crate::page_store::{LocalPageStore, PageAddress};
 use crate::types::ShardId;
 
-use super::state::{ShardState, SlotLayoutState};
 use super::read_page_bytes;
+use super::state::{ShardState, SlotLayoutState};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct SlotRuntimeState {

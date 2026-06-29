@@ -172,6 +172,8 @@ pub struct CacheStats {
     #[serde(default)]
     pub async_writeback_backpressure_rejections: u64,
     #[serde(default)]
+    pub writeback_backpressure_events: u64,
+    #[serde(default)]
     pub async_writeback_queue_depth: u64,
     #[serde(default)]
     pub async_writeback_queue_bytes: u64,
