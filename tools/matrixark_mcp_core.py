@@ -3672,7 +3672,7 @@ def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
     return refs
 
 
-def serving_ref_for_pack(ref: Json) -> Json:
+def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> Json:
     """Return only answer-bearing fields for the serving ContextPack payload."""
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
@@ -3701,11 +3701,34 @@ def serving_ref_for_pack(ref: Json) -> Json:
         value = ref.get(field, metadata.get(field))
         if value not in (None, "", [], {}):
             item[field] = value
+    session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+    if session_continuity and session_continuity != default_session_continuity:
+        item["session_continuity"] = session_continuity
     return item
 
 
-def serving_refs_for_pack(refs: list[Json]) -> list[Json]:
-    return [serving_ref_for_pack(ref) for ref in refs]
+def session_continuity_counts(refs: list[Json]) -> Json:
+    counts: Json = {}
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+        value = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
+        if not value:
+            continue
+        counts[value] = int(counts.get(value, 0)) + 1
+    return counts
+
+
+def default_session_continuity_for_pack(refs: list[Json]) -> str:
+    counts = session_continuity_counts(refs)
+    if not counts:
+        return ""
+    return max(counts.items(), key=lambda item: (item[1], item[0]))[0]
+
+
+def serving_refs_for_pack(refs: list[Json], *, default_session_continuity: str = "") -> list[Json]:
+    return [serving_ref_for_pack(ref, default_session_continuity=default_session_continuity) for ref in refs]
 
 
 def compact_context_pack_for_serving(pack: Json) -> Json:
@@ -3739,8 +3762,21 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
     compact = {key: pack[key] for key in serving_keys if key in pack}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list):
-        compact["selected_refs"] = serving_refs_for_pack(selected_refs)
+        default_session_continuity = default_session_continuity_for_pack(selected_refs)
+        compact["selected_refs"] = serving_refs_for_pack(
+            selected_refs,
+            default_session_continuity=default_session_continuity,
+        )
         compact["remote_context_refs"] = compact["selected_refs"]
+        continuity_counts = session_continuity_counts(selected_refs)
+        if continuity_counts:
+            compact["context_groups"] = {
+                "session_continuity": {
+                    "default": default_session_continuity,
+                    "counts": continuity_counts,
+                    "per_ref_field": "omitted_when_default",
+                }
+            }
     local_refs = pack.get("local_context_refs", [])
     if isinstance(local_refs, list):
         compact["local_context_refs"] = [
