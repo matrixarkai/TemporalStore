@@ -245,6 +245,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertTrue(resource_chunks)
             self.assertTrue(all(record.get("resource_hash") for record in resource_chunks))
             self.assertFalse(any(record.get("raw_uri") or record.get("source_ref") for record in resource_chunks))
+            self.assertFalse(
+                any(
+                    record.get("record_type") == "context_index"
+                    and str(record.get("index_name") or "").lower() == "classification:new_event"
+                    for record in records
+                )
+            )
 
             server = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log), line_json=True, access_mode="dev")
             scope = {

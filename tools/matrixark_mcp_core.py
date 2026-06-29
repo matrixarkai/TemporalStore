@@ -599,7 +599,11 @@ def materialize_serving_records(record: Json) -> list[Json]:
     debug_type = ""
     if record_type == "context_event":
         extraction = serving.get("internal_extraction") if isinstance(serving.get("internal_extraction"), dict) else {}
-        serving["classification"] = extraction.get("classification", serving.get("classification", ""))
+        classification = non_default_classification(extraction.get("classification", serving.get("classification", "")))
+        if classification:
+            serving["classification"] = classification
+        else:
+            serving.pop("classification", None)
         serving["event_type"] = extraction.get("event_type", serving.get("event_type", ""))
         serving["status"] = extraction.get("status", serving.get("status", "observed"))
         serving["source_kind"] = envelope.get("kind", serving.get("source_kind", "message")) if isinstance(envelope, dict) else serving.get("source_kind", "message")
@@ -2337,6 +2341,11 @@ def context_index_name(kind: str, value: Any) -> str:
     return f"{kind}:{normalized}" if normalized else ""
 
 
+def non_default_classification(value: Any) -> str:
+    classification = str(value or "").strip().upper()
+    return "" if classification in {"", "NEW_EVENT"} else classification
+
+
 def metadata_index_terms(metadata: Json, *, keyword_limit: int = MAX_METADATA_KEYWORD_INDEXES_PER_CHUNK) -> list[str]:
     terms: list[str] = []
     for field in ["unit_kind", "heading_slug", "relative_path"]:
@@ -3210,7 +3219,9 @@ def candidate_index_terms(
         terms.add(context_index_name("event_type", extraction.get("event_type")))
         if not require_oss_understanding():
             terms.add(context_index_name("event_type", infer_event_type(str(record.get("text", "")))))
-        terms.add(context_index_name("classification", extraction.get("classification")))
+        classification = non_default_classification(extraction.get("classification"))
+        if classification:
+            terms.add(context_index_name("classification", classification))
         terms.add(context_index_name("status", extraction.get("status") or "observed"))
         terms.add(context_index_name("source_type", envelope.get("kind") or "message"))
     elif record_type == "context_entity":
