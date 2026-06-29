@@ -43,6 +43,7 @@ struct SecondaryReplicationSummary {
     lagging_follower: LaggingFollowerSummary,
     network_vote: NetworkVoteSummary,
     rolling_restart: RollingRestartSummary,
+    leader_transfer_under_load: LeaderTransferUnderLoadSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
@@ -106,6 +107,19 @@ struct RollingRestartSummary {
     restarted_nodes: Vec<RaftNodeId>,
     writes_after_each_restart: Vec<WriteSummary>,
     reads_after_each_restart: Vec<ReadSummary>,
+}
+
+#[derive(Debug, Serialize)]
+struct LeaderTransferUnderLoadSummary {
+    source_leader: RaftNodeId,
+    target_leader: RaftNodeId,
+    transfer_status: Status,
+    writes: Vec<WriteSummary>,
+    observed_write_ids: Vec<String>,
+    observed_commit_indexes: Vec<u64>,
+    final_leader: RaftNodeId,
+    exact_once_observed: bool,
+    under_load_observed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -390,6 +404,7 @@ fn main() {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
     wait_for_surviving_apply_health(new_leader, &survivors);
+    let leader_transfer_under_load = run_leader_transfer_under_load_phase(new_leader, &survivors);
     trigger_replication_pressure(
         new_leader,
         &survivors,
@@ -451,6 +466,7 @@ fn main() {
         &partition,
         &lagging_follower,
         &network_vote,
+        &leader_transfer_under_load,
         failover.status.ok,
     );
 
@@ -469,6 +485,7 @@ fn main() {
             lagging_follower,
             network_vote,
             rolling_restart,
+            leader_transfer_under_load,
             crashed_leader,
             failover,
             reads_after_leader_crash,
@@ -485,6 +502,7 @@ fn data_node_process_rollout_report(
     partition: &PartitionSummary,
     lagging_follower: &LaggingFollowerSummary,
     network_vote: &NetworkVoteSummary,
+    leader_transfer_under_load: &LeaderTransferUnderLoadSummary,
     failover_validated: bool,
 ) -> OpenRaftDataNodeProcessRolloutReport {
     let node_evidence = nodes
@@ -575,6 +593,12 @@ fn data_node_process_rollout_report(
     }
     if per_node_log_store_inspection_count < spawned_process_count {
         blockers.push("per_node_log_store_inspection_missing".to_string());
+    }
+    if !leader_transfer_under_load.exact_once_observed {
+        blockers.push("leader_transfer_exact_once_evidence_missing".to_string());
+    }
+    if !leader_transfer_under_load.under_load_observed {
+        blockers.push("leader_transfer_under_load_evidence_missing".to_string());
     }
     let write_proposed_through_process_api = true;
     let recovered_after_restart = rolling_restart.restarted_nodes.len() >= 3;
@@ -980,7 +1004,13 @@ fn data_node_process_rollout_report(
         restarted_node_count,
         per_node_log_store_inspection_count,
         write_proposed_through_process_api,
-        leader_transfer_validated: true,
+        leader_transfer_validated: leader_transfer_under_load.transfer_status.ok,
+        leader_transfer_under_load_observed: leader_transfer_under_load.under_load_observed,
+        leader_transfer_exact_once_observed: leader_transfer_under_load.exact_once_observed,
+        leader_transfer_write_ids_observed: leader_transfer_under_load.observed_write_ids.clone(),
+        leader_transfer_commit_indexes_observed: leader_transfer_under_load
+            .observed_commit_indexes
+            .clone(),
         failover_validated,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
@@ -991,6 +1021,8 @@ fn data_node_process_rollout_report(
         real_process_path_evidence_validated,
         ready: write_proposed_through_process_api
             && recovered_after_restart
+            && leader_transfer_under_load.exact_once_observed
+            && leader_transfer_under_load.under_load_observed
             && snapshot_install_validated
             && applied_fence_validated
             && independent_wal_dirs
@@ -1518,6 +1550,114 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
         key: key.to_string(),
         status: response.status,
     }
+}
+
+fn run_leader_transfer_under_load_phase(
+    source_leader: &ProductionRaftNode,
+    survivors: &[ProductionRaftNode],
+) -> LeaderTransferUnderLoadSummary {
+    let target = survivors
+        .iter()
+        .find(|node| node.node_id != source_leader.node_id)
+        .unwrap_or(source_leader);
+    let mut writes = Vec::new();
+    for index in 0..3 {
+        writes.push(propose(
+            source_leader,
+            &format!("leader-transfer-before-{index}"),
+            &format!("v-transfer-before-{index}"),
+        ));
+    }
+    let transfer_response: AdminLivenessResponse = post_json_with_options(
+        &source_leader.addr,
+        "/raft/control/transfer_leader",
+        &AdminCatchUpRequest {
+            node_id: target.node_id,
+        },
+        request_options(),
+    )
+    .expect("leader-transfer request failed");
+    let final_status: RaftClusterStatus =
+        get_json_with_options(&source_leader.addr, "/raft/status", request_options())
+            .expect("status request after leader transfer failed");
+    for index in 0..3 {
+        writes.push(propose(
+            target,
+            &format!("leader-transfer-after-{index}"),
+            &format!("v-transfer-after-{index}"),
+        ));
+    }
+    let observed_write_ids = writes
+        .iter()
+        .map(|write| write.key.clone())
+        .collect::<Vec<_>>();
+    let observed_commit_indexes = survivors
+        .iter()
+        .map(|node| {
+            get_json_with_options::<RaftClusterStatus>(
+                &node.addr,
+                "/raft/status",
+                request_options(),
+            )
+            .expect("status request for transfer evidence failed")
+            .commit_index
+        })
+        .collect::<Vec<_>>();
+    let mut unique_write_ids = observed_write_ids.iter().cloned().collect::<BTreeSet<_>>();
+    let exact_once_observed = transfer_response.status.ok
+        && unique_write_ids.len() == observed_write_ids.len()
+        && writes.iter().all(|write| write.status.ok)
+        && writes.iter().all(|write| {
+            survivors.iter().all(|node| {
+                wait_for_value(
+                    node,
+                    node.node_id,
+                    &write.key,
+                    expected_transfer_value(&write.key),
+                )
+                .status
+                .ok
+            })
+        });
+    unique_write_ids.clear();
+    let under_load_observed = exact_once_observed
+        && observed_commit_indexes.len() >= 2
+        && observed_commit_indexes
+            .iter()
+            .all(|commit| *commit >= writes.len() as u64);
+    LeaderTransferUnderLoadSummary {
+        source_leader: source_leader.node_id,
+        target_leader: target.node_id,
+        transfer_status: transfer_response.status,
+        writes,
+        observed_write_ids,
+        observed_commit_indexes,
+        final_leader: final_status.leader_id,
+        exact_once_observed,
+        under_load_observed,
+    }
+}
+
+fn expected_transfer_value(key: &str) -> &str {
+    key.strip_prefix("leader-transfer-before-")
+        .map(|index| match index {
+            "0" => "v-transfer-before-0",
+            "1" => "v-transfer-before-1",
+            "2" => "v-transfer-before-2",
+            _ => "",
+        })
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            key.strip_prefix("leader-transfer-after-")
+                .map(|index| match index {
+                    "0" => "v-transfer-after-0",
+                    "1" => "v-transfer-after-1",
+                    "2" => "v-transfer-after-2",
+                    _ => "",
+                })
+                .filter(|value| !value.is_empty())
+                .unwrap_or("")
+        })
 }
 
 fn trigger_replication_pressure(
