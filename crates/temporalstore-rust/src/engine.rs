@@ -11133,9 +11133,20 @@ fn model_compaction_policy_reports(
             } else {
                 stats.deleted_page_refs.saturating_mul(10_000) / total_refs
             };
+            let layout_policy = compaction_layout_policy_for_model(&model_id);
+            let stale_density_triggered = stale_density_basis_points > 0;
+            let tombstone_compaction_triggered =
+                stats.deleted_page_refs > 0 || tombstone_density_basis_points > 0;
+            let object_page_packing_enabled = compaction_object_page_packing_enabled(&model_id);
+            let layout_aware_rewrite_required = object_page_packing_enabled
+                || matches!(
+                    layout_policy,
+                    "timestamped_chunked_pages" | "context_timeline_or_sidecar_pages"
+                )
+                || model_id == "risk";
             ModelCompactionPolicyReport {
-                layout_policy: compaction_layout_policy_for_model(&model_id).to_string(),
-                object_page_packing_enabled: compaction_object_page_packing_enabled(&model_id),
+                layout_policy: layout_policy.to_string(),
+                object_page_packing_enabled,
                 model_id,
                 live_page_refs: stats.live_page_refs,
                 deleted_page_refs: stats.deleted_page_refs,
@@ -11152,6 +11163,9 @@ fn model_compaction_policy_reports(
                     tombstone_density_basis_points,
                 )
                 .to_string(),
+                stale_density_triggered,
+                tombstone_compaction_triggered,
+                layout_aware_rewrite_required,
             }
         })
         .collect()

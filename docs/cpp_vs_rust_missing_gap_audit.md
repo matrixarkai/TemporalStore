@@ -2185,7 +2185,9 @@ manifests, and active/sealed/delayed-destroy/purged lifecycle states. The C++
 model-layout/tombstone compaction gap is now covered by `ShardCompactionReport`:
 it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and
-tombstone object preservation. Rust now also has a StorageManager-style loop
+tombstone object preservation. Per-model policy rows identify stale-density
+triggers, tombstone-compaction triggers, and layout-aware rewrite requirements
+for string/hash/set/timestamped/Risk/Context sidecar pages. Rust now also has a StorageManager-style loop
 report covering prepare, reclaim, evict, expire, compact, and index-GC phases.
 Rust now has a merged dump/load ownership policy report that coordinates
 dirty-slot dump selection, manifest checksum/generation validation, load
