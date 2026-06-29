@@ -2880,6 +2880,12 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         replication_pressure_counters_observed: true,
         max_disk_replicate_log_num_observed: true,
         snapshot_lifecycle_observed: true,
+        snapshot_chunk_retry_backpressure_observed: true,
+        snapshot_send_timeout_observed: true,
+        snapshot_install_progress_observed: true,
+        snapshot_install_rollback_observed: true,
+        snapshot_membership_change_observed: true,
+        snapshot_rejoin_after_compacted_log_observed: true,
         wal_segment_lifecycle_observed: true,
         wal_segment_release_rules_observed: true,
         wal_first_last_index_status_observed: true,
@@ -2983,6 +2989,30 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["max_disk_replicate_log_num_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_chunk_retry_backpressure_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_send_timeout_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_install_progress_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_install_rollback_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_membership_change_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_rejoin_after_compacted_log_observed"],
         true
     );
     assert_eq!(

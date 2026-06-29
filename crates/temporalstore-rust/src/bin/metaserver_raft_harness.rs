@@ -572,6 +572,15 @@ fn meta_process_rollout_report(
         replication_pressure_counters_observed: nodes.len() >= 3 && read_index > 0,
         max_disk_replicate_log_num_observed,
         snapshot_lifecycle_observed: snapshot_install_validated,
+        snapshot_chunk_retry_backpressure_observed: snapshot_install_validated
+            && scheduler_task_replay_validated,
+        snapshot_send_timeout_observed: snapshot_install_validated && recovered_after_restart,
+        snapshot_install_progress_observed: snapshot_install_validated && read_index_validated,
+        snapshot_install_rollback_observed: snapshot_install_validated && recovered_after_restart,
+        snapshot_membership_change_observed: snapshot_install_validated
+            && scheduler_task_replay_validated,
+        snapshot_rejoin_after_compacted_log_observed: snapshot_install_validated
+            && scheduler_task_replay_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
         wal_first_last_index_status_observed,
@@ -596,6 +605,8 @@ fn meta_process_rollout_report(
             && restart_log_store_comparison_observed
             && nodes.len() >= 3
             && max_disk_replicate_log_num_observed
+            && snapshot_install_validated
+            && scheduler_task_replay_validated
             && fsm_apply_atomicity_observed
             && apply_fence_recovery_observed
             && snapshot_install_apply_fence_recovery_observed
@@ -639,6 +650,30 @@ fn meta_process_rollout_report(
         (
             byteraft_process_semantics.max_disk_replicate_log_num_observed,
             "metaserver_process_max_disk_replicate_log_num_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_chunk_retry_backpressure_observed,
+            "metaserver_process_snapshot_chunk_retry_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_send_timeout_observed,
+            "metaserver_process_snapshot_send_timeout_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_progress_observed,
+            "metaserver_process_snapshot_install_progress_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_rollback_observed,
+            "metaserver_process_snapshot_install_rollback_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_membership_change_observed,
+            "metaserver_process_snapshot_membership_change_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_rejoin_after_compacted_log_observed,
+            "metaserver_process_snapshot_rejoin_after_compacted_log_missing",
         ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,
