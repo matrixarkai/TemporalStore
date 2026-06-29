@@ -817,6 +817,10 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     #[serde(default)]
     pub bounded_stale_reads_observed: bool,
     #[serde(default)]
+    pub bounded_stale_partition_reads_observed: bool,
+    #[serde(default)]
+    pub follower_lease_expiration_observed: bool,
+    #[serde(default)]
     pub minority_partition_rejected: bool,
     #[serde(default)]
     pub healed_follower_catchup_observed: bool,

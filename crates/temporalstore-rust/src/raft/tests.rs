@@ -2866,6 +2866,8 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         lagging_follower_read_rejected: true,
         stale_follower_write_rejected: true,
         bounded_stale_reads_observed: true,
+        bounded_stale_partition_reads_observed: true,
+        follower_lease_expiration_observed: true,
         minority_partition_rejected: true,
         healed_follower_catchup_observed: true,
         per_peer_pipeline_state_observed: true,
@@ -2998,6 +3000,14 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["bounded_stale_partition_reads_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["follower_lease_expiration_observed"],
         true
     );
     assert_eq!(
