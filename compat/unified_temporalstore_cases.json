@@ -1506,8 +1506,8 @@
               "confidence": 0.75,
               "event_id_hash": 9001,
               "event_time_ms": 9000,
-              "ingestion_time_ms": 9000,
               "importance": 0.5,
+              "ingestion_time_ms": 9000,
               "text": "context event from shared corpus",
               "type": 4
             },
@@ -1528,8 +1528,8 @@
               "confidence": 0.8,
               "event_id_hash": 9002,
               "event_time_ms": 9000,
-              "ingestion_time_ms": 9000,
               "importance": 0.6,
+              "ingestion_time_ms": 9000,
               "text": "second context event in same millisecond",
               "type": 4
             },
@@ -1567,8 +1567,8 @@
                 "confidence": 0.75,
                 "event_id_hash": 9001,
                 "event_time_ms": 9000,
-                "ingestion_time_ms": 9000,
                 "importance": 0.5,
+                "ingestion_time_ms": 9000,
                 "text": "context event from shared corpus",
                 "type": 4
               },
@@ -1576,8 +1576,8 @@
                 "confidence": 0.8,
                 "event_id_hash": 9002,
                 "event_time_ms": 9000,
-                "ingestion_time_ms": 9000,
                 "importance": 0.6,
+                "ingestion_time_ms": 9000,
                 "text": "second context event in same millisecond",
                 "type": 4
               }
@@ -2911,13 +2911,15 @@
       "shard_id": 11,
       "steps": [
         {
-          "name": "rust_engine_accepts_per_event_sync_async_and_raft_modes",
-          "skip_client": true,
           "command": {
+            "cpp_contract": "RequestOptions.event_replication_mode and RequestOption.event_replication_mode carry inherit/async_storage/sync_storage/raft without restart",
+            "expected_modes": [
+              "async_storage",
+              "sync_storage",
+              "raft"
+            ],
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "rust_test": "replicated_execute_selects_sync_async_or_raft_without_restart",
-            "cpp_contract": "RequestOptions.event_replication_mode and RequestOption.event_replication_mode carry inherit/async_storage/sync_storage/raft without restart",
             "required_paths": [
               "crates/temporalstore-rust/src/types.rs",
               "crates/temporalstore-rust/src/engine.rs",
@@ -2925,13 +2927,11 @@
               "src/protocol/base.proto",
               "src/client/client.h"
             ],
-            "expected_modes": [
-              "async_storage",
-              "sync_storage",
-              "raft"
-            ],
-            "restart_required": false
-          }
+            "restart_required": false,
+            "rust_test": "replicated_execute_selects_sync_async_or_raft_without_restart"
+          },
+          "name": "rust_engine_accepts_per_event_sync_async_and_raft_modes",
+          "skip_client": true
         }
       ]
     },
@@ -5132,13 +5132,13 @@
         {
           "command": {
             "description": "Writes compressed page stream records, reads logical ranges across envelopes, rolls active zones, reopens from the zone manifest, and verifies delayed-destroy accounting.",
-            "kind": "storage_stream_backed_extent_runtime",
-            "expect_logical_stream_read": true,
             "expect_append_roll": true,
-            "expect_extent_manifest": true,
-            "expect_envelope_checksum": true,
             "expect_compression_stream": true,
-            "expect_delayed_destroy": true
+            "expect_delayed_destroy": true,
+            "expect_envelope_checksum": true,
+            "expect_extent_manifest": true,
+            "expect_logical_stream_read": true,
+            "kind": "storage_stream_backed_extent_runtime"
           },
           "name": "stream_backed_extents_roll_read_reopen_and_delay_destroy",
           "skip_client": true
@@ -5154,7 +5154,6 @@
         {
           "command": {
             "description": "Runs the Rust-native StorageManager loop over dirty slots, reclaim candidates, cache eviction, TTL expiry, model-layout compaction, and slot dump manifest/index cleanup.",
-            "kind": "storage_manager_background_loop",
             "expect_phases": [
               "prepare",
               "reclaim",
@@ -5162,7 +5161,8 @@
               "expire",
               "compact",
               "index_gc"
-            ]
+            ],
+            "kind": "storage_manager_background_loop"
           },
           "name": "storage_manager_loop_prepare_reclaim_evict_expire_compact_index_gc",
           "skip_client": true
@@ -5178,18 +5178,18 @@
         {
           "command": {
             "description": "Creates a slot dump manifest, validates the load preflight and recovery replay boundary, installs into a restored engine, and rejects a stale merged load attempt after newer writes.",
-            "kind": "storage_merged_dump_load_policy",
-            "expect_manifest_checksum": true,
+            "expect_follower_safe_index_gc": true,
             "expect_generation_validation": true,
             "expect_load_preflight": true,
+            "expect_load_version_handoff": true,
+            "expect_manifest_checksum": true,
+            "expect_multi_slot_merged_manifest": true,
             "expect_replay_boundary": true,
             "expect_roll_forward": true,
-            "expect_follower_safe_index_gc": true,
-            "expect_stale_load_rejection": true,
-            "expect_multi_slot_merged_manifest": true,
             "expect_rollback_markers": true,
-            "expect_load_version_handoff": true,
-            "expect_stale_object_page_conflict_report": true
+            "expect_stale_load_rejection": true,
+            "expect_stale_object_page_conflict_report": true,
+            "kind": "storage_merged_dump_load_policy"
           },
           "name": "storage_merged_policy_dump_load_replay_index_gc",
           "skip_client": true
@@ -5790,14 +5790,14 @@
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-resource-skill-parser-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
             "required_paths": [
               "tools/matrixark_resource_parser.py",
               "tools/test_matrixark_resource_parser.py",
               "docs/rust_context_resource_skill_parser_parity.md"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_resource --lib -- --test-threads=1 && cargo test -p temporalstore-rust context_skill --lib -- --test-threads=1 && cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval --lib -- --test-threads=1",
-            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only"
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_context_pipeline_parity"
           },
           "name": "resource_and_skill_parser_shared"
         }
@@ -5878,21 +5878,7 @@
       "shard_id": 33,
       "steps": [
         {
-          "name": "context_events_stay_lean_sidecars_and_indexes_carry_metadata",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
-            "rust_runner": "cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval context_models_round_trip_cpp_wire_payloads_and_type_alias -- --test-threads=1",
-            "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow.rs",
-              "docs/rust_context_pipeline_debug_trace.md",
-              "src/extension/context/interface.proto",
-              "src/extension/context/implement.cc"
-            ],
             "acceptance": {
               "context_event_hot_fields": [
                 "event_id_hash",
@@ -5902,6 +5888,14 @@
                 "importance",
                 "text",
                 "ingestion_time_ms"
+              ],
+              "forbidden_hot_event_fields": [
+                "source_ref",
+                "related_node_hashes",
+                "compact_attrs",
+                "status",
+                "actor_hash",
+                "valid_until_ms"
               ],
               "metadata_sidecars": [
                 "ContextIndexRef",
@@ -5916,17 +5910,23 @@
                 "entity_ref",
                 "source_ref",
                 "summary_ref"
-              ],
-              "forbidden_hot_event_fields": [
-                "source_ref",
-                "related_node_hashes",
-                "compact_attrs",
-                "status",
-                "actor_hash",
-                "valid_until_ms"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ context debug flow must emit equivalent ContextEvent hot fields plus sidecar/index fanout for resource_ref, skill_ref, entity_ref, source_ref, summary_ref, child refs, compression, dirty markers, and selected evidence ordering.",
+            "description": "C++-aligned context hot schema boundary: ContextEvent stores event id/time/type/confidence/importance/text/ingestion time only; source/resource/skill/entity/summary refs, node links, compression payloads, dirty markers, and query-debug selected refs are sidecar/index records.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "crates/temporalstore-rust/src/context_workflow.rs",
+              "docs/rust_context_pipeline_debug_trace.md",
+              "src/extension/context/interface.proto",
+              "src/extension/context/implement.cc"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval context_models_round_trip_cpp_wire_payloads_and_type_alias -- --test-threads=1",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_events_stay_lean_sidecars_and_indexes_carry_metadata",
+          "skip_client": true
         }
       ]
     },
@@ -5935,22 +5935,14 @@
       "shard_id": 11,
       "steps": [
         {
-          "name": "storage_recovery_validates_indexes_pages_manifests_and_sidecar_refs",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared storage case tying dump/load, recovery, corrupt page/index/oplog/snapshot, follower-safe GC, cache refill, and context sidecar/index refs into one dependency matrix.",
-            "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus storage_fault_matrix storage_follower_safe_gc storage_cache_refill -- --test-threads=1",
-            "cpp_runner_contract": "C++ storage corpus runner must report equivalent orphan pages, missing refs, stale refs, corrupt bytes, replay boundary, follower cursor retention, cache refill, and shared-store replay evidence.",
-            "required_paths": [
-              "compat/storage_migration_corpus.json",
-              "crates/temporalstore-rust/src/page_store.rs",
-              "src/storage",
-              "src/extension/context"
-            ],
             "acceptance": {
+              "cache_paths": [
+                "memory_miss",
+                "disk_or_page_store_read",
+                "memory_refill",
+                "eviction_reason"
+              ],
               "recovery_errors_reported": [
                 "orphan_pages",
                 "missing_index_refs",
@@ -5964,15 +5956,23 @@
                 "checkpoint_generation",
                 "oplog_sequence",
                 "raft_snapshot_index"
-              ],
-              "cache_paths": [
-                "memory_miss",
-                "disk_or_page_store_read",
-                "memory_refill",
-                "eviction_reason"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ storage corpus runner must report equivalent orphan pages, missing refs, stale refs, corrupt bytes, replay boundary, follower cursor retention, cache refill, and shared-store replay evidence.",
+            "description": "Shared storage case tying dump/load, recovery, corrupt page/index/oplog/snapshot, follower-safe GC, cache refill, and context sidecar/index refs into one dependency matrix.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "compat/storage_migration_corpus.json",
+              "crates/temporalstore-rust/src/page_store.rs",
+              "src/storage",
+              "src/extension/context"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus storage_fault_matrix storage_follower_safe_gc storage_cache_refill -- --test-threads=1",
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_recovery_validates_indexes_pages_manifests_and_sidecar_refs",
+          "skip_client": true
         }
       ]
     },
@@ -5981,28 +5981,13 @@
       "shard_id": 39,
       "steps": [
         {
-          "name": "temporal_raft_process_read_safety_membership_and_snapshot_evidence",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "stress",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft case requiring production TemporalRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
-            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-temporal-raft-process-read-safety",
-            "cpp_runner_contract": "C++ RustRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
-            "required_paths": [
-              "crates/temporalstore-rust/src/raft.rs",
-              "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
-              "crates/temporalstore-rust/src/bin/raft_node.rs",
-              "src/rustraft",
-              "src/metaserver_v2"
-            ],
             "acceptance": {
-              "read_safety": [
-                "read_index",
-                "lease_read_guard",
-                "lagging_follower_rejects_stale_read",
-                "secondary_read_after_catchup"
+              "faults": [
+                "failover",
+                "snapshot_install",
+                "restart_recovery",
+                "follower_lag"
               ],
               "membership": [
                 "learner_add",
@@ -6015,16 +6000,31 @@
                 "pending_joint_consensus_restart",
                 "scheduler_generation_token_coupling"
               ],
-              "faults": [
-                "failover",
-                "snapshot_install",
-                "restart_recovery",
-                "follower_lag"
+              "read_safety": [
+                "read_index",
+                "lease_read_guard",
+                "lagging_follower_rejects_stale_read",
+                "secondary_read_after_catchup"
               ]
             },
-            "timeout_s": 1800,
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <temporal-raft-process-read-safety.json>"
-          }
+            "cpp_runner_contract": "C++ RustRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
+            "description": "Shared Raft case requiring production TemporalRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
+            "kind": "existing_test",
+            "mode": "stress",
+            "required_paths": [
+              "crates/temporalstore-rust/src/raft.rs",
+              "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
+              "crates/temporalstore-rust/src/bin/raft_node.rs",
+              "src/rustraft",
+              "src/metaserver_v2"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-temporal-raft-process-read-safety",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <temporal-raft-process-read-safety.json>",
+            "suite": "cpp_data_raft_parity",
+            "timeout_s": 1800
+          },
+          "name": "temporal_raft_process_read_safety_membership_and_snapshot_evidence",
+          "skip_client": true
         }
       ]
     },
@@ -7179,92 +7179,92 @@
       "shard_id": 10,
       "steps": [
         {
-          "name": "detect_object_store_backend_0",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "blob://pool/stream/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "bytestore"
-          }
+            "backend": "bytestore",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_0"
         },
         {
-          "name": "detect_object_store_backend_1",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "local://pool/stream/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "bytestore"
-          }
+            "backend": "bytestore",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_1"
         },
         {
-          "name": "detect_object_store_backend_2",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "file:///tmp/pool/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "local_file"
-          }
+            "backend": "local_file",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_2"
         },
         {
-          "name": "detect_object_store_backend_3",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "s3://bucket/prefix/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "s3"
-          }
+            "backend": "s3",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_3"
         },
         {
-          "name": "detect_object_store_backend_4",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "ceph://bucket/prefix/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "ceph_s3"
-          }
+            "backend": "ceph_s3",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_4"
         },
         {
-          "name": "detect_object_store_backend_5",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "ceph+s3://bucket/prefix/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "ceph_s3"
-          }
+            "backend": "ceph_s3",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_5"
         },
         {
-          "name": "detect_object_store_backend_6",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "rados://pool/prefix/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "ceph_rados"
-          }
+            "backend": "ceph_rados",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_6"
         },
         {
-          "name": "detect_object_store_backend_7",
           "command": {
             "kind": "object_store_backend_detect",
             "uri": "http://bucket/prefix/"
           },
           "expect": {
-            "kind": "object_store_backend",
-            "backend": "unknown"
-          }
+            "backend": "unknown",
+            "kind": "object_store_backend"
+          },
+          "name": "detect_object_store_backend_7"
         }
       ]
     },
@@ -7403,18 +7403,17 @@
       ]
     },
     {
-      "name": "engine_lifecycle_load_config_membership_unload",
-      "family": "control plane",
-      "shard_id": 7,
       "description": "Shared C++/Rust engine lifecycle case for direct shard load, duplicate-load rejection, config versioning, info/stats reporting, membership version guards, and unload cleanup. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs so the moved production surface remains tied to the unified corpus.",
+      "family": "control plane",
+      "name": "engine_lifecycle_load_config_membership_unload",
+      "shard_id": 7,
       "steps": [
         {
-          "name": "engine_lifecycle_load_config_membership_unload_shared",
           "command": {
+            "description": "Rust executes TemporalEngine load_shard_with, set_config/get_config, update_membership, get_info/get_stats, and unload_shard_with. C++ parity maps to partition/server load/unload, configuration, and membership surfaces.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_node_lifecycle_parity",
-            "description": "Rust executes TemporalEngine load_shard_with, set_config/get_config, update_membership, get_info/get_stats, and unload_shard_with. C++ parity maps to partition/server load/unload, configuration, and membership surfaces.",
             "required_paths": [
               "crates/temporalstore-rust/src/engine/lifecycle.rs",
               "src/server/partition_manager.cc",
@@ -7422,56 +7421,57 @@
             ],
             "rust_runner": "cargo test -p temporalstore-rust control_api_load_config_info_stats_membership_and_unload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
+            "suite": "cpp_data_node_lifecycle_parity"
+          },
+          "name": "engine_lifecycle_load_config_membership_unload_shared"
         }
       ]
     },
     {
-      "name": "engine_lifecycle_reload_metadata_readonly_stale_version",
-      "family": "control plane",
-      "shard_id": 7,
       "description": "Shared C++/Rust engine lifecycle case for reload metadata replacement, stale load-version rejection, membership preservation across reload, and readonly write barriers. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs.",
+      "family": "control plane",
+      "name": "engine_lifecycle_reload_metadata_readonly_stale_version",
+      "shard_id": 7,
       "steps": [
         {
-          "name": "engine_lifecycle_reload_metadata_readonly_stale_version_shared",
           "command": {
+            "description": "Rust executes TemporalEngine reload_shard_with and validates stale generation rejection, metadata refresh, preserved replica membership, and readonly write rejection. C++ parity maps to partition reload, load version, and readonly serving behavior.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_node_lifecycle_parity",
-            "description": "Rust executes TemporalEngine reload_shard_with and validates stale generation rejection, metadata refresh, preserved replica membership, and readonly write rejection. C++ parity maps to partition reload, load version, and readonly serving behavior.",
             "required_paths": [
               "crates/temporalstore-rust/src/engine/tests.rs",
               "src/partition/partition.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust engine_reload_shard_updates_metadata_and_rejects_stale_version --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-engine-lifecycle-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
+            "suite": "cpp_data_node_lifecycle_parity"
+          },
+          "name": "engine_lifecycle_reload_metadata_readonly_stale_version_shared"
         }
       ]
     },
     {
-      "name": "context_query_debug_filter_group_cpp_parity",
-      "family": "context",
-      "shard_id": 42,
       "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, candidate drop reasons, summary traversal evidence, selected refs, and prompt injection ordering.",
+      "family": "context",
+      "name": "context_query_debug_filter_group_cpp_parity",
+      "shard_id": 42,
       "steps": [
         {
-          "name": "context_query_debug_filter_group_cpp_parity_shared",
           "command": {
+            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, dropped candidate reasons, summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
+            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_query_debug_parity",
-            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, dropped candidate reasons, summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow/query.rs",
               "src/model/model_manager.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
-            "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
-          }
+            "suite": "cpp_context_query_debug_parity"
+          },
+          "name": "context_query_debug_filter_group_cpp_parity_shared"
         }
       ]
     },
@@ -7480,19 +7480,13 @@
       "shard_id": 31,
       "steps": [
         {
-          "name": "storage_cache_dynamic_modes_fault_matrix_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Unified storage/cache case tying per-event async/sync/Raft selection to dump/load, corruption, follower-safe GC, cache refill, and shared-store sync/async replay evidence.",
-            "rust_runner": "cargo test -p temporalstore-rust storage_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin storage_modes_harness -- --async-flush-limit 1",
-            "cpp_runner_contract": "C++ consumes the same case as object/page/slot lifecycle, storage manager, and shared-store replay parity evidence.",
-            "required_paths": [
-              "docs/shared_store_replication.md"
-            ],
             "acceptance": {
+              "cache_paths": [
+                "memory_miss_disk_or_page_refill",
+                "slot_invalidation",
+                "warmup_from_page_index"
+              ],
               "event_replication_modes": [
                 "async_storage",
                 "sync_storage",
@@ -7506,14 +7500,20 @@
                 "corrupt_index_log",
                 "corrupt_oplog"
               ],
-              "cache_paths": [
-                "memory_miss_disk_or_page_refill",
-                "slot_invalidation",
-                "warmup_from_page_index"
-              ],
               "restart_required": false
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ consumes the same case as object/page/slot lifecycle, storage manager, and shared-store replay parity evidence.",
+            "description": "Unified storage/cache case tying per-event async/sync/Raft selection to dump/load, corruption, follower-safe GC, cache refill, and shared-store sync/async replay evidence.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/shared_store_replication.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust storage_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin storage_modes_harness -- --async-flush-limit 1",
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_cache_dynamic_modes_fault_matrix_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7522,18 +7522,7 @@
       "shard_id": 32,
       "steps": [
         {
-          "name": "raft_datanode_metaserver_process_evidence_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, FSM apply crash-window atomicity, learner add/promote/remove, secondary reads, and lag gates.",
-            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness && cargo run -p temporalstore-rust --bin metaserver_raft_harness",
-            "cpp_runner_contract": "C++ RustRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
-            "required_paths": [
-              "docs/distributed_raft_readiness.md"
-            ],
             "acceptance": {
               "local_fixture_allowed_for_readiness": false,
               "required_process_paths": [
@@ -7554,8 +7543,19 @@
                 "secondary_reads"
               ]
             },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <log>"
-          }
+            "cpp_runner_contract": "C++ RustRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
+            "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, FSM apply crash-window atomicity, learner add/promote/remove, secondary reads, and lag gates.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/distributed_raft_readiness.md"
+            ],
+            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness && cargo run -p temporalstore-rust --bin metaserver_raft_harness",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-metaserver-raft-validation --log <log>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "raft_datanode_metaserver_process_evidence_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7564,18 +7564,7 @@
       "shard_id": 33,
       "steps": [
         {
-          "name": "context_resource_skill_model_fanout_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_pipeline_parity",
-            "description": "Unified context case for resource lifecycle, SKILL.md registry semantics, embedding provider metadata, summary-embedding coarse retrieval, secondary indexes, and query debug traces.",
-            "rust_runner": "cargo test -p temporalstore-rust context_resource_skill_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin context_workflow_harness",
-            "cpp_runner_contract": "C++ context pipeline emits the same event/segment/entity/node/child/embedding/summary/compression/index fanout report.",
-            "required_paths": [
-              "docs/matrixark_resource_skill_parsing_pipeline.md"
-            ],
             "acceptance": {
               "fanout_models": [
                 "event",
@@ -7596,6 +7585,11 @@
                 "delete",
                 "stale_invalidate"
               ],
+              "retrieval": [
+                "summary_embedding_coarse",
+                "chunk_expand",
+                "injection_order"
+              ],
               "skill_registry": [
                 "enable_disable",
                 "precedence",
@@ -7603,14 +7597,20 @@
                 "triggers",
                 "allowed_tools",
                 "version_update"
-              ],
-              "retrieval": [
-                "summary_embedding_coarse",
-                "chunk_expand",
-                "injection_order"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ context pipeline emits the same event/segment/entity/node/child/embedding/summary/compression/index fanout report.",
+            "description": "Unified context case for resource lifecycle, SKILL.md registry semantics, embedding provider metadata, summary-embedding coarse retrieval, secondary indexes, and query debug traces.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/matrixark_resource_skill_parsing_pipeline.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_resource_skill_ -- --test-threads=1 && cargo run -p temporalstore-rust --bin context_workflow_harness",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_resource_skill_model_fanout_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7619,24 +7619,8 @@
       "shard_id": 34,
       "steps": [
         {
-          "name": "client_proxy_datanode_metaserver_control_plane_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_client_proxy_control_plane_parity",
-            "description": "Unified control-plane case for topology version changes, stale route invalidation, admission policy, route quarantine/recovery, lifecycle load/reload/unload, and scheduler token rejection.",
-            "rust_runner": "cargo test -p temporalstore-rust client_proxy_control_plane_ -- --test-threads=1",
-            "cpp_runner_contract": "C++ client/proxy/metaserver/data-node tests consume the same topology/admission/lifecycle report contract.",
-            "required_paths": [
-              "docs/client_proxy_control_plane_parity.md"
-            ],
             "acceptance": {
-              "topology": [
-                "table_version_guard",
-                "shard_version_guard",
-                "stale_route_retry_once"
-              ],
               "admission": [
                 "readonly",
                 "write_disabled",
@@ -7655,9 +7639,25 @@
                 "load_token",
                 "generation_check",
                 "stale_rejection"
+              ],
+              "topology": [
+                "table_version_guard",
+                "shard_version_guard",
+                "stale_route_retry_once"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ client/proxy/metaserver/data-node tests consume the same topology/admission/lifecycle report contract.",
+            "description": "Unified control-plane case for topology version changes, stale route invalidation, admission policy, route quarantine/recovery, lifecycle load/reload/unload, and scheduler token rejection.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/client_proxy_control_plane_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust client_proxy_control_plane_ -- --test-threads=1",
+            "suite": "cpp_client_proxy_control_plane_parity"
+          },
+          "name": "client_proxy_datanode_metaserver_control_plane_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7666,38 +7666,38 @@
       "shard_id": 35,
       "steps": [
         {
-          "name": "ingestion_kafka_flink_deadletter_lag_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_ingestion_parity",
-            "description": "Unified ingestion case for Kafka offset ledger, rebalance/backpressure, Flink precommit/commit/abort, dead letters, lag metrics, and restart/failover idempotence.",
-            "rust_runner": "cargo test -p temporalstore-rust ingestion_ -- --test-threads=1",
-            "cpp_runner_contract": "C++ ingestion runtime emits the same offset/checkpoint/dead-letter/lag/idempotence report contract.",
-            "required_paths": [
-              "docs/ingestion_cpp_rust_parity.md"
-            ],
             "acceptance": {
-              "kafka": [
-                "consumer_group",
-                "offset_ledger",
-                "rebalance",
-                "backpressure"
+              "failure": [
+                "dead_letter_export",
+                "lag_metrics",
+                "leader_change_idempotence",
+                "restart_idempotence"
               ],
               "flink": [
                 "precommit",
                 "commit",
                 "abort"
               ],
-              "failure": [
-                "dead_letter_export",
-                "lag_metrics",
-                "leader_change_idempotence",
-                "restart_idempotence"
+              "kafka": [
+                "consumer_group",
+                "offset_ledger",
+                "rebalance",
+                "backpressure"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ ingestion runtime emits the same offset/checkpoint/dead-letter/lag/idempotence report contract.",
+            "description": "Unified ingestion case for Kafka offset ledger, rebalance/backpressure, Flink precommit/commit/abort, dead letters, lag metrics, and restart/failover idempotence.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/ingestion_cpp_rust_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust ingestion_ -- --test-threads=1",
+            "suite": "cpp_ingestion_parity"
+          },
+          "name": "ingestion_kafka_flink_deadletter_lag_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7706,48 +7706,48 @@
       "shard_id": 36,
       "steps": [
         {
-          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
-          "skip_client": true,
           "command": {
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "suite": "cpp_product_api_parity",
-            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
-            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
-            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
-            "required_paths": [
-              "docs/product_api_cpp_rust_parity.md"
-            ],
             "acceptance": {
-              "redis_admin": [
-                "aliases",
-                "status_codes",
-                "typed_errors"
-              ],
               "feature": [
                 "nested_points",
                 "replace",
                 "filter",
                 "aggregation"
               ],
-              "sequence": [
-                "batch_query",
-                "time_ordering",
-                "missing_series"
-              ],
               "ips": [
                 "snapshot",
                 "stat",
                 "filter_metadata"
+              ],
+              "redis_admin": [
+                "aliases",
+                "status_codes",
+                "typed_errors"
               ],
               "risk": [
                 "cpc",
                 "fol",
                 "manager",
                 "debug"
+              ],
+              "sequence": [
+                "batch_query",
+                "time_ordering",
+                "missing_series"
               ]
-            }
-          }
+            },
+            "cpp_runner_contract": "C++ product modules execute the same command/response corpus for Redis/admin/Feature/Sequence/IPS/Risk behavior.",
+            "description": "Unified API case covering Redis/admin aliases plus Feature nested point semantics, Sequence edge cases, IPS snap/stat/filter metadata, and Risk CPC/list/manager/debug behavior.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "docs/product_api_cpp_rust_parity.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust redis_ feature_ sequence_ ips_ risk_ -- --test-threads=1",
+            "suite": "cpp_product_api_parity"
+          },
+          "name": "redis_admin_feature_sequence_ips_risk_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7756,19 +7756,37 @@
       "shard_id": 37,
       "steps": [
         {
-          "name": "locomo_longmemeval_rust_temporalstore_cpp_report_shared_contract",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "labels": [
+                "deterministic_engineering",
+                "live_reader",
+                "paper_comparable"
+              ],
+              "production_claim_requires": [
+                "real_dataset",
+                "live_reader_calls",
+                "full_rust_replay",
+                "archived_report"
+              ]
+            },
+            "archive_contract": "Reports include dataset hash, case count, model/provider, reader mode, thresholds, p50/p95, token reduction, category breakdown, and JSON path.",
+            "cpp_runner_contract": "C++ benchmark adapter emits matrixark_vikingmem_context_benchmark_report_v1 for case-by-case comparator use.",
+            "datasets": [
+              {
+                "artifact_kind": "real_or_fixture_json",
+                "name": "LOCOMO",
+                "threshold_profile": "locomo_full"
+              },
+              {
+                "artifact_kind": "real_or_fixture_json",
+                "name": "LongMemEval_s",
+                "threshold_profile": "longmemeval_full"
+              }
+            ],
+            "description": "Unified benchmark case for LOCOMO and LongMemEval_s report contracts, requiring Rust TemporalStore backend evidence and separate deterministic/live-reader/paper-comparable labels.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_context_benchmark_parity",
-            "description": "Unified benchmark case for LOCOMO and LongMemEval_s report contracts, requiring Rust TemporalStore backend evidence and separate deterministic/live-reader/paper-comparable labels.",
-            "rust_runner": "python3 tools/run_context_benchmarks.py --require-rust-temporalstore",
-            "cpp_runner_contract": "C++ benchmark adapter emits matrixark_vikingmem_context_benchmark_report_v1 for case-by-case comparator use.",
-            "archive_contract": "Reports include dataset hash, case count, model/provider, reader mode, thresholds, p50/p95, token reduction, category breakdown, and JSON path.",
-            "required_paths": [
-              "docs/context_benchmark_truth_and_report_contract.md"
-            ],
             "report_contract": {
               "required_fields": [
                 "benchmark_family",
@@ -7799,38 +7817,20 @@
                 "reader_model"
               ]
             },
-            "acceptance": {
-              "labels": [
-                "deterministic_engineering",
-                "live_reader",
-                "paper_comparable"
-              ],
-              "production_claim_requires": [
-                "real_dataset",
-                "live_reader_calls",
-                "full_rust_replay",
-                "archived_report"
-              ]
-            },
+            "required_paths": [
+              "docs/context_benchmark_truth_and_report_contract.md"
+            ],
+            "rust_runner": "python3 tools/run_context_benchmarks.py --require-rust-temporalstore",
+            "suite": "cpp_context_benchmark_parity",
             "threshold_profiles": [
               "fixture",
               "locomo_full",
               "longmemeval_full",
               "oss_reader_full"
-            ],
-            "datasets": [
-              {
-                "name": "LOCOMO",
-                "artifact_kind": "real_or_fixture_json",
-                "threshold_profile": "locomo_full"
-              },
-              {
-                "name": "LongMemEval_s",
-                "artifact_kind": "real_or_fixture_json",
-                "threshold_profile": "longmemeval_full"
-              }
             ]
-          }
+          },
+          "name": "locomo_longmemeval_rust_temporalstore_cpp_report_shared_contract",
+          "skip_client": true
         }
       ]
     },
@@ -7839,13 +7839,17 @@
       "shard_id": 58,
       "steps": [
         {
-          "name": "wal_log_codec_segment_lifecycle_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "corrupt_header_rejected": true,
+              "segment_first_last_index_reported": true,
+              "snapshot_retention_floor_reported": true,
+              "wal_magic_version_checked": true
+            },
+            "cpp_runner_contract": "C++ runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection.",
+            "description": "Shared Raft library case for C++ ByteRaft WAL/log record compatibility: C++-style data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for C++ ByteRaft WAL/log record compatibility: C++-style data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
               "src/partition/storage/data_raft_replication.cc",
@@ -7853,15 +7857,11 @@
             ],
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_cxx_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload cpp_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection.",
-            "acceptance": {
-              "wal_magic_version_checked": true,
-              "corrupt_header_rejected": true,
-              "segment_first_last_index_reported": true,
-              "snapshot_retention_floor_reported": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "wal_log_codec_segment_lifecycle_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7870,13 +7870,18 @@
       "shard_id": 59,
       "steps": [
         {
-          "name": "read_index_lease_fault_matrix_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "healed_follower_catches_up": true,
+              "lagging_follower_read_rejected": true,
+              "minority_write_rejected": true,
+              "read_index_validated": true,
+              "stale_leader_lease_rejected": true
+            },
+            "cpp_runner_contract": "C++ runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility.",
+            "description": "Shared Raft library case for ByteRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for ByteRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
             "required_paths": [
               "tools/run_data_raft_failover_ubuntu22.sh",
               "tools/run_data_raft_mixed_rw_ubuntu22.sh",
@@ -7884,16 +7889,11 @@
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup raft_rejects_write_without_majority raft_follower_catches_up_after_outage partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility.",
-            "acceptance": {
-              "read_index_validated": true,
-              "stale_leader_lease_rejected": true,
-              "lagging_follower_read_rejected": true,
-              "minority_write_rejected": true,
-              "healed_follower_catches_up": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "read_index_lease_fault_matrix_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7902,13 +7902,18 @@
       "shard_id": 60,
       "steps": [
         {
-          "name": "replication_pipeline_reorder_backpressure_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "failed_follower_does_not_block_quorum": true,
+              "inflight_limit_enforced": true,
+              "oversized_log_rejected": true,
+              "reorder_gap_recovers": true,
+              "reorder_timeout_reported": true
+            },
+            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, oversized-log rejection, and apply backpressure counters.",
+            "description": "Shared Raft library case for ByteRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for ByteRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "required_paths": [
               "tools/run_raft_stress_suite_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -7916,16 +7921,11 @@
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=500 bash tools/run_raft_stress_suite_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported distributed_propose_does_not_wait_for_failed_followers_after_quorum --lib -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, oversized-log rejection, and apply backpressure counters.",
-            "acceptance": {
-              "inflight_limit_enforced": true,
-              "oversized_log_rejected": true,
-              "reorder_gap_recovers": true,
-              "reorder_timeout_reported": true,
-              "failed_follower_does_not_block_quorum": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "replication_pipeline_reorder_backpressure_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7934,13 +7934,17 @@
       "shard_id": 61,
       "steps": [
         {
-          "name": "snapshot_chunk_retry_rollback_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "chunk_progress_reported": true,
+              "external_snapshot_ref_preserved": true,
+              "retry_backpressure_reported": true,
+              "stale_term_rejected_before_install": true
+            },
+            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, install progress, stale snapshot rejection, rollback count, external snapshot refs, and restart recovery evidence.",
+            "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "required_paths": [
               "tools/run_data_raft_snapshot_restore_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -7948,15 +7952,11 @@
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_transport_rejects_stale_term_before_install raft_snapshot_chunk_transport_rejects_stale_term_before_buffering raft_install_snapshot_request_carries_external_snapshot_reference snapshot_transfer_policy_streams_small_snapshots_to_peer snapshot_transfer_policy_requires_external_ref_for_large_snapshot --lib -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, install progress, stale snapshot rejection, rollback count, external snapshot refs, and restart recovery evidence.",
-            "acceptance": {
-              "chunk_progress_reported": true,
-              "retry_backpressure_reported": true,
-              "stale_term_rejected_before_install": true,
-              "external_snapshot_ref_preserved": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "snapshot_chunk_retry_rollback_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7965,13 +7965,17 @@
       "shard_id": 62,
       "steps": [
         {
-          "name": "membership_roles_joint_consensus_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "auto_promote_observed": true,
+              "learner_add_promote_remove": true,
+              "pending_joint_consensus_persisted": true,
+              "stale_membership_rejected": true
+            },
+            "cpp_runner_contract": "C++ runner emits learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, and leader transfer evidence.",
+            "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "required_paths": [
               "tools/run_data_raft_scale_up_down_ubuntu22.sh",
               "tools/run_metaserver_raft_membership_ubuntu22.sh",
@@ -7979,15 +7983,11 @@
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer temporal_raft_metaserver_backend_supports_membership_and_bounded_reads joint_consensus_requires_old_and_new_majorities_before_commit_or_write joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities --lib --features temporal-raft-engine -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, and leader transfer evidence.",
-            "acceptance": {
-              "learner_add_promote_remove": true,
-              "auto_promote_observed": true,
-              "pending_joint_consensus_persisted": true,
-              "stale_membership_rejected": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "membership_roles_joint_consensus_shared",
+          "skip_client": true
         }
       ]
     },
@@ -7996,13 +7996,17 @@
       "shard_id": 63,
       "steps": [
         {
-          "name": "rpc_auth_deadline_transport_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "auth_required": true,
+              "deadline_metadata_sent": true,
+              "http_append_vote_snapshot_validated": true,
+              "retry_metrics_reported": true
+            },
+            "cpp_runner_contract": "C++ runner emits transport auth, deadline, retry, inflight, append/vote/snapshot route, and local status evidence using the same temporalstore_unified_case_report_v1 shape.",
+            "description": "Shared Raft library case for production transport contracts: auth token enforcement, deadlines, retry counters, append/vote/snapshot HTTP transport, and inflight release after transport errors.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft library case for production transport contracts: auth token enforcement, deadlines, retry counters, append/vote/snapshot HTTP transport, and inflight release after transport errors.",
             "required_paths": [
               "tools/run_live_raft_metrics_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -8010,15 +8014,11 @@
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_attaches_auth_and_deadline_metadata raft_rpc_runtime_retries_transport_errors_and_releases_inflight http_raft_transport_sends_append_vote_and_snapshot_over_tcp raft_hard_state_membership_and_snapshot_transport_are_exposed --lib -- --test-threads=1",
-            "cpp_runner_contract": "C++ runner emits transport auth, deadline, retry, inflight, append/vote/snapshot route, and local status evidence using the same temporalstore_unified_case_report_v1 shape.",
-            "acceptance": {
-              "auth_required": true,
-              "deadline_metadata_sent": true,
-              "retry_metrics_reported": true,
-              "http_append_vote_snapshot_validated": true
-            },
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>"
-          }
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "rpc_auth_deadline_transport_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8027,13 +8027,16 @@
       "shard_id": 64,
       "steps": [
         {
-          "name": "byteraft_metrics_admin_pipeline_status_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "capability_matrix_present": true,
+              "peer_pipeline_state_present": true,
+              "prometheus_byteraft_metrics_present": true
+            },
+            "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1.",
+            "description": "Shared Raft admin/status case for ByteRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft admin/status case for ByteRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
             "required_paths": [
               "tools/run_live_raft_metrics_ubuntu22.sh",
               "src/partition/storage/data_raft_consensus.cc",
@@ -8042,13 +8045,10 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
-            "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1.",
-            "acceptance": {
-              "capability_matrix_present": true,
-              "peer_pipeline_state_present": true,
-              "prometheus_byteraft_metrics_present": true
-            }
-          }
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "byteraft_metrics_admin_pipeline_status_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8057,13 +8057,16 @@
       "shard_id": 77,
       "steps": [
         {
-          "name": "server_byteraft_runtime_admin_route_shared",
-          "skip_client": true,
           "command": {
+            "acceptance": {
+              "peer_pipeline_states_present": true,
+              "report_ready_field_present": true,
+              "route_exists": true
+            },
+            "cpp_runner_contract": "C++ server/admin runner emits the corresponding ByteRaft local-status/admin report for comparison.",
+            "description": "Shared data-node API case for the Rust-native /raft/control/byteraft_runtime_admin route and equivalent C++ admin/status surface.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_data_raft_parity",
-            "description": "Shared data-node API case for the Rust-native /raft/control/byteraft_runtime_admin route and equivalent C++ admin/status surface.",
             "required_paths": [
               "src/server/test/server_test.cc",
               "src/protocol/server.proto",
@@ -8072,13 +8075,10 @@
             "runner": "cmake --build build-ubuntu22/release --target server_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
-            "cpp_runner_contract": "C++ server/admin runner emits the corresponding ByteRaft local-status/admin report for comparison.",
-            "acceptance": {
-              "route_exists": true,
-              "report_ready_field_present": true,
-              "peer_pipeline_states_present": true
-            }
-          }
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "server_byteraft_runtime_admin_route_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8087,18 +8087,18 @@
       "shard_id": 78,
       "steps": [
         {
-          "name": "storage_manager_metrics_admin_phase_reports_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ storage manager runner emits phase duration, selected slots, skipped reasons, bytes reclaimed, pressure before/after, WAL/index floors, and retention blockers.",
+            "description": "Shared storage-manager admin/metrics case for prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC phase reports.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared storage-manager admin/metrics case for prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC phase reports.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust server_exposes_storage_manager_metrics_admin_phase_reports --bin server -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-storage-manager-validation --log <storage-manager-admin.json>",
-            "cpp_runner_contract": "C++ storage manager runner emits phase duration, selected slots, skipped reasons, bytes reclaimed, pressure before/after, WAL/index floors, and retention blockers."
-          }
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_manager_metrics_admin_phase_reports_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8107,18 +8107,18 @@
       "shard_id": 79,
       "steps": [
         {
-          "name": "cache_replacement_policy_soak_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ cache runner emits eviction/admission/replacement, pinned handle, placement, writeback/backpressure, restart, and latency histogram evidence.",
+            "description": "Shared cache parity case for long-running replacement-policy soak under memory/disk pressure, pinned handles, placement semantics, async writeback/backpressure, restart, and latency metrics.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared cache parity case for long-running replacement-policy soak under memory/disk pressure, pinned handles, placement semantics, async writeback/backpressure, restart, and latency metrics.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cache_replacement_policy_soak --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-cache-soak-validation --log <cache-soak.json>",
-            "cpp_runner_contract": "C++ cache runner emits eviction/admission/replacement, pinned handle, placement, writeback/backpressure, restart, and latency histogram evidence."
-          }
+            "suite": "cpp_storage_parity"
+          },
+          "name": "cache_replacement_policy_soak_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8127,18 +8127,18 @@
       "shard_id": 80,
       "steps": [
         {
-          "name": "control_client_cpp_partition_set_route_cache_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared client route-cache case for C++ partition-set/member/version topology, stale route invalidation, and topology-version guarded refresh.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_client_control_plane_parity",
-            "description": "Shared client route-cache case for C++ partition-set/member/version topology, stale route invalidation, and topology-version guarded refresh.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_cpp_partition_set_route_cache --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "control_client_cpp_partition_set_route_cache_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8147,18 +8147,18 @@
       "shard_id": 81,
       "steps": [
         {
-          "name": "control_client_metasync_outage_churn_stress_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared client MetaSyncer case for jitter, backoff, per-table deadlines, topology-version refresh, metaserver outage, and cached-route survival.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_client_control_plane_parity",
-            "description": "Shared client MetaSyncer case for jitter, backoff, per-table deadlines, topology-version refresh, metaserver outage, and cached-route survival.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_metasync_outage_churn_stress --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "control_client_metasync_outage_churn_stress_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8167,18 +8167,18 @@
       "shard_id": 82,
       "steps": [
         {
-          "name": "control_client_deployment_placement_routing_hooks_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared client placement/routing case for deployment-aware routing, location-affine secondary reads, and primary-only writes.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_client_control_plane_parity",
-            "description": "Shared client placement/routing case for deployment-aware routing, location-affine secondary reads, and primary-only writes.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_deployment_placement_routing_hooks --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "control_client_deployment_placement_routing_hooks_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8187,18 +8187,18 @@
       "shard_id": 83,
       "steps": [
         {
-          "name": "control_client_pipeline_batch_partial_timeout_contract_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared client pipeline case for batching, partial failures, retry-safe vs unsafe writes, timeout propagation, and duplicate write prevention.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_client_control_plane_parity",
-            "description": "Shared client pipeline case for batching, partial failures, retry-safe vs unsafe writes, timeout propagation, and duplicate write prevention.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_client_pipeline_batch_partial_timeout_contract --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_client_control_plane_parity"
+          },
+          "name": "control_client_pipeline_batch_partial_timeout_contract_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8207,18 +8207,18 @@
       "shard_id": 84,
       "steps": [
         {
-          "name": "control_multi_proxy_topology_churn_scale_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared proxy scale case for two-plus proxies under topology churn, stale cache invalidation, backend quarantine, recovery probing, and convergence.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_proxy_control_plane_parity",
-            "description": "Shared proxy scale case for two-plus proxies under topology churn, stale cache invalidation, backend quarantine, recovery probing, and convergence.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_multi_proxy_topology_churn_scale --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_proxy_control_plane_parity"
+          },
+          "name": "control_multi_proxy_topology_churn_scale_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8227,18 +8227,18 @@
       "shard_id": 85,
       "steps": [
         {
-          "name": "control_proxy_operational_surface_aliases_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared proxy operational surface case for Rust-native aliases covering C++ admin/config/heartbeat/status behavior without brpc/thrift.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_proxy_control_plane_parity",
-            "description": "Shared proxy operational surface case for Rust-native aliases covering C++ admin/config/heartbeat/status behavior without brpc/thrift.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_proxy_operational_surface_aliases --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_proxy_control_plane_parity"
+          },
+          "name": "control_proxy_operational_surface_aliases_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8247,18 +8247,18 @@
       "shard_id": 86,
       "steps": [
         {
-          "name": "control_proxy_tonic_streaming_maturity_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared proxy tonic streaming/callback case for long-running request, cancellation, backpressure, and reconnect behavior.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_proxy_control_plane_parity",
-            "description": "Shared proxy tonic streaming/callback case for long-running request, cancellation, backpressure, and reconnect behavior.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust control_proxy_tonic_streaming_maturity --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_proxy_control_plane_parity"
+          },
+          "name": "control_proxy_tonic_streaming_maturity_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8267,18 +8267,18 @@
       "shard_id": 87,
       "steps": [
         {
-          "name": "storage_byteraft_dump_load_atomicity_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared data-node storage case for dump/load atomicity, manifest install, rollback-safe restart, and logical read verification.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared data-node storage case for dump/load atomicity, manifest install, rollback-safe restart, and logical read verification.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust storage_byteraft_dump_load_atomicity --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_byteraft_dump_load_atomicity_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8287,18 +8287,18 @@
       "shard_id": 88,
       "steps": [
         {
-          "name": "storage_byteraft_cache_refill_pressure_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_byteraft_cache_refill_pressure_shared",
+          "skip_client": true
         }
       ]
     },
@@ -8307,18 +8307,151 @@
       "shard_id": 89,
       "steps": [
         {
-          "name": "storage_manager_continuous_background_runtime_shared",
-          "skip_client": true,
           "command": {
+            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
+            "description": "Shared StorageManager runtime case for continuous prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC with real pressure signals and per-phase reports.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "suite": "cpp_storage_parity",
-            "description": "Shared StorageManager runtime case for continuous prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC with real pressure signals and per-phase reports.",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
-            "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
-          }
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_manager_continuous_background_runtime_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared Rust/C++ product-visible storage case for evict -> memory miss -> disk/block/shared-store fallback -> memory refill.",
+      "family": "storage/cache",
+      "name": "storage_cache_cold_read_after_eviction_shared",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "ObjectManager/PageStore cold read reloads by PageAddress after eviction and preserves logical reads",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/test/cold_read_eviction_shared_test.cc"
+            ],
+            "rust_test": "cache_cold_read_refills_from_disk_or_block_store_after_eviction",
+            "suite": "cpp_storage_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "rust_cold_read_after_eviction_path"
+        }
+      ]
+    },
+    {
+      "description": "Shared Rust/C++ storage lifecycle case for multi-slot merged dump/load, rollback markers, restart recovery, and stale page conflict reporting.",
+      "family": "storage/cache",
+      "name": "storage_merged_dump_load_interruption_shared",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "StorageManager merged dump/load install is atomic across slots and reports stale object/page conflicts",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/test/merged_dump_load_interruption_shared_test.cc"
+            ],
+            "rust_test": "merged_dump_load_interruption_rolls_back_and_recovers",
+            "suite": "cpp_storage_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "rust_merged_dump_load_restart_interruption"
+        }
+      ]
+    },
+    {
+      "description": "Shared Rust/C++ Raft process-path evidence case requiring spawned processes, independent WAL/snapshot dirs, read-index observations, restart recovery, and per-node log inspection.",
+      "family": "raft",
+      "name": "raft_process_path_log_inspection_shared",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "acceptance": [
+              "spawned data-node and metaserver processes",
+              "independent WAL and snapshot directories",
+              "observed read-index response",
+              "restart recovery validates per-node log stores"
+            ],
+            "cpp_contract": "ByteRaft process harness proves per-node WAL status, read-index, restart recovery, and log-store inspection",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/test/raft_process_path_log_inspection_shared_test.cc"
+            ],
+            "rust_runner": "tools/run_raft_distributed_parity.sh",
+            "rust_test": "openraft_process_path_reports_independent_wal_snapshot_and_read_index",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "rust_openraft_process_path_evidence"
+        }
+      ]
+    },
+    {
+      "description": "Shared client/proxy control-plane case for topology-version invalidation, quarantine/recovery, retry budget propagation, and multi-proxy convergence.",
+      "family": "client/proxy/control-plane",
+      "name": "client_proxy_route_churn_shared",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "C++ client/proxy handles topology churn with retry-safe classification, stale route invalidation, quarantine, and convergence",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/proxy/test/client_proxy_route_churn_shared_test.cc"
+            ],
+            "rust_test": "client_proxy_route_churn_converges_without_duplicate_unsafe_writes",
+            "suite": "cpp_client_proxy_control_plane_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "rust_client_proxy_route_churn_contract"
+        }
+      ]
+    },
+    {
+      "description": "Shared context/resource/skill pipeline case for resource refs, skill refs, entity refs, summary refs, and secondary-index lookup after restart.",
+      "family": "context",
+      "name": "context_resource_skill_secondary_index_shared",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "C++ context pipeline writes resource, skill, entity, summary, embedding, dirty marker, and secondary index records with restart-safe lookup",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/context/test/resource_skill_secondary_index_shared_test.cc"
+            ],
+            "rust_test": "resource_skill_ingest_secondary_indexes_survive_restart",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "rust_resource_skill_secondary_index_restart"
         }
       ]
     }
@@ -8425,43 +8558,43 @@
         ]
       },
       {
-        "suite": "cpp_context_query_debug_parity",
+        "blocker": "native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
+        "description": "C++ Context query/index debug-flow surfaces are mapped through context_model/model_manager files until a native shared corpus runner emits matrixark_context_query_debug_v1.",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+        "family": "context",
         "mode": "static_surface_gate",
         "status": "temporary_static_surface_gate",
-        "description": "C++ Context query/index debug-flow surfaces are mapped through context_model/model_manager files until a native shared corpus runner emits matrixark_context_query_debug_v1.",
-        "family": "context",
+        "suite": "cpp_context_query_debug_parity",
         "suites": [
           "cpp_context_query_debug_parity"
-        ],
-        "blocker": "native C++ context query debug corpus adapter still needs to emit matrixark_context_query_debug_v1 case results",
-        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native"
+        ]
       },
       {
+        "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
+        "expected_runner_command": "run_cpp_control_plane_shared_cases --corpus {corpus}",
         "family": "client_proxy_control_plane",
+        "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_client_proxy_control_plane_parity"
-        ],
-        "status": "temporary_static_surface_gate",
-        "blocker": "C++ executable shared adapter for client/proxy/data-node/metaserver control-plane workflows is still pending.",
-        "expected_runner_command": "run_cpp_control_plane_shared_cases --corpus {corpus}"
+        ]
       },
       {
+        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
+        "expected_runner_command": "run_cpp_product_api_shared_cases --corpus {corpus}",
         "family": "product_api_models",
+        "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_product_api_parity"
-        ],
-        "status": "temporary_static_surface_gate",
-        "blocker": "C++ executable shared adapter for Redis/admin/Feature/Sequence/IPS/Risk command corpus is still pending.",
-        "expected_runner_command": "run_cpp_product_api_shared_cases --corpus {corpus}"
+        ]
       },
       {
+        "blocker": "C++ native benchmark adapter must emit matrixark_vikingmem_context_benchmark_report_v1 before static benchmark report contracts become executable shared cases.",
+        "expected_runner_command": "run_cpp_context_benchmark_shared_cases --corpus {corpus}",
         "family": "context_benchmark_report_contract",
+        "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_context_benchmark_parity"
-        ],
-        "status": "temporary_static_surface_gate",
-        "blocker": "C++ native benchmark adapter must emit matrixark_vikingmem_context_benchmark_report_v1 before static benchmark report contracts become executable shared cases.",
-        "expected_runner_command": "run_cpp_context_benchmark_shared_cases --corpus {corpus}"
+        ]
       }
     ],
     "required_case_names": [
@@ -8644,7 +8777,12 @@
       "control_proxy_tonic_streaming_maturity",
       "storage_byteraft_dump_load_atomicity",
       "storage_byteraft_cache_refill_pressure",
-      "storage_manager_continuous_background_runtime"
+      "storage_manager_continuous_background_runtime",
+      "storage_cache_cold_read_after_eviction_shared",
+      "storage_merged_dump_load_interruption_shared",
+      "raft_process_path_log_inspection_shared",
+      "client_proxy_route_churn_shared",
+      "context_resource_skill_secondary_index_shared"
     ],
     "required_command_kinds": [
       "string_set",
@@ -8744,7 +8882,8 @@
       "raft_rustraft_membership_roles_joint_consensus_matrix",
       "raft_rustraft_rpc_auth_deadline_transport_matrix",
       "raft_byteraft_metrics_admin_pipeline_status",
-      "server_raft_byteraft_runtime_admin_route"
+      "server_raft_byteraft_runtime_admin_route",
+      "raft_process_path_log_inspection_shared"
     ],
     "required_response_kinds": [
       "empty",

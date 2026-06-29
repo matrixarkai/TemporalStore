@@ -11,6 +11,7 @@
 #pragma once
 
 #include <cstdint>
+#include <fstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -72,6 +73,27 @@ inline nlohmann::json ToJson(const UnifiedCaseReportArchive& archive) {
     root["cases"].push_back(ToJson(report));
   }
   return root;
+}
+
+inline UnifiedCaseReport& AddCase(
+    UnifiedCaseReportArchive* archive,
+    std::string name,
+    std::string status = "passed") {
+  archive->cases.push_back(UnifiedCaseReport{std::move(name), std::move(status), {}});
+  return archive->cases.back();
+}
+
+inline void AddStep(
+    UnifiedCaseReport* report,
+    UnifiedCaseStepReport step) {
+  report->steps.push_back(std::move(step));
+}
+
+inline void SaveJsonArchive(
+    const UnifiedCaseReportArchive& archive,
+    const std::string& path) {
+  std::ofstream out(path);
+  out << ToJson(archive).dump(2) << "\n";
 }
 
 inline UnifiedCaseStepReport PassedStep(

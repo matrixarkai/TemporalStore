@@ -43,6 +43,7 @@ pub(super) struct SlotStoreRuntimeReport {
     pub slots: Vec<SlotRuntimeState>,
 }
 
+#[allow(dead_code)]
 pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
     let mut report = SlotStoreRuntimeReport {
         slot_store_runtime_module: true,
@@ -116,6 +117,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
     report
 }
 
+#[allow(dead_code)]
 fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
     match layout {
         SlotLayoutState::Empty => "empty",

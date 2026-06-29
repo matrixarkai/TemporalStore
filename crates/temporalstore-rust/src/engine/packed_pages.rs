@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::block_store::{
-    BlockAddress, BlockStoreError, LocalBlockStore, LocalPageStore, PageAddress,
-};
+use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::cache::MultiLayerCache;
 use crate::types::{FeaturePoint, ShardId};
 
@@ -162,11 +160,11 @@ pub(super) fn read_feature_point(
 
 pub(super) fn read_feature_point_cached(
     cache: &MultiLayerCache,
-    page_store: &LocalPageStore,
+    block_store: &LocalBlockStore,
     shard_id: ShardId,
     timestamp_ms: u64,
-    address: &PageAddress,
-    packed_page_cache: &mut HashMap<PageAddress, Option<Vec<FeaturePoint>>>,
+    address: &BlockAddress,
+    packed_page_cache: &mut HashMap<BlockAddress, Option<Vec<FeaturePoint>>>,
 ) -> Option<FeaturePoint> {
     if let Some(points) = packed_page_cache.get(address) {
         return points
@@ -179,7 +177,7 @@ pub(super) fn read_feature_point_cached(
             .cloned();
     }
 
-    let bytes = read_page_bytes(cache, page_store, shard_id, address)?;
+    let bytes = read_page_bytes(cache, block_store, shard_id, address)?;
     match decode_feature_page_strict(&bytes) {
         PackedFeaturePageDecode::Packed(points) => {
             let selected = points
