@@ -563,7 +563,7 @@ class MatrixArkMcpServer:
                     raise
                 elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
                 timeout = request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms
-                if timeout and not result.get("partial_context_pack"):
+                if timeout and not (result.get("partial_context_pack") or result.get("partial")):
                     result = self._retrieve_timeout_fallback(args, deadline_ms=effective_retrieve_deadline_ms or request_deadline_ms, elapsed_ms=elapsed_ms, reason="request_deadline_after_retrieve")
                     result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["request_deadline_after_retrieve"]
                     result["partial_context_pack"] = True

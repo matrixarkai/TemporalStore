@@ -70,10 +70,11 @@ class MatrixArkServiceMetrics:
 
     def observe_retrieve_result(self, result: Json) -> None:
         with self._lock:
-            if result.get("partial_context_pack"):
+            if result.get("partial_context_pack") or result.get("partial"):
                 self._partial_context_pack_count += 1
-            budget = int(result.get("remote_context_budget_tokens") or result.get("max_context_tokens") or 0)
-            used = int(result.get("used_remote_context_tokens") or result.get("used_context_tokens") or 0)
+            tokens = result.get("tokens") if isinstance(result.get("tokens"), dict) else {}
+            budget = int(tokens.get("remote_budget") or result.get("remote_context_budget_tokens") or result.get("max_context_tokens") or 0)
+            used = int(tokens.get("remote") or result.get("used_remote_context_tokens") or result.get("used_context_tokens") or 0)
             pressure = min(1.0, used / budget) if budget > 0 else 0.0
             self._last_token_pressure = pressure
             self._token_pressure_samples.append(pressure)

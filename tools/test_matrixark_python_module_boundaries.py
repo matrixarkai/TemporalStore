@@ -107,14 +107,16 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
             }
         )
         self.assertNotIn("selected_refs", pack)
-        self.assertIn("selected_ref_groups", pack)
-        self.assertEqual("same_session", pack["context_groups"]["session_continuity"]["default"])
-        self.assertEqual(2, pack["context_groups"]["session_continuity"]["counts"]["same_session"])
-        event_group = next(group for group in pack["selected_ref_groups"] if group["ref_type"] == "event")
-        summary_group = next(group for group in pack["selected_ref_groups"] if group["ref_type"] == "summary")
-        self.assertNotIn("ref_type", event_group["refs"][0])
-        self.assertNotIn("session_continuity", event_group["refs"][0])
-        self.assertEqual("cross_session", summary_group["refs"][0]["session_continuity"])
+        self.assertNotIn("selected_ref_groups", pack)
+        self.assertIn("groups", pack)
+        self.assertEqual("same_session", pack["defaults"]["session_continuity"])
+        self.assertEqual(2, pack["counts"]["session_continuity"]["same_session"])
+        event_group = next(group for group in pack["groups"] if group["type"] == "event")
+        summary_group = next(group for group in pack["groups"] if group["type"] == "summary")
+        self.assertNotIn("ref_type", event_group["items"][0])
+        self.assertNotIn("session_continuity", event_group["items"][0])
+        self.assertEqual("cross_session", summary_group["items"][0]["session_continuity"])
+        self.assertEqual(3, event_group["items"][0]["tokens"])
 
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
