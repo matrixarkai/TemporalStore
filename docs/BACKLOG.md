@@ -85,6 +85,28 @@ Latest AWS/test state:
   - Native TemporalStore gap: add server-side secondary-index lookup and AND filtering so the store can return candidate refs before MatrixArk reads full records or computes similarity.
   - Next tasks: expose `QUERY_CONTEXT_INDEX`, index-intersection APIs, and benchmark dense-only vs secondary-prefiltered vs hybrid sparse+index retrieval at tenant scale.
 
+- Replace product-visible per-term `ContextIndex` fanout with TemporalStore-native feature/sequence-style secondary filtering for hot context serving.
+  - Design note: see `docs/matrixark_temporalstore_secondary_index_design.md`.
+  - Problem:
+    - the current compatibility path writes compact `ContextIndexRef` postings under `ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}`;
+    - those refs are smaller than duplicated events, but they still grow with `objects x index_terms_per_object`;
+    - resource imports, PDFs, repos, and keyword-heavy chunks can create too many index refs and too much debug/audit noise.
+  - Target:
+    - keep `ContextEvent` and other hot context data as timestamp-keyed series;
+    - apply declared compact field filters in the TemporalStore native scan/query path, similar to the older `TemporalFeatureQuery` / `TemporalFeatureFilter` API;
+    - use a small fixed index-family set: `source_type`, `event_type`, `entity_type`, `resource_type`, `unit_kind`, `skill_trigger`, `skill_tool`, `keyword_id`, `relative_path_hash`, and `visibility_scope`;
+    - store field/value ids or hashes in native structures instead of repeated `index_name` strings in serving records.
+  - C++/Rust work:
+    - add `matrixark_scan_candidates` that accepts scope, node ids, data model set, time range, compact secondary filters, and a candidate limit;
+    - make `matrixark_retrieve_context_pack` call this native scan before scoring and packing;
+    - keep old `ContextIndexRef` writes as a compatibility/debug path until native candidate scan is fully used by both C++ and Rust;
+    - hide `ContextIndexRef` rows from serving ContextPack output by default and expose them only through debug/audit sampling.
+  - Acceptance gates:
+    - PDF/resource debug traces no longer show unbounded `context_index` rows;
+    - index writes are capped per object and per import;
+    - native scan returns fewer candidates than broad prefix scan before embedding scoring;
+    - C++ and Rust return the same candidate ids and same selected refs under shared corpus tests.
+
 - Keep MVP entity extraction flat, but attach entities to filesystem-like `ContextNode` paths; add multi-layer entity/path extraction later.
   - Product decision:
     - OpenViking's public design is clearly hierarchical through a filesystem/context-layer model for resources, memory, and skills;
