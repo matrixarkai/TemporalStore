@@ -151,11 +151,6 @@ pub use meta::{
     StaleServerReport, StateChangeRequest, TableMetaInfo, TablePartition, TableTopologyResponse,
 };
 #[allow(deprecated)]
-pub use wal::{
-    LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
-    WalStats,
-};
-#[allow(deprecated)]
 pub use page_store::{
     LocalPageStore, PageAddress, PageStoreOptions, PageStoreSegmentReport, PageStoreStats,
 };
@@ -174,25 +169,20 @@ pub use proxy::{
 pub use raft::temporal_raft_integration::{
     new_temporal_raft_data_node_backend, new_temporal_raft_metaserver_backend,
     TemporalRaftBackendReport, TemporalRaftConfig, TemporalRaftConsensusBackend,
-    TemporalRaftDurableLogRecord,
-    TemporalRaftDurableSnapshot, TemporalRaftEntry, TemporalRaftEntryPayload, TemporalRaftLogId,
-    TemporalRaftMembership, TemporalRaftNode, TemporalRaftRuntimeKind, TemporalRaftSnapshotMeta,
-    TemporalRaftStoredMembership,
+    TemporalRaftDurableLogRecord, TemporalRaftDurableSnapshot, TemporalRaftEntry,
+    TemporalRaftEntryPayload, TemporalRaftLogId, TemporalRaftMembership, TemporalRaftNode,
+    TemporalRaftRuntimeKind, TemporalRaftSnapshotMeta, TemporalRaftStoredMembership,
 };
 pub use raft::{
-    apply_data_raft_membership_from_topology, rustraft_parity_contract,
-    rustraft_parity_report, rustraft_parity_report_from_current_readiness,
-    distributed_raft_readiness, handle_authenticated_raft_http, handle_raft_http,
-    production_raft_security_from_env, require_production_raft_ready,
-    validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
-    RustRaftParityContract, RustRaftParityReport, RustRaftSemanticRequirement,
-    DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus,
-    DataRaftTopologyApplyReport, DataRaftTopologyMembershipPlan,
-    DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
-    HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
-    MetaOwnedDataRaftMembershipReport, MetaRaftCluster, MetaState,
-    TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
-    TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
+    apply_data_raft_membership_from_topology, distributed_raft_readiness,
+    handle_authenticated_raft_http, handle_raft_http, production_raft_security_from_env,
+    require_production_raft_ready, rustraft_parity_contract, rustraft_parity_report,
+    rustraft_parity_report_from_current_readiness, validate_raft_deployment_mode,
+    AppendEntriesRequest, AppendEntriesResponse, DataRaftConsensusBackend,
+    DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus, DataRaftTopologyApplyReport,
+    DataRaftTopologyMembershipPlan, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
+    DistributedRaftReadRequest, HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse,
+    LocalRaftWal, MetaCommand, MetaOwnedDataRaftMembershipReport, MetaRaftCluster, MetaState,
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftChaosPlan,
     ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftProcessSpec, ProductionRaftRuntime,
     ProductionRaftRuntimeOptions, ProductionRaftSecurity, ProductionRaftSecurityEnv,
@@ -203,8 +193,11 @@ pub use raft::{
     RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport, RaftNodeId,
     RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole,
     RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, RaftWalSegmentInfo,
-    RaftWalSegmentReport, ReadIndexResponse, UnavailableDataRaftConsensusBackend, VoteRequest,
-    VoteResponse,
+    RaftWalSegmentReport, ReadIndexResponse, RustRaftParityContract, RustRaftParityReport,
+    RustRaftSemanticRequirement, TemporalRaftDataNodeProcessRolloutReport,
+    TemporalRaftMetaProcessRolloutReport, TemporalRaftProcessNodeEvidence,
+    TemporalRaftProcessOperationalSemanticsEvidence, UnavailableDataRaftConsensusBackend,
+    VoteRequest, VoteResponse,
 };
 pub use readiness::{
     metaserver_scheduler_execution_readiness_report, production_readiness_report,
@@ -241,6 +234,11 @@ pub use types::{
     ExecuteRequest, ExecuteResponse, FeaturePoint, InternalContextIndex, IpsSnapshotReport,
     IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse, ReplicatedCommand,
     ReplicatedExecuteRequest, ShardId, Status,
+};
+#[allow(deprecated)]
+pub use wal::{
+    LocalOplogStore, LocalWalStore, OplogRecord, OplogStats, WalError, WalGcReport, WalRecord,
+    WalStats,
 };
 pub use wal::{
     LocalWriteAheadLogStore, WriteAheadLogError, WriteAheadLogGcReport, WriteAheadLogRecord,

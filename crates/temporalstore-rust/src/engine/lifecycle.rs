@@ -11,10 +11,7 @@ impl TemporalEngine {
         Self::with_cache_and_block_store(cache, LocalPageStore::default())
     }
 
-    pub fn with_cache_and_block_store(
-        cache: MultiLayerCache,
-        block_store: LocalPageStore,
-    ) -> Self {
+    pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: LocalPageStore) -> Self {
         Self::with_cache_block_store_and_index_dir(cache, block_store, unique_temp_path("indexes"))
     }
 

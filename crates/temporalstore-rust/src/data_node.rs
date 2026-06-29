@@ -1639,6 +1639,11 @@ impl DataNodeRuntime {
                 prune_slot_dump_manifests: options.enable_index_gc,
                 roll_forward_slot_dump_installs: options.enable_index_gc,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -1740,6 +1745,11 @@ impl DataNodeRuntime {
                 prune_slot_dump_manifests: false,
                 roll_forward_slot_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -1809,6 +1819,11 @@ impl DataNodeRuntime {
                 prune_slot_dump_manifests: false,
                 roll_forward_slot_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: true,
                 warm_cache: false,
             });
@@ -2042,6 +2057,11 @@ impl DataNodeRuntime {
                 prune_slot_dump_manifests: true,
                 roll_forward_slot_dump_installs: true,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             });
@@ -3492,6 +3512,11 @@ fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> GcResponse 
                 prune_slot_dump_manifests: false,
                 roll_forward_slot_dump_installs: false,
                 follower_replay_cursors: Vec::new(),
+                page_gc_shared_store_cursors: Vec::new(),
+                page_gc_raft_snapshot_refs: Vec::new(),
+                page_gc_checkpoint_floor_segment_id: None,
+                page_gc_raft_install_floor_segment_id: None,
+                page_gc_delayed_destroy_grace_ms: 0,
                 invalidate_cache: false,
                 warm_cache: false,
             }),
@@ -3902,7 +3927,19 @@ fn apply_storage_manager_cycle_to_runtime_report(
         pressure_before = pressure_before.max(stage.pressure_before);
         pressure_after = pressure_after.max(stage.pressure_after);
     }
-    report.last_pressure_snapshot = Some(cycle.pressure_snapshot.clone());
+    report.last_pressure_snapshot = Some(StorageManagerPressureSnapshot {
+        shard_id: cycle.shard_id,
+        dirty_slot_count: cycle.pressure_snapshot.dirty_slot_count,
+        selected_dirty_slot_count: cycle.plan.selected_dump_slots.len(),
+        undumped_oplog_records: cycle.pressure_snapshot.undumped_wal_records,
+        stale_page_segment_count: cycle.plan.stale_page_segment_ids.len(),
+        reclaim_candidate_count: cycle.plan.reclaim_candidates.len(),
+        reclaimable_physical_bytes: cycle.plan.reclaimable_physical_bytes,
+        cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
+        cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
+        background_queue_depth: 0,
+        foreground_queue_depth: 0,
+    });
     report.last_phase_reports = cycle.stages.clone();
     report.last_selected_slots = selected_slots.into_iter().collect();
     report.last_skipped_reasons = skipped_reasons.into_iter().collect();

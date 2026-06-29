@@ -174,6 +174,10 @@ pub struct ShardStats {
     pub object_manager: ObjectManagerStats,
     pub partition_info: PartitionInfoStats,
     pub cache: CacheStats,
+    #[serde(default)]
+    pub page_store: BlockStoreStats,
+    #[serde(default)]
+    pub page_store_zones: BlockStoreExtentSummary,
     #[serde(alias = "page_store")]
     pub block_store: BlockStoreStats,
     #[serde(default)]
@@ -225,6 +229,8 @@ pub enum StreamKind {
     Wal,
     #[serde(alias = "page")]
     Block,
+    #[serde(alias = "block")]
+    Page,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

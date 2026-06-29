@@ -13,9 +13,9 @@ pub mod reports;
 
 mod admin_report;
 mod constants;
-mod object_manager;
 mod context;
 mod lifecycle;
+mod object_manager;
 mod packed_pages;
 mod product_model;
 mod set_index_serde;
@@ -2207,7 +2207,7 @@ impl TemporalEngine {
     ) -> StorageWalReclaimPlan {
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
-        let current_oplog_sequence = self.oplog_store.stats(shard_id).last_sequence;
+        let current_oplog_sequence = self.oplog_store().stats(shard_id).last_sequence;
         let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let slot_summaries = self.slot_storage_summaries(shard_id);
         let current_slot_fingerprints = self
@@ -2344,7 +2344,7 @@ impl TemporalEngine {
             };
         }
         let oplog_gc = self
-            .oplog_store
+            .oplog_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
             .ok();
         StorageWalReclaimReport {
@@ -3891,6 +3891,7 @@ impl TemporalEngine {
             cache_memory_bytes: cache.memory_bytes,
             cache_disk_bytes: cache.disk_bytes,
             page_store_bytes_written: page_store.bytes_written,
+            block_store_bytes_written: page_store.bytes_written,
             boundary,
             object_lifecycle: recovery.object_lifecycle,
             segment_integrity,
@@ -3969,9 +3970,9 @@ impl TemporalEngine {
             object_ids_embedded: true,
             routing_slots_embedded: true,
             compression_supported: true,
-            active_zones: zones.active_zones,
-            sealed_zones: zones.sealed_zones,
-            delayed_destroy_zones: zones.delayed_destroy_zones,
+            active_zones: zones.active_extents,
+            sealed_zones: zones.sealed_extents,
+            delayed_destroy_zones: zones.delayed_destroy_extents,
             live_physical_bytes: zones.live_physical_bytes,
             reclaimable_physical_bytes: zones.reclaimable_physical_bytes,
             page_store_writes: stats.writes,
@@ -4034,6 +4035,7 @@ impl TemporalEngine {
                 report.warmed_page_refs = report.warmed_page_refs.saturating_add(1);
             } else if let Ok(bytes) = self.page_store.read(&entry.address) {
                 report.page_store_reads = report.page_store_reads.saturating_add(1);
+                report.block_store_reads = report.block_store_reads.saturating_add(1);
                 let byte_len = bytes.len() as u64;
                 match self.cache.put(key, bytes) {
                     Ok(()) => {
@@ -4410,13 +4412,13 @@ impl TemporalEngine {
                 );
             }
             for (state, value) in [
-                ("active", stats.page_store_zones.active_zones),
-                ("sealed", stats.page_store_zones.sealed_zones),
+                ("active", stats.page_store_zones.active_extents),
+                ("sealed", stats.page_store_zones.sealed_extents),
                 (
                     "delayed_destroy",
-                    stats.page_store_zones.delayed_destroy_zones,
+                    stats.page_store_zones.delayed_destroy_extents,
                 ),
-                ("purged", stats.page_store_zones.purged_zones),
+                ("purged", stats.page_store_zones.purged_extents),
             ] {
                 push_metric(
                     &mut out,
@@ -4457,11 +4459,11 @@ impl TemporalEngine {
                 );
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_zone_unix_ms),
-                ("live", stats.page_store_zones.oldest_live_zone_unix_ms),
+                ("known", stats.page_store_zones.oldest_known_extent_unix_ms),
+                ("live", stats.page_store_zones.oldest_live_extent_unix_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_zone_unix_ms,
+                    stats.page_store_zones.oldest_reclaimable_extent_unix_ms,
                 ),
             ] {
                 if let Some(value) = value {
@@ -4477,11 +4479,11 @@ impl TemporalEngine {
                 }
             }
             for (scope, value) in [
-                ("known", stats.page_store_zones.oldest_known_zone_age_ms),
-                ("live", stats.page_store_zones.oldest_live_zone_age_ms),
+                ("known", stats.page_store_zones.oldest_known_extent_age_ms),
+                ("live", stats.page_store_zones.oldest_live_extent_age_ms),
                 (
                     "reclaimable",
-                    stats.page_store_zones.oldest_reclaimable_zone_age_ms,
+                    stats.page_store_zones.oldest_reclaimable_extent_age_ms,
                 ),
             ] {
                 if let Some(value) = value {
@@ -4641,7 +4643,7 @@ impl TemporalEngine {
 
     pub fn read_stream(&self, request: StreamReadRequest) -> StreamReadResponse {
         let data: Result<Vec<u8>, String> = match request.stream_kind {
-            StreamKind::Page => self
+            StreamKind::Block | StreamKind::Page => self
                 .page_store
                 .read_logical_range(request.page_segment_id, request.offset, request.size)
                 .map_err(|err| err.to_string()),
@@ -4709,7 +4711,7 @@ impl TemporalEngine {
                         request.max_bytes,
                     )
                     .map_err(|err| err.to_string()),
-                StreamKind::Index | StreamKind::Page => unreachable!(),
+                StreamKind::Index | StreamKind::Block | StreamKind::Page => unreachable!(),
             };
             return match records {
                 Ok(records) => ScanStreamResponse {
@@ -5162,12 +5164,8 @@ impl TemporalEngine {
         let tombstoned_object_ids_before =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
         let model_layouts_before = compaction_model_layout_reports(&self.page_store, shard);
-        let object_manager_before = object_manager_runtime_report(
-            shard_id,
-            shard,
-            start_routing_slot,
-            end_routing_slot,
-        );
+        let object_manager_before =
+            object_manager_runtime_report(shard_id, shard, start_routing_slot, end_routing_slot);
         let slot_layout_transition_count_before = object_manager_before.layout_transition_count;
         let roll = self
             .page_store
@@ -5352,12 +5350,8 @@ impl TemporalEngine {
         rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
         let tombstoned_object_ids_after =
             storage_object_lifecycle_report(shard_id, shard).tombstoned_object_ids;
-        let object_manager_after = object_manager_runtime_report(
-            shard_id,
-            shard,
-            start_routing_slot,
-            end_routing_slot,
-        );
+        let object_manager_after =
+            object_manager_runtime_report(shard_id, shard, start_routing_slot, end_routing_slot);
         let slot_layout_transition_count_after = object_manager_after.layout_transition_count;
         let slot_layout_states_after = object_manager_after.layout_states;
         let stale_page_segment_ids = before_segments
@@ -5649,8 +5643,10 @@ impl TemporalEngine {
                 object_manager,
                 partition_info,
                 cache: self.cache.stats(),
-                page_store,
-                page_store_zones,
+                page_store: page_store.clone(),
+                page_store_zones: page_store_zones.clone(),
+                block_store: page_store,
+                block_store_extents: page_store_zones,
                 write_ahead_log: self.wal_store.stats(shard_id),
             }
         })
@@ -10189,7 +10185,7 @@ fn slot_storage_summaries(
         summary.page_ref_count = summary.page_ref_count.saturating_add(1);
         summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length);
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length);
-        if let Some(zone_id) = entry.address.zone_id {
+        if let Some(zone_id) = entry.address.extent_id {
             summary.last_compacted_zone = Some(
                 summary
                     .last_compacted_zone
@@ -10274,7 +10270,7 @@ fn cpp_packed_page_index_bytes(
         page_id: page.page_id,
         object_id: page.object_id,
         routing_slot: Some(page.routing_slot),
-        zone_id: page.zone_id,
+        extent_id: page.zone_id,
         sha256: page.checksum.clone(),
     });
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
@@ -10379,7 +10375,7 @@ fn storage_physical_index_report(
             length: entry.address.length,
             page_id: entry.address.page_id,
             object_id: entry.address.object_id,
-            zone_id: entry.address.zone_id,
+            zone_id: entry.address.extent_id,
             checksum: entry.address.sha256.clone(),
             dirty: entry.dirty,
             deleted: entry.deleted,
@@ -10430,7 +10426,7 @@ fn storage_physical_index_report(
                 length: page.address.length,
                 page_id: page.address.page_id,
                 object_id: Some(page.object_id),
-                zone_id: page.address.zone_id,
+                zone_id: page.address.extent_id,
                 checksum: page.address.sha256.clone(),
                 dirty: page.dirty,
                 deleted: page.deleted,
@@ -10533,14 +10529,27 @@ fn object_manager_runtime_report(
         owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
         evidence: vec![
             "runtime owns page refs in the first-class slot index".to_string(),
-            "runtime tracks dirty generations and dirty routing slots in SlotNodeIndex"
-                .to_string(),
+            "runtime tracks dirty generations and dirty routing slots in SlotNodeIndex".to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
         ],
         ..ObjectManagerRuntimeReport::default()
     };
 
     for slot in shard.slot_index.slots.values() {
+        if let Some(state) = report
+            .layout_states
+            .iter_mut()
+            .find(|state| state.state == slot_layout_name(slot.layout))
+        {
+            state.object_count = state
+                .object_count
+                .saturating_add(slot.object_ids.len() as u64);
+        } else {
+            report.layout_states.push(SlotLayoutStateCount {
+                state: slot_layout_name(slot.layout).to_string(),
+                object_count: slot.object_ids.len() as u64,
+            });
+        }
         report.object_count = report
             .object_count
             .saturating_add(slot.object_ids.len() as u64);
@@ -11533,7 +11542,7 @@ fn append_value(
         page_id: None,
         object_id,
         routing_slot,
-        zone_id: None,
+        extent_id: None,
         sha256: None,
     };
     let bytes = bytes.to_vec();

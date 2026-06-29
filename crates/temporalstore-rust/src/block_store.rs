@@ -700,6 +700,14 @@ impl LocalBlockStore {
         Ok(ids)
     }
 
+    pub fn zone_summary(&self) -> BlockStoreExtentSummary {
+        self.extent_summary()
+    }
+
+    pub fn zone_descriptors(&self) -> Vec<BlockStoreExtentDescriptor> {
+        self.extent_descriptors()
+    }
+
     pub fn gc_segments_before(
         &self,
         retain_from_page_segment_id: u64,

@@ -312,7 +312,9 @@ fn serve() -> i32 {
         }
         records_written += match response.op.as_str() {
             "put_string" | "hset" => 1,
-            "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => response.count.unwrap_or(0) as u64,
+            "batch_hset" | "matrixark_append_records" | "matrixark_batch_append_records" => {
+                response.count.unwrap_or(0) as u64
+            }
             _ => 0,
         };
         records_read += match response.op.as_str() {
