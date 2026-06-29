@@ -691,8 +691,16 @@ def validate_byteraft_process_semantics(
             f"{job}: {label} leader transfer commit indexes missing",
         )
         require(
+            len(commit_indexes) == len(write_ids),
+            f"{job}: {label} leader transfer write IDs and commit indexes are not paired",
+        )
+        require(
             all(index > 0 for index in commit_indexes),
             f"{job}: {label} leader transfer commit indexes were not committed",
+        )
+        require(
+            len(set(commit_indexes)) == len(commit_indexes),
+            f"{job}: {label} duplicate leader transfer commit indexes observed",
         )
     for field in [
         "per_peer_pipeline_state_observed",

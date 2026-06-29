@@ -2949,7 +2949,7 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
             "leader-transfer-after-1".to_string(),
             "leader-transfer-after-2".to_string(),
         ],
-        leader_transfer_commit_indexes_observed: vec![6, 6, 6],
+        leader_transfer_commit_indexes_observed: vec![1, 2, 3, 4, 5, 6],
         failover_validated: true,
         recovered_after_restart: true,
         restart_recovery_validated: true,
@@ -2988,7 +2988,7 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        6
     );
     assert_eq!(
         json["byteraft_process_semantics"]["replicate_inflight_limits_observed"],
