@@ -217,6 +217,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual(str(resource), resource_result["resource_uri"])
             self.assertTrue(resource_result["ingest"].get("resource_chunks"))
             self.assertGreaterEqual(resource_result["ingest"].get("resource_fact_event_count", 0), 1)
+            self.assertLessEqual(resource_result["ingest"].get("resource_fact_event_count", 0), 8)
 
             skill_result = self.run_hook(
                 repo,

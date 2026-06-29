@@ -2587,7 +2587,10 @@ class MatrixArkLocalAdapter:
                     )
             resource_fact_records: list[Json] = []
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
+            remaining_resource_fact_budget = max(0, MAX_RESOURCE_FACTS_PER_RESOURCE)
             for chunk in fact_chunks:
+                if remaining_resource_fact_budget <= 0:
+                    break
                 source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
                 chunk_metadata = serving_resource_metadata({**chunk.metadata, "source_locator": source_locator})
                 for fact_extraction in extract_resource_facts(
@@ -2596,7 +2599,8 @@ class MatrixArkLocalAdapter:
                     envelope=envelope,
                     raw_uri=raw_uri,
                     resource_version=resource_version_value,
-                ):
+                )[:remaining_resource_fact_budget]:
+                    remaining_resource_fact_budget -= 1
                     fact_event_type = str(fact_extraction["event_type"])
                     fact_entity_type = str(fact_extraction["entity_type"])
                     fact_value = str(fact_extraction.get("value", ""))
