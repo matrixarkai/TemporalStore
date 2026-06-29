@@ -1964,6 +1964,95 @@ fn rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
     assert_eq!(runtime.metrics().backpressure_rejections, 1);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix raft_rustraft_snapshot_lifecycle_depth
+#[test]
+fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        214,
+        [1, 2, 3],
+        RaftConfig {
+            max_inflights_replicate: 1,
+            max_applied_log_bytes: 1,
+            send_snapshot_timeout_ms: 1,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_alive(3, false).unwrap();
+    for index in 0..3 {
+        cluster
+            .propose(Command::StringSet {
+                key: format!("snapshot-lifecycle-{index}"),
+                value: vec![index as u8],
+            })
+            .unwrap();
+    }
+    let snapshot_report = cluster.maybe_trigger_snapshot().unwrap();
+    assert!(snapshot_report.triggered);
+    cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
+    cluster.set_alive(3, true).unwrap();
+
+    let chunks = cluster.build_install_snapshot_chunks(3, 1).unwrap();
+    assert!(chunks.len() > 1);
+    cluster.advance_time_ms(2);
+    let first = cluster
+        .receive_install_snapshot_chunk(chunks[0].clone())
+        .unwrap();
+    assert!(first.success);
+    assert!(!first.snapshot_complete);
+    let duplicate = cluster
+        .receive_install_snapshot_chunk(chunks[0].clone())
+        .unwrap();
+    assert!(duplicate.success);
+    assert!(!duplicate.snapshot_complete);
+    for chunk in chunks.iter().skip(1) {
+        cluster
+            .receive_install_snapshot_chunk(chunk.clone())
+            .unwrap();
+    }
+    assert_eq!(cluster.commit_index(3).unwrap(), 3);
+
+    let rollback_chunks = cluster.build_install_snapshot_chunks(2, 1).unwrap();
+    cluster
+        .receive_install_snapshot_chunk(rollback_chunks[0].clone())
+        .unwrap();
+    let mut changed_metadata = rollback_chunks[1].clone();
+    changed_metadata.last_included_index = changed_metadata.last_included_index.saturating_add(1);
+    assert!(matches!(
+        cluster.receive_install_snapshot_chunk(changed_metadata).unwrap_err(),
+        RaftError::InvalidSnapshotChunk(message) if message.contains("metadata changed")
+    ));
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.snapshot_retry_backpressure_present);
+    assert!(admin.snapshot_rate_limit_present);
+    assert!(admin.snapshot_install_progress_present);
+    assert!(admin.snapshot_install_rollback_present);
+    assert!(admin.snapshot_membership_change_present);
+    assert!(admin.snapshot_rejoin_after_compacted_log_present);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "snapshot_sender_downloader_lifecycle" && item.ready));
+    let lagging_peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .unwrap();
+    assert!(lagging_peer.snapshot_send_timeouts > 0);
+    assert!(lagging_peer.snapshot_rate_limit_rejections > 0);
+    assert!(lagging_peer.snapshot_chunk_retry_count > 0);
+    assert_eq!(lagging_peer.snapshot_install_progress_per_mille, 1_000);
+    assert!(lagging_peer.snapshot_during_membership_change);
+    assert!(lagging_peer.snapshot_rejoin_after_compacted_log);
+    let rollback_peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 2)
+        .unwrap();
+    assert!(rollback_peer.snapshot_install_rolled_back > 0);
+}
+
 // shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
 #[test]
 fn raft_snapshot_transport_rejects_stale_term_before_install() {
