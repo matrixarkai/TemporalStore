@@ -10,6 +10,7 @@ use crate::rebalance::{
 use crate::types::{Command, FeatureFilter, FeatureFilterOp, FeaturePoint, SequenceFeatureRow};
 use std::time::{Duration, Instant};
 
+// shared-corpus: raft_temporal_raft_process_rollout_evidence
 #[test]
 fn rustraft_parity_contract_is_library_consumable_and_openraft_free() {
     let contract = rustraft_parity_contract();
@@ -31,6 +32,7 @@ fn rustraft_parity_contract_is_library_consumable_and_openraft_free() {
     assert!(!cargo_toml.contains("openraft"));
 }
 
+// shared-corpus: raft_temporal_raft_process_rollout_evidence raft_temporal_raft_process_read_safety_and_membership_matrix
 #[test]
 fn rustraft_parity_report_tracks_distributed_readiness_fields() {
     let readiness = distributed_raft_readiness();
@@ -49,6 +51,7 @@ fn rustraft_parity_report_tracks_distributed_readiness_fields() {
     assert!(report.ready);
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn data_raft_log_codec_round_trips_cxx_style_header() {
     let entry = DataRaftLogCodecEntry {
@@ -81,6 +84,7 @@ fn data_raft_log_codec_round_trips_cxx_style_header() {
     assert!(decoded.log_size > 0);
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn data_raft_log_codec_rejects_bad_header_and_sequence() {
     let entry = DataRaftLogCodecEntry {
@@ -125,6 +129,7 @@ fn data_raft_log_codec_rejects_bad_header_and_sequence() {
     ));
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn cpp_data_raft_replication_rejects_corrupt_log_payload() {
     assert!(matches!(
@@ -151,6 +156,7 @@ fn cpp_data_raft_replication_rejects_corrupt_log_payload() {
     ));
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn data_raft_command_codec_round_trips_batch_request() {
     let entry = DataRaftCommandCodecEntry {
@@ -178,6 +184,7 @@ fn data_raft_command_codec_round_trips_batch_request() {
     assert_eq!(decoded, entry);
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn data_raft_command_codec_round_trips_chunked_timestamped_kv_payload() {
     let points = large_feature_points();
@@ -201,6 +208,7 @@ fn data_raft_command_codec_round_trips_chunked_timestamped_kv_payload() {
     ));
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn cpp_data_raft_replication_rejects_invalid_command_payload() {
     assert!(matches!(
@@ -315,6 +323,7 @@ fn cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations() {
 }
 
 #[cfg(feature = "temporal-raft-engine")]
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle raft_temporal_raft_process_rollout_evidence
 #[test]
 fn temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer() {
     use super::temporal_raft_integration::TemporalRaftConsensusBackend;
@@ -460,6 +469,7 @@ fn temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restar
 }
 
 #[cfg(feature = "temporal-raft-engine")]
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
     use super::temporal_raft_integration::TemporalRaftConsensusBackend;
@@ -521,6 +531,7 @@ fn temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
 }
 
 #[cfg(feature = "temporal-raft-engine")]
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn temporal_raft_metaserver_backend_supports_membership_and_bounded_reads() {
     use super::temporal_raft_integration::TemporalRaftConsensusBackend;
@@ -889,6 +900,7 @@ fn raft_snapshot_install_preserves_chunked_timestamped_kv_page_format() {
     assert!(layout.duplicate_packed_timestamps.is_empty());
 }
 
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
 #[test]
 fn raft_rejects_write_without_majority() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -910,6 +922,7 @@ fn raft_rejects_write_without_majority() {
     );
 }
 
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
 #[test]
 fn raft_follower_catches_up_after_outage() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -1046,6 +1059,7 @@ fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
 }
 
 // shared-corpus: raft_rustraft_replication_backpressure
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_replication_backpressure
 #[test]
 fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -1142,6 +1156,7 @@ fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() 
 }
 
 // shared-corpus: raft_rustraft_replication_backpressure
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_replication_backpressure
 #[test]
 fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -1359,6 +1374,7 @@ fn request_vote_higher_term_updates_term_even_when_candidate_log_is_behind() {
     assert_eq!(hard_state.voted_for, None);
 }
 
+// shared-corpus: raft_rustraft_rpc_auth_deadline_transport_matrix
 #[test]
 fn raft_hard_state_membership_and_snapshot_transport_are_exposed() {
     let cluster = RaftCluster::new_single_shard(9, [1, 2, 3]);
@@ -1385,6 +1401,7 @@ fn raft_hard_state_membership_and_snapshot_transport_are_exposed() {
     assert_eq!(response.last_included_index, 1);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
 #[test]
 fn raft_install_snapshot_request_carries_external_snapshot_reference() {
     let cluster = RaftCluster::new_single_shard(19, [1, 2, 3]);
@@ -1413,6 +1430,7 @@ fn raft_install_snapshot_request_carries_external_snapshot_reference() {
     assert_eq!(response.last_included_index, 1);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
 #[test]
 fn snapshot_transfer_policy_streams_small_snapshots_to_peer() {
     let cluster = RaftCluster::new_single_shard(20, [1, 2, 3]);
@@ -1436,6 +1454,7 @@ fn snapshot_transfer_policy_streams_small_snapshots_to_peer() {
     assert_eq!(request.external_snapshot_ref, None);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
 #[test]
 fn snapshot_transfer_policy_requires_external_ref_for_large_snapshot() {
     let cluster = RaftCluster::new_single_shard(21, [1, 2, 3]);
@@ -1663,6 +1682,7 @@ async fn external_snapshot_bootstrap_rejects_stale_local_replica_before_download
     );
 }
 
+// shared-corpus: raft_rustraft_rpc_auth_deadline_transport_matrix
 #[test]
 fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
     let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
@@ -1728,6 +1748,7 @@ fn http_raft_transport_sends_append_vote_and_snapshot_over_tcp() {
     assert_eq!(snapshot_response.last_included_index, 2);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix raft_rustraft_snapshot_lifecycle_depth
 #[test]
 fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     let cluster = RaftCluster::new_single_shard(21, [1, 2, 3]);
@@ -1780,6 +1801,7 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
 }
 
 // shared-corpus: raft_rustraft_snapshot_lifecycle_depth
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix raft_rustraft_snapshot_lifecycle_depth
 #[test]
 fn rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
     let transport = FlakyTransport {
@@ -1828,6 +1850,7 @@ fn rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
     assert_eq!(runtime.metrics().backpressure_rejections, 1);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
 #[test]
 fn raft_snapshot_transport_rejects_stale_term_before_install() {
     let cluster = RaftCluster::new_single_shard(211, [1, 2, 3]);
@@ -1848,6 +1871,7 @@ fn raft_snapshot_transport_rejects_stale_term_before_install() {
     assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
 }
 
+// shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix raft_rustraft_snapshot_lifecycle_depth
 #[test]
 fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
     let cluster = RaftCluster::new_single_shard(212, [1, 2, 3]);
@@ -1880,6 +1904,7 @@ fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
     assert_eq!(response.received_chunks, 1);
 }
 
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix raft_rustraft_rolling_restart_joint_consensus_fault_harness
 #[test]
 fn joint_consensus_requires_old_and_new_majorities_before_commit_or_write() {
     let cluster = RaftCluster::new_single_shard(22, [1, 2, 3]);
@@ -1922,6 +1947,7 @@ fn joint_consensus_requires_old_and_new_majorities_before_commit_or_write() {
         .unwrap();
 }
 
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix raft_rustraft_rolling_restart_joint_consensus_fault_harness
 #[test]
 fn joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities() {
     let dir = tempfile::tempdir().unwrap();
@@ -1965,6 +1991,7 @@ fn joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities
     assert_eq!(restored.membership().voters, vec![1, 2, 3, 4, 5]);
 }
 
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_rpc_auth_deadline_transport_matrix
 #[test]
 fn raft_rpc_runtime_retries_transport_errors_and_releases_inflight() {
     let transport = FlakyTransport {
@@ -2003,6 +2030,7 @@ fn raft_rpc_runtime_retries_transport_errors_and_releases_inflight() {
     assert_eq!(runtime.metrics().backpressure_rejections, 1);
 }
 
+// shared-corpus: raft_rustraft_rpc_auth_deadline_transport_matrix
 #[test]
 fn raft_rpc_runtime_attaches_auth_and_deadline_metadata() {
     let cluster = RaftCluster::new_single_shard(25, [1, 2, 3]);
@@ -2064,6 +2092,7 @@ fn raft_scheduler_randomizes_election_timeout_and_emits_heartbeats() {
     assert!((3..=5).contains(&election_due_at.expect("election should become due")));
 }
 
+// shared-corpus: raft_rustraft_read_lease_fault_matrix raft_rustraft_packet_loss_fault_harness
 #[test]
 fn partition_chaos_majority_side_continues_and_healed_replica_catches_up() {
     let cluster = RaftCluster::new_single_shard(24, [1, 2, 3]);
@@ -2199,6 +2228,7 @@ impl RaftTransport for OneFailedFollowerTransport {
     }
 }
 
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_packet_loss_fault_harness
 #[test]
 fn distributed_propose_does_not_wait_for_failed_followers_after_quorum() {
     let cluster =
@@ -3275,6 +3305,7 @@ fn wait_for_http(addr: &str) {
     panic!("raft http server {addr} did not start");
 }
 
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
 #[test]
 fn raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -3532,6 +3563,7 @@ fn raft_status_read_index_and_transfer_leader_match_engine_control_shape() {
 }
 
 // shared-corpus: raft_rustraft_read_safety_policy
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
 #[test]
 fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -3611,6 +3643,7 @@ fn raft_config_matches_cpp_defaults_and_validates_required_limits() {
     );
 }
 
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_election_controls
 #[test]
 fn raft_config_rejects_oversized_log_entries_and_prohibited_elections() {
     let mut config = RaftConfig {
@@ -3831,6 +3864,7 @@ fn data_raft_read_policy_matches_cpp_partition_manager_modes() {
 }
 
 // shared-corpus: raft_rustraft_read_safety_policy
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
 #[test]
 fn raft_read_index_and_transfer_reject_lagging_replica() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
