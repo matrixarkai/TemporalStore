@@ -690,6 +690,41 @@ fn data_node_process_rollout_report(
             || peer.oversized_log_rejections > 0
             || peer.append_queue_max_depth > 0
     });
+    let snapshot_chunk_retry_backpressure_observed = runtime_reports
+        .iter()
+        .any(|report| report.snapshot_retry_backpressure_present)
+        || peer_pipeline_states.iter().any(|peer| {
+            peer.snapshot_retry_count > 0
+                || peer.snapshot_chunk_retry_count > 0
+                || peer.snapshot_backpressure_rejections > 0
+        });
+    let snapshot_send_timeout_observed = peer_pipeline_states
+        .iter()
+        .any(|peer| peer.snapshot_send_timeouts > 0 || peer.snapshot_send_elapsed_ms > 0);
+    let snapshot_install_progress_observed = runtime_reports
+        .iter()
+        .any(|report| report.snapshot_install_progress_present)
+        || peer_pipeline_states.iter().any(|peer| {
+            peer.snapshot_install_total_chunks > 0 && peer.snapshot_install_progress_per_mille > 0
+        });
+    let snapshot_install_rollback_observed = runtime_reports
+        .iter()
+        .any(|report| report.snapshot_install_rollback_present)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_install_rolled_back > 0);
+    let snapshot_membership_change_observed = runtime_reports
+        .iter()
+        .any(|report| report.snapshot_membership_change_present)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_during_membership_change);
+    let snapshot_rejoin_after_compacted_log_observed = runtime_reports
+        .iter()
+        .any(|report| report.snapshot_rejoin_after_compacted_log_present)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.snapshot_rejoin_after_compacted_log);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -717,6 +752,12 @@ fn data_node_process_rollout_report(
         replication_pressure_counters_observed,
         max_disk_replicate_log_num_observed,
         snapshot_lifecycle_observed: snapshot_install_validated,
+        snapshot_chunk_retry_backpressure_observed,
+        snapshot_send_timeout_observed,
+        snapshot_install_progress_observed,
+        snapshot_install_rollback_observed,
+        snapshot_membership_change_observed,
+        snapshot_rejoin_after_compacted_log_observed,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
         wal_first_last_index_status_observed,
@@ -748,6 +789,12 @@ fn data_node_process_rollout_report(
             && append_queue_depth_observed
             && replication_pressure_counters_observed
             && max_disk_replicate_log_num_observed
+            && snapshot_chunk_retry_backpressure_observed
+            && snapshot_send_timeout_observed
+            && snapshot_install_progress_observed
+            && snapshot_install_rollback_observed
+            && snapshot_membership_change_observed
+            && snapshot_rejoin_after_compacted_log_observed
             && per_node_log_store_inspection_count >= voter_count
             && wal_segment_release_rules_observed
             && wal_first_last_index_status_observed
@@ -827,6 +874,30 @@ fn data_node_process_rollout_report(
         (
             byteraft_process_semantics.max_disk_replicate_log_num_observed,
             "process_max_disk_replicate_log_num_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_chunk_retry_backpressure_observed,
+            "process_snapshot_chunk_retry_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_send_timeout_observed,
+            "process_snapshot_send_timeout_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_progress_observed,
+            "process_snapshot_install_progress_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_rollback_observed,
+            "process_snapshot_install_rollback_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_membership_change_observed,
+            "process_snapshot_membership_change_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_rejoin_after_compacted_log_observed,
+            "process_snapshot_rejoin_after_compacted_log_missing",
         ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,

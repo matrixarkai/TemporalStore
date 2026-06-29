@@ -845,6 +845,18 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     #[serde(default)]
     pub snapshot_lifecycle_observed: bool,
     #[serde(default)]
+    pub snapshot_chunk_retry_backpressure_observed: bool,
+    #[serde(default)]
+    pub snapshot_send_timeout_observed: bool,
+    #[serde(default)]
+    pub snapshot_install_progress_observed: bool,
+    #[serde(default)]
+    pub snapshot_install_rollback_observed: bool,
+    #[serde(default)]
+    pub snapshot_membership_change_observed: bool,
+    #[serde(default)]
+    pub snapshot_rejoin_after_compacted_log_observed: bool,
+    #[serde(default)]
     pub wal_segment_lifecycle_observed: bool,
     #[serde(default)]
     pub wal_segment_release_rules_observed: bool,
