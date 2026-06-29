@@ -3672,6 +3672,95 @@ def local_context_refs_for_pack(local_budget: Json) -> list[Json]:
     return refs
 
 
+def serving_ref_for_pack(ref: Json) -> Json:
+    """Return only answer-bearing fields for the serving ContextPack payload."""
+    metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
+    item: Json = {
+        "ref_type": ref.get("ref_type", ""),
+        "text": ref.get("text", ""),
+        "token_estimate": ref.get("token_estimate", 0),
+    }
+    optional_fields = [
+        "context_class",
+        "source_ref",
+        "citation",
+        "resource_type",
+        "unit_kind",
+        "heading",
+        "heading_slug",
+        "relative_path",
+        "source_locator",
+        "entity_type",
+        "entity_name",
+        "operator",
+        "summary_type",
+        "resource_version",
+        "version_state",
+    ]
+    for field in optional_fields:
+        value = ref.get(field, metadata.get(field))
+        if value not in (None, "", [], {}):
+            item[field] = value
+    return item
+
+
+def serving_refs_for_pack(refs: list[Json]) -> list[Json]:
+    return [serving_ref_for_pack(ref) for ref in refs]
+
+
+def compact_context_pack_for_serving(pack: Json) -> Json:
+    """Strip planner/audit/debug fields from the default returned ContextPack.
+
+    Full retrieval policy, score details, dropped refs, storage mode, model
+    fallback flags, and operational visibility live in ContextPackAudit or
+    telemetry records when enabled. The serving pack should spend tokens on
+    evidence and citations.
+    """
+    serving_keys = [
+        "context_pack_id",
+        "context_sources_order",
+        "local_context_refs",
+        "selected_refs",
+        "remote_context_refs",
+        "selected_ref_counts",
+        "context_assembly_policy",
+        "used_context_tokens",
+        "used_remote_context_tokens",
+        "used_local_context_tokens",
+        "total_prompt_context_tokens",
+        "remote_context_budget_tokens",
+        "requested_max_context_tokens",
+        "local_context_safety_margin_tokens",
+        "budget_source",
+        "quality_warnings",
+        "insufficient_context",
+        "partial_context_pack",
+    ]
+    compact = {key: pack[key] for key in serving_keys if key in pack}
+    selected_refs = pack.get("selected_refs", [])
+    if isinstance(selected_refs, list):
+        compact["selected_refs"] = serving_refs_for_pack(selected_refs)
+        compact["remote_context_refs"] = compact["selected_refs"]
+    local_refs = pack.get("local_context_refs", [])
+    if isinstance(local_refs, list):
+        compact["local_context_refs"] = [
+            {
+                key: value
+                for key, value in ref.items()
+                if key in {"ref_type", "source", "token_estimate", "text"}
+                and value not in (None, "", [], {})
+            }
+            for ref in local_refs
+            if isinstance(ref, dict)
+        ]
+    if "context_assembly_policy" in compact and isinstance(compact["context_assembly_policy"], dict):
+        compact["context_assembly_policy"] = {
+            "skill_selection": compact["context_assembly_policy"].get("skill_selection", "skill_section_only"),
+            "resource_selection": "ranked_facts_entities_chunks",
+        }
+    return compact
+
+
 def is_resource_or_skill_candidate(candidate: Json) -> bool:
     ref_type = str(candidate.get("ref_type") or "")
     context_class = str(candidate.get("context_class") or "")

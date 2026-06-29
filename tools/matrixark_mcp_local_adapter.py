@@ -3678,7 +3678,7 @@ class MatrixArkLocalAdapter:
                 "created_at_ms": now_ms(),
             }
         )
-        return pack
+        return compact_context_pack_for_serving(pack)
 
     def retrieve(self, args: Json) -> Json:
         started_perf = time.perf_counter()
@@ -4756,7 +4756,9 @@ class MatrixArkLocalAdapter:
         if over_budget_stages and not any(str(warning).startswith("stage_budget_exceeded:") for warning in quality_warnings):
             quality_warnings.append("stage_budget_exceeded:" + ",".join(over_budget_stages))
             pack["quality_warnings"] = quality_warnings
-        return pack
+        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+            return pack
+        return compact_context_pack_for_serving(pack)
 
     def feedback(self, args: Json, *, hook: Json | None = None) -> Json:
         args = {**args, "kind": "feedback"}

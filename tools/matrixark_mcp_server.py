@@ -387,6 +387,16 @@ class MatrixArkMcpServer:
             return "admin"
         return ""
 
+    def _retrieve_response(self, result: Json, args: Json, *, request_deadline_ms: int, elapsed_ms: float) -> Json:
+        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+            return {
+                **result,
+                "access": args.get("_matrixark_auth", {}),
+                "request_deadline_ms": request_deadline_ms,
+                "request_elapsed_ms": round(elapsed_ms, 3),
+            }
+        return result
+
     @contextmanager
     def _operation_slot(self, name: str, request_deadline_ms: int):
         group = self._operation_group(name)
@@ -446,7 +456,7 @@ class MatrixArkMcpServer:
                     status="backpressure_partial",
                     details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms},
                 )
-                return {**result, "access": args.get("_matrixark_auth", {})}
+                return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
             raise MatrixArkError(str(exc))
 
     def _call_tool_dispatch(self, name: str, args: Json, hook: Json | None, identity: Json, request_deadline_ms: int) -> Json:
@@ -549,7 +559,7 @@ class MatrixArkMcpServer:
                         self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)
                         self.metrics.observe_retrieve_result(result)
                         self.access.append_audit("context.retrieve", identity, status="timeout_partial", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
-                        return {**result, "access": args.get("_matrixark_auth", {})}
+                        return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
                     raise
                 elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
                 timeout = request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms
@@ -562,7 +572,7 @@ class MatrixArkMcpServer:
                 self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=timeout)
                 self.metrics.observe_retrieve_result(result)
                 self.access.append_audit("context.retrieve", identity, status="timeout_partial" if timeout else "ok", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
-                return {**result, "access": args.get("_matrixark_auth", {})}
+                return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
             if name == "matrixark_ingestion_dashboard":
                 result = self.adapter.ingestion_dashboard(args)
                 self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})

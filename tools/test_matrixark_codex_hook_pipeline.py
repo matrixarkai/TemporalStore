@@ -291,7 +291,9 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertGreaterEqual(pack["selected_ref_counts"].get("resource_chunk", 0), 1)
             self.assertGreaterEqual(pack["selected_ref_counts"].get("skill_section", 0), 1)
             self.assertTrue(pack["context_assembly_policy"]["skill_selection"], "skill_section_only")
-            pushdown = pack["recall_policy"]["backend_retrieval_pushdown"]
+            self.assertNotIn("recall_policy", pack)
+            audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
+            pushdown = audit["recall_policy"]["backend_retrieval_pushdown"]
             self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
             self.assertGreater(pushdown["dropped_by_type"], 0)
             replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
