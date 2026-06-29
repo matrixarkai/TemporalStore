@@ -79,11 +79,11 @@ Current inventory:
 total cases: 180
 total steps: 363
 executable shared behavior cases: 180
-executable shared behavior steps: 238
-C++ existing-test/static parity surfaces: 125 steps
+executable shared behavior steps: 239
+C++ existing-test/static parity surfaces: 124 steps
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
-required command kinds: 76
+required command kinds: 77
 required response kinds: 20
 ```
 
@@ -173,6 +173,10 @@ Rust-local-only coverage into shared executable command kinds:
   quarantine/recovery contract.
 - `ops_grafana_metrics_cpp_parity` now uses `proxy_grafana_prometheus_metric_parity` to check
   proxy/readiness Prometheus families and the Grafana metric-family mapping contract.
+- `control_metaserver_scheduler_lifecycle_workflow` now uses
+  `metaserver_scheduler_control_plane` to validate C++ partition-set/member/version topology,
+  stale load-generation rejection, safe-mode cooldown reporting, topology-derived data-node Raft
+  membership application, and metaserver scheduler readiness evidence.
 - `control_client_cpp_partition_set_route_cache` now uses
   `client_cpp_partition_set_route_cache` to validate table id, C++ partition ids, partition
   version, slot ranges, primary/replica members, topology version, and preflight evidence.
