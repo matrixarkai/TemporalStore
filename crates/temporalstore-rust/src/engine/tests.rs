@@ -4,8 +4,9 @@ use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,
 };
 use crate::types::{
-    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextExtractedEventIndexes,
-    ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp, ReplicatedCommand,
+    ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding,
+    ContextExtractedEventIndexes, ContextSummary, ContextWire, FeatureFilter, FeatureFilterOp,
+    ReplicatedCommand,
 };
 use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore};
 
@@ -1166,6 +1167,12 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 },
             ],
         },
+        Command::RiskSet {
+            family: RiskFamily::Cpc,
+            key: "compact-risk".to_string(),
+            timestamp_ms: 45,
+            amount: 3,
+        },
         Command::ContextWriteEvent {
             tenant_hash: 7,
             node_hash: 9,
@@ -1186,6 +1193,25 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 compact_attrs: Vec::new(),
             },
             first_write_only: false,
+        },
+        Command::ContextUpsertEmbedding {
+            tenant_hash: 7,
+            embedding: ContextEmbedding {
+                ref_hash: 90,
+                level: 1,
+                model_hash: 700,
+                vector: vec![0.25, 0.75],
+                updated_at_ms: 51,
+            },
+        },
+        Command::ContextUpsertSummary {
+            tenant_hash: 7,
+            summary: ContextSummary {
+                node_hash: 9,
+                level: 1,
+                text: "compact summary".to_string(),
+                valid_from_ms: 52,
+            },
         },
         Command::CommonDelete {
             key: "compact-set".to_string(),
@@ -1264,7 +1290,31 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert_eq!(layout("feature").packed_timestamped_pages, 1);
     assert_eq!(layout("ips").index_refs, 2);
     assert_eq!(layout("ips").unique_page_refs, 1);
+    assert_eq!(layout("risk").unique_page_refs, 1);
     assert_eq!(layout("context_event").index_refs, 1);
+    assert_eq!(layout("context_embedding").unique_page_refs, 1);
+    assert_eq!(layout("context_summary").index_refs, 1);
+
+    let policy = |model_id: &str| {
+        report
+            .before
+            .model_policies
+            .iter()
+            .find(|policy| policy.model_id == model_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing model policy for {model_id}: {:?}",
+                    report.before.model_policies
+                )
+            })
+    };
+    assert!(policy("string").stale_density_triggered);
+    assert!(policy("set").tombstone_compaction_triggered);
+    assert!(policy("hash").layout_aware_rewrite_required);
+    assert!(policy("feature").layout_aware_rewrite_required);
+    assert!(policy("risk").layout_aware_rewrite_required);
+    assert!(policy("context_embedding").layout_aware_rewrite_required);
+    assert!(policy("context_summary").layout_aware_rewrite_required);
 
     let after = engine.storage_recovery_report(1);
     assert_eq!(after.object_lifecycle.owner_mismatch_page_refs, 0);

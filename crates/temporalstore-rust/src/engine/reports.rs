@@ -90,6 +90,12 @@ pub struct ModelCompactionPolicyReport {
     pub cold_page_rewrite_eligible_refs: u64,
     #[serde(default)]
     pub compaction_action: String,
+    #[serde(default)]
+    pub stale_density_triggered: bool,
+    #[serde(default)]
+    pub tombstone_compaction_triggered: bool,
+    #[serde(default)]
+    pub layout_aware_rewrite_required: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -214,7 +214,10 @@ Compaction now reports `model_layout_compaction_ready`, per-model layout rows, p
 page preservation, rewritten object/page counts, stale-page density before and after, slot layout
 transition counts, and tombstone object preservation. Blockers are emitted if compaction rewrites no
 live refs, loses tombstones, lacks model-layout rows, fails to improve or preserve live-ref density,
-or lacks slot-layout transition evidence.
+or lacks slot-layout transition evidence. Per-model policy rows also expose stale-density triggers,
+tombstone-compaction triggers, and layout-aware rewrite requirements; the shared compaction test now
+covers string/hash/set/timestamped pages, Risk pages, and Context event/embedding/summary sidecar
+pages.
 
 ## Exact Evidence Fields For Current Storage Gaps
 
