@@ -1,0 +1,633 @@
+{
+  "backend": "cpp",
+  "backend_metrics": {
+    "error": null,
+    "latency_ms": 2.195,
+    "result": {
+      "access": {
+        "account_id": "acct_local",
+        "agent_name": "local_agent",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "scope_key": "t=4848243343181226175|u=647902544814218759|",
+        "session_hash": 0,
+        "tenant_hash": 4848243343181226175,
+        "tenant_id": "tenant_local_agent",
+        "user_hash": 647902544814218759,
+        "user_id": "root"
+      },
+      "backend": "temporalstore-direct",
+      "metrics": {
+        "audit_buffered_records": 0,
+        "audit_flush_failures": 0,
+        "audit_mode": "drop",
+        "commands_total": 45,
+        "entry_count_cache": 45,
+        "errors_total": 0,
+        "metaserver": "127.0.0.1:18000",
+        "mode": "direct-sdk",
+        "namespace": "deploy_ns",
+        "records_cache_ready": true,
+        "records_read_total": 0,
+        "records_written_total": 113,
+        "service": {
+          "audit_write_failures": 0,
+          "avg_token_pressure": 0.070755,
+          "backend_ready": 1,
+          "backend_ready_status": "ready",
+          "backpressure_count": 0,
+          "dirty_summary_lag_ms": 42808,
+          "last_token_pressure": 0.070755,
+          "model": {
+            "embedding": {
+              "buckets": [
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ],
+              "count": 4,
+              "latencies": [
+                1.0851119877770543,
+                0.6351739866659045,
+                0.6431309739127755,
+                0.7437389576807618
+              ]
+            },
+            "extraction": {
+              "buckets": [
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ],
+              "count": 4,
+              "latencies": [
+                0.12933596735820174,
+                0.03523100167512894,
+                0.044942949898540974,
+                0.06385601591318846
+              ]
+            },
+            "query_embedding": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.12511102249845862,
+                0.12875802349299192,
+                0.10142801329493523,
+                0.11345604434609413,
+                0.12254895409569144,
+                0.09687000419944525,
+                0.32391201239079237,
+                0.10567205026745796
+              ]
+            },
+            "retrieval_audit": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.153,
+                0.214,
+                0.128,
+                0.142,
+                0.183,
+                0.143,
+                0.121,
+                0.163
+              ]
+            },
+            "retrieval_candidate_fetch": {
+              "buckets": [
+                5,
+                5,
+                5,
+                5,
+                5,
+                5,
+                6,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.642,
+                0.127,
+                0.118,
+                0.147,
+                0.811,
+                2019.868,
+                1026.438,
+                3043.219
+              ]
+            },
+            "retrieval_node_traversal": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                1.337,
+                1.589,
+                12.559,
+                1.315,
+                1.749,
+                1.22,
+                1.433,
+                1.433
+              ]
+            },
+            "retrieval_pack": {
+              "buckets": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+                4,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                976.878,
+                1990.614,
+                2990.764,
+                3983.382,
+                993.538,
+                1995.289,
+                2993.613,
+                3993.867
+              ]
+            },
+            "retrieval_query_understanding": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                2.516,
+                11.148,
+                22.491,
+                0.645,
+                1.545,
+                0.543,
+                0.946,
+                0.735
+              ]
+            },
+            "retrieval_rerank_score": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                2.256,
+                2.553,
+                1.26,
+                2.409,
+                7.977,
+                7.952,
+                2.211,
+                2.889
+              ]
+            }
+          },
+          "ops": {
+            "backend_ready": {
+              "buckets": [
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "error": 0,
+              "latencies": [
+                13.480430992785841
+              ],
+              "ok": 1
+            },
+            "ingest": {
+              "buckets": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                2,
+                2,
+                2,
+                4
+              ],
+              "error": 0,
+              "latencies": [
+                14540.675259020645,
+                15549.8895610217,
+                1011.9661740027368,
+                1003.9766359841451
+              ],
+              "ok": 4
+            },
+            "retrieve": {
+              "buckets": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                1,
+                2,
+                7,
+                8,
+                8
+              ],
+              "error": 0,
+              "latencies": [
+                994.4335789768957,
+                2006.1597439926118,
+                3017.994256981183,
+                3988.4106130339205,
+                1005.789641989395,
+                4025.401696038898,
+                4025.1271830056794,
+                7043.541465012822
+              ],
+              "ok": 8
+            },
+            "summary_refresh": {
+              "buckets": [
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                1
+              ],
+              "error": 0,
+              "latencies": [
+                20135.11637499323
+              ],
+              "ok": 1
+            }
+          },
+          "partial_context_pack_count": 0,
+          "resource_import_lag_ms": 0,
+          "resource_import_queue_depth": 0,
+          "started_at": 1782759078.9080372,
+          "timeout_count": 0
+        },
+        "storage_prefix": "matrixark:scale:1782759078566:cpp",
+        "table": "deploy_table",
+        "timeouts_total": 0,
+        "write_queue_dead_letter_batches": 0,
+        "write_queue_depth": 0,
+        "write_queue_durable_pending_batches": 0,
+        "write_queue_enabled": false,
+        "write_queue_enqueued_batches": 0,
+        "write_queue_enqueued_records": 0,
+        "write_queue_failures": 0,
+        "write_queue_flushed_batches": 0,
+        "write_queue_flushed_records": 0,
+        "write_queue_mode": "memory"
+      },
+      "metrics_format": "prometheus",
+      "prometheus": "# HELP matrixark_backend_qps MatrixArk storage backend command QPS.\n# TYPE matrixark_backend_qps gauge\nmatrixark_backend_qps{backend=\"cpp\"} 1.036938\n# HELP matrixark_backend_commands_total MatrixArk storage backend command count.\n# TYPE matrixark_backend_commands_total counter\nmatrixark_backend_commands_total{backend=\"cpp\"} 45\n# HELP matrixark_backend_errors_total MatrixArk storage backend command errors.\n# TYPE matrixark_backend_errors_total counter\nmatrixark_backend_errors_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.\n# TYPE matrixark_backend_timeouts_total counter\nmatrixark_backend_timeouts_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_info MatrixArk storage backend identity and mode.\n# TYPE matrixark_backend_info gauge\nmatrixark_backend_info{backend=\"cpp\",storage_mode=\"direct-sdk\"} 1\n# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.\n# TYPE matrixark_backend_ready gauge\nmatrixark_backend_ready{backend=\"cpp\",storage_mode=\"direct-sdk\",status=\"ready\"} 1\n# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.\n# TYPE matrixark_backend_command_latency_ms gauge\nmatrixark_backend_command_latency_ms{backend=\"cpp\",quantile=\"0.50\"} 2000.0\nmatrixark_backend_command_latency_ms{backend=\"cpp\",quantile=\"0.95\"} 5000.0\nmatrixark_backend_command_latency_ms{backend=\"cpp\",quantile=\"0.99\"} 5000.0\n# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.\n# TYPE matrixark_backend_command_latency_ms_bucket counter\n# HELP matrixark_backend_command_latency_ms_sum MatrixArk storage backend command latency sum in milliseconds.\n# TYPE matrixark_backend_command_latency_ms_sum counter\nmatrixark_backend_command_latency_ms_sum{backend=\"cpp\"} 70053.827\n# HELP matrixark_backend_command_latency_ms_count MatrixArk storage backend command latency sample count.\n# TYPE matrixark_backend_command_latency_ms_count counter\nmatrixark_backend_command_latency_ms_count{backend=\"cpp\"} 45\n# HELP matrixark_backend_command_latency_max_ms MatrixArk storage backend maximum command latency in milliseconds.\n# TYPE matrixark_backend_command_latency_max_ms gauge\nmatrixark_backend_command_latency_max_ms{backend=\"cpp\"} 3987.143\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"25\"} 0\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"50\"} 0\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"100\"} 0\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"250\"} 0\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"500\"} 1\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"1000\"} 3\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"2000\"} 28\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"5000\"} 45\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"10000\"} 45\nmatrixark_backend_command_latency_ms_bucket{backend=\"cpp\",le=\"+Inf\"} 45\n# HELP matrixark_backend_records_written_total MatrixArk storage backend records written.\n# TYPE matrixark_backend_records_written_total counter\nmatrixark_backend_records_written_total{backend=\"cpp\"} 113\n# HELP matrixark_backend_records_read_total MatrixArk storage backend records read.\n# TYPE matrixark_backend_records_read_total counter\nmatrixark_backend_records_read_total{backend=\"cpp\"} 0\n# HELP matrixark_context_records_total MatrixArk context records currently cached by backend.\n# TYPE matrixark_context_records_total gauge\nmatrixark_context_records_total{backend=\"cpp\"} 113\n# HELP matrixark_backend_cached_clients MatrixArk storage backend cached clients.\n# TYPE matrixark_backend_cached_clients gauge\nmatrixark_backend_cached_clients{backend=\"cpp\"} 1\n# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.\n# TYPE matrixark_backend_audit_buffered_records gauge\nmatrixark_backend_audit_buffered_records{backend=\"cpp\"} 0\n# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.\n# TYPE matrixark_backend_audit_flush_failures_total counter\nmatrixark_backend_audit_flush_failures_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_write_queue_depth MatrixArk direct backend queued write batches.\n# TYPE matrixark_backend_write_queue_depth gauge\nmatrixark_backend_write_queue_depth{backend=\"cpp\"} 0\n# HELP matrixark_backend_write_queue_durable_pending_batches MatrixArk durable TemporalStore-backed write queue pending batches.\n# TYPE matrixark_backend_write_queue_durable_pending_batches gauge\nmatrixark_backend_write_queue_durable_pending_batches{backend=\"cpp\",mode=\"memory\"} 0\n# HELP matrixark_backend_write_queue_failures_total MatrixArk direct backend background write failures.\n# TYPE matrixark_backend_write_queue_failures_total counter\nmatrixark_backend_write_queue_failures_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_write_queue_enqueued_records_total MatrixArk direct backend records accepted into the async write queue.\n# TYPE matrixark_backend_write_queue_enqueued_records_total counter\nmatrixark_backend_write_queue_enqueued_records_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_write_queue_flushed_records_total MatrixArk direct backend queued records flushed to TemporalStore.\n# TYPE matrixark_backend_write_queue_flushed_records_total counter\nmatrixark_backend_write_queue_flushed_records_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_write_queue_dead_letter_batches_total MatrixArk durable direct write queue batches moved to dead letter.\n# TYPE matrixark_backend_write_queue_dead_letter_batches_total counter\nmatrixark_backend_write_queue_dead_letter_batches_total{backend=\"cpp\"} 0\n# HELP matrixark_backend_info MatrixArk backend identity and storage mode.\n# TYPE matrixark_backend_info gauge\nmatrixark_backend_info{backend=\"cpp\",storage_mode=\"direct-sdk\"} 1\n# HELP matrixark_backend_ready MatrixArk backend readiness state, 1 for ready and 0 for not ready.\n# TYPE matrixark_backend_ready gauge\nmatrixark_backend_ready{backend=\"cpp\",storage_mode=\"direct-sdk\",status=\"ready\"} 1\n# HELP matrixark_service_requests_total MatrixArk MCP service requests by operation and status.\n# TYPE matrixark_service_requests_total counter\n# HELP matrixark_service_qps MatrixArk MCP service request QPS by operation.\n# TYPE matrixark_service_qps gauge\n# HELP matrixark_service_latency_ms MatrixArk MCP service latency quantiles by operation.\n# TYPE matrixark_service_latency_ms gauge\n# HELP matrixark_service_latency_ms_bucket MatrixArk MCP service latency histogram buckets by operation.\n# TYPE matrixark_service_latency_ms_bucket counter\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",status=\"ok\"} 1\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\"} 0.023043\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",quantile=\"0.5\"} 13.48\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",quantile=\"0.95\"} 13.48\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",quantile=\"0.99\"} 13.48\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"25\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"50\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"100\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"250\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"500\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"1000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"2000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"5000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"10000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"backend_ready\",le=\"+Inf\"} 1\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",status=\"ok\"} 4\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\"} 0.092172\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",quantile=\"0.5\"} 1011.966\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",quantile=\"0.95\"} 15549.89\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",quantile=\"0.99\"} 15549.89\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"50\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"100\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"250\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"500\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"1000\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"2000\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"5000\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"10000\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"ingest\",le=\"+Inf\"} 4\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",status=\"ok\"} 8\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\"} 0.184344\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",quantile=\"0.5\"} 3017.994\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",quantile=\"0.95\"} 7043.541\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",quantile=\"0.99\"} 7043.541\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"50\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"100\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"250\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"500\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"1000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"2000\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"5000\"} 7\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"10000\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"retrieve\",le=\"+Inf\"} 8\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",status=\"ok\"} 1\nmatrixark_service_requests_total{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\"} 0.023043\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",quantile=\"0.5\"} 20135.116\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",quantile=\"0.95\"} 20135.116\nmatrixark_service_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",quantile=\"0.99\"} 20135.116\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"50\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"100\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"250\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"500\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"1000\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"2000\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"5000\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"10000\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",operation=\"summary_refresh\",le=\"+Inf\"} 1\n# HELP matrixark_timeouts_total MatrixArk MCP timeout count.\n# TYPE matrixark_timeouts_total counter\nmatrixark_timeouts_total{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_backpressure_rejections_total MatrixArk MCP service backpressure rejection count.\n# TYPE matrixark_backpressure_rejections_total counter\nmatrixark_backpressure_rejections_total{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_partial_context_pack_total MatrixArk partial ContextPack count.\n# TYPE matrixark_partial_context_pack_total counter\nmatrixark_partial_context_pack_total{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_token_pressure_ratio Remote context budget pressure.\n# TYPE matrixark_token_pressure_ratio gauge\nmatrixark_token_pressure_ratio{backend=\"cpp\",storage_mode=\"direct-sdk\",window=\"last\"} 0.070755\nmatrixark_token_pressure_ratio{backend=\"cpp\",storage_mode=\"direct-sdk\",window=\"avg\"} 0.070755\n# HELP matrixark_dirty_summary_lag_ms Oldest pending dirty summary lag in milliseconds.\n# TYPE matrixark_dirty_summary_lag_ms gauge\nmatrixark_dirty_summary_lag_ms{backend=\"cpp\",storage_mode=\"direct-sdk\"} 42808\n# HELP matrixark_resource_import_lag_ms Oldest queued/running resource import lag in milliseconds.\n# TYPE matrixark_resource_import_lag_ms gauge\nmatrixark_resource_import_lag_ms{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_resource_import_queue_depth Current MatrixArk resource import queue depth.\n# TYPE matrixark_resource_import_queue_depth gauge\nmatrixark_resource_import_queue_depth{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_audit_write_failures_total MatrixArk audit write flush failure count.\n# TYPE matrixark_audit_write_failures_total counter\nmatrixark_audit_write_failures_total{backend=\"cpp\",storage_mode=\"direct-sdk\"} 0\n# HELP matrixark_model_latency_ms MatrixArk parser/model latency quantiles by stage.\n# TYPE matrixark_model_latency_ms gauge\n# HELP matrixark_model_latency_ms_bucket MatrixArk parser/model latency buckets by stage.\n# TYPE matrixark_model_latency_ms_bucket counter\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",quantile=\"0.5\"} 0.643\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",quantile=\"0.95\"} 1.085\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",quantile=\"0.99\"} 1.085\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"25\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"50\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"100\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"250\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"500\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"1000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"2000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"5000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"10000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"embedding\",le=\"+Inf\"} 4\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",quantile=\"0.5\"} 0.045\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",quantile=\"0.95\"} 0.129\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",quantile=\"0.99\"} 0.129\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"25\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"50\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"100\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"250\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"500\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"1000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"2000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"5000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"10000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"extraction\",le=\"+Inf\"} 4\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",quantile=\"0.5\"} 0.113\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",quantile=\"0.95\"} 0.324\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",quantile=\"0.99\"} 0.324\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"query_embedding\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",quantile=\"0.5\"} 0.143\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",quantile=\"0.95\"} 0.214\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",quantile=\"0.99\"} 0.214\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_audit\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",quantile=\"0.5\"} 0.642\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",quantile=\"0.95\"} 3043.219\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",quantile=\"0.99\"} 3043.219\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"25\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"50\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"100\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"250\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"500\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"1000\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"2000\"} 6\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_candidate_fetch\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",quantile=\"0.5\"} 1.433\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",quantile=\"0.95\"} 12.559\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",quantile=\"0.99\"} 12.559\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_node_traversal\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",quantile=\"0.5\"} 1995.289\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",quantile=\"0.95\"} 3993.867\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",quantile=\"0.99\"} 3993.867\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"25\"} 0\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"50\"} 0\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"100\"} 0\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"250\"} 0\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"500\"} 0\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"1000\"} 2\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"2000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_pack\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",quantile=\"0.5\"} 0.946\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",quantile=\"0.95\"} 22.491\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",quantile=\"0.99\"} 22.491\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_query_understanding\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",quantile=\"0.5\"} 2.409\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",quantile=\"0.95\"} 7.977\nmatrixark_model_latency_ms{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",quantile=\"0.99\"} 7.977\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"cpp\",storage_mode=\"direct-sdk\",stage=\"retrieval_rerank_score\",le=\"+Inf\"} 8\n"
+    }
+  },
+  "errors": {
+    "ingest": [],
+    "retrieve": []
+  },
+  "ingest": {
+    "avg_ms": 8027.132,
+    "elapsed_s": 16.558,
+    "errors": 0,
+    "max_ms": 15550.636,
+    "ok": 4,
+    "ops": 4,
+    "p50_ms": 14541.385,
+    "p95_ms": 15550.636,
+    "p99_ms": 15550.636,
+    "qps": 0.242
+  },
+  "ingest_messages": {
+    "message_qps": 2.416,
+    "messages": 40,
+    "messages_per_ingest": 10
+  },
+  "raw_storage": {
+    "errors": {
+      "read": [],
+      "write": []
+    },
+    "read": {
+      "avg_ms": 0.994,
+      "elapsed_s": 0.028,
+      "errors": 0,
+      "max_ms": 2.09,
+      "ok": 50,
+      "ops": 50,
+      "p50_ms": 0.914,
+      "p95_ms": 1.96,
+      "p99_ms": 2.09,
+      "qps": 1766.577,
+      "records": 50
+    },
+    "write": {
+      "avg_ms": 106.747,
+      "batch_size": 10,
+      "elapsed_s": 0.544,
+      "errors": 0,
+      "max_ms": 149.543,
+      "ok": 10,
+      "ops": 10,
+      "p50_ms": 95.985,
+      "p95_ms": 149.543,
+      "p99_ms": 149.543,
+      "qps": 18.386,
+      "record_qps": 183.86,
+      "records": 100
+    }
+  },
+  "readiness": {
+    "access": {
+      "account_id": "acct_local",
+      "agent_name": "local_agent",
+      "api_key_id": "dev",
+      "mode": "dev",
+      "role": "dev_admin",
+      "scope_key": "t=4848243343181226175|u=647902544814218759|",
+      "session_hash": 0,
+      "tenant_hash": 4848243343181226175,
+      "tenant_id": "tenant_local_agent",
+      "user_hash": 647902544814218759,
+      "user_id": "root"
+    },
+    "attempt_log": [],
+    "attempts": 1,
+    "backend": "temporalstore-direct",
+    "checks": {
+      "mcp_process_started": true,
+      "metaserver_reachable": {
+        "address": "127.0.0.1:18000",
+        "ok": true
+      },
+      "namespace_table_opened": true,
+      "slot_coverage_verified_by_warmup_hset_hget": true
+    },
+    "metaserver": "127.0.0.1:18000",
+    "probe": true,
+    "reason": "manual",
+    "status": "ready",
+    "storage_prefix": "matrixark:scale:1782759078566:cpp",
+    "topology": {
+      "metaserver": "127.0.0.1:18000",
+      "namespace": "deploy_ns",
+      "storage_prefix": "matrixark:scale:1782759078566:cpp",
+      "table": "deploy_table",
+      "warmup_field": "2370208:1782759078908:3944562213743375720",
+      "warmup_key": "matrixark:scale:1782759078566:cpp:readiness"
+    },
+    "warmup_key": "matrixark:scale:1782759078566:cpp:readiness"
+  },
+  "retrieve": {
+    "avg_ms": 3263.643,
+    "elapsed_s": 8.051,
+    "errors": 0,
+    "max_ms": 7043.762,
+    "ok": 8,
+    "ops": 8,
+    "p50_ms": 3988.719,
+    "p95_ms": 7043.762,
+    "p99_ms": 7043.762,
+    "partial_context_packs": 0,
+    "qps": 0.994,
+    "selected_refs_avg": 0.0,
+    "selected_refs_max": 0
+  },
+  "status": "passed",
+  "storage_prefix": "matrixark:scale:1782759078566:cpp",
+  "summary_refresh": {
+    "error": null,
+    "latency_ms": 20135.427,
+    "result": {
+      "access": {
+        "account_id": "acct_scale",
+        "agent_name": "local_agent",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "scope_key": "t=3823117250029978076|u=5172441694772987983|s=277632352842503953|",
+        "session_hash": 277632352842503953,
+        "session_id": "scale-1782759078566-cpp",
+        "tenant_hash": 3823117250029978076,
+        "tenant_id": "tenant_scale",
+        "user_hash": 5172441694772987983,
+        "user_id": "user_scale"
+      },
+      "compression_created_count": 0,
+      "refreshed": [
+        {
+          "dirty_hash": 4999744824857637485,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5951183779253179187,
+          "node_path": [
+            "tenant:tenant_scale"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 2453941578282522861,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 6168299677663099690,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4246893398140642488,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 7182130523143268640,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 1520437975204595749,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4721751450605559443,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale",
+            "session:scale-1782759078566-cpp"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 4351424139121312828,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 2108787425228467530,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4215254916783949828,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale",
+            "session:scale-1782759078566-cpp",
+            "conversation:scale"
+          ],
+          "source_event_count": 4,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 4,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 1216
+          },
+          "summary_version_hash": 6121177039305094936,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        }
+      ],
+      "refreshed_count": 4,
+      "status": "ok"
+    }
+  }
+}
