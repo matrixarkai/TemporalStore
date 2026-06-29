@@ -6089,6 +6089,108 @@ fn legacy_model_maps_are_promoted_to_slot_index_authority() {
     assert_eq!(physical.missing_routing_slot_count, 0);
 }
 
+// shared-corpus: storage_cold_read_page_address_fallback
+#[test]
+fn cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "cold-slot-read".to_string(),
+                    value: b"from-disk".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        shard.strings.clear();
+    }
+    let _ = engine
+        .cache()
+        .invalidate(&CacheKey::string(1, "cold-slot-read"));
+    engine.cache().clear_memory_for_test();
+    let block_reads_before = engine.block_store().stats().reads;
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "cold-slot-read".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"from-disk".to_vec())
+        }
+    );
+    assert!(engine.block_store().stats().reads > block_reads_before);
+}
+
+// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+#[test]
+fn recovery_reconciles_model_views_from_slot_index_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache_dir = dir.path().join("cache");
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "recover-slot-view".to_string(),
+                    value: b"view".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    engine.unload_shard(1);
+
+    let index_path = index_dir.join("shard-1.index.json");
+    let mut json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&index_path).expect("index file")).unwrap();
+    json["strings"] = serde_json::json!({});
+    std::fs::write(&index_path, serde_json::to_vec_pretty(&json).unwrap()).unwrap();
+
+    let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
+    recovered.load_shard(1);
+    {
+        let shards = recovered.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("recovered shard");
+        assert!(shard.strings.contains_key("recover-slot-view"));
+    }
+    let get = recovered.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "recover-slot-view".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"view".to_vec())
+        }
+    );
+}
+
 // shared-corpus: storage_dump_load_recovery
 #[test]
 fn core_index_loads_legacy_slot_page_field_names() {

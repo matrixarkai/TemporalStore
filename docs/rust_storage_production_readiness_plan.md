@@ -183,6 +183,9 @@ competing primary index. Changed objects are synchronized into that slot index i
 slot dirty generations and PageIndex-like model id, page id, dirty/deleted/log flags, size, and
 address metadata. Slot layout transition evidence is also present for writes, rebuilds, compaction,
 tombstones, and dump/load validation.
+Recovery reconciles secondary model views from the slot index, and cold-read tests now prove the
+read path can serve from `PageIndex -> PageAddress -> cache/page-store` after model maps and memory
+cache state are cleared.
 
 The Rust lifecycle behavior evidence is specifically scoped to: slot-first ownership updates on
 object writes and deletes, recovery validation of owner/page refs, slot-scoped dump/load manifest
