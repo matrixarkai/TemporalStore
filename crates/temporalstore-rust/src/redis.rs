@@ -1,92 +1,22 @@
 use std::collections::{HashMap, HashSet};
-use std::io::{self, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
-use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod encoding;
 mod protocol;
+mod server;
+mod state;
 
 pub use protocol::{read_command, RespValue};
+pub use server::serve_redis_proxy;
+pub use state::RedisCommandState;
 
 use crate::client::{slot_id_for_key, stable_key_hash};
 use crate::types::{
-    parse_cpp_feature_filters, Command, CommandResponse, ExecuteRequest, FeatureFilter,
-    FeatureFilterOp, FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId,
-    StringSetCondition,
+    parse_cpp_feature_filters, Command, CommandResponse, FeatureFilter, FeatureFilterOp,
+    FeaturePoint, FeatureWritePolicy, RiskFamily, RiskFolType, ShardId, StringSetCondition,
 };
-use crate::TemporalStoreClient;
 
-const REDIS_LIST_ENCODING_PREFIX: &[u8] = b"__temporalstore_redis_list_v1__\n";
-const REDIS_ZSET_ENCODING_PREFIX: &[u8] = b"__temporalstore_redis_zset_v1__\n";
-
-pub fn serve_redis_proxy(addr: &str, proxy_addr: String, shard_id: ShardId) -> io::Result<()> {
-    let listener = TcpListener::bind(addr)?;
-    let client = Arc::new(TemporalStoreClient::new(proxy_addr));
-    for stream in listener.incoming() {
-        let stream = stream?;
-        let client = Arc::clone(&client);
-        thread::spawn(move || {
-            let _ = handle_stream(stream, &client, shard_id);
-        });
-    }
-    Ok(())
-}
-
-fn handle_stream(
-    mut stream: TcpStream,
-    client: &TemporalStoreClient,
-    shard_id: ShardId,
-) -> io::Result<()> {
-    let reader_stream = stream.try_clone()?;
-    let mut reader = BufReader::new(reader_stream);
-    let mut state = RedisCommandState::default();
-    while let Some(args) = read_command(&mut reader)? {
-        let response = execute_redis_command_with_state(args, shard_id, &mut state, |command| {
-            client
-                .execute(ExecuteRequest { shard_id, command })
-                .map_err(|err| err.to_string())
-                .and_then(|response| {
-                    if response.status.ok {
-                        Ok(response.response)
-                    } else {
-                        Err(format!(
-                            "{} {}",
-                            response.status.code, response.status.message
-                        ))
-                    }
-                })
-        });
-        stream.write_all(&response.encode())?;
-        stream.flush()?;
-    }
-    Ok(())
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RedisCommandState {
-    pub config: HashMap<String, String>,
-    pub keyspace: HashSet<String>,
-    pub master: Option<(String, String)>,
-    pub authenticated: bool,
-    pub loaded_shard_id: Option<ShardId>,
-}
-
-impl Default for RedisCommandState {
-    fn default() -> Self {
-        let mut config = HashMap::new();
-        config.insert("requirepass".to_string(), String::new());
-        config.insert("maxmemory".to_string(), "0".to_string());
-        config.insert("maxmemory-policy".to_string(), "noeviction".to_string());
-        Self {
-            config,
-            keyspace: HashSet::new(),
-            master: None,
-            authenticated: false,
-            loaded_shard_id: None,
-        }
-    }
-}
+use encoding::{REDIS_LIST_ENCODING_PREFIX, REDIS_ZSET_ENCODING_PREFIX};
 
 pub fn execute_redis_command(
     args: Vec<Vec<u8>>,
@@ -4380,9 +4310,11 @@ fn upper(value: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::io::BufReader;
+
     use super::*;
     use crate::engine::TemporalEngine;
-    use crate::types::SequenceFeatureRow;
+    use crate::types::{ExecuteRequest, SequenceFeatureRow};
 
     #[test]
     fn resp_parser_reads_array_command() {
