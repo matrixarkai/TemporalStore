@@ -9128,7 +9128,7 @@ fn raft_apply_health_from_status(
     let mut slow_appliers = Vec::new();
     let mut max_apply_lag = 0;
     for node in &status.nodes {
-        if !node.alive {
+        if !node.alive || !node.replica_role.can_serve_data() {
             continue;
         }
         let apply_lag = node.commit_index.saturating_sub(node.applied_index);
@@ -9183,6 +9183,17 @@ fn raft_observer_apply_health_from_status(
             healthy: false,
         };
     };
+    if !node.replica_role.can_serve_data() {
+        return RaftApplyHealth {
+            leader_id: status.leader_id,
+            leader_commit_index: status.commit_index,
+            max_allowed_apply_lag,
+            max_apply_lag: 0,
+            fully_applied_nodes: Vec::new(),
+            slow_appliers: Vec::new(),
+            healthy: node.alive && status.has_majority && status.leader_lease_valid,
+        };
+    }
     let apply_lag = node.commit_index.saturating_sub(node.applied_index);
     let fully_applied =
         node.alive && apply_lag <= max_allowed_apply_lag && node.applied_index >= node.commit_index;
