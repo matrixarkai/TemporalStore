@@ -3676,31 +3676,29 @@ def serving_ref_for_pack(ref: Json, *, default_session_continuity: str = "") -> 
     """Return only answer-bearing fields for the serving ContextPack payload."""
     metadata = ref.get("metadata", {}) if isinstance(ref.get("metadata"), dict) else {}
     item: Json = {
-        "ref_type": ref.get("ref_type", ""),
         "text": ref.get("text", ""),
-        "token_estimate": ref.get("token_estimate", 0),
+        "tokens": ref.get("token_estimate", 0),
     }
-    optional_fields = [
-        "context_class",
-        "source_ref",
-        "citation",
-        "resource_type",
-        "unit_kind",
-        "heading",
-        "heading_slug",
-        "relative_path",
-        "source_locator",
-        "entity_type",
-        "entity_name",
-        "operator",
-        "summary_type",
-        "resource_version",
-        "version_state",
+    source = ref.get("citation") or ref.get("source_ref") or ref.get("source_locator") or metadata.get("source_locator")
+    if source:
+        item["source"] = source
+    optional_field_aliases = [
+        ("resource_type", "resource_type"),
+        ("unit_kind", "unit_kind"),
+        ("heading", "heading"),
+        ("heading_slug", "heading_slug"),
+        ("relative_path", "path"),
+        ("entity_type", "entity_type"),
+        ("entity_name", "entity"),
+        ("operator", "operator"),
+        ("summary_type", "summary_type"),
+        ("resource_version", "version"),
+        ("version_state", "version_state"),
     ]
-    for field in optional_fields:
+    for field, alias in optional_field_aliases:
         value = ref.get(field, metadata.get(field))
         if value not in (None, "", [], {}):
-            item[field] = value
+            item[alias] = value
     session_continuity = str(ref.get("session_continuity") or metadata.get("session_continuity") or "")
     if session_continuity and session_continuity != default_session_continuity:
         item["session_continuity"] = session_continuity
@@ -3741,16 +3739,13 @@ def serving_ref_groups_for_pack(refs: list[Json], *, default_session_continuity:
         context_class = str(ref.get("context_class") or ref_type)
         key = (ref_type, context_class)
         if key not in groups:
-            groups[key] = {"ref_type": ref_type, "count": 0, "refs": []}
+            groups[key] = {"type": ref_type, "n": 0, "items": []}
             if context_class and context_class != ref_type:
-                groups[key]["context_class"] = context_class
+                groups[key]["class"] = context_class
             order.append(key)
         item = serving_ref_for_pack(ref, default_session_continuity=default_session_continuity)
-        item.pop("ref_type", None)
-        if item.get("context_class") == context_class:
-            item.pop("context_class", None)
-        groups[key]["refs"].append(item)
-        groups[key]["count"] += 1
+        groups[key]["items"].append(item)
+        groups[key]["n"] += 1
     return [groups[key] for key in order]
 
 
@@ -3764,8 +3759,17 @@ def selected_ref_count_from_pack(pack: Json) -> int:
         for group in groups:
             if not isinstance(group, dict):
                 continue
-            refs_in_group = group.get("refs", [])
-            total += int(group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+            refs_in_group = group.get("refs", group.get("items", []))
+            total += int(group.get("count") or group.get("n") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
+    groups = pack.get("groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("items", group.get("refs", []))
+            total += int(group.get("n") or group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
         return total
     return 0
 
@@ -3778,55 +3782,43 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
     telemetry records when enabled. The serving pack should spend tokens on
     evidence and citations.
     """
-    serving_keys = [
-        "context_pack_id",
-        "context_sources_order",
-        "local_context_refs",
-        "selected_ref_counts",
-        "context_assembly_policy",
-        "used_context_tokens",
-        "used_remote_context_tokens",
-        "used_local_context_tokens",
-        "total_prompt_context_tokens",
-        "remote_context_budget_tokens",
-        "requested_max_context_tokens",
-        "local_context_safety_margin_tokens",
-        "budget_source",
-        "quality_warnings",
-        "insufficient_context",
-        "partial_context_pack",
-    ]
-    compact = {key: pack[key] for key in serving_keys if key in pack}
+    compact: Json = {"context_pack_id": pack.get("context_pack_id", "")}
     selected_refs = pack.get("selected_refs", [])
     if isinstance(selected_refs, list):
         default_session_continuity = default_session_continuity_for_pack(selected_refs)
-        compact["selected_ref_groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
+        compact["groups"] = serving_ref_groups_for_pack(selected_refs, default_session_continuity=default_session_continuity)
+        if pack.get("selected_ref_counts"):
+            compact.setdefault("counts", {})["refs"] = pack.get("selected_ref_counts", {})
         continuity_counts = session_continuity_counts(selected_refs)
         if continuity_counts:
-            compact["context_groups"] = {
-                "session_continuity": {
-                    "default": default_session_continuity,
-                    "counts": continuity_counts,
-                    "per_ref_field": "omitted_when_default",
-                }
-            }
+            compact.setdefault("defaults", {})["session_continuity"] = default_session_continuity
+            compact.setdefault("counts", {})["session_continuity"] = continuity_counts
     local_refs = pack.get("local_context_refs", [])
     if isinstance(local_refs, list):
-        compact["local_context_refs"] = [
+        local = [
             {
-                key: value
+                ("tokens" if key == "token_estimate" else key): value
                 for key, value in ref.items()
-                if key in {"ref_type", "source", "token_estimate", "text"}
-                and value not in (None, "", [], {})
+                if key in {"source", "token_estimate", "text"} and value not in (None, "", [], {})
             }
             for ref in local_refs
             if isinstance(ref, dict)
         ]
-    if "context_assembly_policy" in compact and isinstance(compact["context_assembly_policy"], dict):
-        compact["context_assembly_policy"] = {
-            "skill_selection": compact["context_assembly_policy"].get("skill_selection", "skill_section_only"),
-            "resource_selection": "ranked_facts_entities_chunks",
-        }
+        if local:
+            compact["local"] = local
+    tokens_summary = {
+        "remote": pack.get("used_remote_context_tokens", pack.get("used_context_tokens", 0)),
+        "local": pack.get("used_local_context_tokens", 0),
+        "total": pack.get("total_prompt_context_tokens", 0),
+        "remote_budget": pack.get("remote_context_budget_tokens", 0),
+    }
+    compact["tokens"] = {key: value for key, value in tokens_summary.items() if value not in (None, "", 0)}
+    if pack.get("quality_warnings"):
+        compact["warnings"] = pack.get("quality_warnings", [])
+    if pack.get("partial_context_pack"):
+        compact["partial"] = True
+    if pack.get("insufficient_context"):
+        compact["insufficient_context"] = True
     return compact
 
 

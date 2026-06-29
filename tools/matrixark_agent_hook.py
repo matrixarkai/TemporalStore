@@ -29,6 +29,7 @@ try:
         payload_text,
         read_stdin_payload,
         selected_ref_count_from_retrieve,
+        used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -43,6 +44,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         payload_text,
         read_stdin_payload,
         selected_ref_count_from_retrieve,
+        used_context_tokens_from_retrieve,
         validate_hook_backend_policy,
     )
 
@@ -571,7 +573,7 @@ def main() -> int:
                 "retrieved": {
                     "context_pack_id": retrieve.get("context_pack_id"),
                     "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
-                    "used_context_tokens": retrieve.get("used_context_tokens", 0) if retrieve else 0,
+                    "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
                 },
                 "committed": {
                     "status": commit.get("status"),

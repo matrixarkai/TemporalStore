@@ -284,13 +284,13 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "audit_mode": "full",
                 },
             )
-            ref_types = {str(group.get("ref_type")) for group in pack["selected_ref_groups"]}
+            ref_types = {str(group.get("type")) for group in pack["groups"]}
             self.assertIn("event", ref_types)
             self.assertIn("resource_chunk", ref_types)
             self.assertIn("skill_section", ref_types)
-            self.assertGreaterEqual(pack["selected_ref_counts"].get("resource_chunk", 0), 1)
-            self.assertGreaterEqual(pack["selected_ref_counts"].get("skill_section", 0), 1)
-            self.assertTrue(pack["context_assembly_policy"]["skill_selection"], "skill_section_only")
+            self.assertGreaterEqual(pack["counts"]["refs"].get("resource_chunk", 0), 1)
+            self.assertGreaterEqual(pack["counts"]["refs"].get("skill_section", 0), 1)
+            self.assertNotIn("context_assembly_policy", pack)
             self.assertNotIn("recall_policy", pack)
             audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
             pushdown = audit["recall_policy"]["backend_retrieval_pushdown"]

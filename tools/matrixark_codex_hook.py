@@ -68,7 +68,31 @@ def selected_ref_count_from_retrieve(pack: Json | None) -> int:
             refs_in_group = group.get("refs", [])
             total += int(group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
         return total
+    groups = pack.get("groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("items", [])
+            total += int(group.get("n") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
     return 0
+
+
+def used_context_tokens_from_retrieve(pack: Json | None) -> int:
+    if not isinstance(pack, dict):
+        return 0
+    tokens = pack.get("tokens")
+    if isinstance(tokens, dict):
+        try:
+            return int(tokens.get("remote") or tokens.get("total") or 0)
+        except (TypeError, ValueError):
+            return 0
+    try:
+        return int(pack.get("used_context_tokens") or pack.get("used_remote_context_tokens") or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def normalized_event_name(event: str) -> str:
@@ -691,7 +715,7 @@ def main() -> int:
                 "retrieve": {
                     "context_pack_id": retrieve.get("context_pack_id"),
                     "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
-                    "used_context_tokens": retrieve.get("used_context_tokens", 0) if retrieve else 0,
+                    "used_context_tokens": used_context_tokens_from_retrieve(retrieve),
                 },
                 "session_commit": {
                     "status": commit.get("status"),
