@@ -8281,6 +8281,11 @@ impl RaftCluster {
             "data",
             self.byteraft_runtime_admin_report(),
         );
+        append_byteraft_local_status_prometheus(
+            &mut out,
+            "data",
+            self.byteraft_local_status_report(),
+        );
         out
     }
 
@@ -9327,8 +9332,10 @@ impl RaftClusterInner {
             },
             ByteRaftCapabilityEvidence {
                 capability: "membership_role_semantics".to_string(),
-                ready: witness_membership_present || learner_auto_promote_present,
-                evidence_field: "witness_membership_present; learner_auto_promote_present; peer_pipeline_states[*].auto_promoted_from_learner".to_string(),
+                ready: witness_membership_present
+                    && learner_auto_promote_present
+                    && pending_joint_consensus_present,
+                evidence_field: "witness_membership_present; learner_auto_promote_present; pending_joint_consensus_present; peer_pipeline_states[*].auto_promoted_from_learner; byteraft_local_status_report.pending_joint_consensus".to_string(),
                 detail: format!(
                     "witness={witness_membership_present}; auto_promote={learner_auto_promote_present}; pending_joint_consensus={pending_joint_consensus_present}"
                 ),
@@ -9413,6 +9420,15 @@ impl RaftClusterInner {
         }
         if !wal_segment_lifecycle_present {
             blockers.push("wal_segment_lifecycle_missing".to_string());
+        }
+        if !witness_membership_present {
+            blockers.push("witness_membership_missing".to_string());
+        }
+        if !learner_auto_promote_present {
+            blockers.push("learner_auto_promote_missing".to_string());
+        }
+        if !pending_joint_consensus_present {
+            blockers.push("pending_joint_consensus_evidence_missing".to_string());
         }
         if !pre_vote_enforced {
             blockers.push("pre_vote_not_enforced".to_string());
@@ -10978,6 +10994,93 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_offline_timeout_rejections",
             labels,
             peer.offline_timeout_rejections,
+        );
+    }
+}
+
+fn append_byteraft_local_status_prometheus(
+    out: &mut String,
+    kind: &str,
+    report: ByteRaftLocalStatusReport,
+) {
+    out.push_str("# HELP temporalstore_raft_byteraft_local_pending_joint_consensus_present Whether local status has pending joint-consensus membership.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_local_pending_joint_consensus_present gauge\n",
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_pending_joint_consensus_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.pending_joint_consensus.is_some()),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_witness_membership_present Whether local status has a witness member.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_witness_membership_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_witness_membership_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.witness_membership_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_learner_membership_present Whether local status has a learner member.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_learner_membership_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_learner_membership_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.learner_membership_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_learner_auto_promote_present Whether local status observed learner auto-promotion evidence.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_learner_auto_promote_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_learner_auto_promote_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.learner_auto_promote_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_role ByteRaft-style local-status peer role as a labeled gauge.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_role gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_participates_in_quorum Whether a peer participates in quorum.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_participates_in_quorum gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_can_serve_data Whether a peer can serve data reads.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_serve_data gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_can_be_leader Whether a peer can become leader.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_be_leader gauge\n");
+    for peer in report.peers {
+        let labels = &[
+            ("kind", kind.to_string()),
+            ("node_id", peer.status.node_id.to_string()),
+            (
+                "role",
+                format!("{:?}", peer.status.role).to_ascii_lowercase(),
+            ),
+            (
+                "replica_role",
+                format!("{:?}", peer.status.replica_role).to_ascii_lowercase(),
+            ),
+        ];
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_role",
+            labels,
+            1,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_participates_in_quorum",
+            labels,
+            u64::from(peer.participates_in_quorum),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_can_serve_data",
+            labels,
+            u64::from(peer.can_serve_data),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_can_be_leader",
+            labels,
+            u64::from(peer.can_be_leader),
         );
     }
 }
