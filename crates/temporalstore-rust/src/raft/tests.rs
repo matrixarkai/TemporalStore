@@ -1155,6 +1155,117 @@ fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() 
     );
 }
 
+// shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_replication_backpressure
+#[test]
+fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            max_inflights_replicate: 1,
+            max_memory_replicate_log_bytes: 512,
+            max_inflights_apply_task: 1,
+            max_apply_batch_bytes: 16,
+            enable_reorder_queue: true,
+            reorder_window_size: 4,
+            reorder_timeout_us: 1_000,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "pipeline-a".to_string(),
+            value: b"a".to_vec(),
+        })
+        .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "pipeline-b".to_string(),
+            value: b"b".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+
+    let first = cluster.build_append_entries_request(3).unwrap();
+    assert_eq!(first.entries.len(), 1);
+    let append_pressure = cluster.build_append_entries_request(3).unwrap_err();
+    assert!(matches!(
+        append_pressure,
+        RaftError::AppendBackpressure { .. }
+    ));
+
+    let apply_pressure = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 2,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![RaftLogEntry {
+                term: 1,
+                index: 3,
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "apply-pressure".to_string(),
+                    value: vec![b'x'; 64],
+                },
+            }],
+            leader_commit: 3,
+        })
+        .unwrap();
+    assert!(!apply_pressure.success);
+    assert_eq!(
+        apply_pressure.reject_reason.as_deref(),
+        Some("apply_batch_backpressure")
+    );
+
+    let oversized = cluster
+        .propose(Command::StringSet {
+            key: "oversized-pipeline".to_string(),
+            value: vec![b'z'; 4_096],
+        })
+        .unwrap_err();
+    assert!(matches!(oversized, RaftError::LogEntryTooLarge { .. }));
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.append_backpressure_enforced);
+    assert!(admin.apply_backpressure_enforced);
+    assert!(admin.memory_replicate_bytes_enforced);
+    assert!(admin.oversized_log_rejection_present);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "per_peer_replication_pipeline_state" && item.ready));
+    let lagging_peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .unwrap();
+    assert_eq!(lagging_peer.append_queue_limit, 1);
+    assert_eq!(lagging_peer.inflight_bytes_limit, 512);
+    assert!(lagging_peer.append_queue_max_depth >= lagging_peer.append_queue_limit);
+    assert!(lagging_peer.append_rejected > 0);
+    let apply_peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 2)
+        .unwrap();
+    assert_eq!(apply_peer.apply_inflight_limit, 1);
+    assert_eq!(apply_peer.apply_batch_bytes_limit, 16);
+    assert!(apply_peer.apply_backpressure_rejections > 0);
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_limit"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_inflight_bytes_limit"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_inflight_limit"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_batch_bytes_limit"));
+}
+
 // shared-corpus: raft_rustraft_replication_backpressure
 // shared-corpus: raft_rustraft_pipeline_reorder_backpressure_matrix raft_rustraft_replication_backpressure
 #[test]
