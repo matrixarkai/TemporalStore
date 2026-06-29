@@ -27,7 +27,7 @@ BASELINE = ROOT / "tools" / "rust_product_test_baseline.json"
 
 TEST_ATTR = re.compile(r"^\s*#\[(?:tokio::)?test\]")
 FN_NAME = re.compile(r"\bfn\s+([A-Za-z0-9_]+)\s*\(")
-SHARED_MARKER = re.compile(r"shared-corpus:\s*([A-Za-z0-9_,\-\s]+)")
+SHARED_MARKER = re.compile(r"shared-corpus:[ \t]*([A-Za-z0-9_,\- \t]+)")
 INTERNAL_MARKER = re.compile(r"rust-internal:\s*(\S.{7,})")
 
 
