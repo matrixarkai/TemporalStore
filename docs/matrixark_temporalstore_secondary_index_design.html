@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MatrixArk Secondary Index Design</title>
+  <style>
+    :root { color-scheme: light dark; --fg:#182026; --muted:#5d6b76; --line:#d8dee4; --code:#f4f6f8; --accent:#175ddc; }
+    @media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#9aa7b2; --line:#30363d; --code:#161b22; --accent:#79c0ff; } }
+    body { margin:0; font:16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; color:var(--fg); background:Canvas; }
+    main { max-width:980px; margin:0 auto; padding:32px 22px 64px; }
+    h1 { font-size:2rem; line-height:1.15; margin:0 0 20px; }
+    h2 { margin-top:34px; padding-top:14px; border-top:1px solid var(--line); }
+    p, li { max-width:82ch; }
+    code { background:var(--code); padding:0.1rem 0.28rem; border-radius:4px; }
+    pre { background:var(--code); border:1px solid var(--line); border-radius:8px; padding:14px; overflow:auto; }
+    pre code { background:transparent; padding:0; }
+    .note { border-left:4px solid var(--accent); padding:10px 14px; background:color-mix(in srgb, var(--accent) 8%, transparent); }
+  </style>
+</head>
+<body>
+<main>
+<h1>MatrixArk Secondary Index Design</h1>
+<h2>Short Answer</h2>
+<p>TemporalStore already had a primary timestamp-keyed feature model before MatrixArk context management was introduced. That older model stores data under one time-ordered key and applies compact field filters during query.</p>
+<p>MatrixArk's current <code>ContextIndexRef</code> layer is closer to a native posting list:</p>
+<pre><code>ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}
+  timestamp_key -&gt; {primary_node_hash, primary_event_time_ms, event_id_hash}</code></pre>
+<p>That is better than duplicating full events, but it can still fan out heavily when every event, resource chunk, PDF keyword, heading, status, and source emits separate index refs.</p>
+<div class="note"><strong>Decision:</strong> the production serving path should use timestamped context series plus declared compact filter fields, not unbounded product-visible ContextIndex rows for every term.</div>
+<h2>How TemporalStore Worked Before Context Management</h2>
+<pre><code>struct TemporalFeaturePoint {
+    uint64_t timestamp;
+    std::string value;
+};
+
+struct TemporalFeatureFilter {
+    std::string field;
+    TemporalFeatureFilterOp op;
+    uint64_t value;
+};
+
+struct TemporalFeatureQuery {
+    uint64_t start_ts;
+    uint64_t end_ts;
+    uint64_t count;
+    std::vector&lt;TemporalFeatureFilter&gt; filters;
+};</code></pre>
+<p>The primary access pattern is:</p>
+<pre><code>key + timestamp range + count + optional filters -&gt; matching rows</code></pre>
+<p>For sequence feature rows, the payload has a fixed compact schema, such as <code>timestamp</code>, <code>gid</code>, <code>action_type</code>, <code>duration</code>, and <code>author_id</code>. Query filters can apply to compact fields. Timestamp remains the primary timeline key.</p>
+<h2>How Current MatrixArk Context Indexing Works</h2>
+<pre><code>ctx:event:{tenant_hash}:{node_hash}
+ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}
+ctx:summary:{tenant_hash}:{node_hash}:{level}
+ctx:embedding:{tenant_hash}:{ref_hash}
+ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}</code></pre>
+<p>For <code>ContextEvent</code>, ingestion time is the primary timeline:</p>
+<pre><code>ctx:event:{tenant_hash}:{node_hash}
+  context_timeline_key(ingestion_time_ms, event_id_hash) -&gt; compact ContextEvent</code></pre>
+<p>For secondary lookup, the current native context path writes small refs:</p>
+<pre><code>ctxidx:{tenant_hash}:event_kind:{event_kind_hash}:{scope_hash}
+ctxidx:{tenant_hash}:status:{status_hash}:{scope_hash}
+ctxidx:{tenant_hash}:source:{source_hash}:{scope_hash}
+ctxidx:{tenant_hash}:entity:{entity_hash}:{scope_hash}
+ctxidx:{tenant_hash}:event_time_bucket:{bucket_ms}:{scope_hash}</code></pre>
+<p>Each ref points back to the primary event row:</p>
+<pre><code>{primary_node_hash, primary_event_time_ms, event_id_hash}</code></pre>
+<h2>Why Too Many Indexes Hurt</h2>
+<ul>
+  <li>More writes per event or resource chunk.</li>
+  <li>More pages/blocks to compact and cache.</li>
+  <li>More prefix scans and index intersections during retrieval.</li>
+  <li>More debug/audit noise.</li>
+  <li>More duplicated strings if index names are stored as text in exported records.</li>
+  <li>Worse ingestion p95 when PDFs or repos generate many keywords.</li>
+</ul>
+<h2>Production Target</h2>
+<pre><code>Context data model = timestamped series
+Secondary filters = declared compact fields or native posting families
+Query = time range + scope + filter predicates + top-k/candidate cap</code></pre>
+<p>The serving API should look like:</p>
+<pre><code>matrixark_scan_candidates(
+  scope_key,
+  node_hashes,
+  data_models=["event", "entity", "resource_chunk", "skill_section"],
+  time_range,
+  filters={
+    "source_type": ["message", "resource"],
+    "event_type": ["approval", "deadline"],
+    "resource_type": ["pdf", "md"],
+    "entity_type": ["owner", "decision"],
+    "keyword_id": [123, 456]
+  },
+  limit
+)</code></pre>
+<p>and eventually <code>matrixark_retrieve_context_pack(...)</code>, so Python sends the query plan and receives a compact candidate list or finished ContextPack.</p>
+<h2>Recommended Context Index Families</h2>
+<pre><code>source_type
+event_type
+entity_type
+resource_type
+unit_kind
+skill_trigger
+skill_tool
+keyword_id
+relative_path_hash
+visibility_scope</code></pre>
+<p>Do not create unbounded indexes for every arbitrary string. Keywords should be normalized to a capped dictionary and written as <code>keyword_id</code>, not long repeated strings.</p>
+<h2>How Filtering Should Work</h2>
+<p>For the query <code>Who approved the Project Aurora GPU request?</code>, query understanding can produce:</p>
+<pre><code>{
+  "query_type": "current_state",
+  "filters": {
+    "event_type": ["approval"],
+    "entity_type": ["resource_decision", "approval_state"],
+    "source_type": ["message", "resource"],
+    "keyword_id": ["gpu", "aurora", "approved"]
+  },
+  "temporal_window": {"mode": "latest"}
+}</code></pre>
+<p>Native retrieval then enforces scope, scores L0/L1 nodes, applies compact filters before reading/scoring too many rows, scores surviving events/entities/chunks/skills, and packs selected evidence into the ContextPack.</p>
+<h2>What To Change From Today</h2>
+<ol>
+  <li>Keep <code>ContextEvent</code> timestamp-keyed by ingestion time.</li>
+  <li>Keep <code>ContextIndexRef</code> as a native internal posting/ref mechanism, not a verbose serving data model.</li>
+  <li>Stop exporting every index ref into ContextPack/debug pages by default.</li>
+  <li>Cap index fanout per object and per resource import.</li>
+  <li>Add a native C++/Rust candidate scan API that applies scope and filter predicates before returning rows.</li>
+  <li>Move keyword indexing to dictionary ids.</li>
+  <li>Keep detailed index decisions in sampled audit/debug records only when debugging is enabled.</li>
+</ol>
+<h2>Compatibility Plan</h2>
+<ol>
+  <li>Keep writing existing <code>ContextIndexRef</code> families and current query behavior.</li>
+  <li>Add C++ and Rust <code>matrixark_scan_candidates</code> and map query-understanding filters to native field ids.</li>
+  <li>Store field/value ids rather than repeated strings and hide <code>ContextIndexRef</code> from serving ContextPacks.</li>
+  <li>Keep verbose <code>context_index</code> export only under debug/audit sampling.</li>
+</ol>
+</main>
+</body>
+</html>
