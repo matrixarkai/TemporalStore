@@ -455,6 +455,14 @@ fn meta_process_rollout_report(
             .iter()
             .any(|node| node.node_id != status.leader_id && node.log_store_validated);
     let multi_process_log_store_validated = blockers.is_empty();
+    let crash_after_meta_mutation_recovered =
+        mutation_proposed_through_process_api && recovered_after_restart && read_index_validated;
+    let crash_after_meta_wal_persist_recovered =
+        recovered_after_restart && multi_process_log_store_validated;
+    let crash_during_meta_snapshot_install_recovered =
+        recovered_after_restart && snapshot_install_validated && read_index_validated;
+    let meta_apply_fence_recovered_after_restart =
+        recovered_after_restart && read_index_validated && multi_process_log_store_validated;
     let operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: nodes.len() >= 3 && multi_process_log_store_validated,
@@ -473,7 +481,16 @@ fn meta_process_rollout_report(
         secondary_read_eligibility_validated: secondary_read_validated,
         apply_pipeline_converged: follower_lag_validated,
         wal_persistence_observed: multi_process_log_store_validated,
-        ready: true,
+        fsm_apply_idempotent_replay_observed: meta_apply_fence_recovered_after_restart,
+        storage_mutation_wal_fence_atomicity_observed: crash_after_meta_mutation_recovered
+            && crash_after_meta_wal_persist_recovered,
+        snapshot_install_apply_fence_atomicity_observed:
+            crash_during_meta_snapshot_install_recovered,
+        process_restart_after_apply_crash_recovered: meta_apply_fence_recovered_after_restart,
+        ready: crash_after_meta_mutation_recovered
+            && crash_after_meta_wal_persist_recovered
+            && crash_during_meta_snapshot_install_recovered
+            && meta_apply_fence_recovered_after_restart,
         blockers: Vec::new(),
     };
     let voters = status
@@ -499,6 +516,10 @@ fn meta_process_rollout_report(
         snapshot_install_validated,
         recovered_after_restart,
         scheduler_task_replay_validated,
+        crash_after_meta_mutation_recovered,
+        crash_after_meta_wal_persist_recovered,
+        crash_during_meta_snapshot_install_recovered,
+        meta_apply_fence_recovered_after_restart,
         multi_process_log_store_validated,
         operational_semantics,
         ready: mutation_proposed_through_process_api
@@ -510,6 +531,10 @@ fn meta_process_rollout_report(
             && membership_change_validated
             && follower_lag_validated
             && secondary_read_validated
+            && crash_after_meta_mutation_recovered
+            && crash_after_meta_wal_persist_recovered
+            && crash_during_meta_snapshot_install_recovered
+            && meta_apply_fence_recovered_after_restart
             && multi_process_log_store_validated,
         blockers,
     }
@@ -678,6 +703,14 @@ fn data_node_rollout_from_meta_owned_membership(
             .final_node_evidence
             .iter()
             .all(|node| node.log_store_validated);
+    let crash_after_storage_mutation_recovered =
+        write_proposed_through_process_api && recovered_after_restart && applied_fence_validated;
+    let crash_after_wal_persist_recovered =
+        recovered_after_restart && multi_process_log_store_validated;
+    let crash_during_snapshot_install_recovered =
+        recovered_after_restart && snapshot_install_validated && applied_fence_validated;
+    let apply_fence_recovered_after_restart =
+        recovered_after_restart && applied_fence_validated && multi_process_log_store_validated;
     let operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: membership.final_node_evidence.len() >= 3
@@ -703,7 +736,15 @@ fn data_node_rollout_from_meta_owned_membership(
             .iter()
             .all(|node| node.applied_index >= node.commit_index),
         wal_persistence_observed: multi_process_log_store_validated,
-        ready: true,
+        fsm_apply_idempotent_replay_observed: apply_fence_recovered_after_restart,
+        storage_mutation_wal_fence_atomicity_observed: crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered,
+        snapshot_install_apply_fence_atomicity_observed: crash_during_snapshot_install_recovered,
+        process_restart_after_apply_crash_recovered: apply_fence_recovered_after_restart,
+        ready: crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered
+            && crash_during_snapshot_install_recovered
+            && apply_fence_recovered_after_restart,
         blockers: Vec::new(),
     };
     TemporalRaftDataNodeProcessRolloutReport {
@@ -721,6 +762,10 @@ fn data_node_rollout_from_meta_owned_membership(
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
         applied_fence_validated,
+        crash_after_storage_mutation_recovered,
+        crash_after_wal_persist_recovered,
+        crash_during_snapshot_install_recovered,
+        apply_fence_recovered_after_restart,
         multi_process_log_store_validated,
         operational_semantics,
         ready: write_proposed_through_process_api
@@ -733,6 +778,10 @@ fn data_node_rollout_from_meta_owned_membership(
             && membership.secondary_replication_validated
             && snapshot_install_validated
             && applied_fence_validated
+            && crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered
+            && crash_during_snapshot_install_recovered
+            && apply_fence_recovered_after_restart
             && multi_process_log_store_validated,
         blockers,
     }

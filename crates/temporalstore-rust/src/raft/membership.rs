@@ -127,6 +127,14 @@ pub struct TemporalRaftProcessOperationalSemanticsEvidence {
     #[serde(default)]
     pub wal_persistence_observed: bool,
     #[serde(default)]
+    pub fsm_apply_idempotent_replay_observed: bool,
+    #[serde(default)]
+    pub storage_mutation_wal_fence_atomicity_observed: bool,
+    #[serde(default)]
+    pub snapshot_install_apply_fence_atomicity_observed: bool,
+    #[serde(default)]
+    pub process_restart_after_apply_crash_recovered: bool,
+    #[serde(default)]
     pub ready: bool,
     #[serde(default)]
     pub blockers: Vec<String>,
@@ -152,6 +160,10 @@ impl TemporalRaftProcessOperationalSemanticsEvidence {
             && self.secondary_read_eligibility_validated
             && self.apply_pipeline_converged
             && self.wal_persistence_observed
+            && self.fsm_apply_idempotent_replay_observed
+            && self.storage_mutation_wal_fence_atomicity_observed
+            && self.snapshot_install_apply_fence_atomicity_observed
+            && self.process_restart_after_apply_crash_recovered
     }
 
     pub fn missing_requirements(&self) -> Vec<String> {
@@ -207,6 +219,22 @@ impl TemporalRaftProcessOperationalSemanticsEvidence {
             ),
             (self.apply_pipeline_converged, "apply_pipeline_converged"),
             (self.wal_persistence_observed, "wal_persistence_observed"),
+            (
+                self.fsm_apply_idempotent_replay_observed,
+                "fsm_apply_idempotent_replay_observed",
+            ),
+            (
+                self.storage_mutation_wal_fence_atomicity_observed,
+                "storage_mutation_wal_fence_atomicity_observed",
+            ),
+            (
+                self.snapshot_install_apply_fence_atomicity_observed,
+                "snapshot_install_apply_fence_atomicity_observed",
+            ),
+            (
+                self.process_restart_after_apply_crash_recovered,
+                "process_restart_after_apply_crash_recovered",
+            ),
         ] {
             if !present {
                 missing.push(requirement.to_string());
@@ -261,6 +289,14 @@ pub struct TemporalRaftDataNodeProcessRolloutReport {
     pub restart_recovery_validated: bool,
     pub snapshot_install_validated: bool,
     pub applied_fence_validated: bool,
+    #[serde(default)]
+    pub crash_after_storage_mutation_recovered: bool,
+    #[serde(default)]
+    pub crash_after_wal_persist_recovered: bool,
+    #[serde(default)]
+    pub crash_during_snapshot_install_recovered: bool,
+    #[serde(default)]
+    pub apply_fence_recovered_after_restart: bool,
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
     pub operational_semantics: TemporalRaftProcessOperationalSemanticsEvidence,
@@ -308,6 +344,14 @@ pub struct TemporalRaftMetaProcessRolloutReport {
     pub snapshot_install_validated: bool,
     pub recovered_after_restart: bool,
     pub scheduler_task_replay_validated: bool,
+    #[serde(default)]
+    pub crash_after_meta_mutation_recovered: bool,
+    #[serde(default)]
+    pub crash_after_meta_wal_persist_recovered: bool,
+    #[serde(default)]
+    pub crash_during_meta_snapshot_install_recovered: bool,
+    #[serde(default)]
+    pub meta_apply_fence_recovered_after_restart: bool,
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
     pub operational_semantics: TemporalRaftProcessOperationalSemanticsEvidence,

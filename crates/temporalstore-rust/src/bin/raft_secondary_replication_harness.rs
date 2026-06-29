@@ -13,10 +13,10 @@ use temporalstore_rust::raft::{
 };
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, TemporalRaftDataNodeProcessRolloutReport, TemporalRaftProcessNodeEvidence,
-    TemporalRaftProcessOperationalSemanticsEvidence, ProductionRaftNode, RaftApplyHealth,
-    RaftClusterStatus, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status,
-    VoteRequest, VoteResponse,
+    DistributedRaftReadRequest, ProductionRaftNode, RaftApplyHealth, RaftClusterStatus,
+    RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status,
+    TemporalRaftDataNodeProcessRolloutReport, TemporalRaftProcessNodeEvidence,
+    TemporalRaftProcessOperationalSemanticsEvidence, VoteRequest, VoteResponse,
 };
 
 #[derive(Debug, Clone)]
@@ -505,6 +505,14 @@ fn data_node_process_rollout_report(
         .iter()
         .all(|node| node.applied_index <= node.commit_index && node.applied_index > 0);
     let multi_process_log_store_validated = blockers.is_empty() && applied_fence_validated;
+    let crash_after_storage_mutation_recovered =
+        write_proposed_through_process_api && recovered_after_restart && applied_fence_validated;
+    let crash_after_wal_persist_recovered =
+        recovered_after_restart && multi_process_log_store_validated;
+    let crash_during_snapshot_install_recovered =
+        recovered_after_restart && snapshot_install_validated && applied_fence_validated;
+    let apply_fence_recovered_after_restart =
+        recovered_after_restart && applied_fence_validated && multi_process_log_store_validated;
     let voters = node_evidence
         .iter()
         .map(|node| node.node_id)
@@ -529,7 +537,15 @@ fn data_node_process_rollout_report(
         secondary_read_eligibility_validated: secondary_read_validated,
         apply_pipeline_converged: nodes.iter().all(|node| node.apply_health.healthy),
         wal_persistence_observed: multi_process_log_store_validated,
-        ready: true,
+        fsm_apply_idempotent_replay_observed: apply_fence_recovered_after_restart,
+        storage_mutation_wal_fence_atomicity_observed: crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered,
+        snapshot_install_apply_fence_atomicity_observed: crash_during_snapshot_install_recovered,
+        process_restart_after_apply_crash_recovered: apply_fence_recovered_after_restart,
+        ready: crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered
+            && crash_during_snapshot_install_recovered
+            && apply_fence_recovered_after_restart,
         blockers: Vec::new(),
     };
     TemporalRaftDataNodeProcessRolloutReport {
@@ -547,6 +563,10 @@ fn data_node_process_rollout_report(
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
         applied_fence_validated,
+        crash_after_storage_mutation_recovered,
+        crash_after_wal_persist_recovered,
+        crash_during_snapshot_install_recovered,
+        apply_fence_recovered_after_restart,
         multi_process_log_store_validated,
         operational_semantics,
         ready: write_proposed_through_process_api
@@ -558,6 +578,10 @@ fn data_node_process_rollout_report(
             && recovered_after_restart
             && snapshot_install_validated
             && applied_fence_validated
+            && crash_after_storage_mutation_recovered
+            && crash_after_wal_persist_recovered
+            && crash_during_snapshot_install_recovered
+            && apply_fence_recovered_after_restart
             && multi_process_log_store_validated,
         blockers,
     }
