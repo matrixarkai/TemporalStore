@@ -857,6 +857,8 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
     pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
+    #[serde(default)]
+    pub real_process_path_evidence_validated: bool,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
@@ -900,6 +902,8 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
     pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
+    #[serde(default)]
+    pub real_process_path_evidence_validated: bool,
     pub ready: bool,
     pub blockers: Vec<String>,
 }

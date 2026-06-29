@@ -2913,6 +2913,7 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         applied_fence_validated: true,
         multi_process_log_store_validated: true,
         byteraft_process_semantics: semantics,
+        real_process_path_evidence_validated: true,
         ready: true,
         blockers: Vec::new(),
     };
@@ -2958,6 +2959,7 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         true
     );
     assert_eq!(json["byteraft_process_semantics"]["ready"], true);
+    assert_eq!(json["real_process_path_evidence_validated"], true);
 }
 
 #[test]

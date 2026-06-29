@@ -475,8 +475,16 @@ fn meta_process_rollout_report(
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
     let voter_count = voters.len();
-    let observed_process_requests = read_index.max(1);
-    let read_index_responses_observed = u64::from(read_index_validated);
+    let observed_process_requests = if read_index_validated {
+        voter_count as u64
+    } else {
+        0
+    };
+    let read_index_responses_observed = if read_index_validated {
+        voter_count as u64
+    } else {
+        0
+    };
     let read_index_and_lease_evidence_observed = read_index_validated
         && status
             .nodes
@@ -518,6 +526,27 @@ fn meta_process_rollout_report(
     if !byteraft_process_semantics.ready {
         blockers.push("byteraft_process_semantics_missing".to_string());
     }
+    let real_process_path_evidence_validated = spawned_process_count >= 3
+        && spawned_process_count == nodes.len()
+        && independent_wal_dirs
+        && independent_snapshot_dirs
+        && observed_process_requests >= spawned_process_count as u64
+        && read_index_responses_observed >= spawned_process_count as u64
+        && restarted_node_count >= spawned_process_count
+        && per_node_log_store_inspection_count >= spawned_process_count
+        && nodes.iter().all(|node| {
+            !node.addr.is_empty()
+                && !node.wal_dir.is_empty()
+                && !node.snapshot_dir.is_empty()
+                && node.log_store_validated
+                && node.commit_index > 0
+                && node.applied_index > 0
+        })
+        && multi_process_log_store_validated
+        && byteraft_process_semantics.ready;
+    if !real_process_path_evidence_validated {
+        blockers.push("real_process_path_evidence_missing".to_string());
+    }
     OpenRaftMetaProcessRolloutReport {
         voters,
         learners: Vec::new(),
@@ -541,6 +570,7 @@ fn meta_process_rollout_report(
         scheduler_task_replay_validated,
         multi_process_log_store_validated,
         byteraft_process_semantics: byteraft_process_semantics.clone(),
+        real_process_path_evidence_validated,
         ready: mutation_proposed_through_process_api
             && read_index_validated
             && snapshot_install_validated
@@ -551,7 +581,8 @@ fn meta_process_rollout_report(
             && restarted_node_count >= voter_count
             && per_node_log_store_inspection_count >= voter_count
             && multi_process_log_store_validated
-            && byteraft_process_semantics.ready,
+            && byteraft_process_semantics.ready
+            && real_process_path_evidence_validated,
         blockers,
     }
 }
