@@ -53,6 +53,7 @@ use crate::types::{
     ShardId, Status, StringSetCondition,
 };
 use crate::wal::LocalWriteAheadLogStore;
+use context::{context_index_ref_identity, validate_context_index_lookup};
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {

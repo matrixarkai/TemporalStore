@@ -17,8 +17,7 @@ use crate::control::{
 use crate::engine::reports::{
     ShardCompactionModelLayoutReport, ShardCompactionUtilityReport, SlotDumpManifest,
     StorageLifecyclePlan, StorageLifecycleReport, StorageLifecycleRequest,
-    StorageManagerCycleReport, StorageManagerCycleRequest,
-    StorageManagerPressureSnapshot, StorageManagerStageReport,
+    StorageManagerCycleReport, StorageManagerCycleRequest, StorageManagerStageReport,
     StorageProductionReadinessPolicy, StorageProductionReadinessReport,
 };
 use crate::engine::TemporalEngine;

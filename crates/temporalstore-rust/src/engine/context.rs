@@ -6,9 +6,9 @@ use crate::page_store::LocalPageStore;
 use crate::page_store::PageAddress;
 use crate::types::{
     ContextAuditRef, ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity,
-    ContextEvent, ContextExtractedEventIndexes, ContextIndexRef, ContextNode, ContextPackAudit,
-    ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, FeaturePoint,
-    InternalContextIndex, ShardId, Status,
+    ContextEvent, ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
+    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
+    FeaturePoint, InternalContextIndex, ShardId, Status,
 };
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached};
@@ -348,6 +348,25 @@ pub(super) fn validate_context_index_ref(index_ref: &ContextIndexRef) -> Result<
         "invalid context index ref",
     )?;
     validate_context_timestamp(index_ref.primary_event_time_ms)
+}
+
+pub(super) fn context_index_ref_identity(index_ref: &ContextIndexRef) -> (u64, u64, u64) {
+    (
+        index_ref.primary_node_hash,
+        index_ref.primary_event_time_ms,
+        index_ref.event_id_hash,
+    )
+}
+
+pub(super) fn validate_context_index_lookup(lookup: &ContextIndexLookup) -> Result<(), Status> {
+    validate_context_index_name(&lookup.index_name)?;
+    validate_context_required(lookup.index_value_hash != 0, "index_value_hash is required")?;
+    validate_context_timestamp(lookup.start_time_ms)?;
+    validate_context_timestamp(lookup.end_time_ms)?;
+    validate_context_required(
+        lookup.start_time_ms <= lookup.end_time_ms,
+        "start_time_ms must be <= end_time_ms",
+    )
 }
 
 pub(super) fn validate_context_extracted_indexes(
