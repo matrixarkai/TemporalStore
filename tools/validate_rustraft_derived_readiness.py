@@ -37,7 +37,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                 "crates/temporalstore-rust/Cargo.toml",
                 (
                     'rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git"',
-                    'rev = "c7b0819"',
+                    'rev = "',
                 ),
             ),
             Evidence(
