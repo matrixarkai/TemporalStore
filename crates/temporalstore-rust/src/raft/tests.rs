@@ -2878,6 +2878,7 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         apply_batch_backpressure_observed: true,
         append_queue_depth_observed: true,
         replication_pressure_counters_observed: true,
+        max_disk_replicate_log_num_observed: true,
         snapshot_lifecycle_observed: true,
         wal_segment_lifecycle_observed: true,
         wal_segment_release_rules_observed: true,
@@ -2978,6 +2979,10 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["replication_pressure_counters_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["max_disk_replicate_log_num_observed"],
         true
     );
     assert_eq!(

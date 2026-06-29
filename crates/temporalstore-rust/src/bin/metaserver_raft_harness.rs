@@ -518,6 +518,13 @@ fn meta_process_rollout_report(
         node.wal_retained_segment_count == node.wal_segments_inspected
             && node.wal_release_floor <= node.wal_last_sequence
     });
+    let max_disk_replicate_log_num_observed = nodes.iter().all(|node| {
+        node.wal_retained_segment_count > 0
+            && node.wal_retained_segment_count <= 64
+            && node.wal_first_sequence > 0
+            && node.wal_last_sequence >= node.wal_first_sequence
+            && node.wal_release_floor <= node.wal_last_sequence
+    });
     let wal_first_last_index_status_observed = nodes.iter().all(|node| {
         node.wal_first_sequence > 0 && node.wal_last_sequence >= node.wal_first_sequence
     });
@@ -563,6 +570,7 @@ fn meta_process_rollout_report(
         apply_batch_backpressure_observed: nodes.len() >= 3 && read_index > 0,
         append_queue_depth_observed: read_index > 0,
         replication_pressure_counters_observed: nodes.len() >= 3 && read_index > 0,
+        max_disk_replicate_log_num_observed,
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
@@ -587,6 +595,7 @@ fn meta_process_rollout_report(
             && wal_slow_fsync_backpressure_observed
             && restart_log_store_comparison_observed
             && nodes.len() >= 3
+            && max_disk_replicate_log_num_observed
             && fsm_apply_atomicity_observed
             && apply_fence_recovery_observed
             && snapshot_install_apply_fence_recovery_observed
@@ -626,6 +635,10 @@ fn meta_process_rollout_report(
         (
             byteraft_process_semantics.replication_pressure_counters_observed,
             "metaserver_process_replication_pressure_counters_missing",
+        ),
+        (
+            byteraft_process_semantics.max_disk_replicate_log_num_observed,
+            "metaserver_process_max_disk_replicate_log_num_missing",
         ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,
