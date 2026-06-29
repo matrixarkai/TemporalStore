@@ -79,11 +79,11 @@ Current inventory:
 total cases: 180
 total steps: 363
 executable shared behavior cases: 180
-executable shared behavior steps: 239
-C++ existing-test/static parity surfaces: 124 steps
+executable shared behavior steps: 240
+C++ existing-test/static parity surfaces: 123 steps
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
-required command kinds: 77
+required command kinds: 78
 required response kinds: 20
 ```
 
@@ -153,6 +153,17 @@ local-status reports. Read-safety fields include read-index, lease-read, and pre
 counters. Rust now also validates that configured in-flight append entry/byte limits reject
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
+
+`raft_openraft_process_rollout_evidence` now uses the executable
+`raft_openraft_process_path_default_gate` command instead of a static existing-test surface. The
+shared gate enforces production-distributed mode, rejects `LocalModel`, requires OpenRaft
+data-node/metaserver process startup selectors, and validates ByteRaft-derived process-path
+evidence for per-peer pipeline state, reorder queues, read-index/lease safety, stale follower write
+rejection, minority partition rejection, chunked snapshot retry/backpressure/progress/rollback,
+compacted-log rejoin, WAL segment lifecycle, learner auto-promotion, witness membership, pending
+joint consensus, and admin/status surface coverage. It still fails closed on the broader durable
+multi-process rollout blockers until spawned-process evidence with independent WAL/snapshot dirs is
+available.
 
 The latest migration passes moved twelve proxy/client/SDK churn and compatibility cases out of
 Rust-local-only coverage into shared executable command kinds:

@@ -1215,6 +1215,24 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_metaserver_scheduler_control_plane();
             true
         }
+        "raft_openraft_process_path_default_gate" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid Raft process-path command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("production_openraft_byteraft_process_path_semantics"),
+                "case={} step={} unsupported Raft process-path scenario",
+                case.name,
+                step.name
+            );
+            verify_raft_openraft_process_path_default_gate();
+            true
+        }
         "raft_linearizable_hash_failover" => {
             verify_raft_linearizable_hash_failover();
             true
@@ -2975,6 +2993,100 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             op => panic!("unsupported executable shared Raft membership op {op}"),
         }
     }
+}
+
+fn verify_raft_openraft_process_path_default_gate() {
+    let readiness = temporalstore_rust::distributed_raft_readiness();
+    assert_eq!(
+        readiness.mode,
+        temporalstore_rust::RaftDeploymentMode::ProductionDistributed
+    );
+    assert!(readiness.openraft_data_node_process_startup_present);
+    assert!(readiness.openraft_metaserver_process_startup_present);
+    assert!(readiness.durable_apply_index_snapshot_integrated);
+    assert!(readiness.metaserver_membership_workflow_present);
+    assert!(readiness.metaserver_driven_membership_present);
+    assert!(readiness.byteraft_per_peer_pipeline_state_present);
+    assert!(readiness.byteraft_reorder_queue_state_present);
+    assert!(readiness.byteraft_snapshot_sender_downloader_lifecycle_present);
+    assert!(readiness.byteraft_wal_segment_lifecycle_present);
+    assert!(readiness.byteraft_read_index_lease_semantics_present);
+    assert!(readiness.byteraft_admin_status_surface_present);
+    assert!(
+        !readiness.complete,
+        "distributed Raft readiness must not pass without multi-process evidence"
+    );
+    assert!(readiness.missing.iter().any(|item| {
+        item.contains("durable OpenRaft data-node process rollout")
+            || item.contains("durable OpenRaft metaserver process rollout")
+    }));
+
+    let local_mode = temporalstore_rust::validate_raft_deployment_mode(
+        temporalstore_rust::RaftDeploymentMode::LocalModel,
+    )
+    .unwrap_err();
+    assert_eq!(
+        local_mode.mode,
+        temporalstore_rust::RaftDeploymentMode::LocalModel
+    );
+    assert!(local_mode
+        .message
+        .contains("local Raft deployment mode is disabled"));
+
+    let byteraft = temporalstore_rust::raft::raft_byteraft_runtime_readiness();
+    assert!(byteraft.runtime_report_present);
+    assert!(byteraft.per_peer_pipeline_state_present);
+    assert!(byteraft.reorder_queue_state_present);
+    assert!(byteraft.snapshot_sender_downloader_lifecycle_present);
+    assert!(byteraft.wal_segment_lifecycle_present);
+    assert!(byteraft.read_index_lease_semantics_present);
+    assert!(byteraft.stale_follower_write_rejection_present);
+    assert!(byteraft.admin_status_surface_present);
+    assert!(
+        byteraft.process_path_operational_semantics_ready,
+        "{:?}",
+        byteraft.missing
+    );
+
+    let report = byteraft.report;
+    assert!(report.read_index_validated);
+    assert!(report.lease_read_validated);
+    assert!(report.stale_leader_lease_rejected);
+    assert!(report.lagging_follower_read_rejected);
+    assert!(report.stale_follower_read_rejected);
+    assert!(report.stale_follower_write_rejected);
+    assert!(report.minority_partition_rejected_reads);
+    assert!(report.minority_partition_rejected_writes);
+    assert!(report.healed_follower_caught_up);
+    assert!(report.append_backpressure_enforced);
+    assert!(report.apply_backpressure_enforced);
+    assert!(report.memory_replicate_bytes_enforced);
+    assert!(report.oversized_log_rejection_present);
+    assert!(report.out_of_order_append_handling_present);
+    assert!(report.reorder_queue_enabled);
+    assert!(report.snapshot_sender_lifecycle_present);
+    assert!(report.snapshot_downloader_lifecycle_present);
+    assert!(report.snapshot_retry_backpressure_present);
+    assert!(report.snapshot_install_progress_present);
+    assert!(report.snapshot_install_rollback_present);
+    assert!(report.snapshot_membership_change_present);
+    assert!(report.snapshot_rejoin_after_compacted_log_present);
+    assert!(report.wal_segment_lifecycle_present);
+    assert!(report.witness_membership_present);
+    assert!(report.learner_auto_promote_present);
+    assert!(report.pending_joint_consensus_present);
+    assert!(report.admin_status_surface_complete);
+    assert!(report.peer_pipeline_states.iter().any(|peer| {
+        peer.inflight_entries > 0
+            || peer.inflight_bytes > 0
+            || peer.append_queue_depth > 0
+            || peer.append_queue_max_depth > 0
+    }));
+    assert!(report.peer_pipeline_states.iter().any(|peer| {
+        peer.snapshot_send_attempts > 0
+            || peer.snapshot_install_started > 0
+            || peer.snapshot_chunk_retry_count > 0
+    }));
 }
 
 fn json_u64(value: &Value, field: &str) -> u64 {
