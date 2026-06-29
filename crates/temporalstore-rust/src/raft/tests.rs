@@ -2363,6 +2363,7 @@ fn ready_temporal_raft_process_node(node_id: RaftNodeId) -> TemporalRaftProcessN
         node_id,
         addr: format!("127.0.0.1:{}", 19000 + node_id),
         wal_dir: format!("/tmp/temporalstore-temporal-raft-test/node-{node_id}"),
+        snapshot_dir: format!("/tmp/temporalstore-temporal-raft-test/node-{node_id}/snapshot"),
         commit_index: 11,
         applied_index: 11,
         snapshot_id: Some("snapshot-11".to_string()),
@@ -2414,6 +2415,13 @@ fn ready_data_node_temporal_raft_rollout_report() -> TemporalRaftDataNodeProcess
             ready_temporal_raft_process_node(2),
             ready_temporal_raft_process_node(3),
         ],
+        spawned_process_count: 3,
+        independent_wal_dirs: true,
+        independent_snapshot_dirs: true,
+        observed_process_requests: 6,
+        read_index_responses_observed: 2,
+        restarted_node_count: 3,
+        per_node_log_store_inspection_count: 3,
         write_proposed_through_process_api: true,
         leader_transfer_validated: true,
         failover_validated: true,
@@ -2452,6 +2460,13 @@ fn ready_meta_temporal_raft_rollout_report() -> TemporalRaftMetaProcessRolloutRe
             ready_temporal_raft_process_node(2),
             ready_temporal_raft_process_node(3),
         ],
+        spawned_process_count: 3,
+        independent_wal_dirs: true,
+        independent_snapshot_dirs: true,
+        observed_process_requests: 6,
+        read_index_responses_observed: 2,
+        restarted_node_count: 3,
+        per_node_log_store_inspection_count: 3,
         mutation_proposed_through_process_api: true,
         applied_raft_mutations: 4,
         generated_scheduler_tasks: 2,
@@ -2533,6 +2548,22 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("data-node multi-process rollout evidence")));
+
+    let mut missing_process_path_proof = ready_data_node_temporal_raft_rollout_report();
+    missing_process_path_proof.independent_snapshot_dirs = false;
+    missing_process_path_proof.observed_process_requests = 0;
+    missing_process_path_proof.read_index_responses_observed = 0;
+    missing_process_path_proof.per_node_log_store_inspection_count = 1;
+    let rejected_process_path = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&missing_process_path_proof),
+        Some(&ready_meta_temporal_raft_rollout_report()),
+    );
+    assert!(!rejected_process_path.data_node_real_process_rollout_validated);
+    assert!(!rejected_process_path.production_ready);
+    assert!(rejected_process_path
+        .missing
+        .iter()
+        .any(|item| item.contains("independent WAL/snapshot dirs")));
 
     let mut missing_behavior_evidence = ready_data_node_temporal_raft_rollout_report();
     missing_behavior_evidence.failover_validated = false;

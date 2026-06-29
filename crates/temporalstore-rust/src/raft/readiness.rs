@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftDistributedReadiness {
@@ -116,6 +117,16 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
     let data_node_real_process_rollout_validated = data_node_report
         .map(|report| {
             report.ready
+                && process_path_proof_is_complete(
+                    report.spawned_process_count,
+                    report.independent_wal_dirs,
+                    report.independent_snapshot_dirs,
+                    report.observed_process_requests,
+                    report.read_index_responses_observed,
+                    report.restarted_node_count,
+                    report.per_node_log_store_inspection_count,
+                    &report.nodes,
+                )
                 && report.write_proposed_through_process_api
                 && report.recovered_after_restart
                 && report.restart_recovery_validated
@@ -143,6 +154,16 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
     let metaserver_real_process_rollout_validated = metaserver_report
         .map(|report| {
             report.ready
+                && process_path_proof_is_complete(
+                    report.spawned_process_count,
+                    report.independent_wal_dirs,
+                    report.independent_snapshot_dirs,
+                    report.observed_process_requests,
+                    report.read_index_responses_observed,
+                    report.restarted_node_count,
+                    report.per_node_log_store_inspection_count,
+                    &report.nodes,
+                )
                 && report.mutation_proposed_through_process_api
                 && report.applied_raft_mutations > 0
                 && report.read_index_validated
@@ -195,7 +216,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );
@@ -207,7 +228,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, crash-window recovery after meta mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft metaserver multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API mutations, real log-store validation, snapshot install, restart recovery, crash-window recovery after meta mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );
@@ -234,6 +255,42 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
         production_ready,
         missing,
     }
+}
+
+fn process_path_proof_is_complete(
+    spawned_process_count: u64,
+    independent_wal_dirs: bool,
+    independent_snapshot_dirs: bool,
+    observed_process_requests: u64,
+    read_index_responses_observed: u64,
+    restarted_node_count: u64,
+    per_node_log_store_inspection_count: u64,
+    nodes: &[TemporalRaftProcessNodeEvidence],
+) -> bool {
+    let expected = nodes.len() as u64;
+    spawned_process_count >= 3
+        && expected >= 3
+        && spawned_process_count >= expected
+        && independent_wal_dirs
+        && independent_snapshot_dirs
+        && observed_process_requests >= expected
+        && read_index_responses_observed > 0
+        && restarted_node_count >= expected
+        && per_node_log_store_inspection_count >= expected
+        && unique_non_empty_dirs(nodes.iter().map(|node| node.wal_dir.as_str()))
+        && unique_non_empty_dirs(nodes.iter().map(|node| node.snapshot_dir.as_str()))
+}
+
+fn unique_non_empty_dirs<'a>(dirs: impl Iterator<Item = &'a str>) -> bool {
+    let mut seen = HashSet::new();
+    let mut count = 0usize;
+    for dir in dirs {
+        if dir.is_empty() || !seen.insert(dir) {
+            return false;
+        }
+        count += 1;
+    }
+    count >= 3
 }
 
 pub fn raft_metaserver_membership_readiness() -> RaftMetaserverMembershipReadiness {

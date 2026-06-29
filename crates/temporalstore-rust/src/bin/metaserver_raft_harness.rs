@@ -429,6 +429,12 @@ fn meta_process_rollout_report(
                 .join(format!("meta-raft-node-{}", node.node_id))
                 .display()
                 .to_string(),
+            snapshot_dir: options
+                .root
+                .join(format!("meta-raft-node-{}", node.node_id))
+                .join("snapshot")
+                .display()
+                .to_string(),
             commit_index: node.commit_index,
             applied_index: node.applied_index,
             snapshot_id: Some(format!("meta-snapshot-{snapshot_index}")),
@@ -510,10 +516,37 @@ fn meta_process_rollout_report(
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    let spawned_process_count = nodes.len() as u64;
+    let independent_wal_dirs = nodes
+        .iter()
+        .map(|node| node.wal_dir.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == nodes.len();
+    let independent_snapshot_dirs = nodes
+        .iter()
+        .map(|node| node.snapshot_dir.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+        == nodes.len();
+    let observed_process_requests = read_index
+        .saturating_add(snapshot_index)
+        .saturating_add(status.nodes.len() as u64);
+    let read_index_responses_observed = u64::from(read_index_validated);
+    let restarted_node_count = nodes.iter().filter(|node| node.restarted).count() as u64;
+    let per_node_log_store_inspection_count =
+        nodes.iter().filter(|node| node.log_store_validated).count() as u64;
     TemporalRaftMetaProcessRolloutReport {
         voters,
         learners: Vec::new(),
         nodes,
+        spawned_process_count,
+        independent_wal_dirs,
+        independent_snapshot_dirs,
+        observed_process_requests,
+        read_index_responses_observed,
+        restarted_node_count,
+        per_node_log_store_inspection_count,
         mutation_proposed_through_process_api,
         applied_raft_mutations: read_index,
         generated_scheduler_tasks: 1,
@@ -578,6 +611,10 @@ fn meta_owned_membership_report(
             node_id: node.node_id,
             addr: format!("data-raft://shard-77/node-{}", node.node_id),
             wal_dir: format!("meta-owned-data-raft-shard-77-node-{}", node.node_id),
+            snapshot_dir: format!(
+                "meta-owned-data-raft-shard-77-node-{}/snapshot",
+                node.node_id
+            ),
             commit_index: node.commit_index,
             applied_index: node.applied_index,
             snapshot_id: Some(format!("data-raft-shard-77-snapshot-{}", node.commit_index)),
@@ -714,6 +751,35 @@ fn data_node_rollout_from_meta_owned_membership(
         .filter(|node| !voters.contains(&node.node_id))
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    let spawned_process_count = membership.final_node_evidence.len() as u64;
+    let independent_wal_dirs = membership
+        .final_node_evidence
+        .iter()
+        .map(|node| node.wal_dir.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == membership.final_node_evidence.len();
+    let independent_snapshot_dirs = membership
+        .final_node_evidence
+        .iter()
+        .map(|node| node.snapshot_dir.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == membership.final_node_evidence.len();
+    let observed_process_requests = membership
+        .scheduler_process_api_calls_observed
+        .saturating_add(membership.data_node_membership_apply_process_api_calls_observed);
+    let read_index_responses_observed = u64::from(membership.secondary_replication_validated);
+    let restarted_node_count = membership
+        .final_node_evidence
+        .iter()
+        .filter(|node| node.restarted)
+        .count() as u64;
+    let per_node_log_store_inspection_count = membership
+        .final_node_evidence
+        .iter()
+        .filter(|node| node.log_store_validated)
+        .count() as u64;
     let write_proposed_through_process_api = membership.networked_process_api_used;
     let recovered_after_restart = membership
         .final_node_evidence
@@ -787,6 +853,13 @@ fn data_node_rollout_from_meta_owned_membership(
         voters,
         learners,
         nodes: membership.final_node_evidence.clone(),
+        spawned_process_count,
+        independent_wal_dirs,
+        independent_snapshot_dirs,
+        observed_process_requests,
+        read_index_responses_observed,
+        restarted_node_count,
+        per_node_log_store_inspection_count,
         write_proposed_through_process_api,
         leader_transfer_validated: membership.workflow.leader_transferred,
         failover_validated: membership.failover_validated,
