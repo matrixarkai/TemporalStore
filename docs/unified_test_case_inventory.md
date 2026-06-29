@@ -79,11 +79,11 @@ Current inventory:
 total cases: 180
 total steps: 363
 executable shared behavior cases: 180
-executable shared behavior steps: 228
-C++ existing-test/static parity surfaces: 135 steps
+executable shared behavior steps: 232
+C++ existing-test/static parity surfaces: 131 steps
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
-required command kinds: 66
+required command kinds: 70
 required response kinds: 20
 ```
 
@@ -154,15 +154,27 @@ counters. Rust now also validates that configured in-flight append entry/byte li
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
 
-The latest migration pass moved two proxy/client churn cases out of Rust-local-only coverage into
-shared executable command kinds:
+The latest migration passes moved six proxy/client/SDK churn and compatibility cases out of
+Rust-local-only coverage into shared executable command kinds:
 
 - `control_multi_proxy_topology_churn_scale` now uses
   `proxy_topology_churn_convergence` to exercise two proxies through metaserver topology movement,
   stale-cache invalidation, route refresh, and recovery onto the moved backend.
+- `control_client_cpp_partition_set_route_cache` now uses
+  `client_cpp_partition_set_route_cache` to validate table id, C++ partition ids, partition
+  version, slot ranges, primary/replica members, topology version, and preflight evidence.
+- `control_client_retry_budget_topology_refresh` now uses
+  `client_retry_budget_topology_refresh` to prove read retry budget behavior and no duplicate unsafe
+  write retry without explicit write budget.
 - `control_client_metasync_outage_churn_stress` now uses
   `client_metasync_outage_churn` to exercise MetaSyncer deadlines, exponential backoff with jitter,
   metaserver outage survival, and topology-version refresh.
+- `control_client_pipeline_batch_partial_timeout_contract` now uses
+  `client_pipeline_batch_partial_timeout` to validate ordered batching, per-command partial failure
+  reporting, timeout-budget propagation, and single-shot unsafe write batch behavior.
+- `control_client_deployment_placement_routing_hooks` now uses
+  `client_deployment_placement_routing` to validate deployment-aware placement, location-affine
+  secondary reads, and primary-only writes.
 
 The shared runner also executes `raft_byteraft_membership_roles` through `raft_membership_op`
 steps instead of letting those operations remain declarative-only in Rust. Remaining `existing_test`

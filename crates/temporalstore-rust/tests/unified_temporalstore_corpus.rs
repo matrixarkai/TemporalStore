@@ -6,20 +6,25 @@ use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json::Value;
-use temporalstore_rust::client::ClientMetaSyncLoopOptions;
+use temporalstore_rust::client::{
+    ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
+};
 use temporalstore_rust::http::{json_response, parse_json, serve};
 use temporalstore_rust::meta::{TopologyVersionReport, TopologyVersionRequest};
+use temporalstore_rust::partition_id::PartitionId;
 use temporalstore_rust::raft::RaftReplicaRole;
 use temporalstore_rust::redis::{execute_redis_command_with_state, RedisCommandState};
-use temporalstore_rust::types::SequenceFeatureRow;
+use temporalstore_rust::types::{
+    BatchExecuteRequest, BatchExecuteResponse, ExecuteResponse, SequenceFeatureRow,
+};
 use temporalstore_rust::{
     execute_redis_command, production_readiness_report, ClientOptions, Command, CommandResponse,
     EndToEndWorkflow, ExecuteRequest, GetTableTopologyRequest, MetaEntityState, ProxyOptions,
     ProxyService, RaftCluster, RaftConfig, RaftError, RegisterServerRequest, RegisterShardRequest,
-    RespValue, ScanStreamRequest, SharedStoreReplicator, SharedStoreStorageMode, SingleNodeMeta,
-    SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind, StreamReadRequest,
-    StreamReadResponse, TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse,
-    TemporalEngine, TemporalStoreClient, TemporalStoreTable,
+    RespValue, ScanStreamRequest, ServerEndpoint, SharedStoreReplicator, SharedStoreStorageMode,
+    SingleNodeMeta, SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind,
+    StreamReadRequest, StreamReadResponse, TableMetaInfo, TableOptions, TablePartition,
+    TableTopologyResponse, TemporalEngine, TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -989,6 +994,42 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_proxy_topology_churn_convergence();
             true
         }
+        "client_cpp_partition_set_route_cache" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid client partition-set command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("partition_set_member_version_route_cache"),
+                "case={} step={} unsupported client partition-set scenario",
+                case.name,
+                step.name
+            );
+            verify_client_cpp_partition_set_route_cache();
+            true
+        }
+        "client_retry_budget_topology_refresh" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid client retry-budget command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("read_retry_write_single_shot_topology_safe_retry"),
+                "case={} step={} unsupported client retry-budget scenario",
+                case.name,
+                step.name
+            );
+            verify_client_retry_budget_topology_refresh();
+            true
+        }
         "client_metasync_outage_churn" => {
             let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
                 .unwrap_or_else(|error| {
@@ -1005,6 +1046,42 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 step.name
             );
             verify_client_metasync_outage_churn();
+            true
+        }
+        "client_pipeline_batch_partial_timeout" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid client pipeline command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("ordered_batch_partial_failure_timeout_budget"),
+                "case={} step={} unsupported client pipeline scenario",
+                case.name,
+                step.name
+            );
+            verify_client_pipeline_batch_partial_timeout();
+            true
+        }
+        "client_deployment_placement_routing" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid client placement command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("location_affine_secondary_reads_primary_only_writes"),
+                "case={} step={} unsupported client placement scenario",
+                case.name,
+                step.name
+            );
+            verify_client_deployment_placement_routing();
             true
         }
         "raft_linearizable_hash_failover" => {
@@ -1503,6 +1580,234 @@ fn verify_proxy_topology_churn_convergence() {
     }
 }
 
+fn verify_client_cpp_partition_set_route_cache() {
+    let meta_addr = free_local_addr();
+    let primary_addr = "127.0.0.1:27101".to_string();
+    let replica_addr = "127.0.0.1:27102".to_string();
+    let meta_addr_for_listener = meta_addr.clone();
+    let primary_for_meta = primary_addr.clone();
+    let replica_for_meta = replica_addr.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(TableMetaInfo {
+                            table_id: 42,
+                            namespace: "ns".to_string(),
+                            table_name: "cpp_parts".to_string(),
+                            state: MetaEntityState::Normal,
+                            topology_version: 12,
+                            first_shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
+                            shard_count: 2,
+                            replica_count: 2,
+                            use_cpp_partition_ids: true,
+                            partition_version: 17,
+                            serving_options: Default::default(),
+                        }),
+                        partitions: vec![
+                            TablePartition {
+                                shard_id: PartitionId::new(42, 0, 0, 17).unwrap().id(),
+                                start_slot: 0,
+                                end_slot: 536_870_911,
+                                primary: Some(primary_for_meta.clone()),
+                                replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
+                                primary_endpoint: Some(ServerEndpoint {
+                                    server_addr: primary_for_meta.clone(),
+                                    location: "zone-a".to_string(),
+                                }),
+                                replica_endpoints: vec![ServerEndpoint {
+                                    server_addr: replica_for_meta.clone(),
+                                    location: "zone-b".to_string(),
+                                }],
+                            },
+                            TablePartition {
+                                shard_id: PartitionId::new(42, 1, 0, 17).unwrap().id(),
+                                start_slot: 536_870_912,
+                                end_slot: 1_073_741_823,
+                                primary: Some(replica_for_meta.clone()),
+                                replicas: vec![replica_for_meta.clone()],
+                                primary_endpoint: Some(ServerEndpoint {
+                                    server_addr: replica_for_meta.clone(),
+                                    location: "zone-b".to_string(),
+                                }),
+                                replica_endpoints: Vec::new(),
+                            },
+                        ],
+                        unchanged: false,
+                    },
+                ),
+                ("POST", "/meta/topology_version") => json_response(
+                    200,
+                    &TopologyVersionReport {
+                        status: Status::ok(),
+                        current_topology_version: 12,
+                        old_topology_version: 0,
+                        unchanged: false,
+                        server_count: 0,
+                        proxy_count: 0,
+                        table_count: 1,
+                        shard_route_count: 2,
+                        normal_servers: 0,
+                        frozen_servers: 0,
+                        dropped_servers: 0,
+                        normal_proxies: 0,
+                        frozen_proxies: 0,
+                        dropped_proxies: 0,
+                        normal_tables: 1,
+                        frozen_tables: 0,
+                        dropped_tables: 0,
+                        changed_tables: Vec::new(),
+                        events: Vec::new(),
+                        event_history_truncated: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some(meta_addr),
+        route_cache_ttl_ms: 60_000,
+        ..ClientOptions::default()
+    });
+    let options = client.sync_table_topology("ns", "cpp_parts").unwrap();
+    assert_eq!(options.table_id, 42);
+    assert!(options.use_cpp_partition_ids);
+    assert_eq!(options.partition_version, 17);
+
+    let report = client.preflight_report();
+    assert_eq!(report.cpp_partition_sets.len(), 1);
+    let partition_set = &report.cpp_partition_sets[0];
+    assert_eq!(partition_set.table_id, 42);
+    assert_eq!(partition_set.combine_name, "ns/cpp_parts");
+    assert!(partition_set.use_cpp_partition_ids);
+    assert_eq!(partition_set.partition_version, 17);
+    assert_eq!(partition_set.topology_version, 12);
+    assert_eq!(partition_set.partition_count, 2);
+    assert_eq!(partition_set.missing_route_count, 0);
+    assert_eq!(partition_set.members[0].start_slot, 0);
+    assert_eq!(partition_set.members[0].end_slot, 536_870_911);
+    assert_eq!(partition_set.members[1].start_slot, 536_870_912);
+    assert_eq!(partition_set.members[1].end_slot, 1_073_741_823);
+    assert_eq!(
+        partition_set.members[0].primary_addr.as_deref(),
+        Some(primary_addr.as_str())
+    );
+    assert_eq!(
+        partition_set.members[0].replica_addrs,
+        vec![replica_addr.clone()]
+    );
+
+    let topology_report = client.topology_cache_report();
+    assert_eq!(topology_report.route_count, 2);
+    assert!(topology_report
+        .routes
+        .iter()
+        .all(|route| route.table == "ns/cpp_parts"
+            && route.use_cpp_partition_ids
+            && route.partition_version == 17));
+    assert_eq!(
+        topology_report.routes[0].partition_id,
+        partition_set.members[0].partition_id
+    );
+}
+
+fn verify_client_retry_budget_topology_refresh() {
+    let read_addr = free_local_addr();
+    let read_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let read_attempts_for_server = Arc::clone(&read_attempts);
+    let read_addr_for_listener = read_addr.clone();
+    std::thread::spawn(move || {
+        serve(&read_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/execute") => {
+                    let attempt =
+                        read_attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt == 0 {
+                        json_response(
+                            200,
+                            &ExecuteResponse {
+                                status: Status::error("retry_later", "loading"),
+                                response: CommandResponse::Empty,
+                            },
+                        )
+                    } else {
+                        json_response(
+                            200,
+                            &ExecuteResponse {
+                                status: Status::ok(),
+                                response: CommandResponse::Bytes {
+                                    value: Some(b"ok".to_vec()),
+                                },
+                            },
+                        )
+                    }
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&read_addr);
+    let read_client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: read_addr,
+        ..ClientOptions::default()
+    });
+    let read_table = read_client.open_table(
+        "ns",
+        "read_retry",
+        TableOptions {
+            retry_backoff_ms: 0,
+            ..TableOptions::default()
+        },
+    );
+    assert_eq!(read_table.get("retry-key").unwrap(), Some(b"ok".to_vec()));
+    assert_eq!(read_attempts.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+    let write_addr = free_local_addr();
+    let write_attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let write_attempts_for_server = Arc::clone(&write_attempts);
+    let write_addr_for_listener = write_addr.clone();
+    std::thread::spawn(move || {
+        serve(&write_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/execute") => {
+                    write_attempts_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    json_response(
+                        200,
+                        &ExecuteResponse {
+                            status: Status::error("retry_later", "write loading"),
+                            response: CommandResponse::Empty,
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&write_addr);
+    let write_client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: write_addr,
+        ..ClientOptions::default()
+    });
+    let write_table = write_client.open_table("ns", "write_retry", TableOptions::default());
+    let err = write_table.set("retry-write", b"v".to_vec()).unwrap_err();
+    assert!(err.to_string().contains("write loading"));
+    assert_eq!(
+        write_attempts.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "unsafe writes without explicit budget must not duplicate a possibly applied write"
+    );
+}
+
 fn verify_client_metasync_outage_churn() {
     let meta_addr = free_local_addr();
     let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
@@ -1651,6 +1956,213 @@ fn verify_client_metasync_outage_churn() {
     let table = client.cached_table("ns", "churn").unwrap();
     assert_eq!(table.options().first_shard_id, 40);
     assert_eq!(client.topology_cache_report().max_topology_version, 40);
+}
+
+fn verify_client_pipeline_batch_partial_timeout() {
+    let proxy_addr = free_local_addr();
+    let batch_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let batch_requests_for_server = Arc::clone(&batch_requests);
+    let proxy_addr_for_listener = proxy_addr.clone();
+    std::thread::spawn(move || {
+        serve(&proxy_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/batch_execute") => {
+                    batch_requests_for_server.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let req = parse_json::<BatchExecuteRequest>(&request.body).unwrap();
+                    assert_eq!(req.commands.len(), 3);
+                    json_response(
+                        200,
+                        &BatchExecuteResponse {
+                            status: Status::ok(),
+                            responses: vec![
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                                ExecuteResponse {
+                                    status: Status::error("partial_failure", "field rejected"),
+                                    response: CommandResponse::Empty,
+                                },
+                                ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(b"after-partial".to_vec()),
+                                    },
+                                },
+                            ],
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&proxy_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr,
+        max_retries: 0,
+        ..ClientOptions::default()
+    });
+    let table = client.open_table(
+        "ns",
+        "pipe",
+        TableOptions {
+            connect_timeout_ms: 200,
+            io_timeout_ms: 250,
+            max_write_retries: 0,
+            retry_backoff_ms: 0,
+            ..TableOptions::default()
+        },
+    );
+    assert_eq!(table.options().connect_timeout_ms, 200);
+    assert_eq!(table.options().io_timeout_ms, 250);
+    assert_eq!(table.options().max_write_retries, 0);
+
+    let mut pipeline = table.pipeline();
+    pipeline.set("pipe-key", b"value".to_vec());
+    pipeline.hset("pipe-key", "field", b"value".to_vec());
+    pipeline.get("pipe-key");
+    let response = pipeline.sync().unwrap();
+    assert!(response.status.ok);
+    assert_eq!(response.responses.len(), 3);
+    assert!(response.responses[0].status.ok);
+    assert_eq!(response.responses[1].status.code, "partial_failure");
+    assert_eq!(
+        response.responses[2].response,
+        CommandResponse::Bytes {
+            value: Some(b"after-partial".to_vec())
+        }
+    );
+    assert_eq!(
+        batch_requests.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "unsafe write batches must not be retried without explicit write budget"
+    );
+}
+
+fn verify_client_deployment_placement_routing() {
+    let primary_addr = free_local_addr();
+    let replica_addr = free_local_addr();
+    let meta_addr = free_local_addr();
+    let primary_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let primary_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let replica_writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let replica_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    start_client_placement_endpoint(
+        primary_addr.clone(),
+        Arc::clone(&primary_writes),
+        Arc::clone(&primary_reads),
+        b"primary".to_vec(),
+        true,
+    );
+    start_client_placement_endpoint(
+        replica_addr.clone(),
+        Arc::clone(&replica_writes),
+        Arc::clone(&replica_reads),
+        b"replica-local".to_vec(),
+        false,
+    );
+
+    let meta_addr_for_listener = meta_addr.clone();
+    let primary_for_meta = primary_addr.clone();
+    let replica_for_meta = replica_addr.clone();
+    std::thread::spawn(move || {
+        serve(&meta_addr_for_listener, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/tables/topology") => json_response(
+                    200,
+                    &TableTopologyResponse {
+                        status: Status::ok(),
+                        table: Some(TableMetaInfo {
+                            table_id: 81,
+                            namespace: "ns".to_string(),
+                            table_name: "placed".to_string(),
+                            state: MetaEntityState::Normal,
+                            topology_version: 11,
+                            first_shard_id: 81,
+                            shard_count: 1,
+                            replica_count: 2,
+                            use_cpp_partition_ids: false,
+                            partition_version: 3,
+                            serving_options: temporalstore_rust::meta::TableServingOptions {
+                                pin_primary: false,
+                                replica_read_policy: "round_robin_replica".to_string(),
+                                preferred_location: String::new(),
+                                drop_percent: 0,
+                                max_read_retries: 1,
+                                max_write_retries: 1,
+                                retry_backoff_ms: 1,
+                                continuous_failed_time_ms: 100,
+                                io_timeout_ms: 1_000,
+                                connect_timeout_ms: 1_000,
+                            },
+                        }),
+                        partitions: vec![TablePartition {
+                            shard_id: 81,
+                            start_slot: 0,
+                            end_slot: u64::MAX,
+                            primary: Some(primary_for_meta.clone()),
+                            replicas: vec![primary_for_meta.clone(), replica_for_meta.clone()],
+                            primary_endpoint: Some(ServerEndpoint {
+                                server_addr: primary_for_meta.clone(),
+                                location: "zone-primary".to_string(),
+                            }),
+                            replica_endpoints: vec![
+                                ServerEndpoint {
+                                    server_addr: primary_for_meta.clone(),
+                                    location: "zone-primary".to_string(),
+                                },
+                                ServerEndpoint {
+                                    server_addr: replica_for_meta.clone(),
+                                    location: "zone-local".to_string(),
+                                },
+                            ],
+                        }],
+                        unchanged: false,
+                    },
+                ),
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+
+    wait_for_http(&primary_addr);
+    wait_for_http(&replica_addr);
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        proxy_addr: "127.0.0.1:1".to_string(),
+        meta_addr: Some(meta_addr),
+        local_location: "zone-local".to_string(),
+        route_cache_ttl_ms: 60_000,
+        ..ClientOptions::default()
+    });
+    let placement = client.deployment_placement_policy("neptune-prod");
+    assert_eq!(placement.preferred_location, "zone-local");
+    assert!(placement.require_location_affinity);
+
+    let table = client.open_table_from_meta("ns", "placed").unwrap();
+    assert_eq!(
+        table.options().replica_read_policy,
+        ClientReplicaReadPolicy::RoundRobinReplica
+    );
+    assert_eq!(table.options().preferred_location, "zone-local");
+    assert!(!table.options().pin_primary);
+
+    table.set("placed-key", b"value".to_vec()).unwrap();
+    assert_eq!(
+        table.get("placed-key").unwrap(),
+        Some(b"replica-local".to_vec())
+    );
+
+    assert_eq!(primary_writes.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(primary_reads.load(std::sync::atomic::Ordering::SeqCst), 0);
+    assert_eq!(replica_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(replica_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 fn client_metasync_table_report(
@@ -2681,6 +3193,64 @@ fn start_single_node_meta_http_service(addr: String, meta: SingleNodeMeta) {
                 ("POST", "/meta/topology_version") => {
                     let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
                     json_response(200, &meta.topology_version_report(req))
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+}
+
+fn start_client_placement_endpoint(
+    addr: String,
+    writes: Arc<std::sync::atomic::AtomicUsize>,
+    reads: Arc<std::sync::atomic::AtomicUsize>,
+    read_value: Vec<u8>,
+    accepts_writes: bool,
+) {
+    std::thread::spawn(move || {
+        serve(&addr, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/execute") => {
+                    let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                    match req.command {
+                        Command::StringSet { .. } if accepts_writes => {
+                            writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Empty,
+                                },
+                            )
+                        }
+                        Command::StringSet { .. } => {
+                            writes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::error(
+                                        "wrong_endpoint",
+                                        "replica received primary-only write",
+                                    ),
+                                    response: CommandResponse::Empty,
+                                },
+                            )
+                        }
+                        Command::StringGet { .. } => {
+                            reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            json_response(
+                                200,
+                                &ExecuteResponse {
+                                    status: Status::ok(),
+                                    response: CommandResponse::Bytes {
+                                        value: Some(read_value.clone()),
+                                    },
+                                },
+                            )
+                        }
+                        _ => json_response(400, &Status::error("bad_request", "unexpected")),
+                    }
                 }
                 _ => json_response(404, &Status::error("not_found", "not found")),
             }
