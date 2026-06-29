@@ -3714,9 +3714,17 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
         )
         .is_ok());
 
+    assert_eq!(
+        cluster.check_write_authority(3),
+        Err(RaftError::NotLeader { node_id: 3 })
+    );
     cluster.set_alive(2, false).unwrap();
     cluster.set_alive(3, false).unwrap();
     assert_eq!(cluster.read_index(1), Err(RaftError::LeaderUnavailable));
+    assert_eq!(
+        cluster.check_write_authority(1),
+        Err(RaftError::NotLeader { node_id: 1 })
+    );
     assert_eq!(
         cluster.propose(Command::StringSet {
             key: "read-safety".to_string(),
@@ -3764,6 +3772,15 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     );
 
     let admin = cluster.byteraft_runtime_admin_report();
+    let state = cluster.read_safety_runtime_state();
+    assert!(state.stale_leader_lease_rejected > 0);
+    assert!(state.lagging_follower_read_rejected > 0);
+    assert!(state.bounded_stale_read_accepted > 0);
+    assert!(state.bounded_stale_read_rejected > 0);
+    assert!(state.minority_partition_read_rejected > 0);
+    assert!(state.minority_partition_write_rejected > 0);
+    assert!(state.stale_follower_write_rejected > 0);
+    assert!(state.healed_follower_catchup_observed > 0);
     assert!(admin.stale_follower_read_rejected);
     assert!(admin.stale_follower_write_rejected);
     assert!(admin.stale_leader_lease_rejected);
@@ -3773,6 +3790,22 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     assert!(admin.minority_partition_rejected_reads);
     assert!(admin.minority_partition_rejected_writes);
     assert!(admin.healed_follower_caught_up);
+    assert_eq!(
+        admin.stale_leader_lease_rejection_count,
+        state.stale_leader_lease_rejected
+    );
+    assert_eq!(
+        admin.lagging_follower_read_rejection_count,
+        state.lagging_follower_read_rejected
+    );
+    assert_eq!(
+        admin.minority_partition_write_rejection_count,
+        state.minority_partition_write_rejected
+    );
+    assert_eq!(
+        admin.healed_follower_catchup_count,
+        state.healed_follower_catchup_observed
+    );
     assert!(admin.read_index_requests >= 3);
     assert!(admin.read_index_rejected >= 2);
     assert!(admin

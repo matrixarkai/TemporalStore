@@ -652,6 +652,24 @@ pub struct ByteRaftRuntimeAdminReport {
     pub lease_read_requests: u64,
     pub lease_read_accepted: u64,
     pub lease_read_rejected: u64,
+    #[serde(default)]
+    pub stale_leader_lease_rejection_count: u64,
+    #[serde(default)]
+    pub lagging_follower_read_rejection_count: u64,
+    #[serde(default)]
+    pub bounded_stale_read_requests: u64,
+    #[serde(default)]
+    pub bounded_stale_read_accepted_count: u64,
+    #[serde(default)]
+    pub bounded_stale_read_rejected_count: u64,
+    #[serde(default)]
+    pub minority_partition_read_rejection_count: u64,
+    #[serde(default)]
+    pub minority_partition_write_rejection_count: u64,
+    #[serde(default)]
+    pub stale_follower_write_rejection_count: u64,
+    #[serde(default)]
+    pub healed_follower_catchup_count: u64,
     pub pre_vote_requests: u64,
     pub pre_vote_accepted: u64,
     pub pre_vote_rejected: u64,
@@ -855,6 +873,10 @@ pub struct RaftReadSafetyRuntimeState {
     pub bounded_stale_read_accepted: u64,
     #[serde(default)]
     pub bounded_stale_read_rejected: u64,
+    #[serde(default)]
+    pub stale_leader_lease_rejected: u64,
+    #[serde(default)]
+    pub lagging_follower_read_rejected: u64,
     #[serde(default)]
     pub stale_follower_write_rejected: u64,
     #[serde(default)]
@@ -7232,6 +7254,10 @@ impl RaftCluster {
         }
         let status = inner.status();
         if !status.leader_lease_valid {
+            inner.read_safety_state.stale_leader_lease_rejected = inner
+                .read_safety_state
+                .stale_leader_lease_rejected
+                .saturating_add(1);
             if !status.has_majority {
                 inner.read_safety_state.minority_partition_read_rejected = inner
                     .read_safety_state
@@ -7282,10 +7308,10 @@ impl RaftCluster {
         if node.commit_index < status.commit_index {
             let replica_commit_index = node.commit_index;
             if node_id != inner.leader_id && node.alive {
-                inner.read_safety_state.healed_follower_catchup_observed = inner
+                inner.read_safety_state.lagging_follower_read_rejected = inner
                     .read_safety_state
-                    .healed_follower_catchup_observed
-                    .saturating_add(0);
+                    .lagging_follower_read_rejected
+                    .saturating_add(1);
             }
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
@@ -7399,32 +7425,52 @@ impl RaftCluster {
                     .bounded_stale_read_requests
                     .saturating_add(1);
                 let status = inner.status();
-                let node = inner
-                    .nodes
-                    .get(&node_id)
-                    .ok_or(RaftError::NodeNotFound(node_id))?;
-                if !node.alive || !node.replica_role.can_serve_data() {
+                let Some((node_alive, can_serve_data, node_commit_index)) =
+                    inner.nodes.get(&node_id).map(|node| {
+                        (
+                            node.alive,
+                            node.replica_role.can_serve_data(),
+                            node.commit_index,
+                        )
+                    })
+                else {
                     inner.read_safety_state.bounded_stale_read_rejected = inner
                         .read_safety_state
                         .bounded_stale_read_rejected
                         .saturating_add(1);
+                    inner.persist_configured_wal()?;
+                    return Err(RaftError::NodeNotFound(node_id));
+                };
+                if !node_alive || !can_serve_data {
+                    inner.read_safety_state.bounded_stale_read_rejected = inner
+                        .read_safety_state
+                        .bounded_stale_read_rejected
+                        .saturating_add(1);
+                    inner.persist_configured_wal()?;
                     return Err(RaftError::NodeNotFound(node_id));
                 }
-                if status.commit_index.saturating_sub(node.commit_index)
+                if status.commit_index.saturating_sub(node_commit_index)
                     > policy.bounded_stale_max_index_lag
                 {
-                    let replica_commit_index = node.commit_index;
+                    let replica_commit_index = node_commit_index;
                     inner.read_safety_state.bounded_stale_read_rejected = inner
                         .read_safety_state
                         .bounded_stale_read_rejected
                         .saturating_add(1);
+                    if node_id != inner.leader_id {
+                        inner.read_safety_state.lagging_follower_read_rejected = inner
+                            .read_safety_state
+                            .lagging_follower_read_rejected
+                            .saturating_add(1);
+                    }
+                    inner.persist_configured_wal()?;
                     return Err(RaftError::ReplicaLagging {
                         replica_id: node_id,
                         replica_commit_index,
                         leader_commit_index: status.commit_index,
                     });
                 }
-                let read_index = node.commit_index;
+                let read_index = node_commit_index;
                 inner.read_safety_state.bounded_stale_read_accepted = inner
                     .read_safety_state
                     .bounded_stale_read_accepted
@@ -7435,6 +7481,7 @@ impl RaftCluster {
                         .healed_follower_catchup_observed
                         .saturating_add(1);
                 }
+                inner.persist_configured_wal()?;
                 Ok(ReadIndexResponse {
                     leader_id: status.leader_id,
                     node_id,
@@ -7504,7 +7551,8 @@ impl RaftCluster {
 
     pub fn check_write_authority(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
-        if node_id == inner.leader_id && inner.status().has_majority {
+        let status = inner.status();
+        if node_id == inner.leader_id && status.has_majority {
             Ok(())
         } else {
             if node_id != inner.leader_id {
@@ -7513,12 +7561,13 @@ impl RaftCluster {
                     .stale_follower_write_rejected
                     .saturating_add(1);
             }
-            if !inner.status().has_majority {
+            if !status.has_majority {
                 inner.read_safety_state.minority_partition_write_rejected = inner
                     .read_safety_state
                     .minority_partition_write_rejected
                     .saturating_add(1);
             }
+            inner.persist_configured_wal()?;
             Err(RaftError::NotLeader { node_id })
         }
     }
@@ -8387,9 +8436,9 @@ impl RaftClusterInner {
             .iter()
             .any(|node| node.node_id != self.leader_id && node.alive)
             && self.read_safety_state.stale_follower_write_rejected > 0;
-        let stale_leader_lease_rejected = self.read_safety_state.lease_read_rejected > 0;
+        let stale_leader_lease_rejected = self.read_safety_state.stale_leader_lease_rejected > 0;
         let lagging_follower_read_rejected =
-            stale_follower_read_rejected && self.read_safety_state.read_index_rejected > 0;
+            self.read_safety_state.lagging_follower_read_rejected > 0;
         let bounded_stale_read_accepted = self.read_safety_state.bounded_stale_read_accepted > 0;
         let bounded_stale_read_rejected = self.read_safety_state.bounded_stale_read_rejected > 0;
         let minority_partition_rejected_reads =
@@ -8642,7 +8691,7 @@ impl RaftClusterInner {
                     && bounded_stale_read_rejected
                     && pre_vote_enforced
                     && pre_vote_process_evidence_observed,
-                evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejected; lagging_follower_read_rejected; bounded_stale_read_*; stale_follower_read_rejected; pre_vote_*; peer_pipeline_states[*].pre_vote_rejections"
+                evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejection_count; lagging_follower_read_rejection_count; bounded_stale_read_*; minority_partition_*_rejection_count; stale_follower_write_rejection_count; healed_follower_catchup_count; pre_vote_*; peer_pipeline_states[*].pre_vote_rejections"
                     .to_string(),
                 detail: format!(
                     "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}; pre_vote_observed={pre_vote_process_evidence_observed}"
@@ -8857,6 +8906,23 @@ impl RaftClusterInner {
             lease_read_requests: self.read_safety_state.lease_read_requests,
             lease_read_accepted: self.read_safety_state.lease_read_accepted,
             lease_read_rejected: self.read_safety_state.lease_read_rejected,
+            stale_leader_lease_rejection_count: self.read_safety_state.stale_leader_lease_rejected,
+            lagging_follower_read_rejection_count: self
+                .read_safety_state
+                .lagging_follower_read_rejected,
+            bounded_stale_read_requests: self.read_safety_state.bounded_stale_read_requests,
+            bounded_stale_read_accepted_count: self.read_safety_state.bounded_stale_read_accepted,
+            bounded_stale_read_rejected_count: self.read_safety_state.bounded_stale_read_rejected,
+            minority_partition_read_rejection_count: self
+                .read_safety_state
+                .minority_partition_read_rejected,
+            minority_partition_write_rejection_count: self
+                .read_safety_state
+                .minority_partition_write_rejected,
+            stale_follower_write_rejection_count: self
+                .read_safety_state
+                .stale_follower_write_rejected,
+            healed_follower_catchup_count: self.read_safety_state.healed_follower_catchup_observed,
             pre_vote_requests: self.read_safety_state.pre_vote_requests,
             pre_vote_accepted: self.read_safety_state.pre_vote_accepted,
             pre_vote_rejected: self.read_safety_state.pre_vote_rejected,
@@ -9987,6 +10053,72 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_lease_read_rejected",
         &[("kind", kind.to_string())],
         report.lease_read_rejected,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_stale_leader_lease_rejections Stale leader lease read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_stale_leader_lease_rejections counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_stale_leader_lease_rejections",
+        &[("kind", kind.to_string())],
+        report.stale_leader_lease_rejection_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_lagging_follower_read_rejections Lagging follower read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_lagging_follower_read_rejections counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_lagging_follower_read_rejections",
+        &[("kind", kind.to_string())],
+        report.lagging_follower_read_rejection_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_requests Bounded-stale read requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_requests counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_bounded_stale_read_requests",
+        &[("kind", kind.to_string())],
+        report.bounded_stale_read_requests,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_accepted Bounded-stale read requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_accepted counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_bounded_stale_read_accepted",
+        &[("kind", kind.to_string())],
+        report.bounded_stale_read_accepted_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_rejected Bounded-stale read requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_rejected counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_bounded_stale_read_rejected",
+        &[("kind", kind.to_string())],
+        report.bounded_stale_read_rejected_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_minority_partition_read_rejections Minority-partition read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_minority_partition_read_rejections counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_minority_partition_read_rejections",
+        &[("kind", kind.to_string())],
+        report.minority_partition_read_rejection_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_minority_partition_write_rejections Minority-partition write rejections observed by the raft runtime.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_minority_partition_write_rejections counter\n",
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_minority_partition_write_rejections",
+        &[("kind", kind.to_string())],
+        report.minority_partition_write_rejection_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_healed_follower_catchup Healed follower catch-up observations by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_healed_follower_catchup counter\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_healed_follower_catchup",
+        &[("kind", kind.to_string())],
+        report.healed_follower_catchup_count,
     );
     out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_requests Pre-vote attempts observed by the raft runtime.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_requests counter\n");
