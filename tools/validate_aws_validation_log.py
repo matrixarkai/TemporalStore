@@ -679,6 +679,10 @@ def validate_byteraft_process_semantics(
         "wal_first_last_index_status_observed",
         "wal_slow_fsync_backpressure_observed",
         "restart_log_store_comparison_observed",
+        "fsm_apply_atomicity_observed",
+        "apply_fence_recovery_observed",
+        "snapshot_install_apply_fence_recovery_observed",
+        "storage_wal_snapshot_crash_recovery_observed",
         "restart_recovery_observed",
         "failover_observed",
     ]:

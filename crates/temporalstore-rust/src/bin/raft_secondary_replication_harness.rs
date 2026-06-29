@@ -480,21 +480,28 @@ fn data_node_process_rollout_report(
             let wal_first_sequence = u64::from(node.status.commit_index > 0);
             let wal_last_sequence = node.status.commit_index;
             let wal_release_floor = wal_last_sequence.saturating_sub(wal_segments_inspected);
+            let applied_index = node
+                .status
+                .nodes
+                .iter()
+                .find(|status| status.node_id == node.node_id)
+                .map(|status| status.applied_index)
+                .unwrap_or_default();
+            let apply_fence_compatible = node.status.commit_index > 0
+                && applied_index > 0
+                && applied_index <= node.status.commit_index
+                && !node.wal_files.is_empty()
+                && node.apply_health.healthy;
+            let restarted = rolling_restart.restarted_nodes.contains(&node.node_id);
             OpenRaftProcessNodeEvidence {
                 node_id: node.node_id,
                 addr: node.addr.clone(),
                 wal_dir: node.wal_dir.clone(),
                 snapshot_dir: format!("{}/snapshots", node.wal_dir),
                 commit_index: node.status.commit_index,
-                applied_index: node
-                    .status
-                    .nodes
-                    .iter()
-                    .find(|status| status.node_id == node.node_id)
-                    .map(|status| status.applied_index)
-                    .unwrap_or_default(),
+                applied_index,
                 snapshot_id: None,
-                restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
+                restarted,
                 log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
                 wal_segments_inspected,
                 wal_retained_segment_count: wal_segments_inspected,
@@ -507,6 +514,10 @@ fn data_node_process_rollout_report(
                     .restarted_nodes
                     .contains(&node.node_id)
                     && node.apply_health.healthy,
+                storage_mutation_recovered_after_restart: restarted && apply_fence_compatible,
+                wal_persisted_apply_fence_observed: apply_fence_compatible,
+                snapshot_install_apply_fence_observed: apply_fence_compatible,
+                deterministic_crash_recovery_observed: restarted && apply_fence_compatible,
                 snapshot_files_inspected: 0,
             }
         })
@@ -600,6 +611,18 @@ fn data_node_process_rollout_report(
     let restart_log_store_comparison_observed = node_evidence
         .iter()
         .all(|node| node.restart_log_store_comparison_observed);
+    let fsm_apply_atomicity_observed = node_evidence
+        .iter()
+        .all(|node| node.storage_mutation_recovered_after_restart);
+    let apply_fence_recovery_observed = node_evidence
+        .iter()
+        .all(|node| node.wal_persisted_apply_fence_observed);
+    let snapshot_install_apply_fence_recovery_observed = node_evidence
+        .iter()
+        .all(|node| node.snapshot_install_apply_fence_observed);
+    let storage_wal_snapshot_crash_recovery_observed = node_evidence
+        .iter()
+        .all(|node| node.deterministic_crash_recovery_observed);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -623,6 +646,10 @@ fn data_node_process_rollout_report(
         wal_first_last_index_status_observed,
         wal_slow_fsync_backpressure_observed,
         restart_log_store_comparison_observed,
+        fsm_apply_atomicity_observed,
+        apply_fence_recovery_observed,
+        snapshot_install_apply_fence_recovery_observed,
+        storage_wal_snapshot_crash_recovery_observed,
         restart_recovery_observed: recovered_after_restart,
         failover_observed: failover_validated,
         membership_change_observed: spawned_process_count >= 3,
@@ -641,6 +668,10 @@ fn data_node_process_rollout_report(
             && wal_first_last_index_status_observed
             && wal_slow_fsync_backpressure_observed
             && restart_log_store_comparison_observed
+            && fsm_apply_atomicity_observed
+            && apply_fence_recovery_observed
+            && snapshot_install_apply_fence_recovery_observed
+            && storage_wal_snapshot_crash_recovery_observed
             && recovered_after_restart
             && failover_validated
             && snapshot_install_validated
@@ -692,6 +723,22 @@ fn data_node_process_rollout_report(
             byteraft_process_semantics.restart_log_store_comparison_observed,
             "process_restart_log_store_comparison_missing",
         ),
+        (
+            byteraft_process_semantics.fsm_apply_atomicity_observed,
+            "process_fsm_apply_atomicity_missing",
+        ),
+        (
+            byteraft_process_semantics.apply_fence_recovery_observed,
+            "process_apply_fence_recovery_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_apply_fence_recovery_observed,
+            "process_snapshot_install_apply_fence_recovery_missing",
+        ),
+        (
+            byteraft_process_semantics.storage_wal_snapshot_crash_recovery_observed,
+            "process_storage_wal_snapshot_crash_recovery_missing",
+        ),
     ] {
         if !ready {
             blockers.push(blocker.to_string());
@@ -718,6 +765,10 @@ fn data_node_process_rollout_report(
                 && node.wal_retained_segment_count > 0
                 && node.wal_last_sequence >= node.wal_first_sequence
                 && node.restart_log_store_comparison_observed
+                && node.storage_mutation_recovered_after_restart
+                && node.wal_persisted_apply_fence_observed
+                && node.snapshot_install_apply_fence_observed
+                && node.deterministic_crash_recovery_observed
         })
         && multi_process_log_store_validated
         && byteraft_process_semantics.ready;

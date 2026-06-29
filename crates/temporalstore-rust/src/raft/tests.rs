@@ -2876,6 +2876,10 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         wal_first_last_index_status_observed: true,
         wal_slow_fsync_backpressure_observed: true,
         restart_log_store_comparison_observed: true,
+        fsm_apply_atomicity_observed: true,
+        apply_fence_recovery_observed: true,
+        snapshot_install_apply_fence_recovery_observed: true,
+        storage_wal_snapshot_crash_recovery_observed: true,
         restart_recovery_observed: true,
         failover_observed: true,
         membership_change_observed: true,
@@ -2900,6 +2904,10 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         wal_release_floor: 2,
         wal_slow_fsync_backpressure_observed: true,
         restart_log_store_comparison_observed: true,
+        storage_mutation_recovered_after_restart: true,
+        wal_persisted_apply_fence_observed: true,
+        snapshot_install_apply_fence_observed: true,
+        deterministic_crash_recovery_observed: true,
         snapshot_files_inspected: 1,
     };
     let report = OpenRaftDataNodeProcessRolloutReport {
@@ -2954,6 +2962,22 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["restart_log_store_comparison_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["fsm_apply_atomicity_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["apply_fence_recovery_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["snapshot_install_apply_fence_recovery_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["storage_wal_snapshot_crash_recovery_observed"],
         true
     );
     assert_eq!(

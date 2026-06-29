@@ -415,6 +415,9 @@ fn meta_process_rollout_report(
             let wal_first_sequence = u64::from(node.commit_index > 0);
             let wal_last_sequence = node.commit_index;
             let wal_release_floor = wal_last_sequence.saturating_sub(wal_segments_inspected);
+            let apply_fence_compatible = node.commit_index >= read_index
+                && node.applied_index >= read_index
+                && node.applied_index <= node.commit_index;
             OpenRaftProcessNodeEvidence {
                 node_id: node.node_id,
                 addr: format!("127.0.0.1:181{}", node.node_id),
@@ -443,6 +446,13 @@ fn meta_process_rollout_report(
                 restart_log_store_comparison_observed: recovered_after_restart
                     && node.commit_index >= read_index
                     && node.applied_index >= read_index,
+                storage_mutation_recovered_after_restart: recovered_after_restart
+                    && apply_fence_compatible,
+                wal_persisted_apply_fence_observed: apply_fence_compatible,
+                snapshot_install_apply_fence_observed: snapshot_index > 0 && apply_fence_compatible,
+                deterministic_crash_recovery_observed: recovered_after_restart
+                    && snapshot_index > 0
+                    && apply_fence_compatible,
                 snapshot_files_inspected: u64::from(snapshot_index > 0),
             }
         })
@@ -517,6 +527,18 @@ fn meta_process_rollout_report(
     let restart_log_store_comparison_observed = nodes
         .iter()
         .all(|node| node.restart_log_store_comparison_observed);
+    let fsm_apply_atomicity_observed = nodes
+        .iter()
+        .all(|node| node.storage_mutation_recovered_after_restart);
+    let apply_fence_recovery_observed = nodes
+        .iter()
+        .all(|node| node.wal_persisted_apply_fence_observed);
+    let snapshot_install_apply_fence_recovery_observed = nodes
+        .iter()
+        .all(|node| node.snapshot_install_apply_fence_observed);
+    let storage_wal_snapshot_crash_recovery_observed = nodes
+        .iter()
+        .all(|node| node.deterministic_crash_recovery_observed);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -538,6 +560,10 @@ fn meta_process_rollout_report(
         wal_first_last_index_status_observed,
         wal_slow_fsync_backpressure_observed,
         restart_log_store_comparison_observed,
+        fsm_apply_atomicity_observed,
+        apply_fence_recovery_observed,
+        snapshot_install_apply_fence_recovery_observed,
+        storage_wal_snapshot_crash_recovery_observed,
         restart_recovery_observed: recovered_after_restart,
         failover_observed: true,
         membership_change_observed: true,
@@ -550,6 +576,10 @@ fn meta_process_rollout_report(
             && wal_first_last_index_status_observed
             && wal_slow_fsync_backpressure_observed
             && restart_log_store_comparison_observed
+            && fsm_apply_atomicity_observed
+            && apply_fence_recovery_observed
+            && snapshot_install_apply_fence_recovery_observed
+            && storage_wal_snapshot_crash_recovery_observed
             && snapshot_install_validated
             && recovered_after_restart
             && scheduler_task_replay_validated,
@@ -578,6 +608,22 @@ fn meta_process_rollout_report(
             byteraft_process_semantics.restart_log_store_comparison_observed,
             "metaserver_process_restart_log_store_comparison_missing",
         ),
+        (
+            byteraft_process_semantics.fsm_apply_atomicity_observed,
+            "metaserver_process_fsm_apply_atomicity_missing",
+        ),
+        (
+            byteraft_process_semantics.apply_fence_recovery_observed,
+            "metaserver_process_apply_fence_recovery_missing",
+        ),
+        (
+            byteraft_process_semantics.snapshot_install_apply_fence_recovery_observed,
+            "metaserver_process_snapshot_install_apply_fence_recovery_missing",
+        ),
+        (
+            byteraft_process_semantics.storage_wal_snapshot_crash_recovery_observed,
+            "metaserver_process_storage_wal_snapshot_crash_recovery_missing",
+        ),
     ] {
         if !ready {
             blockers.push(blocker.to_string());
@@ -601,6 +647,10 @@ fn meta_process_rollout_report(
                 && node.wal_retained_segment_count > 0
                 && node.wal_last_sequence >= node.wal_first_sequence
                 && node.restart_log_store_comparison_observed
+                && node.storage_mutation_recovered_after_restart
+                && node.wal_persisted_apply_fence_observed
+                && node.snapshot_install_apply_fence_observed
+                && node.deterministic_crash_recovery_observed
         })
         && multi_process_log_store_validated
         && byteraft_process_semantics.ready;
