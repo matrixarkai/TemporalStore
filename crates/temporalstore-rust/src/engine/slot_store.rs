@@ -47,8 +47,8 @@ pub(super) struct SlotStoreRuntimeReport {
 pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
     let mut report = SlotStoreRuntimeReport {
         slot_store_runtime_module: true,
-        slot_index_authority: !shard.slot_index.slots.is_empty(),
-        slot_count: shard.slot_index.slots.len(),
+        slot_index_authority: !shard.slot_index.slot_map.is_empty(),
+        slot_count: shard.slot_index.slot_map.len(),
         page_ref_count: 0,
         dirty_slot_count: 0,
         empty_slots: 0,
@@ -64,8 +64,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
         slots: Vec::new(),
     };
 
-    for slot in shard.slot_index.slots.values() {
-        report.page_ref_count = report.page_ref_count.saturating_add(slot.page_refs.len());
+    for slot in shard.slot_index.slot_map.values() {
+        report.page_ref_count = report.page_ref_count.saturating_add(slot.page_index.len());
         if slot.dirty {
             report.dirty_slot_count = report.dirty_slot_count.saturating_add(1);
         }
@@ -79,7 +79,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
             report.ttl_slot_count = report.ttl_slot_count.saturating_add(1);
         }
         report.max_dirty_generation = report.max_dirty_generation.max(slot.dirty_generation);
-        let deleted_page_ref_count = slot.page_refs.values().filter(|page| page.deleted).count();
+        let deleted_page_ref_count = slot.page_index.values().filter(|page| page.deleted).count();
         report.deleted_page_ref_count = report
             .deleted_page_ref_count
             .saturating_add(deleted_page_ref_count);
@@ -101,8 +101,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
         report.slots.push(SlotRuntimeState {
             routing_slot: slot.routing_slot,
             layout: slot_layout_name(slot.layout).to_string(),
-            object_ids: slot.object_ids.iter().copied().collect(),
-            page_ref_count: slot.page_refs.len(),
+            object_ids: slot.object_index.iter().copied().collect(),
+            page_ref_count: slot.page_index.len(),
             dirty: slot.dirty,
             meta_loaded: slot.meta_loaded,
             loading: slot.loading,
@@ -136,9 +136,9 @@ pub(super) fn slot_index_page_address(
 ) -> Option<PageAddress> {
     shard
         .slot_index
-        .slots
+        .slot_map
         .values()
-        .flat_map(|slot| slot.page_refs.values())
+        .flat_map(|slot| slot.page_index.values())
         .filter(|page| {
             !page.deleted
                 && page.model_id == model_id
@@ -156,9 +156,9 @@ pub(super) fn slot_index_component_page_addresses(
 ) -> Vec<(Option<String>, PageAddress)> {
     let mut refs = shard
         .slot_index
-        .slots
+        .slot_map
         .values()
-        .flat_map(|slot| slot.page_refs.values())
+        .flat_map(|slot| slot.page_index.values())
         .filter(|page| !page.deleted && page.model_id == model_id && page.object_key == object_key)
         .map(|page| (page.component.clone(), page.address.clone()))
         .collect::<Vec<_>>();

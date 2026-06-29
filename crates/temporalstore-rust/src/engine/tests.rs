@@ -6008,7 +6008,7 @@ fn slot_index_is_authoritative_when_secondary_views_are_missing() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.slot_index.slots.is_empty());
+        assert!(!shard.slot_index.slot_map.is_empty());
         shard.strings.clear();
         shard.hashes.clear();
         shard.sets.clear();
@@ -6066,7 +6066,7 @@ fn legacy_model_maps_are_promoted_to_slot_index_authority() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard loaded");
         assert!(!shard.strings.is_empty());
-        shard.slot_index.slots.clear();
+        shard.slot_index.slot_map.clear();
     }
 
     let get = engine.execute(ExecuteRequest {
@@ -6087,6 +6087,59 @@ fn legacy_model_maps_are_promoted_to_slot_index_authority() {
     assert_eq!(physical.page_index_count, 1);
     assert_eq!(physical.missing_object_id_count, 0);
     assert_eq!(physical.missing_routing_slot_count, 0);
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn core_index_loads_legacy_slot_page_field_names() {
+    let legacy_json = r#"{
+        "slots": {
+            "7": {
+                "routing_slot": 7,
+                "layout": "SinglePageObject",
+                "dirty": false,
+                "meta_loaded": true,
+                "loading": false,
+                "in_memory": true,
+                "ttl_ms": null,
+                "dirty_generation": 3,
+                "last_dump_sequence": 11,
+                "object_ids": [42],
+                "page_refs": {
+                    "string:k::1:2": {
+                        "object_key": "k",
+                        "model_id": "string",
+                        "object_id": 42,
+                        "address": {
+                            "page_segment_id": 1,
+                            "offset": 2,
+                            "length": 3,
+                            "page_id": 4,
+                            "object_id": 42,
+                            "routing_slot": 7
+                        },
+                        "dirty": false,
+                        "deleted": false,
+                        "log_backed": true
+                    }
+                }
+            }
+        }
+    }"#;
+
+    let index: CoreIndex = serde_json::from_str(legacy_json).unwrap();
+    let slot = index.slot_map.get(&7).expect("legacy slot should load");
+    assert!(slot.object_index.contains(&42));
+    assert_eq!(slot.page_index.len(), 1);
+    assert_eq!(
+        slot.page_index
+            .values()
+            .next()
+            .expect("legacy page index should load")
+            .address
+            .routing_slot,
+        Some(7)
+    );
 }
 
 // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
