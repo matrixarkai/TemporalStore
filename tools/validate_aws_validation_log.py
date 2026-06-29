@@ -634,6 +634,31 @@ def validate_byteraft_process_semantics(
         rollout["multi_process_log_store_validated"],
         f"{job}: {label} multi-process log-store validation missing",
     )
+    require(
+        rollout.get("real_process_path_evidence_validated") is True,
+        f"{job}: {label} real spawned-process durable-store evidence missing",
+    )
+    require(
+        rollout.get("spawned_process_count", 0) >= 3,
+        f"{job}: {label} fewer than three spawned processes reported",
+    )
+    require(
+        rollout.get("independent_wal_dirs") is True,
+        f"{job}: {label} independent WAL dirs missing",
+    )
+    require(
+        rollout.get("independent_snapshot_dirs") is True,
+        f"{job}: {label} independent snapshot dirs missing",
+    )
+    require(
+        rollout.get("restarted_node_count", 0) >= rollout.get("spawned_process_count", 0),
+        f"{job}: {label} restart recovery was not observed for every process",
+    )
+    require(
+        rollout.get("per_node_log_store_inspection_count", 0)
+        >= rollout.get("spawned_process_count", 0),
+        f"{job}: {label} per-node log-store inspection did not cover every process",
+    )
     semantics = rollout.get("byteraft_process_semantics")
     require(isinstance(semantics, dict), f"{job}: {label} ByteRaft process semantics missing")
     require(semantics.get("ready") is True, f"{job}: {label} ByteRaft process semantics not ready")
