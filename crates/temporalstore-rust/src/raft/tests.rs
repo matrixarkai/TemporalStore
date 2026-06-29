@@ -36,8 +36,12 @@ fn rustraft_parity_report_tracks_distributed_readiness_fields() {
     let readiness = distributed_raft_readiness();
     let report = rustraft_parity_report(&readiness);
     assert!(report.contract.openraft_dependency_removed);
-    assert!(report.satisfied.contains(&"leader_write_authority".to_string()));
-    assert!(report.satisfied.contains(&"snapshot_tail_catchup".to_string()));
+    assert!(report
+        .satisfied
+        .contains(&"leader_write_authority".to_string()));
+    assert!(report
+        .satisfied
+        .contains(&"snapshot_tail_catchup".to_string()));
     assert!(report
         .satisfied
         .contains(&"metaserver_membership_workflow".to_string()));
@@ -2105,7 +2109,10 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
 #[test]
 fn raft_temporal_raft_rollout_readiness_fails_closed_without_process_rollout_evidence() {
     let readiness = raft_temporal_raft_rollout_readiness();
-    assert_eq!(readiness.adapter_present, cfg!(feature = "temporal-raft-engine"));
+    assert_eq!(
+        readiness.adapter_present,
+        cfg!(feature = "temporal-raft-engine")
+    );
     assert!(readiness.data_node_process_startup_selects_temporal_raft);
     assert!(readiness.metaserver_process_startup_selects_temporal_raft);
     assert!(readiness.durable_log_state_present);
@@ -2246,7 +2253,10 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
     let readiness =
         raft_temporal_raft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
 
-    assert_eq!(readiness.adapter_present, cfg!(feature = "temporal-raft-engine"));
+    assert_eq!(
+        readiness.adapter_present,
+        cfg!(feature = "temporal-raft-engine")
+    );
     assert!(readiness.data_node_real_process_rollout_validated);
     assert!(readiness.metaserver_real_process_rollout_validated);
     assert!(readiness.multi_process_log_store_validation_present);
@@ -2317,7 +2327,8 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .any(|item| item.contains("secondary reads")));
 
     let mut api_only_data = ready_data_node_temporal_raft_rollout_report();
-    api_only_data.operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence::default();
+    api_only_data.operational_semantics =
+        TemporalRaftProcessOperationalSemanticsEvidence::default();
     let rejected_api_only = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&api_only_data),
         Some(&ready_meta_temporal_raft_rollout_report()),
@@ -5273,12 +5284,18 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         scale_down_validated: true,
         secondary_replication_validated: true,
         networked_process_api_used: true,
+        scheduler_generation_token_coupling_observed: true,
+        stale_generation_rejection_observed: true,
+        membership_generation_replayed_from_meta_raft: true,
         persisted_through_meta_raft_replay: true,
         ready: true,
         blockers: Vec::new(),
     };
     assert!(report.ready);
     assert!(report.networked_process_api_used);
+    assert!(report.scheduler_generation_token_coupling_observed);
+    assert!(report.stale_generation_rejection_observed);
+    assert!(report.membership_generation_replayed_from_meta_raft);
     assert!(report.persisted_through_meta_raft_replay);
     assert!(report.stale_scheduler_token_rejected);
     assert_eq!(report.workflow.final_voters, vec![2, 3, 4]);

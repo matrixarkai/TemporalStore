@@ -351,6 +351,12 @@ pub struct MetaOwnedDataRaftMembershipReport {
     pub leader_transfer_process_api_observed: bool,
     #[serde(default)]
     pub voter_remove_process_api_observed: bool,
+    #[serde(default)]
+    pub scheduler_generation_token_coupling_observed: bool,
+    #[serde(default)]
+    pub stale_generation_rejection_observed: bool,
+    #[serde(default)]
+    pub membership_generation_replayed_from_meta_raft: bool,
     pub persisted_through_meta_raft_replay: bool,
     pub ready: bool,
     pub blockers: Vec<String>,
