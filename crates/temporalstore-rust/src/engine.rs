@@ -6728,6 +6728,8 @@ fn execute_on_shard(
                     break;
                 }
             }
+            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -6779,6 +6781,8 @@ fn execute_on_shard(
                     break;
                 }
             }
+            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
@@ -6899,11 +6903,14 @@ fn execute_on_shard(
                     break;
                 }
             }
+            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            sync_slot_index_object_pages(shard, shard_id, "feature", &key, live_addresses, mutated);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
         Command::FeatureDelete { key } => {
             mutated = shard.features.remove(&key).is_some();
+            mutated |= mark_slot_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
         }
@@ -6976,6 +6983,15 @@ fn execute_on_shard(
                     break;
                 }
             }
+            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            sync_slot_index_object_pages(
+                shard,
+                shard_id,
+                "sequence",
+                &key,
+                live_addresses,
+                mutated,
+            );
             CommandResponse::Empty
         }
         Command::SequenceQuery {
@@ -7066,7 +7082,7 @@ fn execute_on_shard(
                     .entry(key.clone())
                     .or_default()
                     .insert(timestamp_ms, address.clone());
-                shard.ips_meta.entry(key).or_default().insert(
+                shard.ips_meta.entry(key.clone()).or_default().insert(
                     timestamp_ms,
                     IpsPointMeta {
                         address,
@@ -7077,6 +7093,12 @@ fn execute_on_shard(
                 );
                 mutated = true;
             }
+            let live_addresses = shard
+                .ips
+                .get(&key)
+                .map(|series| series.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Empty
         }
         Command::IpsAddWithOptions {
@@ -7135,12 +7157,18 @@ fn execute_on_shard(
                 if let Some(request_id) = request_id {
                     shard
                         .ips_request_ids
-                        .entry(key)
+                        .entry(key.clone())
                         .or_default()
                         .insert(request_id);
                 }
                 mutated = true;
             }
+            let live_addresses = shard
+                .ips
+                .get(&key)
+                .map(|series| series.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -7179,6 +7207,12 @@ fn execute_on_shard(
                     loaded += 1;
                 }
             }
+            let live_addresses = shard
+                .ips
+                .get(&key)
+                .map(|series| series.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer { value: loaded }
         }
         Command::IpsQueryLast { key, count } => {
@@ -7276,6 +7310,12 @@ fn execute_on_shard(
                     shard.ips_meta.remove(&key);
                 }
             }
+            let live_addresses = shard
+                .ips
+                .get(&key)
+                .map(|series| series.values().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            sync_slot_index_object_pages(shard, shard_id, "ips", &key, live_addresses, mutated);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -7284,6 +7324,7 @@ fn execute_on_shard(
             mutated = shard.ips.remove(&key).is_some();
             mutated |= shard.ips_meta.remove(&key).is_some();
             shard.ips_request_ids.remove(&key);
+            mutated |= mark_slot_index_object_deleted(shard, &key);
             CommandResponse::Integer {
                 value: if mutated { 1 } else { 0 },
             }
@@ -9422,6 +9463,97 @@ fn upsert_slot_index_page(
     update_slot_layout(slot);
 }
 
+fn sync_slot_index_object_pages(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    addresses: Vec<PageAddress>,
+    dirty: bool,
+) {
+    let mut touched_slots = BTreeSet::new();
+    let mut removed_any = false;
+    for (routing_slot, slot) in shard.slot_index.slots.iter_mut() {
+        let before = slot.page_refs.len();
+        slot.page_refs
+            .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
+        if slot.page_refs.len() != before {
+            removed_any = true;
+            touched_slots.insert(*routing_slot);
+            slot.dirty |= dirty;
+            if dirty {
+                slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            }
+            update_slot_layout(slot);
+        }
+    }
+
+    let mut unique_addresses = BTreeMap::<(u64, u64, u64), PageAddress>::new();
+    for address in addresses {
+        unique_addresses.insert(
+            (address.page_segment_id, address.offset, address.length),
+            address,
+        );
+    }
+
+    for address in unique_addresses.into_values() {
+        let routing_slot = address
+            .routing_slot
+            .unwrap_or_else(|| page_routing_slot(object_key, 0, u32::MAX));
+        let object_id = address
+            .object_id
+            .unwrap_or_else(|| stable_page_object_id(shard_id, kind, object_key, None));
+        let entry = LivePageEntry {
+            object_key: object_key.to_string(),
+            kind: kind.to_string(),
+            component: None,
+            address,
+            dirty,
+            deleted: false,
+            log_backed: true,
+        };
+        let slot = shard
+            .slot_index
+            .slots
+            .entry(routing_slot)
+            .or_insert_with(|| SlotNodeIndex {
+                routing_slot,
+                meta_loaded: true,
+                in_memory: true,
+                ..SlotNodeIndex::default()
+            });
+        slot.dirty |= dirty;
+        if dirty || touched_slots.insert(routing_slot) {
+            slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+        }
+        slot.meta_loaded = true;
+        slot.loading = false;
+        slot.in_memory = true;
+        slot.object_ids.insert(object_id);
+        slot.page_refs.insert(
+            page_index_ref_key(&entry),
+            PageIndexEntry {
+                object_key: entry.object_key,
+                model_id: entry.kind,
+                component: entry.component,
+                object_id,
+                address: entry.address,
+                dirty: entry.dirty,
+                deleted: entry.deleted,
+                log_backed: entry.log_backed,
+            },
+        );
+        update_slot_layout(slot);
+    }
+
+    if removed_any || dirty {
+        shard
+            .slot_index
+            .slots
+            .retain(|_, slot| !slot.page_refs.is_empty() || !slot.object_ids.is_empty());
+    }
+}
+
 fn classify_slot_layout(object_count: usize, page_ref_count: usize) -> SlotLayoutState {
     match (object_count, page_ref_count) {
         (0, _) => SlotLayoutState::Empty,
@@ -11386,6 +11518,46 @@ fn object_manager_stats(
     start_routing_slot: u32,
     end_routing_slot: u32,
 ) -> ObjectManagerStats {
+    if !shard.slot_index.slots.is_empty() {
+        let live_pages = shard
+            .slot_index
+            .slots
+            .values()
+            .flat_map(|slot| slot.page_refs.values())
+            .filter(|page| !page.deleted)
+            .collect::<Vec<_>>();
+        let object_count = live_pages
+            .iter()
+            .map(|page| page.object_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let dirty_object_count = live_pages
+            .iter()
+            .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
+            .map(|page| page.object_id)
+            .collect::<BTreeSet<_>>()
+            .len();
+        let dirty_slot_count = shard
+            .slot_index
+            .slots
+            .values()
+            .filter(|slot| {
+                slot.dirty
+                    || slot
+                        .page_refs
+                        .values()
+                        .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
+            })
+            .count();
+        return ObjectManagerStats {
+            object_count,
+            page_ref_count: live_pages.len(),
+            dirty_object_count,
+            dirty_slot_count,
+            routing_slot_count: shard.slot_index.slots.len() as u32,
+        };
+    }
+
     let object_count = shard.strings.len()
         + shard.hashes.len()
         + shard.sets.len()
