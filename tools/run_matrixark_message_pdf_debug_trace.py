@@ -273,11 +273,11 @@ PIPELINE_MERMAID = """flowchart TD
 
 DATA_MODEL_ROWS = [
     {"model": "ContextNode", "purpose": "Filesystem-like topology. Messages/resources attach to a leaf node, parents are used for traversal.", "important_fields": "node_hash, parent_hash, node_name, node_path, depth, scope_key"},
-    {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event_id_hash, node_hash, source_ref, summary_text, event_type, entity_type, timestamp"},
+    {"model": "ContextEvent", "purpose": "Replayable extracted fact or raw conversational event.", "important_fields": "event_id_hash, node_hash, source_chunk_hash, resource_hash, source_locator, summary_text, event_type, entity_type, timestamp"},
     {"model": "ContextSegment", "purpose": "Batch/session topic segment when a logical window is committed.", "important_fields": "segment_hash, node_hash, source_event_ids, summary_text, topic, time_range"},
-    {"model": "ContextEntity", "purpose": "Evolving state for current preference/status/owner/budget/deadline.", "important_fields": "entity_hash, entity_type, entity_name, state, source_ref, valid_from, stale_blockers"},
+    {"model": "ContextEntity", "purpose": "Evolving state for current preference/status/owner/budget/deadline.", "important_fields": "entity_hash, entity_type, entity_name, state, source_chunk_hash, resource_hash, source_locator, valid_from, stale_blockers"},
     {"model": "ResourceManifest", "purpose": "Logical imported file/resource version. Raw bytes stay outside TemporalStore.", "important_fields": "resource_hash, raw_uri, resource_type, resource_version, content_hash, scope_key"},
-    {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc.", "important_fields": "chunk_hash, raw_uri, source_ref, text, token_estimate, unit_kind, page_number, heading_slug"},
+    {"model": "ResourceChunk", "purpose": "Cited serving chunk from PDF/MD/etc. Full raw_uri lives on ResourceManifest; chunks carry resource_hash plus source_locator.", "important_fields": "chunk_hash, resource_hash, source_locator, text, token_estimate, unit_kind, page_number, heading_slug"},
     {"model": "ContextSummary", "purpose": "L0/L1 node/resource summary used for preview and tree traversal.", "important_fields": "summary_hash, summary_type, node_hash, summary_text, source_event_ids, source_chunk_hashes"},
     {"model": "ContextEmbedding", "purpose": "Vector stored separately for summaries, chunks, events, entities, and resources.", "important_fields": "embedding_type, ref_type, ref_hash, model, dim, vector"},
     {"model": "ContextIndex", "purpose": "Bounded secondary filters before similarity scoring.", "important_fields": "index_name, index_value, ref_type, ref_hash, node_hash, chunk_hash"},
@@ -418,15 +418,15 @@ def write_outputs(
         "",
         "## Resource Chunks",
         "",
-        markdown_table(by_type["resource_chunk"], ["chunk_hash", "raw_uri", "source_ref", "token_estimate", "metadata.unit_kind", "metadata.content_hash", "text"], limit=80),
+        markdown_table(by_type["resource_chunk"], ["chunk_hash", "resource_hash", "source_locator", "token_estimate", "metadata.unit_kind", "metadata.content_hash", "text"], limit=80),
         "",
         "## Extracted Events",
         "",
-        markdown_table(by_type["context_event"], ["event_id_hash", "node_path", "internal_extraction.event_type", "internal_extraction.entity_type", "summary_text", "source_ref"], limit=80),
+        markdown_table(by_type["context_event"], ["event_id_hash", "node_path", "internal_extraction.event_type", "internal_extraction.entity_type", "summary_text", "source_chunk_hash", "resource_hash", "source_locator"], limit=80),
         "",
         "## Extracted Entities",
         "",
-        markdown_table(by_type["context_entity"], ["entity_hash", "node_path", "entity_type", "entity_name", "operator", "state", "source_ref"], limit=80),
+        markdown_table(by_type["context_entity"], ["entity_hash", "node_path", "entity_type", "entity_name", "operator", "state", "source_chunk_hash", "resource_hash", "source_locator"], limit=80),
         "",
         "## Summaries",
         "",
@@ -534,9 +534,9 @@ def write_outputs(
     <section class="section"><h2>Messages</h2>{records_table([{'role': m['role'], 'content': m['content']} for m in MESSAGES], ['role', 'content'])}</section>
     <section class="section"><h2>Resources</h2>{records_table(trace['resources'], ['raw_uri', 'title', 'line_count'])}</section>
     <section class="section"><h2>Resource Import Tasks</h2>{records_table(by_type['resource_import_task'], ['status', 'raw_uri', 'resource_type', 'chunk_count', 'resource_fact_count', 'resource_entity_count', 'metrics'])}</section>
-    <section class="section"><h2>Resource Chunks</h2>{records_table(by_type['resource_chunk'], ['chunk_hash', 'raw_uri', 'source_ref', 'token_estimate', 'metadata.unit_kind', 'metadata.content_hash', 'text'])}</section>
-    <section class="section"><h2>Extracted Events</h2>{records_table(by_type['context_event'], ['event_id_hash', 'node_path', 'internal_extraction.event_type', 'internal_extraction.entity_type', 'summary_text', 'source_ref'])}</section>
-    <section class="section"><h2>Extracted Entities</h2>{records_table(by_type['context_entity'], ['entity_hash', 'node_path', 'entity_type', 'entity_name', 'operator', 'state', 'source_ref'])}</section>
+    <section class="section"><h2>Resource Chunks</h2>{records_table(by_type['resource_chunk'], ['chunk_hash', 'resource_hash', 'source_locator', 'token_estimate', 'metadata.unit_kind', 'metadata.content_hash', 'text'])}</section>
+    <section class="section"><h2>Extracted Events</h2>{records_table(by_type['context_event'], ['event_id_hash', 'node_path', 'internal_extraction.event_type', 'internal_extraction.entity_type', 'summary_text', 'source_chunk_hash', 'resource_hash', 'source_locator'])}</section>
+    <section class="section"><h2>Extracted Entities</h2>{records_table(by_type['context_entity'], ['entity_hash', 'node_path', 'entity_type', 'entity_name', 'operator', 'state', 'source_chunk_hash', 'resource_hash', 'source_locator'])}</section>
     <section class="section"><h2>Summaries</h2>{records_table(by_type['context_summary'], ['summary_type', 'summary_hash', 'node_path', 'summary_generation_policy.reason', 'summary_text', 'source_chunk_hashes'])}</section>
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
     <section class="section"><h2>Embeddings</h2>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'model', 'dim', 'preview'])}</section>

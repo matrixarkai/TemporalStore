@@ -1938,9 +1938,7 @@ SERVING_RESOURCE_METADATA_FIELDS = {
     "heading",
     "heading_slug",
     "heading_path",
-    "citation",
-    "source_ref",
-    "raw_uri",
+    "source_locator",
     "content_hash",
     "token_estimate",
     "row_start",
@@ -2011,6 +2009,30 @@ def debug_resource_metadata(metadata: Json) -> Json:
         debug["embedding_text_hash"] = stable_hash(embedding_text)
         debug["embedding_text_preview"] = summarize_text(embedding_text, limit=320)
     return debug
+
+
+def source_locator_from_ref(source_ref: str, raw_uri: str) -> str:
+    source_ref = str(source_ref or "")
+    raw_uri = str(raw_uri or "")
+    if not source_ref:
+        return ""
+    if raw_uri and source_ref == raw_uri:
+        return ""
+    if raw_uri and source_ref.startswith(raw_uri + "#"):
+        return source_ref.partition("#")[2]
+    if "#" in source_ref:
+        return source_ref.partition("#")[2]
+    return source_ref
+
+
+def source_ref_from_locator(raw_uri: str, source_locator: str) -> str:
+    raw_uri = str(raw_uri or "")
+    source_locator = str(source_locator or "")
+    if not source_locator:
+        return raw_uri
+    if source_locator.startswith(("file:", "s3://", "http://", "https://", "/")):
+        return source_locator
+    return f"{raw_uri}#{source_locator}" if raw_uri else source_locator
 
 
 def registry_access_scope(scope: Json) -> Json:
@@ -3872,8 +3894,9 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "updated_at_ms",
         "selection_reason",
         "matched_index_terms",
-        "raw_uri",
-        "source_ref",
+        "resource_hash",
+        "raw_uri_hash",
+        "source_locator",
         "resource_type",
         "resource_version",
         "context_class",
@@ -3897,7 +3920,7 @@ def compact_refs_for_audit(refs: list[Json], *, preview_chars: int = 160) -> lis
         "heading_path",
         "relative_path",
         "keywords",
-        "citation",
+        "source_locator",
         "resource_version",
         "content_hash",
         "row_start",
