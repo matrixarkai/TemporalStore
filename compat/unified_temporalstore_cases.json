@@ -3645,7 +3645,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on TemporalRaft data-node and metaserver multi-process rollout plus log-store validation evidence.",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on TemporalRaft data-node and metaserver multi-process rollout, log-store validation, and FSM apply crash-window atomicity evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -7524,7 +7524,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "suite": "cpp_data_raft_parity",
-            "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, learner add/promote/remove, secondary reads, and lag gates.",
+            "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, FSM apply crash-window atomicity, learner add/promote/remove, secondary reads, and lag gates.",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness && cargo run -p temporalstore-rust --bin metaserver_raft_harness",
             "cpp_runner_contract": "C++ RustRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
             "required_paths": [
@@ -7541,6 +7541,10 @@
                 "failover",
                 "snapshot_install",
                 "restart_recovery",
+                "crash_after_storage_or_meta_mutation",
+                "crash_after_wal_persist",
+                "crash_during_snapshot_install",
+                "apply_fence_recovery_after_restart",
                 "follower_lag",
                 "membership_add_promote_remove",
                 "secondary_reads"

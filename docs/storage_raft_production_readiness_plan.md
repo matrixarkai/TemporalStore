@@ -165,6 +165,9 @@ evidence, but they cannot satisfy production readiness by themselves:
   persistence, WAL fence recovery validation, production runtime data-node atomic durability
   reports, storage mutation atomic commit, snapshot-install atomic commit, and snapshot lifecycle
   reporting are covered.
+- TemporalRaft process rollout evidence must now prove deterministic recovery across the P0 FSM
+  apply crash windows: after storage/meta mutation, after WAL persistence, during snapshot install,
+  and after apply-fence restart for both data-node and metaserver process paths.
 - Raft metaserver membership readiness is now explicit in the readiness gate: topology membership
   plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal,
   networked scheduler `/raft/membership/apply` transport, persisted scheduler task state, and

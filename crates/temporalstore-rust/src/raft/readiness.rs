@@ -121,6 +121,10 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 && report.restart_recovery_validated
                 && report.snapshot_install_validated
                 && report.applied_fence_validated
+                && report.crash_after_storage_mutation_recovered
+                && report.crash_after_wal_persist_recovered
+                && report.crash_during_snapshot_install_recovered
+                && report.apply_fence_recovered_after_restart
                 && report.multi_process_log_store_validated
                 && report.leader_transfer_validated
                 && report.failover_validated
@@ -145,6 +149,10 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 && report.snapshot_install_validated
                 && report.recovered_after_restart
                 && report.scheduler_task_replay_validated
+                && report.crash_after_meta_mutation_recovered
+                && report.crash_after_meta_wal_persist_recovered
+                && report.crash_during_meta_snapshot_install_recovered
+                && report.meta_apply_fence_recovered_after_restart
                 && report.multi_process_log_store_validated
                 && report.failover_validated
                 && report.membership_change_validated
@@ -187,7 +195,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );
@@ -199,7 +207,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, crash-window recovery after meta mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );

@@ -281,6 +281,12 @@ remain active. The ByteRaft admin report exposes these as
 `pre_vote_process_evidence_observed`, `election_prohibition_observed`,
 `offline_timeout_observed`, and `transfer_timeout_observed`.
 
+The TemporalRaft process rollout evidence now also fails closed on FSM apply
+atomicity crash windows. Data-node reports must show recovery after storage
+mutation, WAL persistence, snapshot install, and apply-fence restart. Metaserver
+reports must show the same shape for meta mutations, meta WAL persistence,
+meta snapshot install, and meta apply-fence restart.
+
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 cargo run -p temporalstore-rust --bin distributed_raft_harness -- \

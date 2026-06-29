@@ -2359,6 +2359,10 @@ fn ready_temporal_raft_operational_semantics() -> TemporalRaftProcessOperational
         secondary_read_eligibility_validated: true,
         apply_pipeline_converged: true,
         wal_persistence_observed: true,
+        fsm_apply_idempotent_replay_observed: true,
+        storage_mutation_wal_fence_atomicity_observed: true,
+        snapshot_install_apply_fence_atomicity_observed: true,
+        process_restart_after_apply_crash_recovered: true,
         ready: true,
         blockers: Vec::new(),
     }
@@ -2384,6 +2388,10 @@ fn ready_data_node_temporal_raft_rollout_report() -> TemporalRaftDataNodeProcess
         restart_recovery_validated: true,
         snapshot_install_validated: true,
         applied_fence_validated: true,
+        crash_after_storage_mutation_recovered: true,
+        crash_after_wal_persist_recovered: true,
+        crash_during_snapshot_install_recovered: true,
+        apply_fence_recovered_after_restart: true,
         multi_process_log_store_validated: true,
         operational_semantics: ready_temporal_raft_operational_semantics(),
         ready: true,
@@ -2414,6 +2422,10 @@ fn ready_meta_temporal_raft_rollout_report() -> TemporalRaftMetaProcessRolloutRe
         snapshot_install_validated: true,
         recovered_after_restart: true,
         scheduler_task_replay_validated: true,
+        crash_after_meta_mutation_recovered: true,
+        crash_after_meta_wal_persist_recovered: true,
+        crash_during_meta_snapshot_install_recovered: true,
+        meta_apply_fence_recovered_after_restart: true,
         multi_process_log_store_validated: true,
         operational_semantics: ready_temporal_raft_operational_semantics(),
         ready: true,
@@ -2545,6 +2557,18 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
     missing_read_safety
         .operational_semantics
         .wal_persistence_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .fsm_apply_idempotent_replay_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .storage_mutation_wal_fence_atomicity_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .snapshot_install_apply_fence_atomicity_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .process_restart_after_apply_crash_recovered = false;
     let rejected_read_safety = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&missing_read_safety),
         Some(&ready_meta_temporal_raft_rollout_report()),
@@ -2582,6 +2606,55 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("wal_persistence_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("fsm_apply_idempotent_replay_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("storage_mutation_wal_fence_atomicity_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("snapshot_install_apply_fence_atomicity_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("process_restart_after_apply_crash_recovered")));
+
+    let mut missing_data_crash_windows = ready_data_node_temporal_raft_rollout_report();
+    missing_data_crash_windows.crash_after_storage_mutation_recovered = false;
+    missing_data_crash_windows.crash_after_wal_persist_recovered = false;
+    missing_data_crash_windows.crash_during_snapshot_install_recovered = false;
+    missing_data_crash_windows.apply_fence_recovered_after_restart = false;
+    let rejected_data_crash_windows = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&missing_data_crash_windows),
+        Some(&ready_meta_temporal_raft_rollout_report()),
+    );
+    assert!(!rejected_data_crash_windows.data_node_real_process_rollout_validated);
+    assert!(
+        rejected_data_crash_windows
+            .missing
+            .iter()
+            .any(|item| item
+                .contains("storage mutation/WAL persistence/snapshot install/apply fence"))
+    );
+
+    let mut missing_meta_crash_windows = ready_meta_temporal_raft_rollout_report();
+    missing_meta_crash_windows.crash_after_meta_mutation_recovered = false;
+    missing_meta_crash_windows.crash_after_meta_wal_persist_recovered = false;
+    missing_meta_crash_windows.crash_during_meta_snapshot_install_recovered = false;
+    missing_meta_crash_windows.meta_apply_fence_recovered_after_restart = false;
+    let rejected_meta_crash_windows = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&ready_data_node_temporal_raft_rollout_report()),
+        Some(&missing_meta_crash_windows),
+    );
+    assert!(!rejected_meta_crash_windows.metaserver_real_process_rollout_validated);
+    assert!(rejected_meta_crash_windows
+        .missing
+        .iter()
+        .any(|item| item.contains("meta mutation/WAL persistence/snapshot install/apply fence")));
 }
 
 #[test]
