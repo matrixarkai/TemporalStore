@@ -1,0 +1,701 @@
+{
+  "backend": "rust",
+  "backend_metrics": {
+    "error": null,
+    "latency_ms": 3.095,
+    "result": {
+      "access": {
+        "account_id": "acct_local",
+        "agent_name": "local_agent",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "scope_key": "t=4848243343181226175|u=647902544814218759|",
+        "session_hash": 0,
+        "tenant_hash": 4848243343181226175,
+        "tenant_id": "tenant_local_agent",
+        "user_hash": 647902544814218759,
+        "user_id": "root"
+      },
+      "backend": "temporalstore-rust",
+      "capabilities": {
+        "backpressure": true,
+        "batch_append": true,
+        "client_pooling": true,
+        "connection_pooling": true,
+        "graceful_shutdown": true,
+        "health_endpoint": true,
+        "metrics_endpoint": true,
+        "prefix_scan": true,
+        "readiness_endpoint": true,
+        "structured_errors_cpp_compatible": true,
+        "timeout_handling": true
+      },
+      "direct_sdk_bridge": true,
+      "gateway_mode": "rust_direct_sdk_bridge",
+      "health": {
+        "mode": "long_lived_stdio_gateway",
+        "ok": true,
+        "status": "ok"
+      },
+      "metrics": {
+        "audit_buffered_records": 0,
+        "audit_flush_failures": 0,
+        "audit_mode": "drop",
+        "metaserver": "127.0.0.1:18000",
+        "namespace": "deploy_ns",
+        "rust_client": {
+          "backpressure_rejections_total": 0,
+          "backpressure_timeout_ms": 60000,
+          "cli_path": "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "commands_failed_total": 3,
+          "commands_total": 112,
+          "direct_sdk_bridge": true,
+          "gateway_mode": "rust_direct_sdk_bridge",
+          "last_latency_ms": 0.236,
+          "latency_buckets": {
+            "+Inf": 112,
+            "100": 110,
+            "1000": 112,
+            "10000": 112,
+            "2000": 112,
+            "25": 100,
+            "250": 111,
+            "50": 108,
+            "500": 112,
+            "5000": 112
+          },
+          "latency_ms_count": 112,
+          "latency_ms_max": 445.099,
+          "latency_ms_sum": 1611.617,
+          "matrixark_batch_append_wire_format": "entries_compact",
+          "matrixark_context_records_by_type": {
+            "context_child_ref": 6,
+            "context_embedding": 8,
+            "context_event": 4,
+            "context_node": 7,
+            "context_summary": 8,
+            "context_summary_dirty": 4
+          },
+          "matrixark_context_records_total": 37,
+          "max_inflight": 1,
+          "max_observed_latency_ms": 445.099,
+          "p95_latency_ms": 48.012,
+          "p99_latency_ms": 227.392,
+          "process_per_operation_enabled": false,
+          "pure_embedded_direct_sdk": false,
+          "qps": 86.796266,
+          "records_read_total": 51,
+          "records_written_total": 150,
+          "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
+          "single_shot_mode": "debug_only",
+          "structured_errors": true,
+          "supports_batch_append": true,
+          "supports_graceful_shutdown": true,
+          "supports_health": true,
+          "supports_metrics": true,
+          "supports_prefix_scan": true,
+          "supports_readiness": true,
+          "timeouts_total": 0,
+          "transport": "stdio"
+        },
+        "service": {
+          "audit_write_failures": 0,
+          "avg_token_pressure": 0.070755,
+          "backend_ready": 1,
+          "backend_ready_status": "ready",
+          "backpressure_count": 0,
+          "dirty_summary_lag_ms": 556,
+          "last_token_pressure": 0.070755,
+          "model": {
+            "embedding": {
+              "buckets": [
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ],
+              "count": 4,
+              "latencies": [
+                0.3311310429126024,
+                0.2691210247576237,
+                0.1655079540796578,
+                0.19734998932108283
+              ]
+            },
+            "extraction": {
+              "buckets": [
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ],
+              "count": 4,
+              "latencies": [
+                0.07550499867647886,
+                0.050942995585501194,
+                0.03468600334599614,
+                0.05910196341574192
+              ]
+            },
+            "query_embedding": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.022778986021876335,
+                0.01607195008546114,
+                0.024173990823328495,
+                0.015967991203069687,
+                0.023656990379095078,
+                0.019016966689378023,
+                0.03141799243167043,
+                0.02211699029430747
+              ]
+            },
+            "retrieval_audit": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.229,
+                0.146,
+                0.124,
+                0.193,
+                0.127,
+                0.157,
+                0.124,
+                0.151
+              ]
+            },
+            "retrieval_candidate_fetch": {
+              "buckets": [
+                5,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.535,
+                0.119,
+                0.117,
+                0.15,
+                33.597,
+                29.017,
+                28.883,
+                22.455
+              ]
+            },
+            "retrieval_node_traversal": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                1.568,
+                1.479,
+                1.652,
+                1.747,
+                1.346,
+                1.504,
+                1.433,
+                1.358
+              ]
+            },
+            "retrieval_pack": {
+              "buckets": [
+                1,
+                5,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                23.86,
+                38.499,
+                35.254,
+                37.685,
+                47.083,
+                52.709,
+                55.262,
+                58.695
+              ]
+            },
+            "retrieval_query_understanding": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                0.609,
+                0.631,
+                0.989,
+                0.589,
+                0.926,
+                0.622,
+                0.612,
+                0.598
+              ]
+            },
+            "retrieval_rerank_score": {
+              "buckets": [
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "count": 8,
+              "latencies": [
+                13.763,
+                12.465,
+                2.853,
+                2.115,
+                2.552,
+                2.286,
+                2.609,
+                2.442
+              ]
+            }
+          },
+          "ops": {
+            "backend_ready": {
+              "buckets": [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "error": 0,
+              "latencies": [
+                228.94151002401486
+              ],
+              "ok": 1
+            },
+            "ingest": {
+              "buckets": [
+                1,
+                2,
+                2,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4,
+                4
+              ],
+              "error": 0,
+              "latencies": [
+                148.5775419860147,
+                164.33773405151442,
+                15.672899025958031,
+                45.7843309850432
+              ],
+              "ok": 4
+            },
+            "retrieve": {
+              "buckets": [
+                0,
+                3,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8,
+                8
+              ],
+              "error": 0,
+              "latencies": [
+                39.47593900375068,
+                55.55170396110043,
+                41.33289901074022,
+                43.76599000534043,
+                86.08265098882839,
+                86.63543697912246,
+                89.32498499052599,
+                86.10380801837891
+              ],
+              "ok": 8
+            },
+            "summary_refresh": {
+              "buckets": [
+                0,
+                0,
+                0,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1,
+                1
+              ],
+              "error": 0,
+              "latencies": [
+                191.24850700609386
+              ],
+              "ok": 1
+            }
+          },
+          "partial_context_pack_count": 0,
+          "resource_import_lag_ms": 0,
+          "resource_import_queue_depth": 0,
+          "started_at": 1782759122.317664,
+          "timeout_count": 0
+        },
+        "storage_prefix": "matrixark:scale:1782759078566:rust",
+        "table": "deploy_table"
+      },
+      "metrics_format": "prometheus",
+      "process_per_operation_enabled": false,
+      "production_path": "rust_direct_sdk_bridge",
+      "prometheus": "# HELP matrixark_backend_qps MatrixArk storage backend command QPS.\n# TYPE matrixark_backend_qps gauge\nmatrixark_backend_qps{backend=\"rust\"} 86.796266\n# HELP matrixark_backend_commands_total MatrixArk storage backend command count.\n# TYPE matrixark_backend_commands_total counter\nmatrixark_backend_commands_total{backend=\"rust\"} 112\n# HELP matrixark_backend_errors_total MatrixArk storage backend command errors.\n# TYPE matrixark_backend_errors_total counter\nmatrixark_backend_errors_total{backend=\"rust\"} 3\n# HELP matrixark_backend_timeouts_total MatrixArk storage backend command timeouts.\n# TYPE matrixark_backend_timeouts_total counter\nmatrixark_backend_timeouts_total{backend=\"rust\"} 0\n# HELP matrixark_backend_info MatrixArk storage backend identity and mode.\n# TYPE matrixark_backend_info gauge\nmatrixark_backend_info{backend=\"rust\",storage_mode=\"rust-direct-sdk-bridge\"} 1\n# HELP matrixark_backend_ready MatrixArk storage backend readiness, 1 for ready and 0 for not ready.\n# TYPE matrixark_backend_ready gauge\nmatrixark_backend_ready{backend=\"rust\",storage_mode=\"rust-direct-sdk-bridge\",status=\"ready\"} 1\n# HELP matrixark_backend_command_latency_ms MatrixArk storage backend command latency quantiles.\n# TYPE matrixark_backend_command_latency_ms gauge\nmatrixark_backend_command_latency_ms{backend=\"rust\",quantile=\"0.50\"} 25.0\nmatrixark_backend_command_latency_ms{backend=\"rust\",quantile=\"0.95\"} 50.0\nmatrixark_backend_command_latency_ms{backend=\"rust\",quantile=\"0.99\"} 250.0\n# HELP matrixark_backend_command_latency_ms_bucket MatrixArk storage backend command latency buckets.\n# TYPE matrixark_backend_command_latency_ms_bucket counter\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"25\"} 100\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"50\"} 108\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"100\"} 110\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"250\"} 111\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"500\"} 112\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"1000\"} 112\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"2000\"} 112\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"5000\"} 112\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"10000\"} 112\nmatrixark_backend_command_latency_ms_bucket{backend=\"rust\",le=\"+Inf\"} 112\n# HELP matrixark_backend_command_latency_ms_sum MatrixArk storage backend command latency sum in milliseconds.\n# TYPE matrixark_backend_command_latency_ms_sum counter\nmatrixark_backend_command_latency_ms_sum{backend=\"rust\"} 1611.617\n# HELP matrixark_backend_command_latency_ms_count MatrixArk storage backend command latency sample count.\n# TYPE matrixark_backend_command_latency_ms_count counter\nmatrixark_backend_command_latency_ms_count{backend=\"rust\"} 112\n# HELP matrixark_backend_command_latency_max_ms MatrixArk storage backend maximum command latency in milliseconds.\n# TYPE matrixark_backend_command_latency_max_ms gauge\nmatrixark_backend_command_latency_max_ms{backend=\"rust\"} 445.099\n# HELP matrixark_backend_records_written_total MatrixArk storage backend records written.\n# TYPE matrixark_backend_records_written_total counter\nmatrixark_backend_records_written_total{backend=\"rust\"} 150\n# HELP matrixark_backend_records_read_total MatrixArk storage backend records read.\n# TYPE matrixark_backend_records_read_total counter\nmatrixark_backend_records_read_total{backend=\"rust\"} 51\n# HELP matrixark_context_records_total MatrixArk context records currently cached by backend.\n# TYPE matrixark_context_records_total gauge\nmatrixark_context_records_total{backend=\"rust\"} 37\n# HELP matrixark_backend_cached_clients MatrixArk storage backend cached clients.\n# TYPE matrixark_backend_cached_clients gauge\nmatrixark_backend_cached_clients{backend=\"rust\"} 1\n# HELP matrixark_backend_audit_buffered_records MatrixArk buffered audit records awaiting flush.\n# TYPE matrixark_backend_audit_buffered_records gauge\nmatrixark_backend_audit_buffered_records{backend=\"rust\"} 0\n# HELP matrixark_backend_audit_flush_failures_total MatrixArk audit flush failure count.\n# TYPE matrixark_backend_audit_flush_failures_total counter\nmatrixark_backend_audit_flush_failures_total{backend=\"rust\"} 0\n# HELP matrixark_rust_record_log_process_start_time_ms Unix millisecond timestamp when this Rust record-log process started.\n# TYPE matrixark_rust_record_log_process_start_time_ms gauge\nmatrixark_rust_record_log_process_start_time_ms 1782759122516\n# HELP matrixark_rust_record_log_commands_total Total MatrixArk Rust record-log commands by op and status.\n# TYPE matrixark_rust_record_log_commands_total counter\n# HELP matrixark_rust_record_log_command_latency_ms_sum Total command latency in milliseconds by op.\n# TYPE matrixark_rust_record_log_command_latency_ms_sum counter\n# HELP matrixark_rust_record_log_command_latency_ms_max Maximum observed command latency in milliseconds by op.\n# TYPE matrixark_rust_record_log_command_latency_ms_max gauge\nmatrixark_rust_record_log_commands_total{op=\"batch_hset\",status=\"ok\"} 10\nmatrixark_rust_record_log_commands_total{op=\"batch_hset\",status=\"error\"} 0\nmatrixark_rust_record_log_command_latency_ms_sum{op=\"batch_hset\"} 434\nmatrixark_rust_record_log_command_latency_ms_max{op=\"batch_hset\"} 52\nmatrixark_rust_record_log_commands_total{op=\"get_string\",status=\"ok\"} 0\nmatrixark_rust_record_log_commands_total{op=\"get_string\",status=\"error\"} 3\nmatrixark_rust_record_log_command_latency_ms_sum{op=\"get_string\"} 2\nmatrixark_rust_record_log_command_latency_ms_max{op=\"get_string\"} 1\nmatrixark_rust_record_log_commands_total{op=\"hget\",status=\"ok\"} 51\nmatrixark_rust_record_log_commands_total{op=\"hget\",status=\"error\"} 0\nmatrixark_rust_record_log_command_latency_ms_sum{op=\"hget\"} 8\nmatrixark_rust_record_log_command_latency_ms_max{op=\"hget\"} 2\nmatrixark_rust_record_log_commands_total{op=\"hset\",status=\"ok\"} 1\nmatrixark_rust_record_log_commands_total{op=\"hset\",status=\"error\"} 0\nmatrixark_rust_record_log_command_latency_ms_sum{op=\"hset\"} 5\nmatrixark_rust_record_log_command_latency_ms_max{op=\"hset\"} 5\nmatrixark_rust_record_log_commands_total{op=\"matrixark_batch_append_records\",status=\"ok\"} 45\nmatrixark_rust_record_log_commands_total{op=\"matrixark_batch_append_records\",status=\"error\"} 0\nmatrixark_rust_record_log_command_latency_ms_sum{op=\"matrixark_batch_append_records\"} 386\nmatrixark_rust_record_log_command_latency_ms_max{op=\"matrixark_batch_append_records\"} 18\n# HELP matrixark_rust_record_log_records_written_total Total MatrixArk records/hash entries written by the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_records_written_total counter\nmatrixark_rust_record_log_records_written_total 195\n# HELP matrixark_rust_record_log_records_read_total Total MatrixArk records/hash entries read by the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_records_read_total counter\nmatrixark_rust_record_log_records_read_total 51\n# HELP matrixark_rust_record_log_bytes_written_total Approximate payload bytes written by the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_bytes_written_total counter\nmatrixark_rust_record_log_bytes_written_total 101112\n# HELP matrixark_rust_record_log_bytes_read_total Approximate payload bytes read by the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_bytes_read_total counter\nmatrixark_rust_record_log_bytes_read_total 1403\n# HELP matrixark_rust_record_log_clients_created_total TemporalStore clients created by the long-lived Rust record-log bridge.\n# TYPE matrixark_rust_record_log_clients_created_total counter\nmatrixark_rust_record_log_clients_created_total 1\n# HELP matrixark_rust_record_log_parse_errors_total Invalid JSON command lines received by the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_parse_errors_total counter\nmatrixark_rust_record_log_parse_errors_total 0\n# HELP matrixark_rust_record_log_client_connect_errors_total TemporalStore client connection failures in the Rust record-log bridge.\n# TYPE matrixark_rust_record_log_client_connect_errors_total counter\nmatrixark_rust_record_log_client_connect_errors_total 0\n# HELP matrixark_rust_record_log_commands_failed_total Total failed MatrixArk Rust record-log commands.\n# TYPE matrixark_rust_record_log_commands_failed_total counter\nmatrixark_rust_record_log_commands_failed_total 3\n# HELP matrixark_backend_info MatrixArk backend identity and storage mode.\n# TYPE matrixark_backend_info gauge\nmatrixark_backend_info{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 1\n# HELP matrixark_backend_ready MatrixArk backend readiness state, 1 for ready and 0 for not ready.\n# TYPE matrixark_backend_ready gauge\nmatrixark_backend_ready{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",status=\"ready\"} 1\n# HELP matrixark_service_requests_total MatrixArk MCP service requests by operation and status.\n# TYPE matrixark_service_requests_total counter\n# HELP matrixark_service_qps MatrixArk MCP service request QPS by operation.\n# TYPE matrixark_service_qps gauge\n# HELP matrixark_service_latency_ms MatrixArk MCP service latency quantiles by operation.\n# TYPE matrixark_service_latency_ms gauge\n# HELP matrixark_service_latency_ms_bucket MatrixArk MCP service latency histogram buckets by operation.\n# TYPE matrixark_service_latency_ms_bucket counter\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",status=\"ok\"} 1\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\"} 0.774316\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",quantile=\"0.5\"} 228.942\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",quantile=\"0.95\"} 228.942\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",quantile=\"0.99\"} 228.942\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"50\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"100\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"250\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"500\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"1000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"2000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"5000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"10000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"backend_ready\",le=\"+Inf\"} 1\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",status=\"ok\"} 4\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\"} 3.097265\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",quantile=\"0.5\"} 45.784\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",quantile=\"0.95\"} 164.338\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",quantile=\"0.99\"} 164.338\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"25\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"50\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"100\"} 2\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"250\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"500\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"1000\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"2000\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"5000\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"10000\"} 4\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"ingest\",le=\"+Inf\"} 4\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",status=\"ok\"} 8\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\"} 6.19453\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",quantile=\"0.5\"} 55.552\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",quantile=\"0.95\"} 89.325\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",quantile=\"0.99\"} 89.325\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"50\"} 3\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"100\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"250\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"500\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"1000\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"2000\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"5000\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"10000\"} 8\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"retrieve\",le=\"+Inf\"} 8\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",status=\"ok\"} 1\nmatrixark_service_requests_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",status=\"error\"} 0\nmatrixark_service_qps{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\"} 0.774316\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",quantile=\"0.5\"} 191.249\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",quantile=\"0.95\"} 191.249\nmatrixark_service_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",quantile=\"0.99\"} 191.249\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"25\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"50\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"100\"} 0\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"250\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"500\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"1000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"2000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"5000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"10000\"} 1\nmatrixark_service_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",operation=\"summary_refresh\",le=\"+Inf\"} 1\n# HELP matrixark_timeouts_total MatrixArk MCP timeout count.\n# TYPE matrixark_timeouts_total counter\nmatrixark_timeouts_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_backpressure_rejections_total MatrixArk MCP service backpressure rejection count.\n# TYPE matrixark_backpressure_rejections_total counter\nmatrixark_backpressure_rejections_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_partial_context_pack_total MatrixArk partial ContextPack count.\n# TYPE matrixark_partial_context_pack_total counter\nmatrixark_partial_context_pack_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_token_pressure_ratio Remote context budget pressure.\n# TYPE matrixark_token_pressure_ratio gauge\nmatrixark_token_pressure_ratio{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",window=\"last\"} 0.070755\nmatrixark_token_pressure_ratio{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",window=\"avg\"} 0.070755\n# HELP matrixark_dirty_summary_lag_ms Oldest pending dirty summary lag in milliseconds.\n# TYPE matrixark_dirty_summary_lag_ms gauge\nmatrixark_dirty_summary_lag_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 556\n# HELP matrixark_resource_import_lag_ms Oldest queued/running resource import lag in milliseconds.\n# TYPE matrixark_resource_import_lag_ms gauge\nmatrixark_resource_import_lag_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_resource_import_queue_depth Current MatrixArk resource import queue depth.\n# TYPE matrixark_resource_import_queue_depth gauge\nmatrixark_resource_import_queue_depth{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_audit_write_failures_total MatrixArk audit write flush failure count.\n# TYPE matrixark_audit_write_failures_total counter\nmatrixark_audit_write_failures_total{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\"} 0\n# HELP matrixark_model_latency_ms MatrixArk parser/model latency quantiles by stage.\n# TYPE matrixark_model_latency_ms gauge\n# HELP matrixark_model_latency_ms_bucket MatrixArk parser/model latency buckets by stage.\n# TYPE matrixark_model_latency_ms_bucket counter\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",quantile=\"0.5\"} 0.197\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",quantile=\"0.95\"} 0.331\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",quantile=\"0.99\"} 0.331\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"25\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"50\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"100\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"250\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"500\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"1000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"2000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"5000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"10000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"embedding\",le=\"+Inf\"} 4\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",quantile=\"0.5\"} 0.051\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",quantile=\"0.95\"} 0.076\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",quantile=\"0.99\"} 0.076\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"25\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"50\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"100\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"250\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"500\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"1000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"2000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"5000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"10000\"} 4\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"extraction\",le=\"+Inf\"} 4\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",quantile=\"0.5\"} 0.022\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",quantile=\"0.95\"} 0.031\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",quantile=\"0.99\"} 0.031\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"query_embedding\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",quantile=\"0.5\"} 0.146\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",quantile=\"0.95\"} 0.229\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",quantile=\"0.99\"} 0.229\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_audit\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",quantile=\"0.5\"} 0.535\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",quantile=\"0.95\"} 33.597\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",quantile=\"0.99\"} 33.597\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"25\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_candidate_fetch\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",quantile=\"0.5\"} 1.479\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",quantile=\"0.95\"} 1.747\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",quantile=\"0.99\"} 1.747\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_node_traversal\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",quantile=\"0.5\"} 38.499\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",quantile=\"0.95\"} 58.695\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",quantile=\"0.99\"} 58.695\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"25\"} 1\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"50\"} 5\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_pack\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",quantile=\"0.5\"} 0.612\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",quantile=\"0.95\"} 0.989\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",quantile=\"0.99\"} 0.989\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_query_understanding\",le=\"+Inf\"} 8\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",quantile=\"0.5\"} 2.552\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",quantile=\"0.95\"} 13.763\nmatrixark_model_latency_ms{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",quantile=\"0.99\"} 13.763\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"25\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"50\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"100\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"250\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"500\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"1000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"2000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"5000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"10000\"} 8\nmatrixark_model_latency_ms_bucket{backend=\"rust\",storage_mode=\"rust_direct_sdk_bridge\",stage=\"retrieval_rerank_score\",le=\"+Inf\"} 8\n",
+      "pure_embedded_direct_sdk": false,
+      "readiness": {
+        "cached_clients": 1,
+        "mode": "long_lived_stdio_gateway",
+        "ok": true,
+        "status": "ready"
+      },
+      "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
+      "single_shot_mode": "debug_only"
+    }
+  },
+  "errors": {
+    "ingest": [],
+    "retrieve": []
+  },
+  "ingest": {
+    "avg_ms": 93.844,
+    "elapsed_s": 0.196,
+    "errors": 0,
+    "max_ms": 164.549,
+    "ok": 4,
+    "ops": 4,
+    "p50_ms": 148.864,
+    "p95_ms": 164.549,
+    "p99_ms": 164.549,
+    "qps": 20.407
+  },
+  "ingest_messages": {
+    "message_qps": 204.069,
+    "messages": 40,
+    "messages_per_ingest": 10
+  },
+  "raw_storage": {
+    "errors": {
+      "read": [],
+      "write": []
+    },
+    "read": {
+      "avg_ms": 2.175,
+      "elapsed_s": 0.058,
+      "errors": 0,
+      "max_ms": 56.225,
+      "ok": 50,
+      "ops": 50,
+      "p50_ms": 0.926,
+      "p95_ms": 2.71,
+      "p99_ms": 56.225,
+      "qps": 863.087,
+      "records": 50
+    },
+    "write": {
+      "avg_ms": 83.867,
+      "batch_size": 10,
+      "elapsed_s": 0.446,
+      "errors": 0,
+      "max_ms": 445.195,
+      "ok": 10,
+      "ops": 10,
+      "p50_ms": 42.44,
+      "p95_ms": 445.195,
+      "p99_ms": 445.195,
+      "qps": 22.406,
+      "record_qps": 224.056,
+      "records": 100
+    }
+  },
+  "readiness": {
+    "access": {
+      "account_id": "acct_local",
+      "agent_name": "local_agent",
+      "api_key_id": "dev",
+      "mode": "dev",
+      "role": "dev_admin",
+      "scope_key": "t=4848243343181226175|u=647902544814218759|",
+      "session_hash": 0,
+      "tenant_hash": 4848243343181226175,
+      "tenant_id": "tenant_local_agent",
+      "user_hash": 647902544814218759,
+      "user_id": "root"
+    },
+    "attempt_log": [],
+    "attempts": 1,
+    "backend": "temporalstore-rust",
+    "checks": {
+      "mcp_process_started": true,
+      "metaserver_reachable": {
+        "address": "127.0.0.1:18000",
+        "ok": true
+      },
+      "namespace_table_opened": true,
+      "slot_coverage_verified_by_warmup_hset_hget": true
+    },
+    "metaserver": "127.0.0.1:18000",
+    "probe": true,
+    "reason": "manual",
+    "status": "ready",
+    "storage_prefix": "matrixark:scale:1782759078566:rust",
+    "topology": {
+      "metaserver": "127.0.0.1:18000",
+      "namespace": "deploy_ns",
+      "storage_prefix": "matrixark:scale:1782759078566:rust",
+      "table": "deploy_table",
+      "warmup_field": "2370208:1782759122318:3944562213743375720",
+      "warmup_key": "matrixark:scale:1782759078566:rust:readiness"
+    },
+    "warmup_key": "matrixark:scale:1782759078566:rust:readiness"
+  },
+  "retrieve": {
+    "avg_ms": 66.336,
+    "elapsed_s": 0.167,
+    "errors": 0,
+    "max_ms": 89.641,
+    "ok": 8,
+    "ops": 8,
+    "p50_ms": 86.314,
+    "p95_ms": 89.641,
+    "p99_ms": 89.641,
+    "partial_context_packs": 0,
+    "qps": 47.856,
+    "selected_refs_avg": 0.0,
+    "selected_refs_max": 0
+  },
+  "status": "passed",
+  "storage_prefix": "matrixark:scale:1782759078566:rust",
+  "summary_refresh": {
+    "error": null,
+    "latency_ms": 191.556,
+    "result": {
+      "access": {
+        "account_id": "acct_scale",
+        "agent_name": "local_agent",
+        "api_key_id": "dev",
+        "mode": "dev",
+        "role": "dev_admin",
+        "scope_key": "t=3823117250029978076|u=5172441694772987983|s=2407439336756912136|",
+        "session_hash": 2407439336756912136,
+        "session_id": "scale-1782759078566-rust",
+        "tenant_hash": 3823117250029978076,
+        "tenant_id": "tenant_scale",
+        "user_hash": 5172441694772987983,
+        "user_id": "user_scale"
+      },
+      "compression_created_count": 0,
+      "refreshed": [
+        {
+          "dirty_hash": 3773378935774315027,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 5951183779253179187,
+          "node_path": [
+            "tenant:tenant_scale"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 329808833639507428,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 6818585915434814749,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 4246893398140642488,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 4081491091243129680,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 3426847924103097121,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 7012399393247109647,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale",
+            "session:scale-1782759078566-rust"
+          ],
+          "source_event_count": 0,
+          "source_summary_count": 1,
+          "summary_generation_policy": {
+            "child_summary_count": 1,
+            "event_count": 0,
+            "generate_l1": true,
+            "reason": "has_child_summaries",
+            "token_estimate": 128
+          },
+          "summary_version_hash": 6774113761263765413,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        },
+        {
+          "dirty_hash": 626484805029086163,
+          "generated_summary_types": [
+            "node_l0",
+            "node_l1"
+          ],
+          "node_hash": 857077799311787916,
+          "node_path": [
+            "tenant:tenant_scale",
+            "user:user_scale",
+            "session:scale-1782759078566-rust",
+            "conversation:scale"
+          ],
+          "source_event_count": 4,
+          "source_summary_count": 0,
+          "summary_generation_policy": {
+            "child_summary_count": 0,
+            "event_count": 4,
+            "generate_l1": true,
+            "reason": "event_count_threshold",
+            "token_estimate": 1216
+          },
+          "summary_version_hash": 4062158359195255795,
+          "time_compression": {
+            "created": [],
+            "created_count": 0,
+            "max_raw_events_per_node": 256,
+            "raw_event_count": 0,
+            "reason": "raw_event_count_within_threshold",
+            "status": "skipped"
+          }
+        }
+      ],
+      "refreshed_count": 4,
+      "status": "ok"
+    }
+  }
+}

@@ -1,0 +1,398 @@
+{
+  "backends": {
+    "cpp": {
+      "backend": "cpp",
+      "backend_metrics": {
+        "skipped": true
+      },
+      "errors": {
+        "read": [],
+        "write": []
+      },
+      "ingest": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "qps": 0.0
+      },
+      "ingest_messages": {
+        "message_qps": 0.0,
+        "messages": 0,
+        "messages_per_ingest": 0
+      },
+      "raw_storage": {
+        "errors": {
+          "read": [],
+          "write": []
+        },
+        "read": {
+          "avg_ms": 1.11,
+          "elapsed_s": 0.061,
+          "errors": 0,
+          "max_ms": 4.736,
+          "ok": 100,
+          "ops": 100,
+          "p50_ms": 0.971,
+          "p95_ms": 1.846,
+          "p99_ms": 4.434,
+          "qps": 1640.944,
+          "records": 100
+        },
+        "write": {
+          "avg_ms": 80.837,
+          "batch_size": 10,
+          "elapsed_s": 0.418,
+          "errors": 0,
+          "max_ms": 108.749,
+          "ok": 10,
+          "ops": 10,
+          "p50_ms": 79.266,
+          "p95_ms": 108.749,
+          "p99_ms": 108.749,
+          "qps": 23.923,
+          "record_qps": 239.234,
+          "records": 100
+        }
+      },
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [
+          {
+            "attempt": 1,
+            "checks": {
+              "mcp_process_started": true,
+              "metaserver_reachable": {
+                "address": "127.0.0.1:18000",
+                "ok": true
+              },
+              "namespace_table_opened": true,
+              "slot_coverage_verified_by_warmup_hset_hget": false
+            },
+            "error": "Internal: Slot not found",
+            "ok": false,
+            "retryable": true
+          }
+        ],
+        "attempts": 2,
+        "backend": "temporalstore-direct",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "manual",
+        "status": "ready",
+        "storage_prefix": "matrixark:scale:1782759050386:cpp",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:scale:1782759050386:cpp",
+          "table": "deploy_table",
+          "warmup_field": "2369885:1782759050793:3944562213743375720",
+          "warmup_key": "matrixark:scale:1782759050386:cpp:readiness"
+        },
+        "warmup_key": "matrixark:scale:1782759050386:cpp:readiness"
+      },
+      "retrieve": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "partial_context_packs": 0,
+        "qps": 0.0,
+        "selected_refs_avg": 0.0,
+        "selected_refs_max": 0
+      },
+      "status": "passed",
+      "storage_prefix": "matrixark:scale:1782759050386:cpp",
+      "summary_refresh": {
+        "skipped": true
+      }
+    },
+    "rust": {
+      "backend": "rust",
+      "backend_metrics": {
+        "skipped": true
+      },
+      "errors": {
+        "read": [],
+        "write": []
+      },
+      "ingest": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "qps": 0.0
+      },
+      "ingest_messages": {
+        "message_qps": 0.0,
+        "messages": 0,
+        "messages_per_ingest": 0
+      },
+      "raw_storage": {
+        "errors": {
+          "read": [],
+          "write": []
+        },
+        "read": {
+          "avg_ms": 2.397,
+          "elapsed_s": 0.126,
+          "errors": 0,
+          "max_ms": 123.82,
+          "ok": 100,
+          "ops": 100,
+          "p50_ms": 1.044,
+          "p95_ms": 2.262,
+          "p99_ms": 4.073,
+          "qps": 796.575,
+          "records": 100
+        },
+        "write": {
+          "avg_ms": 80.498,
+          "batch_size": 10,
+          "elapsed_s": 0.424,
+          "errors": 0,
+          "max_ms": 422.979,
+          "ok": 10,
+          "ops": 10,
+          "p50_ms": 40.772,
+          "p95_ms": 422.979,
+          "p99_ms": 422.979,
+          "qps": 23.566,
+          "record_qps": 235.664,
+          "records": 100
+        }
+      },
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-rust",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "manual",
+        "status": "ready",
+        "storage_prefix": "matrixark:scale:1782759050386:rust",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:scale:1782759050386:rust",
+          "table": "deploy_table",
+          "warmup_field": "2369885:1782759051509:3944562213743375720",
+          "warmup_key": "matrixark:scale:1782759050386:rust:readiness"
+        },
+        "warmup_key": "matrixark:scale:1782759050386:rust:readiness"
+      },
+      "retrieve": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "partial_context_packs": 0,
+        "qps": 0.0,
+        "selected_refs_avg": 0.0,
+        "selected_refs_max": 0
+      },
+      "status": "passed",
+      "storage_prefix": "matrixark:scale:1782759050386:rust",
+      "summary_refresh": {
+        "skipped": true
+      }
+    }
+  },
+  "comparison": {
+    "rows": [
+      {
+        "cpp": 239.234,
+        "direction": "higher",
+        "metric": "raw_write_record_qps",
+        "percent_delta": -1.492,
+        "rust": 235.664,
+        "rust_minus_cpp": -3.57
+      },
+      {
+        "cpp": 108.749,
+        "direction": "lower",
+        "metric": "raw_write_p95_ms",
+        "percent_delta": 288.95,
+        "rust": 422.979,
+        "rust_minus_cpp": 314.23
+      },
+      {
+        "cpp": 1640.944,
+        "direction": "higher",
+        "metric": "raw_read_qps",
+        "percent_delta": -51.456,
+        "rust": 796.575,
+        "rust_minus_cpp": -844.369
+      },
+      {
+        "cpp": 1.846,
+        "direction": "lower",
+        "metric": "raw_read_p95_ms",
+        "percent_delta": 22.535,
+        "rust": 2.262,
+        "rust_minus_cpp": 0.416
+      },
+      {
+        "cpp": 0.0,
+        "direction": "higher",
+        "metric": "message_qps",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p50_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p95_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p99_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "higher",
+        "metric": "retrieve_qps",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p50_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p95_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p99_ms",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "same",
+        "metric": "selected_refs_avg",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0
+      }
+    ],
+    "status": "comparable"
+  },
+  "config": {
+    "events": 1000,
+    "ingest_workers": 4,
+    "max_context_tokens": 12000,
+    "messages_per_ingest": 20,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "raw_batch_size": 10,
+    "raw_ops": 100,
+    "raw_read_ops": 100,
+    "raw_workers": 2,
+    "retrieve_queries": 128,
+    "retrieve_workers": 16,
+    "skip_context_pipeline": true,
+    "storage_options": {
+      "oplog_mode": "async",
+      "replication_mode": "shared_store",
+      "storage_family": "shared_store",
+      "storage_mode": "multi_node",
+      "write_mode": "async"
+    },
+    "table": "deploy_table"
+  },
+  "generated_at_ms": 1782759050386,
+  "run_id": "1782759050386"
+}
