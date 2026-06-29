@@ -454,6 +454,16 @@ pub struct ObjectManagerRuntimeReport {
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SlotObjectPageOwnershipReport {
+    pub shard_id: ShardId,
+    pub first_class_index_present: bool,
+    pub derived_from_model_maps: bool,
+    pub page_ref_count: usize,
+    pub missing_owner_page_ref_count: usize,
+    pub owner_mismatch_page_ref_count: usize,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SlotDumpManifest {
     pub version: u32,
     pub shard_id: ShardId,
@@ -1221,9 +1231,25 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub shard_id: ShardId,
     pub dry_run: bool,
     pub production_slice_ready: bool,
+    #[serde(default)]
+    pub policy_ready: bool,
     pub dirty_slot_count: usize,
     pub selected_dump_slot_count: usize,
     pub dumped_slot_count: usize,
+    #[serde(default)]
+    pub dump_manifest_created: bool,
+    #[serde(default)]
+    pub load_preflight_safe: bool,
+    #[serde(default)]
+    pub replay_boundary_safe: bool,
+    #[serde(default)]
+    pub manifest_chain_valid: bool,
+    #[serde(default)]
+    pub follower_retention_safe: bool,
+    #[serde(default)]
+    pub index_gc_ready: bool,
+    #[serde(default)]
+    pub manifest_slot_ids: Vec<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub manifest_id: Option<String>,
     pub manifest_checksum_validated: bool,
@@ -1255,6 +1281,15 @@ pub struct StorageMergedDumpLoadPolicyReport {
     pub stale_page_conflict_reported: bool,
     #[serde(default)]
     pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageMergedDumpLoadPolicyRequest {
+    pub lifecycle: StorageLifecycleRequest,
+    #[serde(default)]
+    pub create_dump_manifest: bool,
+    #[serde(default)]
+    pub install_dump_manifest: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]

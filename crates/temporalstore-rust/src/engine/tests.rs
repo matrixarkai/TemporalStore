@@ -1,4 +1,5 @@
 use super::*;
+use crate::{BlockAddress, BlockStoreOptions, LocalBlockStore};
 use crate::block_store::BlockStoreExtentState;
 use crate::engine::golden::{
     cpp_api_golden_corpus_report, cpp_feature_sequence_golden_corpus_report,

@@ -2252,7 +2252,7 @@ impl DataNodeRuntime {
         }
     }
 
-    pub fn start_storage_manager_scheduler(
+    pub fn start_storage_manager_cycle_scheduler(
         &self,
         interval: Duration,
         request: StorageManagerCycleRequest,
