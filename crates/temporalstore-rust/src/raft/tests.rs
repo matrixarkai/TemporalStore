@@ -2965,6 +2965,13 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         snapshot_chunking_observed: true,
         snapshot_compaction_rejoin_observed: true,
         storage_log_idempotent_replay_observed: true,
+        admin_status_surface_observed: true,
+        per_peer_match_next_index_observed: true,
+        per_peer_inflight_and_append_queue_observed: true,
+        per_peer_snapshot_state_observed: true,
+        transfer_target_status_observed: true,
+        prevote_election_counters_observed: true,
+        wal_first_last_index_observed: true,
         recovered_after_restart: true,
         restart_recovery_validated: true,
         snapshot_install_validated: true,
@@ -3118,6 +3125,13 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     assert_eq!(json["snapshot_chunking_observed"], true);
     assert_eq!(json["snapshot_compaction_rejoin_observed"], true);
     assert_eq!(json["storage_log_idempotent_replay_observed"], true);
+    assert_eq!(json["admin_status_surface_observed"], true);
+    assert_eq!(json["per_peer_match_next_index_observed"], true);
+    assert_eq!(json["per_peer_inflight_and_append_queue_observed"], true);
+    assert_eq!(json["per_peer_snapshot_state_observed"], true);
+    assert_eq!(json["transfer_target_status_observed"], true);
+    assert_eq!(json["prevote_election_counters_observed"], true);
+    assert_eq!(json["wal_first_last_index_observed"], true);
     assert_eq!(
         json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
         true

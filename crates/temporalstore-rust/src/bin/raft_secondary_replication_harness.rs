@@ -776,6 +776,42 @@ fn data_node_process_rollout_report(
     let storage_log_idempotent_replay_observed = fsm_apply_atomicity_observed
         && apply_fence_recovery_observed
         && storage_wal_snapshot_crash_recovery_observed;
+    let admin_status_surface_observed = runtime_reports
+        .iter()
+        .all(|report| report.admin_status_surface_complete && report.ready);
+    let per_peer_match_next_index_observed = peer_pipeline_states.len() >= node_evidence.len()
+        && peer_pipeline_states
+            .iter()
+            .all(|peer| peer.match_index > 0 && peer.next_index > 0);
+    let per_peer_inflight_and_append_queue_observed = peer_pipeline_states.iter().any(|peer| {
+        (peer.inflight_entries > 0 || peer.inflight_bytes > 0) && peer.append_queue_max_depth > 0
+    });
+    let per_peer_snapshot_state_observed = peer_pipeline_states.iter().any(|peer| {
+        peer.snapshot_sending
+            || peer.snapshot_installing
+            || peer.snapshot_installed_index > 0
+            || peer.snapshot_install_progress_per_mille > 0
+    });
+    let transfer_target_status_observed = leader_transfer_under_load.transfer_status.ok
+        && peer_pipeline_states.iter().any(|peer| {
+            peer.transfer_leader_target
+                || peer.transfer_leader_requests > 0
+                || peer.transfer_leader_completed > 0
+        });
+    let prevote_election_counters_observed = runtime_reports.iter().any(|report| {
+        report.pre_vote_enforced
+            && report.election_controls_enforced
+            && (report.pre_vote_requests > 0
+                || report.pre_vote_rejected > 0
+                || report
+                    .peer_pipeline_states
+                    .iter()
+                    .any(|peer| peer.pre_vote_rejections > 0 || peer.election_rejections > 0))
+    });
+    let wal_first_last_index_observed = wal_first_last_index_status_observed
+        && runtime_reports
+            .iter()
+            .all(|report| report.wal_first_sequence > 0 && report.wal_last_sequence > 0);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -837,6 +873,13 @@ fn data_node_process_rollout_report(
             && snapshot_chunking_observed
             && snapshot_compaction_rejoin_observed
             && storage_log_idempotent_replay_observed
+            && admin_status_surface_observed
+            && per_peer_match_next_index_observed
+            && per_peer_inflight_and_append_queue_observed
+            && per_peer_snapshot_state_observed
+            && transfer_target_status_observed
+            && prevote_election_counters_observed
+            && wal_first_last_index_observed
             && replicate_inflight_limits_observed
             && max_replicate_bytes_observed
             && oversized_log_rejection_observed
@@ -1061,6 +1104,13 @@ fn data_node_process_rollout_report(
         snapshot_chunking_observed,
         snapshot_compaction_rejoin_observed,
         storage_log_idempotent_replay_observed,
+        admin_status_surface_observed,
+        per_peer_match_next_index_observed,
+        per_peer_inflight_and_append_queue_observed,
+        per_peer_snapshot_state_observed,
+        transfer_target_status_observed,
+        prevote_election_counters_observed,
+        wal_first_last_index_observed,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
@@ -1085,6 +1135,13 @@ fn data_node_process_rollout_report(
             && snapshot_chunking_observed
             && snapshot_compaction_rejoin_observed
             && storage_log_idempotent_replay_observed
+            && admin_status_surface_observed
+            && per_peer_match_next_index_observed
+            && per_peer_inflight_and_append_queue_observed
+            && per_peer_snapshot_state_observed
+            && transfer_target_status_observed
+            && prevote_election_counters_observed
+            && wal_first_last_index_observed
             && snapshot_install_validated
             && applied_fence_validated
             && independent_wal_dirs
