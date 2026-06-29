@@ -31,6 +31,28 @@ class ReadinessArea:
 
 AREAS: tuple[ReadinessArea, ...] = (
     ReadinessArea(
+        name="rustraft_library_boundary",
+        evidence=(
+            Evidence(
+                "crates/rustraft/src/lib.rs",
+                (
+                    "pub trait RustRaftReadinessEvidence",
+                    "pub struct RustRaftReadinessSnapshot",
+                    "pub fn rustraft_parity_contract",
+                    "pub fn rustraft_parity_report",
+                ),
+            ),
+            Evidence(
+                "crates/temporalstore-rust/src/raft/rustraft.rs",
+                (
+                    "use rustraft::",
+                    "impl From<&RaftDistributedReadiness> for RustRaftReadinessSnapshot",
+                    "library_rustraft_parity_report",
+                ),
+            ),
+        ),
+    ),
+    ReadinessArea(
         name="production_mode_required",
         evidence=(
             Evidence(
