@@ -939,6 +939,18 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub healed_follower_catchup_observed: bool,
     #[serde(default)]
     pub lagging_follower_observed_lag: u64,
+    #[serde(default)]
+    pub per_peer_progress_observed: bool,
+    #[serde(default)]
+    pub transport_fault_recovery_observed: bool,
+    #[serde(default)]
+    pub wal_fsync_pressure_observed: bool,
+    #[serde(default)]
+    pub snapshot_chunking_observed: bool,
+    #[serde(default)]
+    pub snapshot_compaction_rejoin_observed: bool,
+    #[serde(default)]
+    pub storage_log_idempotent_replay_observed: bool,
     pub recovered_after_restart: bool,
     #[serde(default)]
     pub restart_recovery_validated: bool,

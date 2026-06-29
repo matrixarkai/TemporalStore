@@ -2959,6 +2959,12 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         bounded_stale_read_eligibility_observed: true,
         healed_follower_catchup_observed: true,
         lagging_follower_observed_lag: 3,
+        per_peer_progress_observed: true,
+        transport_fault_recovery_observed: true,
+        wal_fsync_pressure_observed: true,
+        snapshot_chunking_observed: true,
+        snapshot_compaction_rejoin_observed: true,
+        storage_log_idempotent_replay_observed: true,
         recovered_after_restart: true,
         restart_recovery_validated: true,
         snapshot_install_validated: true,
@@ -3106,6 +3112,12 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     assert_eq!(json["bounded_stale_read_eligibility_observed"], true);
     assert_eq!(json["healed_follower_catchup_observed"], true);
     assert_eq!(json["lagging_follower_observed_lag"], 3);
+    assert_eq!(json["per_peer_progress_observed"], true);
+    assert_eq!(json["transport_fault_recovery_observed"], true);
+    assert_eq!(json["wal_fsync_pressure_observed"], true);
+    assert_eq!(json["snapshot_chunking_observed"], true);
+    assert_eq!(json["snapshot_compaction_rejoin_observed"], true);
+    assert_eq!(json["storage_log_idempotent_replay_observed"], true);
     assert_eq!(
         json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
         true

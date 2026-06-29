@@ -650,6 +650,10 @@ fn data_node_process_rollout_report(
             .all(|read| read.status.ok);
     let secondary_lag_observed =
         lagging_follower.observed_lag > 0 && catchup_read_eligibility_observed;
+    let transport_fault_recovery_observed = minority_partition_rejected
+        && stale_follower_write_rejected
+        && healed_follower_catchup_observed
+        && failover_validated;
     let wal_segment_release_rules_observed = node_evidence.iter().all(|node| {
         node.wal_retained_segment_count == node.wal_segments_inspected
             && node.wal_release_floor <= node.wal_last_sequence
@@ -759,6 +763,19 @@ fn data_node_process_rollout_report(
         || peer_pipeline_states
             .iter()
             .any(|peer| peer.snapshot_rejoin_after_compacted_log);
+    let per_peer_progress_observed = node_evidence.len() >= 3
+        && peer_pipeline_states.len() >= node_evidence.len()
+        && node_evidence
+            .iter()
+            .all(|node| node.commit_index > 0 && node.applied_index > 0);
+    let snapshot_chunking_observed = snapshot_chunk_retry_backpressure_observed
+        && snapshot_install_progress_observed
+        && snapshot_send_timeout_observed;
+    let snapshot_compaction_rejoin_observed =
+        snapshot_rejoin_after_compacted_log_observed && snapshot_membership_change_observed;
+    let storage_log_idempotent_replay_observed = fsm_apply_atomicity_observed
+        && apply_fence_recovery_observed
+        && storage_wal_snapshot_crash_recovery_observed;
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -771,10 +788,7 @@ fn data_node_process_rollout_report(
         follower_lease_expiration_observed,
         minority_partition_rejected,
         healed_follower_catchup_observed,
-        per_peer_pipeline_state_observed: node_evidence.len() >= 3
-            && node_evidence
-                .iter()
-                .all(|node| node.commit_index > 0 && node.applied_index > 0),
+        per_peer_pipeline_state_observed: per_peer_progress_observed,
         append_pipeline_state_observed: node_evidence
             .iter()
             .any(|node| node.commit_index > 0 && node.applied_index > 0),
@@ -817,6 +831,12 @@ fn data_node_process_rollout_report(
             && minority_partition_rejected
             && healed_follower_catchup_observed
             && secondary_lag_observed
+            && per_peer_progress_observed
+            && transport_fault_recovery_observed
+            && wal_slow_fsync_backpressure_observed
+            && snapshot_chunking_observed
+            && snapshot_compaction_rejoin_observed
+            && storage_log_idempotent_replay_observed
             && replicate_inflight_limits_observed
             && max_replicate_bytes_observed
             && oversized_log_rejection_observed
@@ -1035,6 +1055,12 @@ fn data_node_process_rollout_report(
         bounded_stale_read_eligibility_observed: bounded_stale_partition_reads_observed,
         healed_follower_catchup_observed,
         lagging_follower_observed_lag: lagging_follower.observed_lag,
+        per_peer_progress_observed,
+        transport_fault_recovery_observed,
+        wal_fsync_pressure_observed: wal_slow_fsync_backpressure_observed,
+        snapshot_chunking_observed,
+        snapshot_compaction_rejoin_observed,
+        storage_log_idempotent_replay_observed,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
@@ -1053,6 +1079,12 @@ fn data_node_process_rollout_report(
             && minority_partition_rejected
             && bounded_stale_partition_reads_observed
             && healed_follower_catchup_observed
+            && per_peer_progress_observed
+            && transport_fault_recovery_observed
+            && wal_slow_fsync_backpressure_observed
+            && snapshot_chunking_observed
+            && snapshot_compaction_rejoin_observed
+            && storage_log_idempotent_replay_observed
             && snapshot_install_validated
             && applied_fence_validated
             && independent_wal_dirs
