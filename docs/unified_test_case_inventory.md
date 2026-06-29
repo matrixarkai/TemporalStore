@@ -257,7 +257,7 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
-| `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, and latency samples are recorded. |
+| `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, async writeback/backpressure is exercised, and operation-specific latency buckets are recorded for read-through, refill, writeback, eviction, and compaction. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after logical map removal, memory eviction, and restart. |
@@ -280,7 +280,7 @@ C++ execution should progressively cover every executable case.
 | `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
 | `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
-| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, refill failures, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, latency buckets, per-stage StorageManager pressure reports, live-read safety after eviction plus page GC, and periodic StorageManager scheduler queue safety. |
+| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, refill failures, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, operation-specific latency buckets, per-stage StorageManager pressure reports, live-read safety after eviction plus page GC, and periodic StorageManager scheduler queue safety. |
 | `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and WAL/index-log ordering. |
 | `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up. |
 
