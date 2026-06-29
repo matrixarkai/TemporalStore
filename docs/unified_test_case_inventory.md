@@ -143,8 +143,8 @@ Recent shared-case additions moved seven Rust data-node Raft API tests into the 
 test surfaces for those cases until a native C++ shared runner executes the same case IDs. The new
 ByteRaft runtime-admin case requires a shared JSON shape with a capability matrix plus per-peer
 match/next index, inflight bytes, append request/accept/reject counters, append queue depth/max
-depth, active apply and memory backpressure counters, oversized-log rejection, out-of-order append
-handling, append/reorder queues, reorder accept/release/reject counters, snapshot sender/downloader
+depth, observed active apply in-flight and memory backpressure counters, oversized-log rejection,
+out-of-order append handling, append/reorder queues, reorder accept/release/reject counters, snapshot sender/downloader
 lifecycle, WAL segments with bytes/record counts/sequence bounds, read-index/lease evidence, stale
 follower rejection, and matching Prometheus metrics for scrape-based operator parity. Snapshot
 lifecycle fields include send attempt/complete/failure counters, send timeout, install
@@ -156,8 +156,9 @@ without quorum participation, auto-promoted learner evidence, and pending joint-
 local-status reports. Read-safety fields include read-index, lease-read, stale leader lease
 rejection, lagging follower read rejection, stale follower write rejection, bounded stale
 accept/reject decisions, minority partition rejection, healed follower catch-up, and pre-vote
-request/accept/reject counters. Rust now also validates that configured in-flight append entry/byte limits reject
-saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
+request/accept/reject counters. Rust now also validates that configured in-flight append entry/byte
+limits and `max_inflights_apply_task` reject saturated peer pipelines, and that the per-peer pipeline
+and read-safety state is persisted through
 WAL restore.
 
 `raft_openraft_process_rollout_evidence` now uses the executable
