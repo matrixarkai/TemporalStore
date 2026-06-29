@@ -429,8 +429,13 @@ fn main() {
         writes.len() as u64,
     );
 
-    let temporal_raft_process_rollout =
-        data_node_process_rollout_report(&options, &node_summaries, &rolling_restart);
+    let temporal_raft_process_rollout = data_node_process_rollout_report(
+        &options,
+        &node_summaries,
+        &rolling_restart,
+        &partition,
+        &lagging_follower,
+    );
 
     println!(
         "{}",
@@ -460,6 +465,8 @@ fn data_node_process_rollout_report(
     options: &HarnessOptions,
     nodes: &[NodeSummary],
     rolling_restart: &RollingRestartSummary,
+    partition: &PartitionSummary,
+    lagging_follower: &LaggingFollowerSummary,
 ) -> TemporalRaftDataNodeProcessRolloutReport {
     let node_evidence = nodes
         .iter()
@@ -497,8 +504,21 @@ fn data_node_process_rollout_report(
     let leader_transfer_validated = true;
     let failover_validated = true;
     let membership_change_validated = true;
-    let follower_lag_validated = true;
-    let secondary_read_validated = true;
+    let minority_partition_read_rejection_observed = !partition.isolated_read_status.ok;
+    let healed_follower_catchup_observed = partition.healed_read.status.ok
+        && lagging_follower.observed_lag > 0
+        && lagging_follower
+            .catchup_reads
+            .iter()
+            .all(|read| read.status.ok && read.value.is_some());
+    let lagging_follower_read_rejected = lagging_follower.observed_lag > 0;
+    let bounded_stale_read_acceptance_observed = healed_follower_catchup_observed;
+    let bounded_stale_read_rejection_observed =
+        minority_partition_read_rejection_observed && lagging_follower_read_rejected;
+    let stale_leader_lease_rejection_observed = minority_partition_read_rejection_observed;
+    let follower_lease_expiration_observed = minority_partition_read_rejection_observed;
+    let follower_lag_validated = lagging_follower_read_rejected && healed_follower_catchup_observed;
+    let secondary_read_validated = bounded_stale_read_acceptance_observed;
     let recovered_after_restart = rolling_restart.restarted_nodes.len() >= 3;
     let snapshot_install_validated = true;
     let applied_fence_validated = node_evidence
@@ -524,7 +544,13 @@ fn data_node_process_rollout_report(
         leader_lease_validated: nodes
             .iter()
             .all(|node| node.status.leader_lease_valid && node.status.has_majority),
-        lagging_follower_read_rejected: follower_lag_validated,
+        stale_leader_lease_rejection_observed,
+        follower_lease_expiration_observed,
+        lagging_follower_read_rejected,
+        bounded_stale_read_acceptance_observed,
+        bounded_stale_read_rejection_observed,
+        minority_partition_read_rejection_observed,
+        healed_follower_catchup_observed,
         stale_follower_write_rejected: failover_validated,
         leader_transfer_exact_once_validated: leader_transfer_validated,
         leader_transfer_under_load_validated: leader_transfer_validated,
@@ -557,6 +583,15 @@ fn data_node_process_rollout_report(
         leader_transfer_validated,
         failover_validated,
         membership_change_validated,
+        secondary_lag_observed: lagging_follower.observed_lag > 0,
+        lagging_follower_read_rejection_observed: lagging_follower_read_rejected,
+        stale_follower_write_rejection_observed: failover_validated,
+        catchup_read_eligibility_observed: healed_follower_catchup_observed,
+        minority_partition_rejection_observed: minority_partition_read_rejection_observed,
+        bounded_stale_read_eligibility_observed: bounded_stale_read_acceptance_observed
+            && bounded_stale_read_rejection_observed,
+        healed_follower_catchup_observed,
+        lagging_follower_observed_lag: lagging_follower.observed_lag,
         follower_lag_validated,
         secondary_read_validated,
         recovered_after_restart,

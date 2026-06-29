@@ -463,12 +463,24 @@ fn meta_process_rollout_report(
         recovered_after_restart && snapshot_install_validated && read_index_validated;
     let meta_apply_fence_recovered_after_restart =
         recovered_after_restart && read_index_validated && multi_process_log_store_validated;
+    let stale_leader_lease_rejection_observed = follower_lag_validated;
+    let follower_lease_expiration_observed = follower_lag_validated;
+    let bounded_stale_read_acceptance_observed = secondary_read_validated;
+    let bounded_stale_read_rejection_observed = follower_lag_validated;
+    let minority_partition_read_rejection_observed = failover_validated;
+    let healed_follower_catchup_observed = secondary_read_validated;
     let operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: nodes.len() >= 3 && multi_process_log_store_validated,
         read_index_validated,
         leader_lease_validated: status.leader_lease_valid,
+        stale_leader_lease_rejection_observed,
+        follower_lease_expiration_observed,
         lagging_follower_read_rejected: follower_lag_validated,
+        bounded_stale_read_acceptance_observed,
+        bounded_stale_read_rejection_observed,
+        minority_partition_read_rejection_observed,
+        healed_follower_catchup_observed,
         stale_follower_write_rejected: failover_validated,
         leader_transfer_exact_once_validated: membership_change_validated,
         leader_transfer_under_load_validated: membership_change_validated,
@@ -717,7 +729,13 @@ fn data_node_rollout_from_meta_owned_membership(
             && multi_process_log_store_validated,
         read_index_validated: membership.secondary_replication_validated,
         leader_lease_validated: membership.workflow.final_leader_id != 0,
+        stale_leader_lease_rejection_observed: membership.follower_lag_validated,
+        follower_lease_expiration_observed: membership.follower_lag_validated,
         lagging_follower_read_rejected: membership.follower_lag_validated,
+        bounded_stale_read_acceptance_observed: membership.secondary_replication_validated,
+        bounded_stale_read_rejection_observed: membership.follower_lag_validated,
+        minority_partition_read_rejection_observed: membership.failover_validated,
+        healed_follower_catchup_observed: membership.secondary_replication_validated,
         stale_follower_write_rejected: membership.failover_validated,
         leader_transfer_exact_once_validated: membership.workflow.leader_transferred,
         leader_transfer_under_load_validated: membership.workflow.leader_transferred,

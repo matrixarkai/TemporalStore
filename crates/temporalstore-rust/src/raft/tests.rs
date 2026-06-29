@@ -2347,7 +2347,13 @@ fn ready_temporal_raft_operational_semantics() -> TemporalRaftProcessOperational
         process_path_validated: true,
         read_index_validated: true,
         leader_lease_validated: true,
+        stale_leader_lease_rejection_observed: true,
+        follower_lease_expiration_observed: true,
         lagging_follower_read_rejected: true,
+        bounded_stale_read_acceptance_observed: true,
+        bounded_stale_read_rejection_observed: true,
+        minority_partition_read_rejection_observed: true,
+        healed_follower_catchup_observed: true,
         stale_follower_write_rejected: true,
         leader_transfer_exact_once_validated: true,
         leader_transfer_under_load_validated: true,
@@ -2382,6 +2388,14 @@ fn ready_data_node_temporal_raft_rollout_report() -> TemporalRaftDataNodeProcess
         leader_transfer_validated: true,
         failover_validated: true,
         membership_change_validated: true,
+        secondary_lag_observed: true,
+        lagging_follower_read_rejection_observed: true,
+        stale_follower_write_rejection_observed: true,
+        catchup_read_eligibility_observed: true,
+        minority_partition_rejection_observed: true,
+        bounded_stale_read_eligibility_observed: true,
+        healed_follower_catchup_observed: true,
+        lagging_follower_observed_lag: 1,
         follower_lag_validated: true,
         secondary_read_validated: true,
         recovered_after_restart: true,
@@ -2414,6 +2428,11 @@ fn ready_meta_temporal_raft_rollout_report() -> TemporalRaftMetaProcessRolloutRe
         scheduler_retries: 1,
         stale_scheduler_token_rejected: true,
         data_node_membership_results_ready: true,
+        scheduler_mutations_proposed_through_process_api: true,
+        scheduler_task_replay_from_raft_log_observed: true,
+        membership_mutations_proposed_through_process_api: true,
+        data_node_membership_workflow_report_attached: true,
+        data_node_raft_group_results_observed: true,
         failover_validated: true,
         membership_change_validated: true,
         follower_lag_validated: true,
@@ -2541,6 +2560,24 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .leader_lease_validated = false;
     missing_read_safety
         .operational_semantics
+        .stale_leader_lease_rejection_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .follower_lease_expiration_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .bounded_stale_read_acceptance_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .bounded_stale_read_rejection_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .minority_partition_read_rejection_observed = false;
+    missing_read_safety
+        .operational_semantics
+        .healed_follower_catchup_observed = false;
+    missing_read_safety
+        .operational_semantics
         .stale_follower_write_rejected = false;
     missing_read_safety
         .operational_semantics
@@ -2582,6 +2619,22 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("leader_lease_validated")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("stale_leader_lease_rejection_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("bounded_stale_read_rejection_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("minority_partition_read_rejection_observed")));
+    assert!(rejected_read_safety
+        .missing
+        .iter()
+        .any(|item| item.contains("healed_follower_catchup_observed")));
     assert!(rejected_read_safety
         .missing
         .iter()
@@ -5616,6 +5669,15 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         scale_down_validated: true,
         secondary_replication_validated: true,
         networked_process_api_used: true,
+        scheduler_process_api_calls_observed: 5,
+        data_node_membership_apply_process_api_calls_observed: 5,
+        data_node_raft_group_process_nodes_observed: 3,
+        data_node_raft_group_commit_indexes_observed: vec![9, 9, 9],
+        learner_add_process_api_observed: true,
+        catchup_verification_process_api_observed: true,
+        promote_process_api_observed: true,
+        leader_transfer_process_api_observed: true,
+        voter_remove_process_api_observed: true,
         scheduler_generation_token_coupling_observed: true,
         stale_generation_rejection_observed: true,
         membership_generation_replayed_from_meta_raft: true,

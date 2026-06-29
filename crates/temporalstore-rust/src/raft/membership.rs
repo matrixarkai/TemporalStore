@@ -103,7 +103,19 @@ pub struct TemporalRaftProcessOperationalSemanticsEvidence {
     #[serde(default)]
     pub leader_lease_validated: bool,
     #[serde(default)]
+    pub stale_leader_lease_rejection_observed: bool,
+    #[serde(default)]
+    pub follower_lease_expiration_observed: bool,
+    #[serde(default)]
     pub lagging_follower_read_rejected: bool,
+    #[serde(default)]
+    pub bounded_stale_read_acceptance_observed: bool,
+    #[serde(default)]
+    pub bounded_stale_read_rejection_observed: bool,
+    #[serde(default)]
+    pub minority_partition_read_rejection_observed: bool,
+    #[serde(default)]
+    pub healed_follower_catchup_observed: bool,
     #[serde(default)]
     pub stale_follower_write_rejected: bool,
     #[serde(default)]
@@ -148,7 +160,13 @@ impl TemporalRaftProcessOperationalSemanticsEvidence {
             && self.process_path_validated
             && self.read_index_validated
             && self.leader_lease_validated
+            && self.stale_leader_lease_rejection_observed
+            && self.follower_lease_expiration_observed
             && self.lagging_follower_read_rejected
+            && self.bounded_stale_read_acceptance_observed
+            && self.bounded_stale_read_rejection_observed
+            && self.minority_partition_read_rejection_observed
+            && self.healed_follower_catchup_observed
             && self.stale_follower_write_rejected
             && self.leader_transfer_exact_once_validated
             && self.leader_transfer_under_load_validated
@@ -178,8 +196,32 @@ impl TemporalRaftProcessOperationalSemanticsEvidence {
             (self.read_index_validated, "read_index_validated"),
             (self.leader_lease_validated, "leader_lease_validated"),
             (
+                self.stale_leader_lease_rejection_observed,
+                "stale_leader_lease_rejection_observed",
+            ),
+            (
+                self.follower_lease_expiration_observed,
+                "follower_lease_expiration_observed",
+            ),
+            (
                 self.lagging_follower_read_rejected,
                 "lagging_follower_read_rejected",
+            ),
+            (
+                self.bounded_stale_read_acceptance_observed,
+                "bounded_stale_read_acceptance_observed",
+            ),
+            (
+                self.bounded_stale_read_rejection_observed,
+                "bounded_stale_read_rejection_observed",
+            ),
+            (
+                self.minority_partition_read_rejection_observed,
+                "minority_partition_read_rejection_observed",
+            ),
+            (
+                self.healed_follower_catchup_observed,
+                "healed_follower_catchup_observed",
             ),
             (
                 self.stale_follower_write_rejected,

@@ -4620,7 +4620,7 @@
       "steps": [
         {
           "command": {
-            "description": "RustRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
+            "description": "RustRaft-derived read safety case: process evidence must observe read-index success, stale leader lease rejection, follower lease expiration, lagging follower read rejection, bounded-stale accept/reject, minority partition read rejection, healed follower catch-up, and secondary read eligibility.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
