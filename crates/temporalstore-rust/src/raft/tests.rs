@@ -11,6 +11,41 @@ use crate::types::{Command, FeatureFilter, FeatureFilterOp, FeaturePoint, Sequen
 use std::time::{Duration, Instant};
 
 #[test]
+fn byteraft_parity_contract_is_library_consumable_and_openraft_free() {
+    let contract = byteraft_parity_contract();
+    assert!(contract.openraft_dependency_removed);
+    assert_eq!(
+        contract.consensus_backend_boundary,
+        "temporalstore_rust::raft::DataRaftConsensusBackend"
+    );
+    assert!(contract
+        .requirements
+        .iter()
+        .any(|requirement| requirement.id == "leader_write_authority"));
+    assert!(contract
+        .requirements
+        .iter()
+        .all(|requirement| requirement.required_for_production));
+
+    let cargo_toml = include_str!("../../../Cargo.toml").to_ascii_lowercase();
+    assert!(!cargo_toml.contains("openraft"));
+}
+
+#[test]
+fn byteraft_parity_report_tracks_distributed_readiness_fields() {
+    let readiness = distributed_raft_readiness();
+    let report = byteraft_parity_report(&readiness);
+    assert!(report.contract.openraft_dependency_removed);
+    assert!(report.satisfied.contains(&"leader_write_authority".to_string()));
+    assert!(report.satisfied.contains(&"snapshot_tail_catchup".to_string()));
+    assert!(report
+        .satisfied
+        .contains(&"metaserver_membership_workflow".to_string()));
+    assert!(report.missing.is_empty(), "missing: {:?}", report.missing);
+    assert!(report.ready);
+}
+
+#[test]
 fn data_raft_log_codec_round_trips_cxx_style_header() {
     let entry = DataRaftLogCodecEntry {
         shard_id: 7,
