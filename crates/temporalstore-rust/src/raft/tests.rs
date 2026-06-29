@@ -3620,6 +3620,136 @@ fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat
     );
 }
 
+// shared-corpus: raft_rustraft_read_lease_fault_matrix
+// shared-corpus: raft_rustraft_packet_loss_fault_harness
+#[test]
+fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            lease_duration_ms: 10,
+            enable_pre_vote: true,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "read-safety".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "read-safety".to_string(),
+            value: b"v2".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+    assert_eq!(
+        cluster.read_index(3),
+        Err(RaftError::ReplicaLagging {
+            replica_id: 3,
+            replica_commit_index: 1,
+            leader_commit_index: 2,
+        })
+    );
+    assert_eq!(
+        cluster.check_data_raft_read_policy(
+            3,
+            DataRaftReadPolicy {
+                mode: DataRaftReadMode::BoundedStale,
+                bounded_stale_max_index_lag: 0,
+                ..DataRaftReadPolicy::default()
+            },
+        ),
+        Err(RaftError::ReplicaLagging {
+            replica_id: 3,
+            replica_commit_index: 1,
+            leader_commit_index: 2,
+        })
+    );
+    assert!(cluster
+        .check_data_raft_read_policy(
+            3,
+            DataRaftReadPolicy {
+                mode: DataRaftReadMode::BoundedStale,
+                bounded_stale_max_index_lag: 1,
+                ..DataRaftReadPolicy::default()
+            },
+        )
+        .is_ok());
+
+    cluster.set_alive(2, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    assert_eq!(cluster.read_index(1), Err(RaftError::LeaderUnavailable));
+    assert_eq!(
+        cluster.propose(Command::StringSet {
+            key: "read-safety".to_string(),
+            value: b"minority-write".to_vec(),
+        }),
+        Err(RaftError::LeaderUnavailable)
+    );
+
+    cluster.set_alive(2, true).unwrap();
+    cluster.set_alive(3, true).unwrap();
+    assert_eq!(
+        cluster.tick_election().unwrap(),
+        RaftTickOutcome::LeaderAlive { leader_id: 1 }
+    );
+    cluster.catch_up(3).unwrap();
+    assert!(cluster.read_index(3).is_ok());
+    assert!(cluster
+        .check_data_raft_read_policy(
+            3,
+            DataRaftReadPolicy {
+                mode: DataRaftReadMode::BoundedStale,
+                bounded_stale_max_index_lag: 0,
+                ..DataRaftReadPolicy::default()
+            },
+        )
+        .is_ok());
+    cluster
+        .propose(Command::StringSet {
+            key: "read-safety".to_string(),
+            value: b"v3".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "read-safety".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"v3".to_vec())
+        }
+    );
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.stale_follower_read_rejected);
+    assert!(admin.stale_follower_write_rejected);
+    assert!(admin.stale_leader_lease_rejected);
+    assert!(admin.lagging_follower_read_rejected);
+    assert!(admin.bounded_stale_read_accepted);
+    assert!(admin.bounded_stale_read_rejected);
+    assert!(admin.minority_partition_rejected_reads);
+    assert!(admin.minority_partition_rejected_writes);
+    assert!(admin.healed_follower_caught_up);
+    assert!(admin.read_index_requests >= 3);
+    assert!(admin.read_index_rejected >= 2);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "lease_read_index_pre_vote_semantics" && item.ready));
+}
+
 #[test]
 fn raft_config_matches_cpp_defaults_and_validates_required_limits() {
     let config = RaftConfig::default();
