@@ -189,6 +189,16 @@ def read_records(path: Path) -> list[Json]:
     return records
 
 
+def latest_by_key(records: list[Json], key_fields: list[str]) -> list[Json]:
+    latest: dict[tuple[Any, ...], Json] = {}
+    for record in records:
+        key = tuple(record.get(field) for field in key_fields)
+        existing = latest.get(key)
+        if existing is None or int(record.get("updated_at_ms") or 0) >= int(existing.get("updated_at_ms") or 0):
+            latest[key] = record
+    return list(latest.values())
+
+
 def node_tree(records: list[Json]) -> list[Json]:
     nodes_by_hash: dict[int, Json] = {}
     for record in records:
@@ -316,16 +326,24 @@ def write_outputs(
     for record in records:
         by_type[str(record.get("record_type", "unknown"))].append(record)
 
+    current_embedding_records = latest_by_key(
+        by_type["context_embedding"],
+        ["embedding_type", "ref_type", "ref_hash"],
+    )
+    model_counts = Counter(str(record.get("model") or "default") for record in current_embedding_records)
+    embedding_models = [
+        {"model": model, "embedding_count": count}
+        for model, count in sorted(model_counts.items(), key=lambda item: (-item[1], item[0]))
+    ]
     embeddings = [
         {
             "embedding_type": record.get("embedding_type"),
             "ref_type": record.get("ref_type"),
             "ref_hash": record.get("ref_hash"),
             "node_path": record.get("node_path"),
-            "model": record.get("model"),
             **vector_preview(record),
         }
-        for record in by_type["context_embedding"]
+        for record in current_embedding_records
     ]
     summary_policy_rows = [
         {
@@ -438,7 +456,9 @@ def write_outputs(
         "",
         "## Embeddings",
         "",
-        markdown_table(embeddings, ["embedding_type", "ref_type", "ref_hash", "model", "dim", "preview"], limit=120),
+        markdown_table(embedding_models, ["model", "embedding_count"], limit=20),
+        "",
+        markdown_table(embeddings, ["embedding_type", "ref_type", "ref_hash", "dim", "preview"], limit=120),
         "",
         "## Secondary Indexes",
         "",
@@ -539,7 +559,8 @@ def write_outputs(
     <section class="section"><h2>Extracted Entities</h2>{records_table(by_type['context_entity'], ['entity_hash', 'node_path', 'entity_type', 'entity_name', 'operator', 'state', 'source_chunk_hash', 'resource_hash', 'source_locator'])}</section>
     <section class="section"><h2>Summaries</h2>{records_table(by_type['context_summary'], ['summary_type', 'summary_hash', 'node_path', 'summary_generation_policy.reason', 'summary_text', 'source_chunk_hashes'])}</section>
     <section class="section"><h2>Node L0/L1 Generation Policy</h2>{records_table(summary_policy_rows, ['node_path', 'generated_summary_types', 'l1_policy.generate_l1', 'l1_policy.reason', 'l1_policy.token_estimate', 'source_event_count', 'source_summary_count'])}</section>
-    <section class="section"><h2>Embeddings</h2>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'model', 'dim', 'preview'])}</section>
+    <section class="section"><h2>Embedding Models</h2>{records_table(embedding_models, ['model', 'embedding_count'])}</section>
+    <section class="section"><h2>Embeddings</h2><p class="muted">Latest serving embedding per embedding_type/ref_type/ref_hash. Historical refresh rows stay in audit/debug logs.</p>{records_table(embeddings, ['embedding_type', 'ref_type', 'ref_hash', 'dim', 'preview'])}</section>
     <section class="section"><h2>Secondary Indexes</h2>{records_table(by_type['context_index'], ['index_name', 'ref_type', 'ref_hash', 'chunk_hash', 'node_path'])}</section>
     <section class="section"><h2>Retrieval Scan And ContextPack</h2><p class="muted">Query understanding runs first, then scope and secondary-index filters, then ContextNode L0/L1 summary embeddings choose the folders. MatrixArk fetches leaf segments, events, entities, resource chunks, and skill sections from selected nodes before final packing.</p><pre>{html.escape(json.dumps(retrieve_result, indent=2, sort_keys=True)[:60000])}</pre></section>
     <section class="section"><h2>Replay</h2><pre>{html.escape(json.dumps(replay_result, indent=2, sort_keys=True)[:30000])}</pre></section>
