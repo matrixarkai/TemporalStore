@@ -2755,6 +2755,13 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     let semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests: 3,
         read_index_responses_observed: 3,
+        read_index_and_lease_evidence_observed: true,
+        stale_leader_lease_rejected: true,
+        lagging_follower_read_rejected: true,
+        stale_follower_write_rejected: true,
+        bounded_stale_reads_observed: true,
+        minority_partition_rejected: true,
+        healed_follower_catchup_observed: true,
         per_peer_pipeline_state_observed: true,
         append_pipeline_state_observed: true,
         snapshot_lifecycle_observed: true,
@@ -2814,6 +2821,34 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["read_index_and_lease_evidence_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["stale_leader_lease_rejected"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["lagging_follower_read_rejected"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["stale_follower_write_rejected"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["minority_partition_rejected"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["healed_follower_catchup_observed"],
         true
     );
     assert_eq!(json["byteraft_process_semantics"]["ready"], true);

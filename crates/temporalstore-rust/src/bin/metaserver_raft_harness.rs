@@ -477,9 +477,21 @@ fn meta_process_rollout_report(
     let voter_count = voters.len();
     let observed_process_requests = read_index.max(1);
     let read_index_responses_observed = u64::from(read_index_validated);
+    let read_index_and_lease_evidence_observed = read_index_validated
+        && status
+            .nodes
+            .iter()
+            .all(|node| node.applied_index >= read_index);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
+        read_index_and_lease_evidence_observed,
+        stale_leader_lease_rejected: false,
+        lagging_follower_read_rejected: false,
+        stale_follower_write_rejected: false,
+        bounded_stale_reads_observed: false,
+        minority_partition_rejected: false,
+        healed_follower_catchup_observed: false,
         per_peer_pipeline_state_observed: nodes.len() >= 3
             && nodes
                 .iter()
@@ -493,12 +505,16 @@ fn meta_process_rollout_report(
         secondary_lag_observed: read_index_validated && scheduler_task_replay_validated,
         ready: observed_process_requests > 0
             && read_index_responses_observed > 0
+            && read_index_and_lease_evidence_observed
             && per_node_log_store_inspection_count >= voter_count
             && snapshot_install_validated
             && recovered_after_restart
             && scheduler_task_replay_validated,
         blockers: Vec::new(),
     };
+    if !byteraft_process_semantics.read_index_and_lease_evidence_observed {
+        blockers.push("metaserver_process_read_index_lease_evidence_missing".to_string());
+    }
     if !byteraft_process_semantics.ready {
         blockers.push("byteraft_process_semantics_missing".to_string());
     }

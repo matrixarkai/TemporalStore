@@ -153,8 +153,10 @@ rate limiting, membership-change snapshot evidence, compacted-log rejoin evidenc
 rejection counters, including rejection of concurrent snapshot send attempts for the same peer.
 Membership-role fields include witness quorum participation without data service, learner read service
 without quorum participation, auto-promoted learner evidence, and pending joint-consensus state in
-local-status reports. Read-safety fields include read-index, lease-read, and pre-vote request/accept/reject
-counters. Rust now also validates that configured in-flight append entry/byte limits reject
+local-status reports. Read-safety fields include read-index, lease-read, stale leader lease
+rejection, lagging follower read rejection, stale follower write rejection, bounded stale
+accept/reject decisions, minority partition rejection, healed follower catch-up, and pre-vote
+request/accept/reject counters. Rust now also validates that configured in-flight append entry/byte limits reject
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
 
@@ -163,7 +165,8 @@ WAL restore.
 shared gate enforces production-distributed mode, rejects `LocalModel`, requires OpenRaft
 data-node/metaserver process startup selectors, and validates ByteRaft-derived process-path
 evidence for per-peer pipeline state, reorder queues, read-index/lease safety, stale follower write
-rejection, minority partition rejection, chunked snapshot retry/backpressure/progress/rollback,
+rejection, stale leader lease rejection, lagging follower read rejection, bounded stale read
+evidence, minority partition rejection, healed follower catch-up, chunked snapshot retry/backpressure/progress/rollback,
 compacted-log rejoin, WAL segment lifecycle, learner auto-promotion, witness membership, pending
 joint consensus, and admin/status surface coverage. It still fails closed on the broader durable
 multi-process rollout blockers until spawned-process evidence with independent WAL/snapshot dirs is

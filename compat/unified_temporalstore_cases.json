@@ -4178,7 +4178,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, per-node log-store inspection evidence, and ByteRaft-derived process semantics for per-peer pipeline state, snapshot lifecycle, WAL lifecycle, failover, membership, and secondary lag where applicable.",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, per-node log-store inspection evidence, and ByteRaft-derived process semantics for per-peer pipeline state, snapshot lifecycle, WAL lifecycle, stale leader lease rejection, lagging follower read rejection, stale follower write rejection, bounded-stale reads, minority rejection, healed follower catch-up, failover, membership, and secondary lag where applicable.",
             "kind": "raft_openraft_process_path_default_gate",
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
@@ -5245,7 +5245,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200

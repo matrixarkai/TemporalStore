@@ -430,8 +430,15 @@ fn main() {
         writes.len() as u64,
     );
 
-    let openraft_process_rollout =
-        data_node_process_rollout_report(&options, &node_summaries, &rolling_restart);
+    let openraft_process_rollout = data_node_process_rollout_report(
+        &options,
+        &node_summaries,
+        &rolling_restart,
+        &partition,
+        &lagging_follower,
+        &network_vote,
+        failover.status.ok,
+    );
 
     println!(
         "{}",
@@ -461,6 +468,10 @@ fn data_node_process_rollout_report(
     options: &HarnessOptions,
     nodes: &[NodeSummary],
     rolling_restart: &RollingRestartSummary,
+    partition: &PartitionSummary,
+    lagging_follower: &LaggingFollowerSummary,
+    network_vote: &NetworkVoteSummary,
+    failover_validated: bool,
 ) -> OpenRaftDataNodeProcessRolloutReport {
     let node_evidence = nodes
         .iter()
@@ -538,9 +549,38 @@ fn data_node_process_rollout_report(
     let voter_count = voters.len();
     let observed_process_requests = spawned_process_count as u64;
     let read_index_responses_observed = voter_count as u64;
+    let read_index_and_lease_evidence_observed = read_index_responses_observed
+        >= voter_count as u64
+        && nodes
+            .iter()
+            .all(|node| node.status.has_majority && node.status.leader_lease_valid);
+    let stale_leader_lease_rejected = network_vote
+        .stale_response
+        .reject_reason
+        .as_deref()
+        .is_some_and(|reason| reason.contains("stale"));
+    let lagging_follower_read_rejected = lagging_follower.observed_lag > 0;
+    let stale_follower_write_rejected = !partition.isolated_read_status.ok;
+    let bounded_stale_reads_observed = lagging_follower
+        .catchup_reads
+        .iter()
+        .all(|read| read.status.ok);
+    let minority_partition_rejected = !partition.isolated_read_status.ok;
+    let healed_follower_catchup_observed = partition.healed_read.status.ok
+        && lagging_follower
+            .catchup_reads
+            .iter()
+            .all(|read| read.status.ok);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
+        read_index_and_lease_evidence_observed,
+        stale_leader_lease_rejected,
+        lagging_follower_read_rejected,
+        stale_follower_write_rejected,
+        bounded_stale_reads_observed,
+        minority_partition_rejected,
+        healed_follower_catchup_observed,
         per_peer_pipeline_state_observed: node_evidence.len() >= 3
             && node_evidence
                 .iter()
@@ -551,17 +591,59 @@ fn data_node_process_rollout_report(
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         restart_recovery_observed: recovered_after_restart,
-        failover_observed: true,
+        failover_observed: failover_validated,
         membership_change_observed: spawned_process_count >= 3,
         secondary_lag_observed: rolling_restart.restarted_nodes.len() >= 1,
         ready: observed_process_requests >= voter_count as u64
             && read_index_responses_observed >= voter_count as u64
+            && read_index_and_lease_evidence_observed
+            && stale_leader_lease_rejected
+            && lagging_follower_read_rejected
+            && stale_follower_write_rejected
+            && bounded_stale_reads_observed
+            && minority_partition_rejected
+            && healed_follower_catchup_observed
             && per_node_log_store_inspection_count >= voter_count
             && recovered_after_restart
+            && failover_validated
             && snapshot_install_validated
             && applied_fence_validated,
         blockers: Vec::new(),
     };
+    for (ready, blocker) in [
+        (
+            byteraft_process_semantics.read_index_and_lease_evidence_observed,
+            "process_read_index_lease_evidence_missing",
+        ),
+        (
+            byteraft_process_semantics.stale_leader_lease_rejected,
+            "process_stale_leader_lease_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.lagging_follower_read_rejected,
+            "process_lagging_follower_read_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.stale_follower_write_rejected,
+            "process_stale_follower_write_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.bounded_stale_reads_observed,
+            "process_bounded_stale_read_evidence_missing",
+        ),
+        (
+            byteraft_process_semantics.minority_partition_rejected,
+            "process_minority_partition_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.healed_follower_catchup_observed,
+            "process_healed_follower_catchup_missing",
+        ),
+    ] {
+        if !ready {
+            blockers.push(blocker.to_string());
+        }
+    }
     if !byteraft_process_semantics.ready {
         blockers.push("byteraft_process_semantics_missing".to_string());
     }
@@ -579,7 +661,7 @@ fn data_node_process_rollout_report(
         per_node_log_store_inspection_count,
         write_proposed_through_process_api,
         leader_transfer_validated: true,
-        failover_validated: true,
+        failover_validated,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
