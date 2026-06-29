@@ -3285,6 +3285,89 @@ fn raft_prevote_rejects_candidate_without_quorum() {
         RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
     );
     assert_eq!(cluster.leader_id(), 1);
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert_eq!(admin.pre_vote_requests, 1);
+    assert_eq!(admin.pre_vote_rejected, 1);
+    assert!(admin.pre_vote_process_evidence_observed);
+    assert!(admin
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 2 && peer.pre_vote_rejections == 1));
+    assert!(admin
+        .blockers
+        .contains(&"election_prohibition_evidence_missing".to_string()));
+}
+
+// shared-corpus: raft_rustraft_election_controls
+#[test]
+fn raft_election_controls_record_prohibition_offline_and_transfer_timeouts() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            election_cycle_tick: 1,
+            enable_pre_vote: true,
+            prohibits_election: true,
+            offline_timeout_tick: 5,
+            transfer_timeout_tick: 5,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.add_learner_with_auto_promote(4, true).unwrap();
+
+    cluster.set_alive(1, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    assert_eq!(
+        cluster.tick_election().unwrap(),
+        RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
+    );
+    cluster.set_alive(1, true).unwrap();
+    assert_eq!(cluster.elect_leader(4), Err(RaftError::ElectionProhibited));
+    cluster.advance_time_ms(6);
+    cluster.begin_leader_transfer(4).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "transfer-timeout-under-load".to_string(),
+            value: b"committed-on-old-leader".to_vec(),
+        })
+        .unwrap();
+    cluster.advance_time_ms(6);
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.pre_vote_enforced);
+    assert!(admin.election_prohibition_observed);
+    assert!(admin.offline_timeout_observed);
+    assert!(admin.transfer_timeout_observed);
+    assert!(admin.election_controls_enforced);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "pre_vote_election_transfer_controls" && item.ready));
+    assert!(admin
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 3 && peer.offline_timeout_reached));
+    assert!(admin
+        .peer_pipeline_states
+        .iter()
+        .any(|peer| peer.peer_id == 4
+            && peer.auto_promoted_from_learner
+            && peer.election_rejections > 0
+            && peer.transfer_leader_timeouts > 0));
+    assert_eq!(
+        cluster
+            .read_local(
+                1,
+                Command::StringGet {
+                    key: "transfer-timeout-under-load".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"committed-on-old-leader".to_vec())
+        }
+    );
 }
 
 #[test]
