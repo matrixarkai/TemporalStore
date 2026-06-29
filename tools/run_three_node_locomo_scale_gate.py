@@ -184,7 +184,7 @@ def main() -> int:
     locomo = load_json(locomo_report)
     backend = load_json(locomo_backend)
     shared_store = scale.get("shared_store") or {}
-    rollout = secondary.get("openraft_process_rollout") or {}
+    rollout = secondary.get("temporal_raft_process_rollout") or secondary.get("openraft_process_rollout") or {}
     max_async_lag = (
         args.max_async_shared_store_lag
         if args.max_async_shared_store_lag is not None
@@ -207,7 +207,7 @@ def main() -> int:
         blockers,
     )
     require((secondary.get("failover") or {}).get("status", {}).get("ok") is True, "secondary failover failed", blockers)
-    require(rollout.get("ready") is True, "OpenRaft process rollout was not ready", blockers)
+    require(rollout.get("ready") is True, "TemporalRaft process rollout was not ready", blockers)
     require(rollout.get("multi_process_log_store_validated") is True, "multi-process log store not validated", blockers)
     require(rollout.get("restart_recovery_validated") is True, "restart recovery not validated", blockers)
     require(rollout.get("applied_fence_validated") is True, "applied fence not validated", blockers)
@@ -270,7 +270,7 @@ def main() -> int:
             "restarted_secondary": secondary.get("restarted_secondary"),
             "lagging_follower": secondary.get("lagging_follower"),
             "failover_status": (secondary.get("failover") or {}).get("status"),
-            "openraft_process_rollout": rollout,
+            "temporal_raft_process_rollout": rollout,
             "partition": secondary.get("partition"),
         },
         "shared_store": {

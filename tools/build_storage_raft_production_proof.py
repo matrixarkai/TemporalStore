@@ -68,7 +68,10 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             raft_summary.get("data_node", {}).get("follower_write_rejected"),
             raft_summary.get("data_node", {}).get("leader_crash_failover_ok"),
             raft_summary.get("data_node", {}).get("partition_isolated_read_rejected"),
-            raft_summary.get("metaserver", {}).get("openraft_process_rollout", {}).get("ready"),
+            (
+                raft_summary.get("metaserver", {}).get("temporal_raft_process_rollout")
+                or raft_summary.get("metaserver", {}).get("openraft_process_rollout", {})
+            ).get("ready"),
             raft_summary.get("metaserver", {})
             .get("meta_owned_data_raft_membership", {})
             .get("ready"),
@@ -87,15 +90,16 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
     )
 
     evidence = {
-        "openraft_process_rollout": {
+        "temporal_raft_process_rollout": {
             "ready": raft_ready,
             "source": "raft-distributed-parity.json",
             "data_node_majority": raft_summary.get("data_node", {}).get(
                 "distributed_all_nodes_have_majority"
             ),
             "metaserver_rollout": raft_summary.get("metaserver", {}).get(
-                "openraft_process_rollout"
-            ),
+                "temporal_raft_process_rollout"
+            )
+            or raft_summary.get("metaserver", {}).get("openraft_process_rollout"),
         },
         "byteraft_derived_semantics": {
             "ready": raft_ready,
@@ -113,7 +117,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
         "local_raft_fixture_policy": {
             "ready": True,
             "local_raft_fixture_test_only": True,
-            "production_readiness_source": "OpenRaft multi-process harness evidence only",
+            "production_readiness_source": "TemporalRaft multi-process harness evidence only",
             "blocked_runtime_mode": "LocalModel",
         },
         "storage_format_compatibility": {

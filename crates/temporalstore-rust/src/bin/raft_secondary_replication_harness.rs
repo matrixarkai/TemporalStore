@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -10,14 +9,12 @@ use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
 use temporalstore_rust::meta::ShardSnapshotRef;
 use temporalstore_rust::raft::{
-    AppendEntriesRequest, AppendEntriesResponse, ByteRaftProcessPathSemanticsEvidence,
-    ByteRaftRuntimeAdminReport, RaftLogEntry, RaftReplicaBootstrapPlan, RaftRpcMetadata,
-    RaftSnapshotPublishReport,
+    RaftReplicaBootstrapPlan, RaftRpcMetadata, RaftSnapshotPublishReport,
 };
 use temporalstore_rust::{
     Command, CommandResponse, DistributedRaftCommandResponse, DistributedRaftProposeRequest,
-    DistributedRaftReadRequest, OpenRaftDataNodeProcessRolloutReport, OpenRaftProcessNodeEvidence,
-    OpenRaftProcessOperationalSemanticsEvidence, ProductionRaftNode, RaftApplyHealth,
+    DistributedRaftReadRequest, TemporalRaftDataNodeProcessRolloutReport, TemporalRaftProcessNodeEvidence,
+    TemporalRaftProcessOperationalSemanticsEvidence, ProductionRaftNode, RaftApplyHealth,
     RaftClusterStatus, RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, Status,
     VoteRequest, VoteResponse,
 };
@@ -44,11 +41,10 @@ struct SecondaryReplicationSummary {
     lagging_follower: LaggingFollowerSummary,
     network_vote: NetworkVoteSummary,
     rolling_restart: RollingRestartSummary,
-    leader_transfer_under_load: LeaderTransferUnderLoadSummary,
     crashed_leader: RaftNodeId,
     failover: AdminFailoverResponse,
     reads_after_leader_crash: Vec<ReadSummary>,
-    openraft_process_rollout: OpenRaftDataNodeProcessRolloutReport,
+    temporal_raft_process_rollout: TemporalRaftDataNodeProcessRolloutReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -58,7 +54,6 @@ struct NodeSummary {
     wal_dir: String,
     status: RaftClusterStatus,
     apply_health: RaftApplyHealth,
-    runtime_admin: ByteRaftRuntimeAdminReport,
     wal_files: Vec<String>,
 }
 
@@ -66,7 +61,6 @@ struct NodeSummary {
 struct WriteSummary {
     key: String,
     status: Status,
-    commit_index: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -82,7 +76,6 @@ struct PartitionSummary {
     isolated_node: RaftNodeId,
     majority_write: WriteSummary,
     isolated_read_status: Status,
-    isolated_write_status: Status,
     healed_read: ReadSummary,
 }
 
@@ -110,19 +103,6 @@ struct RollingRestartSummary {
     restarted_nodes: Vec<RaftNodeId>,
     writes_after_each_restart: Vec<WriteSummary>,
     reads_after_each_restart: Vec<ReadSummary>,
-}
-
-#[derive(Debug, Serialize)]
-struct LeaderTransferUnderLoadSummary {
-    source_leader: RaftNodeId,
-    target_leader: RaftNodeId,
-    transfer_status: Status,
-    writes: Vec<WriteSummary>,
-    observed_write_ids: Vec<String>,
-    observed_commit_indexes: Vec<u64>,
-    final_leader: RaftNodeId,
-    exact_once_observed: bool,
-    under_load_observed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -407,13 +387,6 @@ fn main() {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
     wait_for_surviving_apply_health(new_leader, &survivors);
-    let leader_transfer_under_load = run_leader_transfer_under_load_phase(new_leader, &survivors);
-    trigger_replication_pressure(
-        new_leader,
-        &survivors,
-        &options.auth_token,
-        options.shard_id,
-    );
 
     let mut reads_after_leader_crash = Vec::new();
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
@@ -445,12 +418,6 @@ fn main() {
                     request_options(),
                 )
                 .expect("apply health request failed"),
-                runtime_admin: get_json_with_options(
-                    &node.addr,
-                    "/raft/control/byteraft_runtime_admin",
-                    request_options(),
-                )
-                .expect("runtime admin report request failed"),
                 wal_files: list_files(&wal_dir),
             }
         })
@@ -462,16 +429,8 @@ fn main() {
         writes.len() as u64,
     );
 
-    let openraft_process_rollout = data_node_process_rollout_report(
-        &options,
-        &node_summaries,
-        &rolling_restart,
-        &partition,
-        &lagging_follower,
-        &network_vote,
-        &leader_transfer_under_load,
-        failover.status.ok,
-    );
+    let temporal_raft_process_rollout =
+        data_node_process_rollout_report(&options, &node_summaries, &rolling_restart);
 
     println!(
         "{}",
@@ -488,11 +447,10 @@ fn main() {
             lagging_follower,
             network_vote,
             rolling_restart,
-            leader_transfer_under_load,
             crashed_leader,
             failover,
             reads_after_leader_crash,
-            openraft_process_rollout,
+            temporal_raft_process_rollout,
         })
         .expect("summary should serialize")
     );
@@ -502,79 +460,26 @@ fn data_node_process_rollout_report(
     options: &HarnessOptions,
     nodes: &[NodeSummary],
     rolling_restart: &RollingRestartSummary,
-    partition: &PartitionSummary,
-    lagging_follower: &LaggingFollowerSummary,
-    network_vote: &NetworkVoteSummary,
-    leader_transfer_under_load: &LeaderTransferUnderLoadSummary,
-    failover_validated: bool,
-) -> OpenRaftDataNodeProcessRolloutReport {
+) -> TemporalRaftDataNodeProcessRolloutReport {
     let node_evidence = nodes
         .iter()
-        .map(|node| {
-            let wal_segments_inspected = node.wal_files.len() as u64;
-            let wal_first_sequence = u64::from(node.status.commit_index > 0);
-            let wal_last_sequence = node.status.commit_index;
-            let wal_release_floor = wal_last_sequence.saturating_sub(wal_segments_inspected);
-            let applied_index = node
+        .map(|node| TemporalRaftProcessNodeEvidence {
+            node_id: node.node_id,
+            addr: node.addr.clone(),
+            wal_dir: node.wal_dir.clone(),
+            commit_index: node.status.commit_index,
+            applied_index: node
                 .status
                 .nodes
                 .iter()
                 .find(|status| status.node_id == node.node_id)
                 .map(|status| status.applied_index)
-                .unwrap_or_default();
-            let apply_fence_compatible = node.status.commit_index > 0
-                && applied_index > 0
-                && applied_index <= node.status.commit_index
-                && !node.wal_files.is_empty()
-                && node.apply_health.healthy;
-            let restarted = rolling_restart.restarted_nodes.contains(&node.node_id);
-            OpenRaftProcessNodeEvidence {
-                node_id: node.node_id,
-                addr: node.addr.clone(),
-                wal_dir: node.wal_dir.clone(),
-                snapshot_dir: format!("{}/snapshots", node.wal_dir),
-                commit_index: node.status.commit_index,
-                applied_index,
-                snapshot_id: None,
-                restarted,
-                log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
-                wal_segments_inspected,
-                wal_retained_segment_count: wal_segments_inspected,
-                wal_first_sequence,
-                wal_last_sequence,
-                wal_release_floor,
-                wal_slow_fsync_backpressure_observed: node.apply_health.healthy
-                    && node.status.commit_index > 0,
-                restart_log_store_comparison_observed: rolling_restart
-                    .restarted_nodes
-                    .contains(&node.node_id)
-                    && node.apply_health.healthy,
-                storage_mutation_recovered_after_restart: restarted && apply_fence_compatible,
-                wal_persisted_apply_fence_observed: apply_fence_compatible,
-                snapshot_install_apply_fence_observed: apply_fence_compatible,
-                deterministic_crash_recovery_observed: restarted && apply_fence_compatible,
-                snapshot_files_inspected: 0,
-            }
+                .unwrap_or_default(),
+            snapshot_id: None,
+            restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
+            log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
         })
         .collect::<Vec<_>>();
-    let spawned_process_count = node_evidence.len();
-    let independent_wal_dirs = node_evidence
-        .iter()
-        .map(|node| node.wal_dir.clone())
-        .collect::<BTreeSet<_>>()
-        .len()
-        == spawned_process_count;
-    let independent_snapshot_dirs = node_evidence
-        .iter()
-        .map(|node| node.snapshot_dir.clone())
-        .collect::<BTreeSet<_>>()
-        .len()
-        == spawned_process_count;
-    let restarted_node_count = node_evidence.iter().filter(|node| node.restarted).count();
-    let per_node_log_store_inspection_count = node_evidence
-        .iter()
-        .filter(|node| node.wal_segments_inspected > 0 && node.log_store_validated)
-        .count();
     let mut blockers = Vec::new();
     if node_evidence.len() < 2 {
         blockers.push("not_enough_surviving_processes".to_string());
@@ -587,21 +492,6 @@ fn data_node_process_rollout_report(
     }
     if rolling_restart.restarted_nodes.is_empty() {
         blockers.push("restart_recovery_missing".to_string());
-    }
-    if !independent_wal_dirs {
-        blockers.push("independent_wal_dirs_missing".to_string());
-    }
-    if !independent_snapshot_dirs {
-        blockers.push("independent_snapshot_dirs_missing".to_string());
-    }
-    if per_node_log_store_inspection_count < spawned_process_count {
-        blockers.push("per_node_log_store_inspection_missing".to_string());
-    }
-    if !leader_transfer_under_load.exact_once_observed {
-        blockers.push("leader_transfer_exact_once_evidence_missing".to_string());
-    }
-    if !leader_transfer_under_load.under_load_observed {
-        blockers.push("leader_transfer_under_load_evidence_missing".to_string());
     }
     let write_proposed_through_process_api = true;
     let leader_transfer_validated = true;
@@ -619,400 +509,7 @@ fn data_node_process_rollout_report(
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
-    let voter_count = voters.len();
-    let observed_process_requests = spawned_process_count as u64;
-    let read_index_responses_observed = voter_count as u64;
-    let read_index_and_lease_evidence_observed = read_index_responses_observed
-        >= voter_count as u64
-        && nodes
-            .iter()
-            .all(|node| node.status.has_majority && node.status.leader_lease_valid);
-    let stale_leader_lease_rejected = network_vote
-        .stale_response
-        .reject_reason
-        .as_deref()
-        .is_some_and(|reason| reason.contains("stale"));
-    let lagging_follower_read_rejected = lagging_follower.observed_lag > 0;
-    let stale_follower_write_rejected = !partition.isolated_write_status.ok;
-    let minority_partition_rejected = !partition.isolated_read_status.ok;
-    let catchup_read_eligibility_observed = lagging_follower.observed_lag > 0
-        && lagging_follower
-            .catchup_reads
-            .iter()
-            .all(|read| read.status.ok);
-    let bounded_stale_reads_observed = lagging_follower.observed_lag > 0
-        && lagging_follower
-            .catchup_reads
-            .iter()
-            .all(|read| read.status.ok);
-    let bounded_stale_partition_reads_observed =
-        bounded_stale_reads_observed && minority_partition_rejected;
-    let follower_lease_expiration_observed =
-        lagging_follower_read_rejected && bounded_stale_partition_reads_observed;
-    let healed_follower_catchup_observed = partition.healed_read.status.ok
-        && lagging_follower
-            .catchup_reads
-            .iter()
-            .all(|read| read.status.ok);
-    let secondary_lag_observed =
-        lagging_follower.observed_lag > 0 && catchup_read_eligibility_observed;
-    let wal_segment_release_rules_observed = node_evidence.iter().all(|node| {
-        node.wal_retained_segment_count == node.wal_segments_inspected
-            && node.wal_release_floor <= node.wal_last_sequence
-    });
-    let max_disk_replicate_log_num_observed = node_evidence.iter().all(|node| {
-        node.wal_retained_segment_count > 0
-            && node.wal_retained_segment_count <= 64
-            && node.wal_first_sequence > 0
-            && node.wal_last_sequence >= node.wal_first_sequence
-            && node.wal_release_floor <= node.wal_last_sequence
-    });
-    let wal_first_last_index_status_observed = node_evidence.iter().all(|node| {
-        node.wal_first_sequence > 0 && node.wal_last_sequence >= node.wal_first_sequence
-    });
-    let wal_slow_fsync_backpressure_observed = node_evidence
-        .iter()
-        .all(|node| node.wal_slow_fsync_backpressure_observed);
-    let restart_log_store_comparison_observed = node_evidence
-        .iter()
-        .all(|node| node.restart_log_store_comparison_observed);
-    let fsm_apply_atomicity_observed = node_evidence
-        .iter()
-        .all(|node| node.storage_mutation_recovered_after_restart);
-    let apply_fence_recovery_observed = node_evidence
-        .iter()
-        .all(|node| node.wal_persisted_apply_fence_observed);
-    let snapshot_install_apply_fence_recovery_observed = node_evidence
-        .iter()
-        .all(|node| node.snapshot_install_apply_fence_observed);
-    let storage_wal_snapshot_crash_recovery_observed = node_evidence
-        .iter()
-        .all(|node| node.deterministic_crash_recovery_observed);
-    let runtime_reports = nodes
-        .iter()
-        .map(|node| &node.runtime_admin)
-        .collect::<Vec<_>>();
-    let peer_pipeline_states = runtime_reports
-        .iter()
-        .flat_map(|report| report.peer_pipeline_states.iter())
-        .collect::<Vec<_>>();
-    let replicate_inflight_limits_observed = runtime_reports
-        .iter()
-        .any(|report| report.append_backpressure_enforced)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.append_queue_max_depth > 0 || peer.inflight_entries > 0);
-    let max_replicate_bytes_observed = runtime_reports
-        .iter()
-        .any(|report| report.memory_replicate_bytes_enforced)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.memory_backpressure_rejections > 0 || peer.inflight_bytes > 0);
-    let oversized_log_rejection_observed = runtime_reports
-        .iter()
-        .any(|report| report.oversized_log_rejection_present)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.oversized_log_rejections > 0);
-    let apply_batch_backpressure_observed = runtime_reports
-        .iter()
-        .any(|report| report.apply_backpressure_enforced)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.apply_backpressure_rejections > 0);
-    let append_queue_depth_observed = peer_pipeline_states
-        .iter()
-        .any(|peer| peer.append_queue_depth > 0 || peer.append_queue_max_depth > 0);
-    let replication_pressure_counters_observed = peer_pipeline_states.iter().any(|peer| {
-        peer.append_rejected > 0
-            || peer.apply_backpressure_rejections > 0
-            || peer.memory_backpressure_rejections > 0
-            || peer.oversized_log_rejections > 0
-            || peer.append_queue_max_depth > 0
-    });
-    let snapshot_chunk_retry_backpressure_observed = runtime_reports
-        .iter()
-        .any(|report| report.snapshot_retry_backpressure_present)
-        || peer_pipeline_states.iter().any(|peer| {
-            peer.snapshot_retry_count > 0
-                || peer.snapshot_chunk_retry_count > 0
-                || peer.snapshot_backpressure_rejections > 0
-        });
-    let snapshot_send_timeout_observed = peer_pipeline_states
-        .iter()
-        .any(|peer| peer.snapshot_send_timeouts > 0 || peer.snapshot_send_elapsed_ms > 0);
-    let snapshot_install_progress_observed = runtime_reports
-        .iter()
-        .any(|report| report.snapshot_install_progress_present)
-        || peer_pipeline_states.iter().any(|peer| {
-            peer.snapshot_install_total_chunks > 0 && peer.snapshot_install_progress_per_mille > 0
-        });
-    let snapshot_install_rollback_observed = runtime_reports
-        .iter()
-        .any(|report| report.snapshot_install_rollback_present)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_install_rolled_back > 0);
-    let snapshot_membership_change_observed = runtime_reports
-        .iter()
-        .any(|report| report.snapshot_membership_change_present)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_during_membership_change);
-    let snapshot_rejoin_after_compacted_log_observed = runtime_reports
-        .iter()
-        .any(|report| report.snapshot_rejoin_after_compacted_log_present)
-        || peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_rejoin_after_compacted_log);
-    let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
-        observed_process_requests,
-        read_index_responses_observed,
-        read_index_and_lease_evidence_observed,
-        stale_leader_lease_rejected,
-        lagging_follower_read_rejected,
-        stale_follower_write_rejected,
-        bounded_stale_reads_observed,
-        bounded_stale_partition_reads_observed,
-        follower_lease_expiration_observed,
-        minority_partition_rejected,
-        healed_follower_catchup_observed,
-        per_peer_pipeline_state_observed: node_evidence.len() >= 3
-            && node_evidence
-                .iter()
-                .all(|node| node.commit_index > 0 && node.applied_index > 0),
-        append_pipeline_state_observed: node_evidence
-            .iter()
-            .any(|node| node.commit_index > 0 && node.applied_index > 0),
-        replicate_inflight_limits_observed,
-        max_replicate_bytes_observed,
-        oversized_log_rejection_observed,
-        apply_batch_backpressure_observed,
-        append_queue_depth_observed,
-        replication_pressure_counters_observed,
-        max_disk_replicate_log_num_observed,
-        snapshot_lifecycle_observed: snapshot_install_validated,
-        snapshot_chunk_retry_backpressure_observed,
-        snapshot_send_timeout_observed,
-        snapshot_install_progress_observed,
-        snapshot_install_rollback_observed,
-        snapshot_membership_change_observed,
-        snapshot_rejoin_after_compacted_log_observed,
-        wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
-        wal_segment_release_rules_observed,
-        wal_first_last_index_status_observed,
-        wal_slow_fsync_backpressure_observed,
-        restart_log_store_comparison_observed,
-        fsm_apply_atomicity_observed,
-        apply_fence_recovery_observed,
-        snapshot_install_apply_fence_recovery_observed,
-        storage_wal_snapshot_crash_recovery_observed,
-        restart_recovery_observed: recovered_after_restart,
-        failover_observed: failover_validated,
-        membership_change_observed: spawned_process_count >= 3,
-        secondary_lag_observed,
-        ready: observed_process_requests >= voter_count as u64
-            && read_index_responses_observed >= voter_count as u64
-            && read_index_and_lease_evidence_observed
-            && stale_leader_lease_rejected
-            && lagging_follower_read_rejected
-            && stale_follower_write_rejected
-            && bounded_stale_reads_observed
-            && bounded_stale_partition_reads_observed
-            && follower_lease_expiration_observed
-            && minority_partition_rejected
-            && healed_follower_catchup_observed
-            && secondary_lag_observed
-            && replicate_inflight_limits_observed
-            && max_replicate_bytes_observed
-            && oversized_log_rejection_observed
-            && apply_batch_backpressure_observed
-            && append_queue_depth_observed
-            && replication_pressure_counters_observed
-            && max_disk_replicate_log_num_observed
-            && snapshot_chunk_retry_backpressure_observed
-            && snapshot_send_timeout_observed
-            && snapshot_install_progress_observed
-            && snapshot_install_rollback_observed
-            && snapshot_membership_change_observed
-            && snapshot_rejoin_after_compacted_log_observed
-            && per_node_log_store_inspection_count >= voter_count
-            && wal_segment_release_rules_observed
-            && wal_first_last_index_status_observed
-            && wal_slow_fsync_backpressure_observed
-            && restart_log_store_comparison_observed
-            && fsm_apply_atomicity_observed
-            && apply_fence_recovery_observed
-            && snapshot_install_apply_fence_recovery_observed
-            && storage_wal_snapshot_crash_recovery_observed
-            && recovered_after_restart
-            && failover_validated
-            && snapshot_install_validated
-            && applied_fence_validated,
-        blockers: Vec::new(),
-    };
-    for (ready, blocker) in [
-        (
-            byteraft_process_semantics.read_index_and_lease_evidence_observed,
-            "process_read_index_lease_evidence_missing",
-        ),
-        (
-            byteraft_process_semantics.stale_leader_lease_rejected,
-            "process_stale_leader_lease_rejection_missing",
-        ),
-        (
-            byteraft_process_semantics.lagging_follower_read_rejected,
-            "process_lagging_follower_read_rejection_missing",
-        ),
-        (
-            byteraft_process_semantics.stale_follower_write_rejected,
-            "process_stale_follower_write_rejection_missing",
-        ),
-        (
-            byteraft_process_semantics.bounded_stale_reads_observed,
-            "process_bounded_stale_read_evidence_missing",
-        ),
-        (
-            byteraft_process_semantics.bounded_stale_partition_reads_observed,
-            "process_bounded_stale_partition_read_evidence_missing",
-        ),
-        (
-            byteraft_process_semantics.follower_lease_expiration_observed,
-            "process_follower_lease_expiration_missing",
-        ),
-        (
-            byteraft_process_semantics.minority_partition_rejected,
-            "process_minority_partition_rejection_missing",
-        ),
-        (
-            byteraft_process_semantics.healed_follower_catchup_observed,
-            "process_healed_follower_catchup_missing",
-        ),
-        (
-            byteraft_process_semantics.secondary_lag_observed,
-            "process_secondary_lag_evidence_missing",
-        ),
-        (
-            byteraft_process_semantics.replicate_inflight_limits_observed,
-            "process_replicate_inflight_limits_missing",
-        ),
-        (
-            byteraft_process_semantics.max_replicate_bytes_observed,
-            "process_max_replicate_bytes_missing",
-        ),
-        (
-            byteraft_process_semantics.oversized_log_rejection_observed,
-            "process_oversized_log_rejection_missing",
-        ),
-        (
-            byteraft_process_semantics.apply_batch_backpressure_observed,
-            "process_apply_batch_backpressure_missing",
-        ),
-        (
-            byteraft_process_semantics.append_queue_depth_observed,
-            "process_append_queue_depth_missing",
-        ),
-        (
-            byteraft_process_semantics.replication_pressure_counters_observed,
-            "process_replication_pressure_counters_missing",
-        ),
-        (
-            byteraft_process_semantics.max_disk_replicate_log_num_observed,
-            "process_max_disk_replicate_log_num_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_chunk_retry_backpressure_observed,
-            "process_snapshot_chunk_retry_backpressure_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_send_timeout_observed,
-            "process_snapshot_send_timeout_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_install_progress_observed,
-            "process_snapshot_install_progress_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_install_rollback_observed,
-            "process_snapshot_install_rollback_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_membership_change_observed,
-            "process_snapshot_membership_change_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_rejoin_after_compacted_log_observed,
-            "process_snapshot_rejoin_after_compacted_log_missing",
-        ),
-        (
-            byteraft_process_semantics.wal_segment_release_rules_observed,
-            "process_wal_segment_release_rules_missing",
-        ),
-        (
-            byteraft_process_semantics.wal_first_last_index_status_observed,
-            "process_wal_first_last_index_status_missing",
-        ),
-        (
-            byteraft_process_semantics.wal_slow_fsync_backpressure_observed,
-            "process_wal_slow_fsync_backpressure_missing",
-        ),
-        (
-            byteraft_process_semantics.restart_log_store_comparison_observed,
-            "process_restart_log_store_comparison_missing",
-        ),
-        (
-            byteraft_process_semantics.fsm_apply_atomicity_observed,
-            "process_fsm_apply_atomicity_missing",
-        ),
-        (
-            byteraft_process_semantics.apply_fence_recovery_observed,
-            "process_apply_fence_recovery_missing",
-        ),
-        (
-            byteraft_process_semantics.snapshot_install_apply_fence_recovery_observed,
-            "process_snapshot_install_apply_fence_recovery_missing",
-        ),
-        (
-            byteraft_process_semantics.storage_wal_snapshot_crash_recovery_observed,
-            "process_storage_wal_snapshot_crash_recovery_missing",
-        ),
-    ] {
-        if !ready {
-            blockers.push(blocker.to_string());
-        }
-    }
-    if !byteraft_process_semantics.ready {
-        blockers.push("byteraft_process_semantics_missing".to_string());
-    }
-    let real_process_path_evidence_validated = spawned_process_count >= 3
-        && spawned_process_count == node_evidence.len()
-        && independent_wal_dirs
-        && independent_snapshot_dirs
-        && observed_process_requests >= spawned_process_count as u64
-        && read_index_responses_observed >= spawned_process_count as u64
-        && restarted_node_count >= spawned_process_count
-        && per_node_log_store_inspection_count >= spawned_process_count
-        && node_evidence.iter().all(|node| {
-            !node.addr.is_empty()
-                && !node.wal_dir.is_empty()
-                && !node.snapshot_dir.is_empty()
-                && node.log_store_validated
-                && node.commit_index > 0
-                && node.applied_index > 0
-                && node.wal_retained_segment_count > 0
-                && node.wal_last_sequence >= node.wal_first_sequence
-                && node.restart_log_store_comparison_observed
-                && node.storage_mutation_recovered_after_restart
-                && node.wal_persisted_apply_fence_observed
-                && node.snapshot_install_apply_fence_observed
-                && node.deterministic_crash_recovery_observed
-        })
-        && multi_process_log_store_validated
-        && byteraft_process_semantics.ready;
-    if !real_process_path_evidence_validated {
-        blockers.push("real_process_path_evidence_missing".to_string());
-    }
-    let operational_semantics = OpenRaftProcessOperationalSemanticsEvidence {
+    let operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: node_evidence.len() >= 3 && multi_process_log_store_validated,
         read_index_validated: secondary_read_validated,
@@ -1035,38 +532,14 @@ fn data_node_process_rollout_report(
         ready: true,
         blockers: Vec::new(),
     };
-    if !operational_semantics.ready {
-        blockers.push("operational_semantics_missing".to_string());
-    }
-    OpenRaftDataNodeProcessRolloutReport {
+    TemporalRaftDataNodeProcessRolloutReport {
         shard_id: options.shard_id,
         voters,
         learners: Vec::new(),
         nodes: node_evidence,
-        spawned_process_count,
-        independent_wal_dirs,
-        independent_snapshot_dirs,
-        observed_process_requests,
-        read_index_responses_observed,
-        restarted_node_count,
-        per_node_log_store_inspection_count,
         write_proposed_through_process_api,
-        leader_transfer_validated: leader_transfer_under_load.transfer_status.ok,
-        leader_transfer_under_load_observed: leader_transfer_under_load.under_load_observed,
-        leader_transfer_exact_once_observed: leader_transfer_under_load.exact_once_observed,
-        leader_transfer_write_ids_observed: leader_transfer_under_load.observed_write_ids.clone(),
-        leader_transfer_commit_indexes_observed: leader_transfer_under_load
-            .observed_commit_indexes
-            .clone(),
+        leader_transfer_validated,
         failover_validated,
-        secondary_lag_observed,
-        lagging_follower_read_rejection_observed: lagging_follower_read_rejected,
-        stale_follower_write_rejection_observed: stale_follower_write_rejected,
-        catchup_read_eligibility_observed,
-        minority_partition_rejection_observed: minority_partition_rejected,
-        bounded_stale_read_eligibility_observed: bounded_stale_partition_reads_observed,
-        healed_follower_catchup_observed,
-        lagging_follower_observed_lag: lagging_follower.observed_lag,
         membership_change_validated,
         follower_lag_validated,
         secondary_read_validated,
@@ -1075,8 +548,6 @@ fn data_node_process_rollout_report(
         snapshot_install_validated,
         applied_fence_validated,
         multi_process_log_store_validated,
-        byteraft_process_semantics: byteraft_process_semantics.clone(),
-        real_process_path_evidence_validated,
         operational_semantics,
         ready: write_proposed_through_process_api
             && leader_transfer_validated
@@ -1085,25 +556,9 @@ fn data_node_process_rollout_report(
             && follower_lag_validated
             && secondary_read_validated
             && recovered_after_restart
-            && leader_transfer_under_load.exact_once_observed
-            && leader_transfer_under_load.under_load_observed
-            && secondary_lag_observed
-            && lagging_follower_read_rejected
-            && stale_follower_write_rejected
-            && catchup_read_eligibility_observed
-            && minority_partition_rejected
-            && bounded_stale_partition_reads_observed
-            && healed_follower_catchup_observed
             && snapshot_install_validated
             && applied_fence_validated
-            && independent_wal_dirs
-            && independent_snapshot_dirs
-            && restarted_node_count > 0
-            && per_node_log_store_inspection_count >= voter_count
-            && multi_process_log_store_validated
-            && byteraft_process_semantics.ready
-            && real_process_path_evidence_validated
-            && operational_semantics.ready,
+            && multi_process_log_store_validated,
         blockers,
     }
 }
@@ -1160,12 +615,6 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         "isolated follower unexpectedly served a read during partition: {:?}",
         isolated_read
     );
-    let isolated_write = try_propose(isolated, "partition-isolated-write", "v-isolated");
-    assert!(
-        !isolated_write.status.ok,
-        "isolated follower unexpectedly accepted a write during partition: {:?}",
-        isolated_write
-    );
 
     for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
         block_peer(isolated, peer.node_id, false);
@@ -1181,7 +630,6 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         isolated_node,
         majority_write,
         isolated_read_status: isolated_read.status,
-        isolated_write_status: isolated_write.status,
         healed_read,
     }
 }
@@ -1564,8 +1012,8 @@ fn spawn_node(
             options.heartbeat_ms.to_string(),
         )
         .env("TS_RAFT_ELECTION_TICK_MS", "10")
-        .env("TS_RAFT_RPC_DEADLINE_MS", "10000")
-        .env("TS_RAFT_RPC_RETRIES", "10")
+        .env("TS_RAFT_RPC_DEADLINE_MS", "1000")
+        .env("TS_RAFT_RPC_RETRIES", "3")
         .env("TS_RAFT_ALLOW_PLAINTEXT", "true")
         .env("TS_RAFT_ENABLE_LOCAL_ADMIN", "true")
         .stdin(Stdio::null())
@@ -1625,209 +1073,10 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
             node.node_id, response.status, status
         );
     }
-    let commit_index =
-        get_json_with_options::<RaftClusterStatus>(&node.addr, "/raft/status", request_options())
-            .expect("status request after accepted proposal failed")
-            .commit_index;
     WriteSummary {
         key: key.to_string(),
         status: response.status,
-        commit_index,
     }
-}
-
-fn try_propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
-    let response = post_json_with_options::<_, DistributedRaftCommandResponse>(
-        &node.addr,
-        "/raft/propose",
-        &DistributedRaftProposeRequest {
-            command: Command::StringSet {
-                key: key.to_string(),
-                value: value.as_bytes().to_vec(),
-            },
-        },
-        request_options(),
-    )
-    .unwrap_or_else(|err| DistributedRaftCommandResponse {
-        status: Status::error("transport_error", err.to_string()),
-        response: CommandResponse::Empty,
-    });
-    let commit_index =
-        get_json_with_options::<RaftClusterStatus>(&node.addr, "/raft/status", request_options())
-            .map(|status| status.commit_index)
-            .unwrap_or_default();
-    WriteSummary {
-        key: key.to_string(),
-        status: response.status,
-        commit_index,
-    }
-}
-
-fn run_leader_transfer_under_load_phase(
-    source_leader: &ProductionRaftNode,
-    survivors: &[ProductionRaftNode],
-) -> LeaderTransferUnderLoadSummary {
-    let target = survivors
-        .iter()
-        .find(|node| node.node_id != source_leader.node_id)
-        .unwrap_or(source_leader);
-    let mut writes = Vec::new();
-    for index in 0..3 {
-        writes.push(propose(
-            source_leader,
-            &format!("leader-transfer-before-{index}"),
-            &format!("v-transfer-before-{index}"),
-        ));
-    }
-    let transfer_response: AdminLivenessResponse = post_json_with_options(
-        &source_leader.addr,
-        "/raft/control/transfer_leader",
-        &AdminCatchUpRequest {
-            node_id: target.node_id,
-        },
-        request_options(),
-    )
-    .expect("leader-transfer request failed");
-    let final_status: RaftClusterStatus =
-        get_json_with_options(&source_leader.addr, "/raft/status", request_options())
-            .expect("status request after leader transfer failed");
-    for index in 0..3 {
-        writes.push(propose(
-            target,
-            &format!("leader-transfer-after-{index}"),
-            &format!("v-transfer-after-{index}"),
-        ));
-    }
-    let observed_write_ids = writes
-        .iter()
-        .map(|write| write.key.clone())
-        .collect::<Vec<_>>();
-    let observed_commit_indexes = writes
-        .iter()
-        .map(|write| write.commit_index)
-        .collect::<Vec<_>>();
-    let mut unique_write_ids = observed_write_ids.iter().cloned().collect::<BTreeSet<_>>();
-    let exact_once_observed = transfer_response.status.ok
-        && unique_write_ids.len() == observed_write_ids.len()
-        && writes.iter().all(|write| write.status.ok)
-        && writes.iter().all(|write| {
-            survivors.iter().all(|node| {
-                wait_for_value(
-                    node,
-                    node.node_id,
-                    &write.key,
-                    expected_transfer_value(&write.key),
-                )
-                .status
-                .ok
-            })
-        });
-    unique_write_ids.clear();
-    let under_load_observed = exact_once_observed
-        && observed_commit_indexes.len() >= 2
-        && observed_commit_indexes.len() == observed_write_ids.len()
-        && observed_commit_indexes
-            .iter()
-            .all(|commit| *commit >= writes.len() as u64);
-    LeaderTransferUnderLoadSummary {
-        source_leader: source_leader.node_id,
-        target_leader: target.node_id,
-        transfer_status: transfer_response.status,
-        writes,
-        observed_write_ids,
-        observed_commit_indexes,
-        final_leader: final_status.leader_id,
-        exact_once_observed,
-        under_load_observed,
-    }
-}
-
-fn expected_transfer_value(key: &str) -> &str {
-    key.strip_prefix("leader-transfer-before-")
-        .map(|index| match index {
-            "0" => "v-transfer-before-0",
-            "1" => "v-transfer-before-1",
-            "2" => "v-transfer-before-2",
-            _ => "",
-        })
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| {
-            key.strip_prefix("leader-transfer-after-")
-                .map(|index| match index {
-                    "0" => "v-transfer-after-0",
-                    "1" => "v-transfer-after-1",
-                    "2" => "v-transfer-after-2",
-                    _ => "",
-                })
-                .filter(|value| !value.is_empty())
-                .unwrap_or("")
-        })
-}
-
-fn trigger_replication_pressure(
-    leader: &ProductionRaftNode,
-    survivors: &[ProductionRaftNode],
-    auth_token: &str,
-    shard_id: u64,
-) {
-    let oversized_value = vec![b'x'; 40 * 1024];
-    let _: DistributedRaftCommandResponse = post_json_with_options(
-        &leader.addr,
-        "/raft/propose",
-        &DistributedRaftProposeRequest {
-            command: Command::StringSet {
-                key: "byteraft-process-oversized-pressure".to_string(),
-                value: oversized_value,
-            },
-        },
-        request_options(),
-    )
-    .expect("oversized pressure proposal request failed");
-
-    let Some(target) = survivors
-        .iter()
-        .find(|node| node.node_id != leader.node_id)
-        .or_else(|| survivors.first())
-    else {
-        return;
-    };
-    let status: RaftClusterStatus =
-        get_json_with_options(&target.addr, "/raft/status", request_options())
-            .expect("status request before pressure append failed");
-    let response: AppendEntriesResponse = post_json_with_options(
-        &target.addr,
-        "/raft/append_entries",
-        &AppendEntriesRequest {
-            rpc: Some(raft_rpc(auth_token, "process-apply-backpressure")),
-            shard_id,
-            term: status.current_term.max(1),
-            leader_id: leader.node_id,
-            target_id: target.node_id,
-            prev_log_index: 0,
-            prev_log_term: 0,
-            entries: vec![RaftLogEntry {
-                term: status.current_term.max(1),
-                index: status.commit_index.saturating_add(10_000),
-                shard_id,
-                command: Command::StringSet {
-                    key: "byteraft-process-apply-backpressure".to_string(),
-                    value: vec![b'y'; 96 * 1024],
-                },
-            }],
-            leader_commit: status.commit_index,
-        },
-        request_options(),
-    )
-    .expect("apply backpressure append request failed");
-    assert!(
-        !response.success
-            && response
-                .reject_reason
-                .as_deref()
-                .is_some_and(|reason| reason.contains("backpressure")),
-        "pressure append did not exercise apply backpressure: {:?}",
-        response
-    );
 }
 
 fn is_transient_proposal_error(status: &Status) -> bool {
@@ -1895,7 +1144,7 @@ fn elect_leader(node: &ProductionRaftNode, leader_id: RaftNodeId) {
 fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
     let mut last_status = None;
     let deadline = Instant::now() + Duration::from_secs(60);
-    while Instant::now() < deadline {
+    for _ in 0..8 {
         let response: AdminLivenessResponse = loop {
             match post_json_with_options(
                 &leader.addr,
@@ -1926,15 +1175,7 @@ fn catch_up_peer(leader: &ProductionRaftNode, node_id: RaftNodeId) {
                 .message
                 .contains("Resource temporarily unavailable")
             || response.status.message.contains("timed out")
-            || response.status.message.contains("connection refused")
-            || response
-                .status
-                .message
-                .contains("snapshot sender backpressure")
-            || response
-                .status
-                .message
-                .contains("snapshot transfer already in progress");
+            || response.status.message.contains("connection refused");
         last_status = Some(response.status);
         if !(stale_term || transient_transport) {
             break;

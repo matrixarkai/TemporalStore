@@ -1826,7 +1826,7 @@ fn env_bool(name: &str, default: bool) -> bool {
 
 fn runtime_options_from_env() -> ProductionMetaRaftRuntimeOptions {
     ProductionMetaRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: env_u64("TS_META_RAFT_NODE_ID", 1),
         nodes: parse_meta_raft_nodes(),
         config: RaftConfig::default(),
@@ -2502,7 +2502,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let snapshot_path = dir.path().join("meta-raft-route-snapshot.json");
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![
                 ProductionRaftNode {
@@ -2626,7 +2626,7 @@ mod tests {
         assert_eq!(servers.servers[0].state, MetaEntityState::Normal);
 
         let restored_runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![
                 ProductionRaftNode {
@@ -3702,7 +3702,7 @@ mod tests {
     #[test]
     fn raft_backed_metaserver_scheduler_drives_lifecycle_workflow() {
         let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             local_node_id: 1,
             nodes: vec![
                 ProductionRaftNode {

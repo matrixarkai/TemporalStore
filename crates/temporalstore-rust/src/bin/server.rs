@@ -1275,7 +1275,7 @@ fn start_server_raft_from_env(
         env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
     );
     let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: raft_shard_id,
         local_node_id,
         nodes,
@@ -5073,7 +5073,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 1,
             local_node_id,
             nodes,

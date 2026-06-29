@@ -214,8 +214,8 @@ AREAS: tuple[ParityArea, ...] = (
             RustEvidence(
                 "crates/temporalstore-rust/src/raft/tests.rs",
                 (
-                    "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
-                    "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+                    "temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+                    "temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
                     "backend.campaign",
                 ),
             ),
@@ -243,7 +243,7 @@ AREAS: tuple[ParityArea, ...] = (
                 "crates/temporalstore-rust/src/raft/tests.rs",
                 (
                     "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
-                    "openraft_metaserver_backend_supports_membership_and_bounded_reads",
+                    "temporal_raft_metaserver_backend_supports_membership_and_bounded_reads",
                     "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
                 ),
             ),

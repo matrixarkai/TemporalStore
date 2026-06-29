@@ -37,8 +37,8 @@ AREAS: tuple[ReadinessArea, ...] = (
                 "crates/temporalstore-rust/src/raft.rs",
                 (
                     "RaftDeploymentMode::ProductionDistributed",
-                    "openraft_data_node_process_startup_present",
-                    "openraft_metaserver_process_startup_present",
+                    "temporal_raft_data_node_process_startup_present",
+                    "temporal_raft_metaserver_process_startup_present",
                     "local Raft deployment mode is disabled",
                     "local_raft_deployment_mode_is_rejected",
                     "distributed_raft_readiness_reports_remaining_production_blockers",
@@ -138,8 +138,8 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "metaserver_owns_data_raft_membership_workflow",
                     "metaserver_membership_workflow_requires_meta_majority",
                     "metaserver_membership_workflow_present",
-                    "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
-                    "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+                    "temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+                    "temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
                 ),
             ),
             Evidence(
