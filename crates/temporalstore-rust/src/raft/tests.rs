@@ -2951,6 +2951,14 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         ],
         leader_transfer_commit_indexes_observed: vec![1, 2, 3, 4, 5, 6],
         failover_validated: true,
+        secondary_lag_observed: true,
+        lagging_follower_read_rejection_observed: true,
+        stale_follower_write_rejection_observed: true,
+        catchup_read_eligibility_observed: true,
+        minority_partition_rejection_observed: true,
+        bounded_stale_read_eligibility_observed: true,
+        healed_follower_catchup_observed: true,
+        lagging_follower_observed_lag: 3,
         recovered_after_restart: true,
         restart_recovery_validated: true,
         snapshot_install_validated: true,
@@ -3090,6 +3098,14 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         json["byteraft_process_semantics"]["stale_follower_write_rejected"],
         true
     );
+    assert_eq!(json["secondary_lag_observed"], true);
+    assert_eq!(json["lagging_follower_read_rejection_observed"], true);
+    assert_eq!(json["stale_follower_write_rejection_observed"], true);
+    assert_eq!(json["catchup_read_eligibility_observed"], true);
+    assert_eq!(json["minority_partition_rejection_observed"], true);
+    assert_eq!(json["bounded_stale_read_eligibility_observed"], true);
+    assert_eq!(json["healed_follower_catchup_observed"], true);
+    assert_eq!(json["lagging_follower_observed_lag"], 3);
     assert_eq!(
         json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
         true

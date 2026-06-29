@@ -81,6 +81,7 @@ struct PartitionSummary {
     isolated_node: RaftNodeId,
     majority_write: WriteSummary,
     isolated_read_status: Status,
+    isolated_write_status: Status,
     healed_read: ReadSummary,
 }
 
@@ -626,12 +627,18 @@ fn data_node_process_rollout_report(
         .as_deref()
         .is_some_and(|reason| reason.contains("stale"));
     let lagging_follower_read_rejected = lagging_follower.observed_lag > 0;
-    let stale_follower_write_rejected = !partition.isolated_read_status.ok;
+    let stale_follower_write_rejected = !partition.isolated_write_status.ok;
     let minority_partition_rejected = !partition.isolated_read_status.ok;
-    let bounded_stale_reads_observed = lagging_follower
-        .catchup_reads
-        .iter()
-        .all(|read| read.status.ok);
+    let catchup_read_eligibility_observed = lagging_follower.observed_lag > 0
+        && lagging_follower
+            .catchup_reads
+            .iter()
+            .all(|read| read.status.ok);
+    let bounded_stale_reads_observed = lagging_follower.observed_lag > 0
+        && lagging_follower
+            .catchup_reads
+            .iter()
+            .all(|read| read.status.ok);
     let bounded_stale_partition_reads_observed =
         bounded_stale_reads_observed && minority_partition_rejected;
     let follower_lease_expiration_observed =
@@ -641,6 +648,8 @@ fn data_node_process_rollout_report(
             .catchup_reads
             .iter()
             .all(|read| read.status.ok);
+    let secondary_lag_observed =
+        lagging_follower.observed_lag > 0 && catchup_read_eligibility_observed;
     let wal_segment_release_rules_observed = node_evidence.iter().all(|node| {
         node.wal_retained_segment_count == node.wal_segments_inspected
             && node.wal_release_floor <= node.wal_last_sequence
@@ -795,7 +804,7 @@ fn data_node_process_rollout_report(
         restart_recovery_observed: recovered_after_restart,
         failover_observed: failover_validated,
         membership_change_observed: spawned_process_count >= 3,
-        secondary_lag_observed: rolling_restart.restarted_nodes.len() >= 1,
+        secondary_lag_observed,
         ready: observed_process_requests >= voter_count as u64
             && read_index_responses_observed >= voter_count as u64
             && read_index_and_lease_evidence_observed
@@ -807,6 +816,7 @@ fn data_node_process_rollout_report(
             && follower_lease_expiration_observed
             && minority_partition_rejected
             && healed_follower_catchup_observed
+            && secondary_lag_observed
             && replicate_inflight_limits_observed
             && max_replicate_bytes_observed
             && oversized_log_rejection_observed
@@ -871,6 +881,10 @@ fn data_node_process_rollout_report(
         (
             byteraft_process_semantics.healed_follower_catchup_observed,
             "process_healed_follower_catchup_missing",
+        ),
+        (
+            byteraft_process_semantics.secondary_lag_observed,
+            "process_secondary_lag_evidence_missing",
         ),
         (
             byteraft_process_semantics.replicate_inflight_limits_observed,
@@ -1013,6 +1027,14 @@ fn data_node_process_rollout_report(
             .observed_commit_indexes
             .clone(),
         failover_validated,
+        secondary_lag_observed,
+        lagging_follower_read_rejection_observed: lagging_follower_read_rejected,
+        stale_follower_write_rejection_observed: stale_follower_write_rejected,
+        catchup_read_eligibility_observed,
+        minority_partition_rejection_observed: minority_partition_rejected,
+        bounded_stale_read_eligibility_observed: bounded_stale_partition_reads_observed,
+        healed_follower_catchup_observed,
+        lagging_follower_observed_lag: lagging_follower.observed_lag,
         recovered_after_restart,
         restart_recovery_validated: recovered_after_restart,
         snapshot_install_validated,
@@ -1024,6 +1046,13 @@ fn data_node_process_rollout_report(
             && recovered_after_restart
             && leader_transfer_under_load.exact_once_observed
             && leader_transfer_under_load.under_load_observed
+            && secondary_lag_observed
+            && lagging_follower_read_rejected
+            && stale_follower_write_rejected
+            && catchup_read_eligibility_observed
+            && minority_partition_rejected
+            && bounded_stale_partition_reads_observed
+            && healed_follower_catchup_observed
             && snapshot_install_validated
             && applied_fence_validated
             && independent_wal_dirs
@@ -1089,6 +1118,12 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         "isolated follower unexpectedly served a read during partition: {:?}",
         isolated_read
     );
+    let isolated_write = try_propose(isolated, "partition-isolated-write", "v-isolated");
+    assert!(
+        !isolated_write.status.ok,
+        "isolated follower unexpectedly accepted a write during partition: {:?}",
+        isolated_write
+    );
 
     for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
         block_peer(isolated, peer.node_id, false);
@@ -1104,6 +1139,7 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         isolated_node,
         majority_write,
         isolated_read_status: isolated_read.status,
+        isolated_write_status: isolated_write.status,
         healed_read,
     }
 }
@@ -1551,6 +1587,33 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
         get_json_with_options::<RaftClusterStatus>(&node.addr, "/raft/status", request_options())
             .expect("status request after accepted proposal failed")
             .commit_index;
+    WriteSummary {
+        key: key.to_string(),
+        status: response.status,
+        commit_index,
+    }
+}
+
+fn try_propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
+    let response = post_json_with_options::<_, DistributedRaftCommandResponse>(
+        &node.addr,
+        "/raft/propose",
+        &DistributedRaftProposeRequest {
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: value.as_bytes().to_vec(),
+            },
+        },
+        request_options(),
+    )
+    .unwrap_or_else(|err| DistributedRaftCommandResponse {
+        status: Status::error("transport_error", err.to_string()),
+        response: CommandResponse::Empty,
+    });
+    let commit_index =
+        get_json_with_options::<RaftClusterStatus>(&node.addr, "/raft/status", request_options())
+            .map(|status| status.commit_index)
+            .unwrap_or_default();
     WriteSummary {
         key: key.to_string(),
         status: response.status,

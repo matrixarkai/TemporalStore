@@ -343,6 +343,10 @@ def validate_raft_secondary(job, summary):
         f"{job}: isolated partition read unexpectedly succeeded",
     )
     require(
+        summary["partition"]["isolated_write_status"]["ok"] is False,
+        f"{job}: isolated partition write unexpectedly succeeded",
+    )
+    require(
         summary["partition"]["healed_read"]["value"] == "v-partition",
         f"{job}: healed partition read mismatch",
     )
@@ -673,6 +677,38 @@ def validate_byteraft_process_semantics(
     if label == "data-node":
         write_ids = rollout.get("leader_transfer_write_ids_observed", [])
         commit_indexes = rollout.get("leader_transfer_commit_indexes_observed", [])
+        require(
+            rollout.get("secondary_lag_observed") is True,
+            f"{job}: {label} top-level secondary lag evidence missing",
+        )
+        require(
+            rollout.get("lagging_follower_read_rejection_observed") is True,
+            f"{job}: {label} lagging follower read rejection evidence missing",
+        )
+        require(
+            rollout.get("stale_follower_write_rejection_observed") is True,
+            f"{job}: {label} stale follower write rejection evidence missing",
+        )
+        require(
+            rollout.get("catchup_read_eligibility_observed") is True,
+            f"{job}: {label} catch-up read eligibility evidence missing",
+        )
+        require(
+            rollout.get("minority_partition_rejection_observed") is True,
+            f"{job}: {label} minority partition rejection evidence missing",
+        )
+        require(
+            rollout.get("bounded_stale_read_eligibility_observed") is True,
+            f"{job}: {label} bounded stale read eligibility evidence missing",
+        )
+        require(
+            rollout.get("healed_follower_catchup_observed") is True,
+            f"{job}: {label} healed follower catch-up evidence missing",
+        )
+        require(
+            rollout.get("lagging_follower_observed_lag", 0) > 0,
+            f"{job}: {label} lagging follower observed lag missing",
+        )
         require(
             rollout.get("leader_transfer_under_load_observed") is True,
             f"{job}: {label} leader transfer under load was not observed",
