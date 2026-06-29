@@ -507,6 +507,35 @@ impl TemporalEngine {
         storage_physical_index_report(shard_id, shard, summaries)
     }
 
+    pub fn slot_object_page_ownership_report(
+        &self,
+        shard_id: ShardId,
+    ) -> SlotObjectPageOwnershipReport {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let Some(shard) = shards.get(&shard_id) else {
+            return SlotObjectPageOwnershipReport {
+                shard_id,
+                ..SlotObjectPageOwnershipReport::default()
+            };
+        };
+        let info = self
+            .infos
+            .read()
+            .expect("info lock poisoned")
+            .get(&shard_id)
+            .cloned();
+        slot_object_page_ownership_report(
+            shard_id,
+            shard,
+            info.as_ref()
+                .map(|info| info.start_routing_slot)
+                .unwrap_or_default(),
+            info.as_ref()
+                .map(|info| info.end_routing_slot)
+                .unwrap_or(u32::MAX),
+        )
+    }
+
     pub fn object_manager_runtime_report(&self, shard_id: ShardId) -> ObjectManagerRuntimeReport {
         let shards = self.shards.read().expect("engine lock poisoned");
         let Some(shard) = shards.get(&shard_id) else {

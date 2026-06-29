@@ -647,6 +647,7 @@ fn context_tree_embedding_summary_and_compression_match_cpp_round_trip() {
                 embedding: ContextEmbedding {
                     ref_hash,
                     level: 1,
+                    model_hash: 0,
                     vector: vec![first, second],
                     updated_at_ms: EVENT_TIME,
                 },
@@ -1278,24 +1279,9 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         .tombstoned_object_keys
         .iter()
         .any(|key| key == "compact-set"));
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let compacted_hot = shards
-        .get(&1)
-        .expect("loaded shard")
-        .slot_objects
-        .values()
-        .flat_map(|objects| objects.values())
-        .find(|object| object.object_key == "compact-hot-object")
-        .expect("hot object slot entry");
-    assert_eq!(compacted_hot.layout_state, SlotLayoutState::ObjectPage);
-    assert!(compacted_hot.layout_transition_count >= 1);
-    assert_eq!(
-        compacted_hot
-            .last_layout_transition
-            .as_ref()
-            .map(|transition| (&transition.from, &transition.to)),
-        Some((&SlotLayoutState::MemoryHot, &SlotLayoutState::ObjectPage))
-    );
+    let object_runtime = engine.object_manager_runtime_report(1);
+    assert!(object_runtime.layout_transition_count >= 1);
+    assert!(object_runtime.object_page_count >= 1);
 }
 
 // shared-corpus: storage_manager_background_loop;
@@ -1348,54 +1334,62 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
     }
     std::thread::sleep(std::time::Duration::from_millis(5));
 
-    let report = engine.run_storage_manager_loop(StorageManagerLoopRequest {
+    let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
-        apply: true,
-        expire_records: true,
-        compact_pages: true,
-        lifecycle: StorageLifecycleRequest {
-            shard_id: 1,
-            max_dump_slots_per_round: 16,
-            min_undumped_oplog_records: 0,
-            purge_delayed_destroy: true,
-            prune_slot_dump_manifests: true,
-            roll_forward_slot_dump_installs: true,
-            invalidate_cache: true,
-            warm_cache: true,
-            ..StorageLifecycleRequest::default()
-        },
+        max_dump_slots_per_round: 16,
+        min_undumped_oplog_records: 0,
+        warm_cache: true,
+        ..StorageManagerCycleRequest::default()
     });
 
-    assert!(report.loop_ready, "{report:?}");
+    assert!(report.completed, "{report:?}");
     for phase in [
-        "prepare", "reclaim", "evict", "expire", "compact", "index_gc",
+        "prepare",
+        "reclaim_oplog",
+        "evict",
+        "expire",
+        "compact",
+        "index_gc",
     ] {
         assert!(
             report
-                .phases
+                .stages
                 .iter()
-                .any(|entry| entry.phase == phase && entry.attempted),
+                .any(|entry| entry.stage == phase && entry.enabled),
             "missing attempted phase {phase}: {report:?}"
         );
     }
-    assert!(report.lifecycle.dump_manifest.is_some());
-    assert!(report.expiry_sweep.expired_records_removed >= 1);
+    assert!(report.lifecycle_report.is_some());
     assert!(report
-        .compaction
+        .expiry_report
+        .as_ref()
+        .is_some_and(|expiry| expiry.expired_records_removed >= 1));
+    assert!(report
+        .compaction_report
         .as_ref()
         .is_some_and(|compaction| compaction.model_layout_compaction_ready));
-    assert!(report
-        .phases
-        .iter()
-        .find(|phase| phase.phase == "prepare")
-        .unwrap()
-        .evidence
-        .iter()
-        .any(|item| item.contains("dirty slots")));
-    assert!(report
-        .evidence
-        .iter()
-        .any(|item| item.contains("prepare/reclaim/evict/expire/compact/index-GC")));
+    assert!(
+        report
+            .stages
+            .iter()
+            .find(|phase| phase.stage == "prepare")
+            .unwrap()
+            .dirty_slot_count
+            >= 1
+    );
+    assert_eq!(
+        report.cxx_stage_order,
+        vec![
+            "prepare",
+            "reclaim_oplog",
+            "expire",
+            "evict",
+            "reclaim_page",
+            "index_gc",
+            "compact",
+            "reap_metrics",
+        ]
+    );
 }
 
 #[test]
@@ -1548,29 +1542,29 @@ fn crash_recovery_report_covers_oplog_index_page_and_extent_manifest() {
     assert_eq!(report.segment_integrity.discovered_page_segment_count, 2);
     assert_eq!(report.segment_integrity.live_page_segment_count, 2);
     assert_eq!(report.segment_integrity.unreadable_page_ref_count, 0);
-    assert_eq!(report.extent_descriptors.len(), 2);
+    assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
-        report.extent_descriptors[0].state,
+        report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
     );
     assert_eq!(
-        report.extent_descriptors[1].state,
+        report.zone_descriptors[1].state,
         BlockStoreExtentState::Active
     );
-    assert_eq!(report.extent_summary.sealed_extents, 1);
-    assert_eq!(report.extent_summary.active_extents, 1);
-    assert_eq!(report.extent_summary.delayed_destroy_extents, 0);
+    assert_eq!(report.zone_summary.sealed_extents, 1);
+    assert_eq!(report.zone_summary.active_extents, 1);
+    assert_eq!(report.zone_summary.delayed_destroy_extents, 0);
     assert_eq!(
-        report.extent_summary.sealed_physical_bytes,
-        report.extent_descriptors[0].physical_bytes
+        report.zone_summary.sealed_physical_bytes,
+        report.zone_descriptors[0].physical_bytes
     );
     assert_eq!(
-        report.extent_summary.active_physical_bytes,
-        report.extent_descriptors[1].physical_bytes
+        report.zone_summary.active_physical_bytes,
+        report.zone_descriptors[1].physical_bytes
     );
     assert_eq!(
-        report.extent_summary.live_physical_bytes,
-        report.extent_descriptors[0].physical_bytes + report.extent_descriptors[1].physical_bytes
+        report.zone_summary.live_physical_bytes,
+        report.zone_descriptors[0].physical_bytes + report.zone_descriptors[1].physical_bytes
     );
     assert_eq!(report.page_segment_live_reports.len(), 2);
     assert_eq!(report.page_segment_live_reports[0].page_segment_id, 0);
@@ -1827,18 +1821,18 @@ fn crash_recovery_rebuilds_missing_extent_manifest_from_page_stream() {
     assert_eq!(report.live_page_segment_ids, vec![0, 1]);
     assert_eq!(report.total_page_refs, 2);
     assert!(report.all_live_pages_readable);
-    assert_eq!(report.extent_descriptors.len(), 2);
+    assert_eq!(report.zone_descriptors.len(), 2);
     assert_eq!(
-        report.extent_descriptors[0].state,
+        report.zone_descriptors[0].state,
         BlockStoreExtentState::Sealed
     );
     assert_eq!(
-        report.extent_descriptors[1].state,
+        report.zone_descriptors[1].state,
         BlockStoreExtentState::Active
     );
-    assert_eq!(report.extent_summary.sealed_extents, 1);
-    assert_eq!(report.extent_summary.active_extents, 1);
-    assert!(report.extent_summary.live_physical_bytes > 0);
+    assert_eq!(report.zone_summary.sealed_extents, 1);
+    assert_eq!(report.zone_summary.active_extents, 1);
+    assert!(report.zone_summary.live_physical_bytes > 0);
     assert!(page_dir.join("page_extent_manifest.json").exists());
     assert_eq!(
         recovered
@@ -5924,54 +5918,20 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
         );
     }
 
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).unwrap();
-        assert_eq!(
-            shard
-                .slot_objects
-                .values()
-                .map(BTreeMap::len)
-                .sum::<usize>(),
-            2
-        );
-        assert_eq!(
-            shard
-                .slot_objects
-                .values()
-                .flat_map(|objects| objects.values())
-                .map(|object| object.pages.len())
-                .sum::<usize>(),
-            2
-        );
-        assert_eq!(shard.dirty_slots.len(), 1);
-        let dirty_slot = *shard.dirty_slots.iter().next().unwrap();
-        let dirty_generation = shard
-            .slot_dirty_generations
-            .get(&dirty_slot)
-            .copied()
-            .unwrap_or_default();
-        assert!(dirty_generation >= 2);
-        assert!(shard
-            .slot_objects
-            .values()
-            .flat_map(|objects| objects.values())
-            .all(|object| object.dirty
-                && object.dirty_generation > 0
-                && object.kind == "hash"
-                && object.layout_generation == 1));
-        assert!(shard
-            .slot_objects
-            .values()
-            .flat_map(|objects| objects.values())
-            .flat_map(|object| object.pages.iter())
-            .all(|page| page.model_id == 2
-                && page.dirty
-                && !page.deleted
-                && !page.log
-                && page.size_bytes == page.logical_bytes
-                && page.page_id == page.address.page_id));
-    }
+    let physical_before_reload = engine.storage_physical_index_report(1);
+    assert!(physical_before_reload.slot_index_authority);
+    assert_eq!(physical_before_reload.page_index_count, 2);
+    assert_eq!(physical_before_reload.dirty_slot_count, 1);
+    assert_eq!(physical_before_reload.missing_object_id_count, 0);
+    assert_eq!(physical_before_reload.missing_routing_slot_count, 0);
+    assert!(physical_before_reload.slot_nodes.iter().any(|slot| {
+        slot.page_ref_count == 2
+            && slot.object_count == 2
+            && slot.dirty_generation >= 2
+            && slot.page_indexes.iter().all(|page| {
+                page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
+            })
+    }));
     assert_eq!(
         engine
             .slot_storage_summaries(1)
@@ -5983,12 +5943,13 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     let ownership = engine.slot_object_page_ownership_report(1);
     assert!(ownership.first_class_index_present);
     assert!(!ownership.derived_from_model_maps);
-    assert!(ownership.core_index_ready);
-    assert_eq!(ownership.object_count, 2);
     assert_eq!(ownership.page_ref_count, 2);
-    assert_eq!(ownership.dirty_slot_count, 1);
-    assert!(ownership.max_dirty_generation >= 2);
-    assert_eq!(ownership.fallback_model_map_page_refs, 0);
+    assert_eq!(ownership.missing_owner_page_ref_count, 0);
+    assert_eq!(ownership.owner_mismatch_page_ref_count, 0);
+    let physical = engine.storage_physical_index_report(1);
+    assert!(physical.slot_index_authority);
+    assert_eq!(physical.page_index_count, 2);
+    assert_eq!(physical.dirty_slot_count, 1);
 
     engine.unload_shard(1);
     engine.load_shard_with(LoadShardRequest {
@@ -6001,38 +5962,23 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
         readonly: false,
         table_name: String::new(),
     });
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).unwrap();
-        assert_eq!(
-            shard
-                .slot_objects
-                .values()
-                .map(BTreeMap::len)
-                .sum::<usize>(),
-            2
-        );
-        assert!(shard
-            .slot_objects
-            .values()
-            .flat_map(|objects| objects.values())
-            .all(|object| object.kind == "hash" && !object.pages.is_empty()));
-        assert!(shard.dirty_slots.is_empty());
-        assert!(shard.slot_dirty_generations.is_empty());
-        assert!(shard
-            .slot_objects
-            .values()
-            .flat_map(|objects| objects.values())
-            .all(|object| !object.dirty));
-    }
+    let physical_after_reload = engine.storage_physical_index_report(1);
+    assert!(physical_after_reload.slot_index_authority);
+    assert_eq!(physical_after_reload.page_index_count, 2);
+    assert_eq!(physical_after_reload.dirty_slot_count, 0);
+    assert!(physical_after_reload
+        .slot_nodes
+        .iter()
+        .any(|slot| slot.page_ref_count == 2 && slot.object_count == 2));
     let reloaded_ownership = engine.slot_object_page_ownership_report(1);
     assert!(reloaded_ownership.first_class_index_present);
     assert!(!reloaded_ownership.derived_from_model_maps);
-    assert!(reloaded_ownership.core_index_ready);
-    assert_eq!(reloaded_ownership.object_count, 2);
     assert_eq!(reloaded_ownership.page_ref_count, 2);
-    assert_eq!(reloaded_ownership.dirty_slot_count, 0);
-    assert_eq!(reloaded_ownership.max_dirty_generation, 0);
+    assert_eq!(reloaded_ownership.missing_owner_page_ref_count, 0);
+    assert_eq!(reloaded_ownership.owner_mismatch_page_ref_count, 0);
+    let reloaded_physical = engine.storage_physical_index_report(1);
+    assert!(reloaded_physical.slot_index_authority);
+    assert_eq!(reloaded_physical.page_index_count, 2);
 }
 
 // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
@@ -6364,15 +6310,16 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(report.index_gc_ready);
     assert!(report.manifest_id.is_some());
     assert!(!report.manifest_slot_ids.is_empty());
-    assert!(report.manifest_oplog_sequence > 0);
-    assert!(report.manifest_index_log_sequence > 0);
-    assert!(report
-        .evidence
-        .iter()
-        .any(|item| item
-            .contains("dirty-slot dump selection, manifest checksum/generation validation")));
+    assert!(report.manifest_checksum_validated);
+    assert!(report.manifest_generation_validated);
+    assert!(report.sequence_boundaries_validated);
+    assert!(report.page_segments_validated);
+    assert!(report.live_page_refs_validated);
+    assert!(report.object_lifecycle_validated);
+    assert!(report.merged_manifest_validated);
+    assert!(report.source_slot_coverage_validated);
 
-    let manifest = report.lifecycle.dump_manifest.clone().unwrap();
+    let manifest = latest_slot_dump_manifest_at(&engine.index_dir, 1).unwrap();
     let restore_engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restore-cache"),
@@ -6430,10 +6377,9 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(stale
         .blockers
         .contains(&"load_preflight_unsafe".to_string()));
-    assert!(matches!(
-        stale.install_status,
-        Some(Status { ok: false, ref code, .. }) if code == "slot_dump_stale_manifest"
-    ));
+    assert!(stale
+        .blockers
+        .contains(&"stale_object_or_page_conflict".to_string()));
 }
 
 #[test]
@@ -6701,6 +6647,7 @@ fn slot_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_fork(
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     let report = lifecycle
         .manifest_prune_report
@@ -7184,6 +7131,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() 
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     assert!(!plan.dirty_slots.is_empty());
     assert_eq!(plan.selected_dump_slots, plan.dirty_slots);
@@ -7209,6 +7157,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_segments() 
         follower_replay_cursors: Vec::new(),
         invalidate_cache: true,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     assert!(report.dump_manifest.is_some());
     assert_eq!(report.object_lifecycle.live_object_ids, 1);
@@ -7392,11 +7341,11 @@ fn storage_page_format_compatibility_report_counts_zones_and_header_gaps() {
     assert!(report.object_ids_embedded);
     assert!(report.routing_slots_embedded);
     assert!(report.compression_supported);
-    assert_eq!(report.sealed_extents, 1);
-    assert_eq!(report.active_extents, 1);
+    assert_eq!(report.sealed_zones, 1);
+    assert_eq!(report.active_zones, 1);
     assert!(report.live_physical_bytes > 0);
-    assert!(report.block_store_writes > 0);
-    assert!(report.block_store_bytes_written > 0);
+    assert!(report.page_store_writes > 0);
+    assert!(report.page_store_bytes_written > 0);
     assert!(report.logical_bytes_written >= 512);
     assert!(report.compressed_records_written > 0);
     assert!(report
@@ -7579,6 +7528,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     let report = engine.apply_storage_lifecycle(StorageLifecycleRequest {
         shard_id: 1,
@@ -7591,6 +7541,7 @@ fn storage_lifecycle_apply_warms_cache_from_page_index() {
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: true,
+        ..StorageLifecycleRequest::default()
     });
     assert!(report.cache_warmup_page_refs >= 1);
     assert_eq!(
@@ -7871,6 +7822,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
             follower_replay_cursors: Vec::new(),
             invalidate_cache: false,
             warm_cache: false,
+            ..StorageLifecycleRequest::default()
         });
         if observed.dirty_slots.len() >= 3 {
             break;
@@ -7888,6 +7840,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     assert!(delayed.dump_delayed);
     assert!(delayed.selected_dump_slots.is_empty());
@@ -7906,6 +7859,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     assert!(!limited.dump_delayed);
     assert!(limited.undumped_oplog_records >= 3);
@@ -7923,6 +7877,7 @@ fn storage_lifecycle_plan_matches_cpp_delayed_and_limited_dirty_slot_dump_policy
         follower_replay_cursors: Vec::new(),
         invalidate_cache: false,
         warm_cache: false,
+        ..StorageLifecycleRequest::default()
     });
     assert!(!explicit.dump_delayed);
     assert_eq!(explicit.selected_dump_slots, vec![delayed.dirty_slots[0]]);

@@ -2415,10 +2415,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 16,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 90,
             memory_hotness_threshold: 4,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 1,
             max_memory_block_bytes: 16,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 64,
             ssd_write_through: true,
         };
@@ -2465,10 +2468,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 64,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 512,
             memory_hotness_threshold: 4,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 1,
             max_memory_block_bytes: 64,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 512,
             ssd_write_through: true,
         };
@@ -2497,10 +2503,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 8,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 512,
             memory_hotness_threshold: 4,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 1,
             max_memory_block_bytes: 8,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 128,
             ssd_write_through: true,
         };
@@ -2571,10 +2580,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 8,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 64,
             memory_hotness_threshold: 4,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 99,
             max_memory_block_bytes: 8,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 64,
             ssd_write_through: false,
         };
@@ -2619,10 +2631,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 0,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 70,
             memory_hotness_threshold: 4,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 1,
             max_memory_block_bytes: 8,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 64,
             ssd_write_through: true,
         };
@@ -2673,10 +2688,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let policy = CacheTieringPolicy {
             memory_capacity_bytes: 0,
+            pmem_capacity_bytes: 0,
             ssd_capacity_bytes: 256,
             memory_hotness_threshold: 99,
+            pmem_admit_hotness_threshold: 0,
             ssd_admit_hotness_threshold: 0,
             max_memory_block_bytes: 0,
+            max_pmem_block_bytes: 0,
             max_ssd_block_bytes: 128,
             ssd_write_through: true,
         };
