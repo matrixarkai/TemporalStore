@@ -568,6 +568,55 @@ pub struct ByteRaftPeerPipelineState {
     pub auto_promoted_from_learner: bool,
 }
 
+impl ByteRaftPeerPipelineState {
+    fn to_rustraft_peer_pipeline_status(&self) -> RustRaftPeerPipelineStatus {
+        RustRaftPeerPipelineStatus {
+            peer_id: self.peer_id,
+            match_index: self.match_index,
+            next_index: self.next_index,
+            append_requests: self.append_requests,
+            append_accepted: self.append_accepted,
+            append_rejected: self.append_rejected,
+            inflight_entries: self.inflight_entries,
+            inflight_bytes: self.inflight_bytes,
+            append_queue_depth: self.append_queue_depth,
+            append_queue_limit: self.append_queue_limit,
+            append_queue_max_depth: self.append_queue_max_depth,
+            inflight_bytes_limit: self.inflight_bytes_limit,
+            apply_inflight_tasks: self.apply_inflight_tasks,
+            apply_inflight_limit: self.apply_inflight_limit,
+            apply_queue_depth: self.apply_queue_depth,
+            apply_queue_max_depth: self.apply_queue_max_depth,
+            apply_batch_bytes_limit: self.apply_batch_bytes_limit,
+            apply_backpressure_rejections: self.apply_backpressure_rejections,
+            memory_backpressure_rejections: self.memory_backpressure_rejections,
+            oversized_log_rejections: self.oversized_log_rejections,
+            reorder_queue_depth: self.reorder_queue_depth,
+            out_of_order_append_rejections: self.out_of_order_append_rejections,
+            reorder_entries_rejected: self.reorder_entries_rejected,
+            reorder_entry_timeouts: self.reorder_entry_timeouts,
+            reorder_dropped_packages: self.reorder_dropped_packages,
+            snapshot_sending: self.snapshot_sending,
+            snapshot_installing: self.snapshot_installing,
+            snapshot_installed_index: self.snapshot_installed_index,
+            snapshot_send_attempts: self.snapshot_send_attempts,
+            snapshot_install_total_chunks: self.snapshot_install_total_chunks,
+            snapshot_install_progress_per_mille: self.snapshot_install_progress_per_mille,
+            snapshot_backpressure_rejections: self.snapshot_backpressure_rejections,
+            snapshot_rate_limit_rejections: self.snapshot_rate_limit_rejections,
+            snapshot_install_rolled_back: self.snapshot_install_rolled_back,
+            snapshot_during_membership_change: self.snapshot_during_membership_change,
+            snapshot_rejoin_after_compacted_log: self.snapshot_rejoin_after_compacted_log,
+            transfer_leader_target: self.transfer_leader_target,
+            transfer_leader_timeouts: self.transfer_leader_timeouts,
+            pre_vote_rejections: self.pre_vote_rejections,
+            election_rejections: self.election_rejections,
+            offline_timeout_reached: self.offline_timeout_reached,
+            offline_timeout_rejections: self.offline_timeout_rejections,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ByteRaftCapabilityEvidence {
     pub capability: String,
@@ -5624,6 +5673,11 @@ impl RaftCluster {
             node.pipeline_state.offline_since_ms = None;
             node.pipeline_state.offline_elapsed_ms = 0;
             node.pipeline_state.offline_timeout_reached = false;
+            node.pipeline_state.inflight_entries = 0;
+            node.pipeline_state.inflight_bytes = 0;
+            node.pipeline_state.append_queue_depth = 0;
+            node.pipeline_state.apply_inflight_tasks = 0;
+            node.pipeline_state.apply_queue_depth = 0;
         } else if node.pipeline_state.offline_since_ms.is_none() {
             node.pipeline_state.offline_since_ms = Some(logical_time_ms);
         }
@@ -8502,71 +8556,48 @@ impl RaftClusterInner {
         let read_index_validated = status.leader_lease_valid && status.has_majority;
         let lease_read_validated =
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
-        let append_backpressure_enforced = self.config.max_inflights_replicate > 0
-            && self.config.max_memory_replicate_log_bytes > 0
-            && peer_pipeline_states.iter().any(|peer| {
-                peer.append_rejected > 0
-                    && (peer.inflight_entries > 0
-                        || peer.inflight_bytes > 0
-                        || peer.append_queue_max_depth > 0)
-                    && (peer.append_queue_depth >= peer.append_queue_limit
-                        || peer.inflight_bytes >= peer.inflight_bytes_limit
-                        || peer.append_queue_max_depth >= peer.append_queue_limit)
-            });
-        let apply_backpressure_enforced = self.config.max_apply_batch_bytes > 0
-            && self.config.max_inflights_apply_task > 0
-            && peer_pipeline_states.iter().any(|peer| {
-                peer.apply_backpressure_rejections > 0
-                    && peer.apply_inflight_limit > 0
-                    && peer.apply_batch_bytes_limit > 0
-                    && (peer.apply_queue_depth >= peer.apply_inflight_limit
-                        || peer.apply_queue_max_depth >= peer.apply_inflight_limit)
-            });
-        let memory_replicate_bytes_enforced = self.config.max_memory_replicate_log_bytes > 0
-            && peer_pipeline_states
-                .iter()
-                .any(|peer| peer.memory_backpressure_rejections > 0);
-        let oversized_log_rejection_present = peer_pipeline_states
+        let rustraft_peer_pipeline_states = peer_pipeline_states
             .iter()
-            .any(|peer| peer.oversized_log_rejections > 0);
-        let out_of_order_append_handling_present = peer_pipeline_states.iter().any(|peer| {
-            peer.out_of_order_append_rejections > 0
-                || peer.reorder_entries_rejected > 0
-                || peer.reorder_entry_timeouts > 0
-                || peer.reorder_dropped_packages > 0
-        });
-        let reorder_queue_enabled = self.config.enable_reorder_queue
-            && self.config.reorder_window_size > 0
-            && self.config.reorder_timeout_us > 0;
-        let snapshot_sender_lifecycle_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_sending || peer.snapshot_installed_index > 0);
-        let snapshot_downloader_lifecycle_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_installing || peer.snapshot_installed_index > 0);
-        let snapshot_retry_backpressure_present = self.config.send_snapshot_timeout_ms > 0
-            && self.config.max_inflights_replicate > 0
-            && peer_pipeline_states.iter().any(|peer| {
-                peer.snapshot_send_attempts > 0
-                    && peer.snapshot_install_total_chunks > 0
-                    && peer.snapshot_backpressure_rejections > 0
-            });
-        let snapshot_rate_limit_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_rate_limit_rejections > 0)
-            || self.config.max_inflights_replicate > 0;
-        let snapshot_install_progress_present = peer_pipeline_states.iter().any(|peer| {
-            peer.snapshot_install_total_chunks > 0 && peer.snapshot_install_progress_per_mille > 0
-        });
-        let snapshot_install_rollback_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_install_rolled_back > 0);
-        let snapshot_membership_change_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_during_membership_change);
-        let snapshot_rejoin_after_compacted_log_present = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.snapshot_rejoin_after_compacted_log);
+            .map(ByteRaftPeerPipelineState::to_rustraft_peer_pipeline_status)
+            .collect::<Vec<_>>();
+        let rustraft_pipeline_evidence = rustraft_pipeline_evidence(
+            &rustraft_peer_pipeline_states,
+            RustRaftPipelineLimits {
+                max_inflights_replicate: self.config.max_inflights_replicate,
+                max_memory_replicate_log_bytes: self.config.max_memory_replicate_log_bytes,
+                max_inflights_apply_task: self.config.max_inflights_apply_task,
+                max_apply_batch_bytes: self.config.max_apply_batch_bytes,
+                enable_reorder_queue: self.config.enable_reorder_queue,
+                reorder_window_size: self.config.reorder_window_size,
+                reorder_timeout_us: self.config.reorder_timeout_us,
+            },
+        );
+        let rustraft_snapshot_evidence = rustraft_snapshot_lifecycle_evidence(
+            &rustraft_peer_pipeline_states,
+            self.config.send_snapshot_timeout_ms,
+            self.config.max_inflights_replicate,
+        );
+        let append_backpressure_enforced = rustraft_pipeline_evidence.append_backpressure_enforced;
+        let apply_backpressure_enforced = rustraft_pipeline_evidence.apply_backpressure_enforced;
+        let memory_replicate_bytes_enforced =
+            rustraft_pipeline_evidence.memory_replicate_bytes_enforced;
+        let oversized_log_rejection_present =
+            rustraft_pipeline_evidence.oversized_log_rejection_present;
+        let out_of_order_append_handling_present =
+            rustraft_pipeline_evidence.out_of_order_append_handling_present;
+        let reorder_queue_enabled = rustraft_pipeline_evidence.reorder_queue_enabled;
+        let snapshot_sender_lifecycle_present = rustraft_snapshot_evidence.sender_lifecycle_present;
+        let snapshot_downloader_lifecycle_present =
+            rustraft_snapshot_evidence.downloader_lifecycle_present;
+        let snapshot_retry_backpressure_present =
+            rustraft_snapshot_evidence.retry_backpressure_present;
+        let snapshot_rate_limit_present = rustraft_snapshot_evidence.rate_limit_present;
+        let snapshot_install_progress_present = rustraft_snapshot_evidence.install_progress_present;
+        let snapshot_install_rollback_present = rustraft_snapshot_evidence.install_rollback_present;
+        let snapshot_membership_change_present =
+            rustraft_snapshot_evidence.membership_change_present;
+        let snapshot_rejoin_after_compacted_log_present =
+            rustraft_snapshot_evidence.rejoin_after_compacted_log_present;
         let (
             wal_segment_count,
             wal_active_segment_id,
@@ -8640,14 +8671,22 @@ impl RaftClusterInner {
                 )
             })
             .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false));
-        let wal_segment_lifecycle_present = wal_segment_count > 0
-            && wal_active_segment_id >= wal_first_retained_segment_id
-            && wal_last_retained_segment_id >= wal_first_retained_segment_id
-            && wal_total_bytes > 0
-            && wal_active_segment_bytes > 0
-            && wal_total_records > 0
-            && wal_last_sequence >= wal_first_sequence
-            && wal_last_log_index >= wal_first_log_index;
+        let rustraft_wal_evidence = rustraft_wal_lifecycle_evidence(&RustRaftWalLifecycleStatus {
+            segment_count: wal_segment_count,
+            active_segment_id: wal_active_segment_id,
+            first_retained_segment_id: wal_first_retained_segment_id,
+            last_retained_segment_id: wal_last_retained_segment_id,
+            total_bytes: wal_total_bytes,
+            active_segment_bytes: wal_active_segment_bytes,
+            total_records: wal_total_records,
+            first_sequence: wal_first_sequence,
+            last_sequence: wal_last_sequence,
+            first_log_index: wal_first_log_index,
+            last_log_index: wal_last_log_index,
+            released_segment_count: wal_released_segment_count,
+            slow_fsync_backpressure_observed: wal_slow_fsync_backpressure_observed,
+        });
+        let wal_segment_lifecycle_present = rustraft_wal_evidence.segment_lifecycle_present;
         let pre_vote_enforced = self.config.enable_pre_vote;
         let pre_vote_process_evidence_observed = self.config.enable_pre_vote
             && self.read_safety_state.pre_vote_requests > 0
@@ -8682,11 +8721,8 @@ impl RaftClusterInner {
                     .map(|node| node.commit_index)
                     .max()
                     .unwrap_or_default();
-        let per_peer_pipeline_state_present = !peer_pipeline_states.is_empty()
-            && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
-            && peer_pipeline_states.iter().any(|peer| {
-                peer.append_queue_depth > 0 || peer.inflight_entries > 0 || peer.append_requests > 0
-            });
+        let per_peer_pipeline_state_present =
+            rustraft_pipeline_evidence.per_peer_pipeline_state_present;
         let capability_matrix = vec![
             ByteRaftCapabilityEvidence {
                 capability: "per_peer_replication_pipeline_state".to_string(),
