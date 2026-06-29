@@ -72,7 +72,7 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |context_batch_commit|1|
 |context_child_ref|6|
 |context_debug_record|33|
-|context_embedding|87|
+|context_embedding|93|
 |context_entity|15|
 |context_entity_update_audit|5|
 |context_event|23|
@@ -83,9 +83,8 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |context_pack_telemetry|1|
 |context_recall_reinforcement|18|
 |context_segment|3|
-|context_summary|41|
-|context_summary_dirty|86|
-|context_summary_refresh_audit|11|
+|context_summary|47|
+|context_summary_dirty|100|
 |matrixark_audit_log|19|
 |matrixark_metric|5|
 |resource_chunk|5|
@@ -123,19 +122,19 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |---|---|---|---|---|---|---|
 |queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
 |running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 394.16, "embedding_count": ...|
+|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 192.394, "embedding_count":...|
 |queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
 |running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 54.521, "embedding_count": ...|
+|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 59.724, "embedding_count": ...|
 |queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
 |running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 51.275, "embedding_count": ...|
+|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|pdf|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 38.753, "embedding_count": ...|
 |queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
 |running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 45.014, "embedding_count": ...|
+|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 84.084, "embedding_count": ...|
 |queued|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
 |running|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|||||
-|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 48.189, "embedding_count": ...|
+|completed|C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalStore\docs\d...|md|1|2|2|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 35.168, "embedding_count": ...|
 
 ## Resource Chunks
 
@@ -151,29 +150,29 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 
 |event_id_hash|node_path|internal_extraction.event_type|internal_extraction.entity_type|summary_text|source_chunk_hash|resource_hash|source_locator|
 |---|---|---|---|---|---|---|---|
-|8135280964260817502||||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||||
-|3497090396958777419||||assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.||||
-|2888418282918082562||||user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch.||||
-|8874551677504413445||||assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch.||||
-|6717215592090782382||||user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection.||||
-|5632673477605542627||||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||||
-|6345269472664278351||||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||||
-|4048399091898324876||||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||||
+|3916845469833649709||||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.||||
+|5047478120541693135||||assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.||||
+|6937044607988168430||||user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch.||||
+|6011239396199102447||||assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch.||||
+|1305081606054211185||||user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection.||||
+|6820270271424507837||||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||||
+|8065980567075677550||||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||||
+|3621841594661482679||||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||||
 |2555347658215328804||||resource_decision: Alice approved the Project Aurora GPU purchase after finance review|4819398059654939441|8584741635287733730|page=1|
 |4540721316824141478||||resource_owner: Bob owns procurement and vendor coordination|4819398059654939441|8584741635287733730|page=1|
-|8465022216181362451||||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||||
+|1784531839575460322||||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||||
 |3511737526308378556||||resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|456790337710764122|888532192682326692|page=1|
 |4918319429494704554||||resource_approval: before vendor selection|456790337710764122|888532192682326692|page=1|
-|1659817715217636730||||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||||
+|6785988548172821056||||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||||
 |8911507370643628805||||resource_cost: Update Memo|2418201568328997923|4492309950785166601|page=1|
 |2637030059605313630||||resource_policy: not be used for current-state answers|2418201568328997923|4492309950785166601|page=1|
-|7516561286953271649||||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||||
+|8455914760919162635||||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||||
 |208729723586261235||||resource_decision: Alice from finance approved the GPU purchase|6051725708133528022|3400855048320878078|heading=project-aurora-gpu-policy|
 |2974006505943548718||||resource_owner: Bob owns procurement and vendor coordination|6051725708133528022|3400855048320878078|heading=project-aurora-gpu-policy|
-|4948898869036228010||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy||||
+|2143931330442076739||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy||||
 |3660941442548591412||||resource_owner: missing, assign Bob before creating a purchase order|3088140979938095262|5124352650846791650|heading=troubleshooting|
 |2993415031816414702||||resource_troubleshooting_step: ing|3088140979938095262|5124352650846791650|heading=troubleshooting|
-|8412290406781019209||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Troubleshooting||||
+|2786904618296876723||||tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Troubleshooting||||
 
 ## Extracted Entities
 
@@ -207,37 +206,43 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|batch_l0|21524118857008535|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
-|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing ...||
-|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...||
-|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
+|batch_l0|847349191541746959|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
 |resource_l0|5253826341840929662|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[4819398059654939441]|
-|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
-|node_l0|1886266633781634111|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
-|node_l1|1616491761191208179|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
-|node_l0|7072998724969009401|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
-|node_l1|3186282447509310879|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |resource_l0|2387919895054058779|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[456790337710764122]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |resource_l0|8362868875371206370|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[2418201568328997923]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |resource_l0|3162514970771483214|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[6051725708133528022]|
+|node_l0|1886266633781634111|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
+|node_l1|1616491761191208179|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
+|node_l0|7072998724969009401|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
+|node_l1|3186282447509310879|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
+|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing ...||
+|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...||
+|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
+|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
+|node_l0|2423087115552912795|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
+|node_l1|8165358132187641623|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...||
+|node_l0|4443347079005396521|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
+|node_l1|7129763152424808338|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...||
+|node_l0|9161093819732845678|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Project Aurora GPU Approval Pa...||
+|node_l1|1076018507551928025|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Proj...||
 |resource_l0|6524626718067131693|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust-temporalstore-code-from-matrixarkai\work\TemporalSt...|[3088140979938095262]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |node_l0|1886266633781634111|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
 |node_l1|1616491761191208179|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
 |node_l0|7072998724969009401|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora :: user: Alice...||
 |node_l1|3186282447509310879|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session / conversation:project_aurora. ...||
-|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase req...||
-|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: tenant:tenant_codex / user:deeproute :: user: Alice from finance app...||
-|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
-|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
-|node_l0|2423087115552912795|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: resource: C:\Users\Deeproute\Documents\Codex\2026-06-10\pull-rust...||
-|node_l1|8165358132187641623|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: resource: C:\Users\Deeproute\Documents\...||
-|node_l0|4443347079005396521|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: resource: C:\Users\Deeproute\Documents\Codex\202...||
-|node_l1|7129763152424808338|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: resource: C:\Users\Dee...||
+|node_l0|4626625830169563149|["tenant:tenant_codex"]|has_child_summaries|tenant:tenant_codex :: Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance app...||
+|node_l1|1916101716449258884|["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: Context node tenant:tenant_codex / user:deeproute. Rich overview: us...||
+|node_l0|5451123137701072075|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf...||
+|node_l1|7794448877417626891|["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: Context node tenant:tenant_codex / user:deeproute /...||
+|node_l0|2423087115552912795|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: user: Alice from finance approved the GPU purchase request for Pr...||
+|node_l1|8165358132187641623|["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: user: Alice from finance approved the G...||
+|node_l0|4443347079005396521|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: user: Alice from finance approved the GPU purcha...||
+|node_l1|7129763152424808338|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: user: Alice from finan...||
 |node_l0|9161093819732845678|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: Budget Update Memo Update: The...||
 |node_l1|1076018507551928025|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: Budg...||
 
@@ -245,17 +250,6 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 
 |node_path|generated_summary_types|l1_policy.generate_l1|l1_policy.reason|l1_policy.token_estimate|source_event_count|source_summary_count|
 |---|---|---|---|---|---|---|
-|["tenant:tenant_codex"]|["node_l0", "node_l1"]|True|has_child_summaries|304|0|2|
-|["tenant:tenant_codex", "user:deeproute"]|["node_l0", "node_l1"]|True|has_child_summaries|304|0|2|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|["node_l0", "node_l1"]|True|has_child_summaries|304|0|2|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|["node_l0", "node_l1"]|True|event_count_threshold|205|8|0|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|["node_l0", "node_l1"]|True|has_child_summaries|648|0|4|
-|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|["node_l0", "node_l1"]|True|event_count_threshold|205|8|0|
-|["tenant:tenant_codex"]|["node_l0", "node_l1"]|True|has_child_summaries|1305|0|8|
-|["tenant:tenant_codex", "user:deeproute"]|["node_l0", "node_l1"]|True|has_child_summaries|1253|0|8|
-|["tenant:tenant_codex", "user:deeproute", "resources"]|["node_l0", "node_l1"]|True|has_child_summaries|250|0|2|
-|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|["node_l0", "node_l1"]|True|has_child_summaries|250|0|2|
-|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|["node_l0", "node_l1"]|True|event_count_threshold|414|8|0|
 
 ## Embeddings
 
@@ -266,101 +260,101 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |embedding_type|ref_type|ref_hash|dim|preview|
 |---|---|---|---|---|
 |session_l0|summary|8695652974415713980|32|[0.0, 0.0, 0.04994, -0.19975, 0.3995, 0.0, -0.24969, 0.04994]|
-|event_text|event|8135280964260817502|32|[0.0, 0.0, 0.0, -0.2, 0.4, 0.0, -0.2, 0.0]|
-|event_text|event|3497090396958777419|32|[0.0, 0.0, 0.26726, 0.0, 0.26726, 0.0, -0.26726, 0.26726]|
-|event_text|event|2888418282918082562|32|[0.0, 0.0, -0.2582, -0.2582, 0.2582, 0.2582, 0.0, 0.0]|
-|event_text|event|8874551677504413445|32|[0.0, 0.0, -0.22942, 0.22942, 0.0, 0.22942, 0.0, 0.0]|
-|event_text|event|6717215592090782382|32|[0.0, -0.22942, -0.22942, -0.22942, 0.22942, 0.0, -0.45883, -0.22942]|
-|event_text|event|5632673477605542627|32|[0.24254, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24254, 0.0]|
-|event_text|event|6345269472664278351|32|[0.0, 0.0, 0.0, -0.44721, 0.22361, 0.22361, 0.22361, 0.0]|
-|event_text|event|4048399091898324876|32|[0.0, 0.0, 0.0, 0.0, 0.31623, 0.31623, 0.0, -0.31623]|
+|event_text|event|3916845469833649709|32|[0.0, 0.0, 0.0, -0.2, 0.4, 0.0, -0.2, 0.0]|
+|event_text|event|5047478120541693135|32|[0.0, 0.0, 0.26726, 0.0, 0.26726, 0.0, -0.26726, 0.26726]|
+|event_text|event|6937044607988168430|32|[0.0, 0.0, -0.2582, -0.2582, 0.2582, 0.2582, 0.0, 0.0]|
+|event_text|event|6011239396199102447|32|[0.0, 0.0, -0.22942, 0.22942, 0.0, 0.22942, 0.0, 0.0]|
+|event_text|event|1305081606054211185|32|[0.0, -0.22942, -0.22942, -0.22942, 0.22942, 0.0, -0.45883, -0.22942]|
+|event_text|event|6820270271424507837|32|[0.24254, 0.0, 0.0, 0.0, 0.0, 0.0, -0.24254, 0.0]|
+|event_text|event|8065980567075677550|32|[0.0, 0.0, 0.0, -0.44721, 0.22361, 0.22361, 0.22361, 0.0]|
+|event_text|event|3621841594661482679|32|[0.0, 0.0, 0.0, 0.0, 0.31623, 0.31623, 0.0, -0.31623]|
 |entity_state|entity|1488030737650625042|32|[0.0, 0.0, -0.24254, 0.0, 0.0, 0.24254, 0.0, 0.0]|
 |entity_state|entity|5205088207995267081|32|[0.0, 0.24254, 0.0, -0.24254, 0.24254, 0.0, 0.0, 0.0]|
 |entity_state|entity|5708414255151575681|32|[0.0, 0.33333, 0.33333, 0.0, 0.0, 0.0, 0.0, 0.33333]|
 |entity_state|entity|8967060400784335657|32|[0.0, 0.0, 0.0, -0.44721, 0.0, 0.44721, -0.44721, 0.0]|
 |entity_state|entity|1722827731307680407|32|[0.70711, 0.70711, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]|
-|segment_text|segment|4517584345163647782|32|[0.0, -0.07538, -0.07538, -0.30151, 0.15076, 0.0, -0.30151, 0.0]|
-|segment_text|segment|3595142660925501474|32|[0.0, 0.0, 0.0, -0.3849, 0.0, 0.19245, 0.19245, 0.19245]|
-|segment_text|segment|6679446472544957279|32|[0.0, 0.0, -0.22361, 0.0, 0.22361, 0.22361, 0.0, 0.0]|
-|batch_l0|summary|21524118857008535|32|[0.05083, -0.05083, -0.10167, -0.1525, 0.35583, 0.20333, -0.20333, 0.0]|
-|node_l0|summary|4626625830169563149|32|[0.0, 0.0, 0.0, -0.24434, 0.48868, 0.0, -0.24434, 0.0]|
-|node_l1|summary|1916101716449258884|32|[0.0, 0.0, 0.02529, -0.17706, 0.43, 0.02529, -0.22765, 0.05059]|
-|node_l0|summary|5451123137701072075|32|[0.0, 0.0, 0.0, -0.2325, 0.46499, 0.0, -0.2325, 0.0]|
+|segment_text|segment|7764079713237211877|32|[0.0, -0.07538, -0.07538, -0.30151, 0.15076, 0.0, -0.30151, 0.0]|
+|segment_text|segment|3800208401925403305|32|[0.0, 0.0, 0.0, -0.3849, 0.0, 0.19245, 0.19245, 0.19245]|
+|segment_text|segment|6773554616877480904|32|[0.0, 0.0, -0.22361, 0.0, 0.22361, 0.22361, 0.0, 0.0]|
+|batch_l0|summary|847349191541746959|32|[0.05083, -0.05083, -0.10167, -0.1525, 0.35583, 0.20333, -0.20333, 0.0]|
 |resource_l0|summary|5253826341840929662|32|[-0.08248, -0.08248, -0.08248, -0.57735, 0.24744, 0.0, -0.08248, 0.08248]|
-|node_l1|summary|7794448877417626891|32|[0.0, -0.02736, -0.02736, -0.16415, 0.38302, 0.02736, -0.27359, 0.02736]|
-|node_l0|summary|1886266633781634111|32|[0.0, 0.0, 0.0, -0.25198, 0.50395, 0.0, -0.12599, 0.0]|
-|node_l1|summary|1616491761191208179|32|[0.0, -0.02757, -0.02757, -0.16539, 0.38592, 0.02757, -0.27566, 0.02757]|
-|node_l0|summary|7072998724969009401|32|[0.0, 0.0, 0.0, -0.28571, 0.42857, 0.14286, -0.14286, 0.0]|
-|node_l1|summary|3186282447509310879|32|[0.0, -0.03975, -0.11924, -0.23848, 0.35772, 0.23848, -0.15899, -0.07949]|
 |resource_chunk|resource_chunk|4819398059654939441|32|[-0.07001, -0.07001, -0.07001, -0.56011, 0.21004, -0.07001, -0.07001, 0.14003]|
 |event_text|event|2555347658215328804|32|[0.0, 0.0, -0.08704, -0.43519, 0.26112, 0.0, -0.34815, 0.08704]|
 |entity_state|entity|2397680881691085687|32|[0.0, -0.07762, -0.07762, -0.38808, 0.31046, 0.0, -0.23284, 0.07762]|
 |event_text|event|4540721316824141478|32|[0.0, 0.1, -0.2, -0.6, 0.2, 0.0, -0.3, 0.1]|
 |entity_state|entity|8767243533843172983|32|[0.0, 0.08671, -0.26013, -0.69369, 0.17342, 0.0, -0.26013, 0.08671]|
-|event_text|event|8465022216181362451|32|[0.0, 0.0, 0.0, -0.5, 0.25, 0.0, -0.25, 0.0]|
+|event_text|event|1784531839575460322|32|[0.0, 0.0, 0.0, -0.5, 0.25, 0.0, -0.25, 0.0]|
 |resource_l0|summary|2387919895054058779|32|[0.0, -0.08085, -0.24254, -0.64676, -0.16169, 0.24254, 0.08085, 0.0]|
 |resource_chunk|resource_chunk|456790337710764122|32|[0.0, -0.06681, -0.20045, -0.66815, -0.26726, 0.20045, 0.06681, 0.06681]|
 |event_text|event|3511737526308378556|32|[0.09091, 0.0, -0.27273, -0.54546, -0.36364, 0.36364, -0.09091, 0.0]|
 |entity_state|entity|740070266483831682|32|[0.08333, -0.08333, -0.16667, -0.5, -0.33333, 0.33333, 0.0, 0.0]|
 |event_text|event|4918319429494704554|32|[0.09667, 0.0, -0.29002, -0.58004, -0.29002, 0.3867, -0.09667, 0.0]|
 |entity_state|entity|7914291714241602812|32|[0.08392, -0.08392, -0.25175, -0.58743, -0.25175, 0.41959, 0.0, 0.0]|
-|event_text|event|1659817715217636730|32|[0.0, 0.0, 0.0, -0.57735, 0.0, 0.0, -0.28868, 0.0]|
+|event_text|event|6785988548172821056|32|[0.0, 0.0, 0.0, -0.57735, 0.0, 0.0, -0.28868, 0.0]|
 |resource_l0|summary|8362868875371206370|32|[-0.16903, -0.25355, -0.08452, -0.42258, 0.08452, 0.08452, 0.16903, -0.16903]|
 |resource_chunk|resource_chunk|2418201568328997923|32|[-0.13047, -0.1957, -0.06523, -0.45663, 0.0, 0.06523, 0.13047, -0.06523]|
 |event_text|event|8911507370643628805|32|[-0.09853, -0.19707, -0.09853, -0.19707, 0.0, 0.19707, 0.0, -0.19707]|
 |entity_state|entity|7429634306363123448|32|[-0.0898, -0.26941, -0.0898, -0.1796, 0.0, 0.1796, 0.0, -0.1796]|
 |event_text|event|2637030059605313630|32|[-0.09285, -0.18569, -0.18569, -0.18569, 0.0, 0.09285, -0.09285, -0.27854]|
 |entity_state|entity|3331126048114181129|32|[-0.08085, -0.24254, -0.16169, -0.16169, 0.0, -0.08085, -0.16169, -0.24254]|
-|event_text|event|7516561286953271649|32|[0.0, 0.0, 0.0, -0.35355, 0.0, 0.0, -0.35355, 0.0]|
+|event_text|event|8455914760919162635|32|[0.0, 0.0, 0.0, -0.35355, 0.0, 0.0, -0.35355, 0.0]|
 |resource_l0|summary|3162514970771483214|32|[-0.09285, -0.09285, 0.09285, -0.55709, 0.27854, 0.09285, 0.0, 0.09285]|
+|node_l0|summary|1886266633781634111|32|[0.0, 0.0, 0.0, -0.14434, 0.57735, 0.0, -0.14434, 0.0]|
+|node_l1|summary|1616491761191208179|32|[0.0336, -0.0336, -0.06719, -0.23517, 0.40315, 0.16798, -0.20157, 0.0]|
+|node_l0|summary|7072998724969009401|32|[0.0, 0.0, 0.0, -0.28571, 0.42857, 0.14286, -0.14286, 0.0]|
+|node_l1|summary|3186282447509310879|32|[0.0, -0.03975, -0.11924, -0.23848, 0.35772, 0.23848, -0.15899, -0.07949]|
+|node_l0|summary|4626625830169563149|32|[0.0, 0.0, 0.0, -0.13245, 0.52981, 0.0, -0.13245, 0.0]|
 |resource_chunk|resource_chunk|6051725708133528022|32|[-0.12804, 0.0, 0.25607, -0.64018, 0.32009, 0.0, 0.0, 0.19206]|
+|node_l1|summary|1916101716449258884|32|[0.0, -0.02807, -0.02807, -0.14036, 0.393, 0.05614, -0.25265, 0.02807]|
+|node_l0|summary|5451123137701072075|32|[0.0, 0.0, 0.0, -0.29814, 0.44721, 0.14907, -0.14907, 0.0]|
+|node_l1|summary|7794448877417626891|32|[0.0, -0.03782, -0.11347, -0.22694, 0.37823, 0.22694, -0.15129, -0.07565]|
+|node_l0|summary|2423087115552912795|32|[0.0, -0.11868, 0.0, -0.23736, 0.47471, 0.0, -0.23736, 0.0]|
+|node_l1|summary|8165358132187641623|32|[0.0, -0.06919, 0.02306, -0.18451, 0.46127, 0.04613, -0.23063, 0.02306]|
 |event_text|event|208729723586261235|32|[0.0, -0.10154, 0.0, -0.50767, 0.10154, 0.10154, -0.3046, 0.10154]|
 |entity_state|entity|3166532788072103647|32|[0.0, -0.17025, 0.0, -0.51075, 0.08513, 0.08513, -0.25538, 0.08513]|
 |event_text|event|2974006505943548718|32|[0.0, 0.0, -0.1118, -0.67082, 0.1118, 0.1118, -0.22361, 0.1118]|
 |entity_state|entity|8700460158918732602|32|[0.0, 0.0, -0.18569, -0.74278, 0.09285, 0.09285, -0.18569, 0.09285]|
-|event_text|event|4948898869036228010|32|[0.0, 0.0, 0.33333, -0.33333, 0.33333, 0.0, -0.33333, 0.0]|
+|node_l0|summary|4443347079005396521|32|[0.0, -0.125, 0.0, -0.125, 0.5, 0.125, -0.25, 0.0]|
+|event_text|event|2143931330442076739|32|[0.0, 0.0, 0.33333, -0.33333, 0.33333, 0.0, -0.33333, 0.0]|
+|node_l1|summary|7129763152424808338|32|[0.0, -0.06432, 0.0, -0.28942, 0.48237, 0.12863, -0.16079, 0.06432]|
+|node_l0|summary|9161093819732845678|32|[0.0, -0.32444, 0.0, -0.32444, 0.16222, 0.32444, 0.32444, 0.0]|
+|node_l1|summary|1076018507551928025|32|[-0.04233, -0.21167, 0.0, -0.508, 0.16933, 0.21167, -0.21167, 0.0]|
 |resource_l0|summary|6524626718067131693|32|[0.0, 0.10483, -0.10483, -0.31449, 0.20966, 0.20966, 0.20966, -0.10483]|
 |resource_chunk|resource_chunk|3088140979938095262|32|[0.0, 0.08392, -0.16784, -0.41959, 0.0, 0.16784, 0.16784, -0.08392]|
 |event_text|event|3660941442548591412|32|[0.11471, 0.22942, -0.11471, -0.34412, 0.11471, 0.22942, 0.0, -0.11471]|
 |entity_state|entity|3363991087828924034|32|[0.09017, 0.18033, -0.09017, -0.36067, 0.09017, 0.18033, 0.0, -0.09017]|
 |event_text|event|2993415031816414702|32|[0.14286, 0.14286, -0.14286, -0.28571, 0.14286, 0.28571, 0.0, -0.14286]|
 |entity_state|entity|3702846657716015588|32|[0.13245, 0.0, -0.13245, -0.26491, 0.13245, 0.26491, 0.0, -0.13245]|
-|event_text|event|8412290406781019209|32|[0.0, 0.0, 0.0, -0.33333, 0.33333, 0.0, -0.33333, 0.0]|
-|node_l0|summary|2423087115552912795|32|[-0.4, -0.2, 0.0, -0.2, 0.2, -0.2, 0.2, 0.0]|
-|node_l1|summary|8165358132187641623|32|[-0.03745, 0.0, -0.03745, -0.26215, 0.41195, 0.03745, -0.1498, -0.03745]|
-|node_l0|summary|4443347079005396521|32|[-0.20412, -0.20412, 0.0, -0.40825, 0.20412, 0.0, 0.20412, 0.0]|
-|node_l1|summary|7129763152424808338|32|[-0.03807, 0.0, -0.03807, -0.26649, 0.41876, 0.11421, -0.11421, 0.0]|
-|node_l0|summary|9161093819732845678|32|[0.0, -0.32444, 0.0, -0.32444, 0.16222, 0.32444, 0.32444, 0.0]|
-|node_l1|summary|1076018507551928025|32|[-0.04233, -0.21167, 0.0, -0.508, 0.16933, 0.21167, -0.21167, 0.0]|
+|event_text|event|2786904618296876723|32|[0.0, 0.0, 0.0, -0.33333, 0.33333, 0.0, -0.33333, 0.0]|
 
 ## Secondary Indexes
 
 |index_name|ref_type|ref_hash|chunk_hash|node_path|
 |---|---|---|---|---|
-|event_type:confirmation|event|8135280964260817502|||
-|status:observed|event|8135280964260817502|||
-|source_type:message|event|8135280964260817502|||
-|event_type:confirmation|event|3497090396958777419|||
-|status:observed|event|3497090396958777419|||
-|source_type:message|event|3497090396958777419|||
-|event_type:plan_update|event|2888418282918082562|||
-|status:observed|event|2888418282918082562|||
-|source_type:message|event|2888418282918082562|||
-|event_type:plan_update|event|8874551677504413445|||
-|status:observed|event|8874551677504413445|||
-|source_type:message|event|8874551677504413445|||
-|event_type:dialogue_batch|event|6717215592090782382|||
-|status:observed|event|6717215592090782382|||
-|source_type:message|event|6717215592090782382|||
-|event_type:dialogue_batch|event|5632673477605542627|||
-|status:observed|event|5632673477605542627|||
-|source_type:message|event|5632673477605542627|||
-|event_type:correction|event|6345269472664278351|||
-|status:observed|event|6345269472664278351|||
-|source_type:message|event|6345269472664278351|||
-|event_type:correction|event|4048399091898324876|||
-|status:observed|event|4048399091898324876|||
-|source_type:message|event|4048399091898324876|||
+|event_type:confirmation|event|3916845469833649709|||
+|status:observed|event|3916845469833649709|||
+|source_type:message|event|3916845469833649709|||
+|event_type:confirmation|event|5047478120541693135|||
+|status:observed|event|5047478120541693135|||
+|source_type:message|event|5047478120541693135|||
+|event_type:plan_update|event|6937044607988168430|||
+|status:observed|event|6937044607988168430|||
+|source_type:message|event|6937044607988168430|||
+|event_type:plan_update|event|6011239396199102447|||
+|status:observed|event|6011239396199102447|||
+|source_type:message|event|6011239396199102447|||
+|event_type:dialogue_batch|event|1305081606054211185|||
+|status:observed|event|1305081606054211185|||
+|source_type:message|event|1305081606054211185|||
+|event_type:dialogue_batch|event|6820270271424507837|||
+|status:observed|event|6820270271424507837|||
+|source_type:message|event|6820270271424507837|||
+|event_type:correction|event|8065980567075677550|||
+|status:observed|event|8065980567075677550|||
+|source_type:message|event|8065980567075677550|||
+|event_type:correction|event|3621841594661482679|||
+|status:observed|event|3621841594661482679|||
+|source_type:message|event|3621841594661482679|||
 |event_type:correction|||||
 |classification:batch_memory|||||
 |status:observed|||||
@@ -400,9 +394,9 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |keyword:aurora|resource_fact|4540721316824141478|4819398059654939441||
 |keyword:gpu|resource_fact|4540721316824141478|4819398059654939441||
 |keyword:approval|resource_fact|4540721316824141478|4819398059654939441||
-|event_type:dialogue_batch|event|8465022216181362451|||
-|status:observed|event|8465022216181362451|||
-|source_type:resource|event|8465022216181362451|||
+|event_type:dialogue_batch|event|1784531839575460322|||
+|status:observed|event|1784531839575460322|||
+|source_type:resource|event|1784531839575460322|||
 |source_type:resource|||||
 |resource_type:pdf|||||
 |source_type:resource|resource_chunk|456790337710764122|456790337710764122||
@@ -434,9 +428,9 @@ MATRIXARK_EMBEDDING_PROVIDER=deterministic python3 tools/run_matrixark_message_p
 |keyword:procurement|resource_fact|4918319429494704554|456790337710764122||
 |keyword:runbook|resource_fact|4918319429494704554|456790337710764122||
 |keyword:procedure|resource_fact|4918319429494704554|456790337710764122||
-|event_type:dialogue_batch|event|1659817715217636730|||
-|status:observed|event|1659817715217636730|||
-|source_type:resource|event|1659817715217636730|||
+|event_type:dialogue_batch|event|6785988548172821056|||
+|status:observed|event|6785988548172821056|||
+|source_type:resource|event|6785988548172821056|||
 |source_type:resource|||||
 |resource_type:pdf|||||
 |source_type:resource|resource_chunk|2418201568328997923|2418201568328997923||
@@ -464,7 +458,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
 
 ```json
 {
-  "context_pack_id": "4883294797643375728",
+  "context_pack_id": "4564508273686334856",
   "dropped_refs": {
     "deadline": 0,
     "deadline_exceeded": false,
@@ -817,7 +811,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "backend_retrieval_pushdown": {
       "backend": "local",
       "dropped_by_scope": 0,
-      "dropped_by_type": 205,
+      "dropped_by_type": 194,
       "execution_mode": "adapter_prefilter",
       "native_pushdown": false,
       "record_types": [
@@ -833,14 +827,14 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "skill_registry_update",
         "skill_section"
       ],
-      "returned_records": 383,
-      "scanned_records": 588,
+      "returned_records": 343,
+      "scanned_records": 537,
       "secondary_index_groups_supplied": 1,
       "selected_node_hashes_supplied": 0
     },
     "hard_deadline": {
       "deadline_ms": 120000,
-      "elapsed_ms": 81.45,
+      "elapsed_ms": 65.408,
       "fallback_reason": "",
       "partial_context_pack": false
     },
@@ -901,13 +895,13 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       "temporal_window": {
         "mode": "latest",
-        "reference_time_ms": 1782692771946,
+        "reference_time_ms": 1782693464996,
         "valid_as_of": "now"
       }
     },
     "recall_reinforcement": {
       "protect_ms": 2592000000,
-      "protected_until_ms": 1785284772017,
+      "protected_until_ms": 1785285465055,
       "reinforced_event_count": 18
     },
     "rerank": {
@@ -957,32 +951,32 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "stages": {
         "audit": {
           "budget_ms": 6000,
-          "elapsed_ms": 2.916,
+          "elapsed_ms": 2.898,
           "over_budget": false
         },
         "candidate_fetch": {
           "budget_ms": 24000,
-          "elapsed_ms": 46.657,
+          "elapsed_ms": 39.887,
           "over_budget": false
         },
         "node_traversal": {
           "budget_ms": 18000,
-          "elapsed_ms": 6.259,
+          "elapsed_ms": 4.498,
           "over_budget": false
         },
         "pack": {
           "budget_ms": 18000,
-          "elapsed_ms": 8.049,
+          "elapsed_ms": 7.121,
           "over_budget": false
         },
         "query_understanding": {
           "budget_ms": 18000,
-          "elapsed_ms": 9.529,
+          "elapsed_ms": 4.037,
           "over_budget": false
         },
         "rerank_score": {
           "budget_ms": 36000,
-          "elapsed_ms": 10.832,
+          "elapsed_ms": 9.747,
           "over_budget": false
         }
       }
@@ -998,7 +992,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "freshness_tolerance_ms": 86400000,
       "half_life_ms": 604800000,
-      "max_selected_age_ms": 1360,
+      "max_selected_age_ms": 983,
       "min_selected_time_score": 1.0,
       "older_selected_ref_count": 0,
       "recent_selected_ref_count": 28,
@@ -1007,7 +1001,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "selected_ref_count": 28
     },
     "tree_traversal": {
-      "candidate_records_after_tree": 383,
+      "candidate_records_after_tree": 343,
       "children_scoring_policy": "score_all_children_up_to_hard_cap_then_split_node_layers",
       "cold_events_represented_by_compression": false,
       "enabled": true,
@@ -1068,7 +1062,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "approval_state: the GPU purchase request for Project Aurora after reviewing the Q3 budget = the GPU purchase request for Project Aurora after reviewing the Q3 budget",
       "time_score": 1.0,
       "token_estimate": 25,
-      "updated_at_ms": 1782692770586
+      "updated_at_ms": 1782693464013
     },
     {
       "business_score": 0.5,
@@ -1138,7 +1132,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "# Project Aurora GPU Policy\nDecision: Alice from finance approved the GPU purchase.\nOwner: Bob owns procurement and vendor coordination.\nBudget: The current cap is 45000 dollars.\nDeadline: The purchase order must be ready by July 15, 2026.\nBlocker: Vendor selection must stop if finance approval is missing.",
       "time_score": 1.0,
       "token_estimate": 47,
-      "updated_at_ms": 1782692771533
+      "updated_at_ms": 1782693464635
     },
     {
       "business_score": 0.5,
@@ -1208,7 +1202,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 51,
-      "updated_at_ms": 1782692770818
+      "updated_at_ms": 1782693464186
     },
     {
       "business_score": 0.95,
@@ -1241,7 +1235,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "approval_state: must be attached before vendor selection = must be attached before vendor selection",
       "time_score": 1.0,
       "token_estimate": 13,
-      "updated_at_ms": 1782692770586
+      "updated_at_ms": 1782693464013
     },
     {
       "access_decision": "allowed_by_registry_scope_before_scoring",
@@ -1310,7 +1304,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "resource page=1: Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
       "token_estimate": 54,
-      "updated_at_ms": 1782692770818,
+      "updated_at_ms": 1782693464186,
       "version_state": "current"
     },
     {
@@ -1385,7 +1379,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "resource heading=project-aurora-gpu-policy: # Project Aurora GPU Policy\nDecision: Alice from finance approved the GPU purchase.\nOwner: Bob owns procurement and vendor coordination.\nBudget: The current cap is 45000 dollars.\nDeadline: The purchase order must be ready by July 15, 2026.\nBlocker: Vendor selection must stop if finance approval is missing.",
       "time_score": 1.0,
       "token_estimate": 53,
-      "updated_at_ms": 1782692771533,
+      "updated_at_ms": 1782693464635,
       "version_state": "current"
     },
     {
@@ -1419,7 +1413,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "approval_state: by Alice in finance, pending procurement owner assignment = by Alice in finance, pending procurement owner assignment",
       "time_score": 1.0,
       "token_estimate": 17,
-      "updated_at_ms": 1782692770586
+      "updated_at_ms": 1782693464013
     },
     {
       "business_score": 0.95,
@@ -1452,7 +1446,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "approval_state: attachment = attachment",
       "time_score": 1.0,
       "token_estimate": 3,
-      "updated_at_ms": 1782692770586
+      "updated_at_ms": 1782693464013
     },
     {
       "business_score": 0.9,
@@ -1522,7 +1516,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
       "time_score": 1.0,
       "token_estimate": 43,
-      "updated_at_ms": 1782692771282
+      "updated_at_ms": 1782693464437
     },
     {
       "business_score": 0.5,
@@ -1592,7 +1586,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "# Troubleshooting\nIf vendor selection fails, first verify the finance approval attachment.\nIf the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.\nIf procurement owner is missing, assign Bob before creating a purchase order.",
       "time_score": 1.0,
       "token_estimate": 39,
-      "updated_at_ms": 1782692771657
+      "updated_at_ms": 1782693464791
     },
     {
       "business_score": 0.5,
@@ -1662,7 +1656,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
       "time_score": 1.0,
       "token_estimate": 48,
-      "updated_at_ms": 1782692771413
+      "updated_at_ms": 1782693464544
     },
     {
       "business_score": 0.95,
@@ -1695,7 +1689,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.866563,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 4517584345163647782,
+      "ref_hash": 7764079713237211877,
       "ref_type": "segment",
       "saliency_score": 0.966667,
       "scope": {},
@@ -1706,7 +1700,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "time_score": 1.0,
       "token_estimate": 69,
       "topic": "approval_budget",
-      "updated_at_ms": 1782692770586
+      "updated_at_ms": 1782693464013
     },
     {
       "access_decision": "allowed_by_registry_scope_before_scoring",
@@ -1775,7 +1769,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "resource page=1: Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
       "time_score": 1.0,
       "token_estimate": 51,
-      "updated_at_ms": 1782692771413,
+      "updated_at_ms": 1782693464544,
       "version_state": "current"
     },
     {
@@ -1850,7 +1844,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "resource heading=troubleshooting: # Troubleshooting\nIf vendor selection fails, first verify the finance approval attachment.\nIf the backup quote is used, keep the 45000 dollar cap and cite Alice's approval.\nIf procurement owner is missing, assign Bob before creating a purchase order.",
       "time_score": 1.0,
       "token_estimate": 42,
-      "updated_at_ms": 1782692771657,
+      "updated_at_ms": 1782693464791,
       "version_state": "current"
     },
     {
@@ -1920,7 +1914,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "resource page=1: GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
       "time_score": 1.0,
       "token_estimate": 46,
-      "updated_at_ms": 1782692771282,
+      "updated_at_ms": 1782693464437,
       "version_state": "current"
     },
     {
@@ -1983,7 +1977,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.736204,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 4048399091898324876,
+      "ref_hash": 3621841594661482679,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -1996,7 +1990,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.",
       "time_score": 1.0,
       "token_estimate": 12,
-      "updated_at_ms": 1782692772005
+      "updated_at_ms": 1782693465045
     },
     {
       "business_score": 0.5,
@@ -2058,7 +2052,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.690188,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 6717215592090782382,
+      "ref_hash": 1305081606054211185,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2071,7 +2065,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "user: The deadline is July 15, 2026, and the runbook says finance approval must be attached before vendor selection.",
       "time_score": 1.0,
       "token_estimate": 19,
-      "updated_at_ms": 1782692772005
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2133,7 +2127,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.675467,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 2888418282918082562,
+      "ref_hash": 6937044607988168430,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2146,7 +2140,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "user: Bob will own procurement, and the budget cap is 42000 dollars for the initial GPU batch.",
       "time_score": 1.0,
       "token_estimate": 17,
-      "updated_at_ms": 1782692772006
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2208,7 +2202,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.675044,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 8135280964260817502,
+      "ref_hash": 3916845469833649709,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2221,7 +2215,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.",
       "time_score": 1.0,
       "token_estimate": 17,
-      "updated_at_ms": 1782692772006
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2278,7 +2272,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.638456,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 8465022216181362451,
+      "ref_hash": 1784531839575460322,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2291,7 +2285,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet",
       "time_score": 1.0,
       "token_estimate": 12,
-      "updated_at_ms": 1782692772004
+      "updated_at_ms": 1782693465043
     },
     {
       "business_score": 0.5,
@@ -2353,7 +2347,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.636907,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 6345269472664278351,
+      "ref_hash": 8065980567075677550,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2366,7 +2360,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.",
       "time_score": 1.0,
       "token_estimate": 16,
-      "updated_at_ms": 1782692772005
+      "updated_at_ms": 1782693465045
     },
     {
       "business_score": 0.5,
@@ -2428,7 +2422,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.617821,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 5632673477605542627,
+      "ref_hash": 6820270271424507837,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2441,7 +2435,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.",
       "time_score": 1.0,
       "token_estimate": 15,
-      "updated_at_ms": 1782692772005
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2498,7 +2492,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.591104,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 8412290406781019209,
+      "ref_hash": 2786904618296876723,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2511,7 +2505,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Troubleshooting",
       "time_score": 1.0,
       "token_estimate": 11,
-      "updated_at_ms": 1782692772000
+      "updated_at_ms": 1782693465042
     },
     {
       "business_score": 0.5,
@@ -2568,7 +2562,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.572037,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 4948898869036228010,
+      "ref_hash": 2143931330442076739,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2581,7 +2575,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "tool: Import Markdown resource for MatrixArk parsing: Project Aurora GPU Policy",
       "time_score": 1.0,
       "token_estimate": 11,
-      "updated_at_ms": 1782692772001
+      "updated_at_ms": 1782693465042
     },
     {
       "business_score": 0.5,
@@ -2643,7 +2637,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.568616,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 3497090396958777419,
+      "ref_hash": 5047478120541693135,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2656,7 +2650,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment.",
       "time_score": 1.0,
       "token_estimate": 16,
-      "updated_at_ms": 1782692772006
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2718,7 +2712,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.566451,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 8874551677504413445,
+      "ref_hash": 6011239396199102447,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2731,7 +2725,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "assistant: I will track Bob as procurement owner and the 42000 dollar cap for the initial batch.",
       "time_score": 1.0,
       "token_estimate": 17,
-      "updated_at_ms": 1782692772005
+      "updated_at_ms": 1782693465046
     },
     {
       "business_score": 0.5,
@@ -2788,7 +2782,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.548177,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 1659817715217636730,
+      "ref_hash": 6785988548172821056,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2801,7 +2795,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook",
       "time_score": 1.0,
       "token_estimate": 10,
-      "updated_at_ms": 1782692772004
+      "updated_at_ms": 1782693465043
     },
     {
       "business_score": 0.5,
@@ -2858,7 +2852,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "packing_score": 0.516625,
       "ranking_formula": "Sfinal=(1-wtime-wbusi)*Sorigin+wtime*Stime+wbusi*Sbusi",
       "recall_path": "primary_hybrid",
-      "ref_hash": 7516561286953271649,
+      "ref_hash": 8455914760919162635,
       "ref_type": "event",
       "scope": {
         "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|"
@@ -2871,7 +2865,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "text": "tool: Import PDF resource for MatrixArk parsing: Budget Update Memo",
       "time_score": 1.0,
       "token_estimate": 10,
-      "updated_at_ms": 1782692772002
+      "updated_at_ms": 1782693465043
     }
   ],
   "used_context_tokens": 784
@@ -2904,7 +2898,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "resource_selection": "resource_facts_entities_and_chunks_are_ranked_separately",
     "skill_selection": "skill_section_only"
   },
-  "context_pack_id": "4883294797643375728",
+  "context_pack_id": "4564508273686334856",
   "context_sources_order": [
     "local_context",
     "matrixark_remote_context"
@@ -3260,34 +3254,34 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     {
       "children_scored": 1,
       "children_selected": 1,
-      "dense_score": 0.576023,
+      "dense_score": 0.50607,
       "depth": 1,
       "node_hash": 3263141514618168867,
       "node_path": [
         "tenant:tenant_codex"
       ],
-      "score": 0.787368,
+      "score": 0.762185,
       "selected": true,
       "sparse_score": 0.7857142857142857
     },
     {
       "children_scored": 2,
       "children_selected": 2,
-      "dense_score": 0.515861,
+      "dense_score": 0.671382,
       "depth": 2,
       "node_hash": 623184698193930698,
       "node_path": [
         "tenant:tenant_codex",
         "user:deeproute"
       ],
-      "score": 0.76571,
+      "score": 0.841698,
       "selected": true,
-      "sparse_score": 0.7857142857142857
+      "sparse_score": 0.8571428571428571
     },
     {
       "children_scored": 1,
       "children_selected": 1,
-      "dense_score": 0.594027,
+      "dense_score": 0.605654,
       "depth": 3,
       "node_hash": 3084181658660614334,
       "node_path": [
@@ -3295,14 +3289,14 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user:deeproute",
         "session:debug-message-pdf-session"
       ],
-      "score": 0.79385,
+      "score": 0.798035,
       "selected": true,
       "sparse_score": 0.7857142857142857
     },
     {
       "children_scored": 1,
       "children_selected": 1,
-      "dense_score": 0.571276,
+      "dense_score": 0.498935,
       "depth": 3,
       "node_hash": 1257764480205296887,
       "node_path": [
@@ -3310,9 +3304,9 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user:deeproute",
         "resources"
       ],
-      "score": 0.745659,
+      "score": 0.659617,
       "selected": true,
-      "sparse_score": 0.6428571428571429
+      "sparse_score": 0.42857142857142855
     },
     {
       "children_scored": 0,
@@ -3333,7 +3327,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     {
       "children_scored": 1,
       "children_selected": 1,
-      "dense_score": 0.601836,
+      "dense_score": 0.624327,
       "depth": 4,
       "node_hash": 5984959491336829337,
       "node_path": [
@@ -3342,9 +3336,9 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "resources",
         "project_aurora"
       ],
-      "score": 0.756661,
+      "score": 0.804758,
       "selected": true,
-      "sparse_score": 0.6428571428571429
+      "sparse_score": 0.7857142857142857
     },
     {
       "children_scored": 0,
@@ -3379,7 +3373,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
   "operational_visibility_policy": {
     "audit_mode": "full",
     "audit_sample_rate": 1.0,
-    "audit_sample_value": 0.386573,
+    "audit_sample_value": 0.799076,
     "rich_replay_audit": true,
     "rich_replay_audit_force_reason": "sampled",
     "telemetry_record": true
@@ -3396,7 +3390,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "backend_retrieval_pushdown": {
       "backend": "local",
       "dropped_by_scope": 0,
-      "dropped_by_type": 205,
+      "dropped_by_type": 194,
       "execution_mode": "adapter_prefilter",
       "native_pushdown": false,
       "record_types": [
@@ -3412,14 +3406,14 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "skill_registry_update",
         "skill_section"
       ],
-      "returned_records": 383,
-      "scanned_records": 588,
+      "returned_records": 343,
+      "scanned_records": 537,
       "secondary_index_groups_supplied": 1,
       "selected_node_hashes_supplied": 0
     },
     "hard_deadline": {
       "deadline_ms": 120000,
-      "elapsed_ms": 81.45,
+      "elapsed_ms": 65.408,
       "fallback_reason": "",
       "partial_context_pack": false
     },
@@ -3480,13 +3474,13 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       },
       "temporal_window": {
         "mode": "latest",
-        "reference_time_ms": 1782692771946,
+        "reference_time_ms": 1782693464996,
         "valid_as_of": "now"
       }
     },
     "recall_reinforcement": {
       "protect_ms": 2592000000,
-      "protected_until_ms": 1785284772017,
+      "protected_until_ms": 1785285465055,
       "reinforced_event_count": 18
     },
     "rerank": {
@@ -3521,7 +3515,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
           "entity_type:approval_state",
           "entity_type:confirmation",
           "entity_type:resource_fact",
-          "event_type:
+          "event_ty
 ```
 
 ## Replay
@@ -3542,14 +3536,14 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
     "user_hash": 7836037686236352053,
     "user_id": "deeproute"
   },
-  "context_pack_id": "4883294797643375728",
+  "context_pack_id": "4564508273686334856",
   "events": [
     {
       "account_id": "acct_local",
       "action": "backend.ready",
       "api_key_id": "dev",
-      "audit_id_hash": 6388628894616510428,
-      "created_at_ms": 1782692770148,
+      "audit_id_hash": 5568268180736074616,
+      "created_at_ms": 1782693463666,
       "details": {
         "attempts": null,
         "backend": "local"
@@ -3566,7 +3560,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
       "user_id": "deeproute"
     },
     {
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 1,
       "node_hash": 3263141514618168867,
       "node_name": "tenant:tenant_codex",
@@ -3593,10 +3587,10 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 2,
       "node_hash": 623184698193930698,
       "node_name": "user:deeproute",
@@ -3624,7 +3618,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
       "child_hash": 623184698193930698,
@@ -3634,7 +3628,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user:deeproute"
       ],
       "child_ref_hash": 30283733866140312,
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 2,
       "parent_hash": 3263141514618168867,
       "parent_path": [
@@ -3659,10 +3653,10 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 3,
       "node_hash": 3084181658660614334,
       "node_name": "session:debug-message-pdf-session",
@@ -3691,7 +3685,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
       "child_hash": 3084181658660614334,
@@ -3702,7 +3696,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "session:debug-message-pdf-session"
       ],
       "child_ref_hash": 3331542308452180010,
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 3,
       "parent_hash": 623184698193930698,
       "parent_path": [
@@ -3728,10 +3722,10 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 4,
       "node_hash": 2100209595829882121,
       "node_name": "conversation:project_aurora",
@@ -3761,7 +3755,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
       "child_hash": 2100209595829882121,
@@ -3773,7 +3767,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "conversation:project_aurora"
       ],
       "child_ref_hash": 472388797698908023,
-      "created_at_ms": 1782692770149,
+      "created_at_ms": 1782693463667,
       "depth": 4,
       "parent_hash": 3084181658660614334,
       "parent_path": [
@@ -3800,7 +3794,7 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693463667
     },
     {
       "context_node_key": [
@@ -3809,12 +3803,13 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "",
         ""
       ],
-      "node_hash": 2100209595829882121,
+      "node_hash": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
         "user:deeproute",
-        "session:debug-message-pdf-session",
-        "conversation:project_aurora"
+        "resources",
+        "project_aurora",
+        "gpu_procurement"
       ],
       "record_type": "context_summary",
       "scope": {
@@ -3835,62 +3830,63 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "user_hash": 7836037686236352053,
         "user_id": "deeproute"
       },
-      "source_event_hash": 8135280964260817502,
+      "source_event_hash": 2786904618296876723,
       "summary_hash": 8695652974415713980,
-      "summary_text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget.",
+      "summary_text": "user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistant: Recorded: Project Aurora GPU purchase is approved by Alice in finance, pending procurement owner assignment. user: Alice from finance approved the GPU purchase request for...",
       "summary_type": "session_l0",
-      "updated_at_ms": 1782692770149
+      "updated_at_ms": 1782693464791
     },
     {
       "dim": 32,
       "embedding_type": "session_l0",
       "model": "matrixark-local-token-hash-v1",
-      "node_hash": 2100209595829882121,
-      "node_id": 2100209595829882121,
+      "node_hash": 1737304210274426578,
+      "node_id": 1737304210274426578,
       "node_path": [
         "tenant:tenant_codex",
         "user:deeproute",
-        "session:debug-message-pdf-session",
-        "conversation:project_aurora"
+        "resources",
+        "project_aurora",
+        "gpu_procurement"
       ],
       "record_type": "context_embedding",
       "ref_hash": 8695652974415713980,
       "ref_type": "summary",
       "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|",
-      "updated_at_ms": 1782692770149,
+      "updated_at_ms": 1782693464791,
       "vector": [
         0.0,
         0.0,
+        0.049938,
+        -0.19975,
+        0.399501,
         0.0,
-        -0.2,
-        0.4,
-        0.0,
-        -0.2,
-        0.0,
-        0.0,
-        0.0,
-        -0.4,
-        0.2,
-        0.0,
-        0.2,
+        -0.249688,
+        0.049938,
         0.0,
         0.0,
-        0.4,
+        -0.399501,
+        0.249688,
+        0.049938,
+        0.149813,
+        0.049938,
+        0.0,
+        0.449439,
         0.0,
         0.0,
-        -0.2,
-        0.0,
-        -0.2,
-        0.0,
-        0.0,
-        0.2,
-        -0.4,
-        0.0,
-        -0.2,
+        -0.149813,
+        -0.049938,
+        -0.19975,
         0.0,
         0.0,
+        0.099875,
+        -0.349563,
+        -0.049938,
+        -0.19975,
         0.0,
-        0.2
+        0.049938,
+        0.0,
+        0.19975
       ]
     },
     {
@@ -3906,48 +3902,14 @@ Retrieval uses the same scope as ingestion. The intended order is: understand th
         "conversation:project_aurora"
       ],
       "record_type": "context_embedding",
-      "ref_hash": 8135280964260817502,
+      "ref_hash": 3916845469833649709,
       "ref_type": "event",
       "scope_key": "t=2466697514329931826|u=7836037686236352053|s=7498925135890267938|",
-      "updated_at_ms": 1782692770149,
+      "updated_at_ms": 1782693463667,
       "vector": [
         0.0,
         0.0,
         0.0,
         -0.2,
-        0.4,
-        0.0,
-        -0.2,
-        0.0,
-        0.0,
-        0.0,
-        -0.4,
-        0.2,
-        0.0,
-        0.2,
-        0.0,
-        0.0,
-        0.4,
-        0.0,
-        0.0,
-        -0.2,
-        0.0,
-        -0.2,
-        0.0,
-        0.0,
-        0.2,
-        -0.4,
-        0.0,
-        -0.2,
-        0.0,
-        0.0,
-        0.0,
-        0.2
-      ]
-    },
-    {
-      "debug_payload": {
-        "envelope": {
-          "ingestion_time_ms": 1782692770149,
-          
+        0.4
 ```

@@ -28,6 +28,7 @@ from tools.matrixark_mcp_server import (  # noqa: E402
     embedding_execution_mode_name,
     embedding_model_name,
 )
+from tools import matrixark_mcp_core as mcp_core  # noqa: E402
 
 
 Json = dict[str, Any]
@@ -574,6 +575,9 @@ def write_outputs(
 
 
 def main() -> int:
+    mcp_core.ENABLE_CONTEXT_DEBUG_RECORDS = True
+    mcp_core.ENABLE_CONTEXT_REPLAY = True
+    mcp_core.ENABLE_SUMMARY_REFRESH_AUDIT = True
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-dir",
@@ -737,6 +741,7 @@ def main() -> int:
             "query": QUERY,
             "scope": scope,
             "max_context_tokens": args.max_context_tokens,
+            "audit_mode": "full",
             "ranking": {
                 "weights": {"time": 0.15, "business": 0.1},
                 "business_type_weights": {"approval": 1.0, "deadline": 0.95, "policy": 0.9, "procedure": 0.9},
@@ -752,6 +757,7 @@ def main() -> int:
         {
             "scope": scope,
             "context_pack_id": retrieve_result.get("context_pack_id", ""),
+            "enable_replay": True,
         },
     )
     trace["calls"].append({"tool": "matrixark_replay", "result": replay_result})

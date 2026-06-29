@@ -60,9 +60,10 @@ class MatrixArkSummaryWorkerTest(unittest.TestCase):
             self.assertIn("node_l1", summary_types)
             self.assertIn("node_l0", embedding_types)
             self.assertIn("node_l1", embedding_types)
+            dirty_markers = [r for r in records if r.get("record_type") == "context_summary_dirty"]
+            self.assertTrue(any(r.get("status") == "completed" for r in dirty_markers))
             audits = [r for r in records if r.get("record_type") == "context_summary_refresh_audit"]
-            self.assertTrue(audits)
-            self.assertTrue(any("node_l1" in r.get("generated_summary_types", []) for r in audits))
+            self.assertFalse(audits)
 
 
 if __name__ == "__main__":

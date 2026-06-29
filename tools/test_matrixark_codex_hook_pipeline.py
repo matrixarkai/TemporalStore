@@ -281,6 +281,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
                     "scope": scope,
                     "query": "Which policy requires finance approval and which skill inspects replay evidence?",
                     "max_context_tokens": 1200,
+                    "audit_mode": "full",
                 },
             )
             ref_types = {str(ref.get("ref_type")) for ref in pack["selected_refs"]}
@@ -293,7 +294,7 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             pushdown = pack["recall_policy"]["backend_retrieval_pushdown"]
             self.assertEqual("adapter_prefilter", pushdown["execution_mode"])
             self.assertGreater(pushdown["dropped_by_type"], 0)
-            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"]})
+            replay = server.call_tool("matrixark_replay", {"scope": scope, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
             audits = [row for row in replay["events"] if row.get("record_type") == "context_pack_audit"]
             self.assertTrue(any(row.get("context_pack_id") == pack["context_pack_id"] for row in audits))
 

@@ -233,9 +233,10 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "api_key": admin_key,
                 "scope": {"account_id": "acct_audit", "tenant_id": "tenant_audit", "user_id": "alice", "session_id": "s1"},
                 "query": "what did Alice approve?",
+                "audit_mode": "full",
             },
         )
-        server.call_tool("matrixark_replay", {"api_key": admin_key, "context_pack_id": pack["context_pack_id"]})
+        server.call_tool("matrixark_replay", {"api_key": admin_key, "context_pack_id": pack["context_pack_id"], "enable_replay": True})
         portal = server.call_tool(
             "matrixark_management_portal",
             {"api_key": admin_key, "scope": {"account_id": "acct_audit", "tenant_id": "tenant_audit", "user_id": "alice"}},
@@ -442,7 +443,7 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             self.assertEqual("matrixark_ingestion_dashboard", dashboard["tool"])
             self.assertEqual("ok", dashboard["status"])
             self.assertIn("rows", dashboard["result"])
-            replay = post("/api/replay", {"arguments": {"api_key": api_key, "context_pack_id": pack_id}})
+            replay = post("/api/replay", {"arguments": {"api_key": api_key, "context_pack_id": pack_id, "enable_replay": True}})
             self.assertEqual("matrixark_replay", replay["tool"])
             self.assertEqual(pack_id, replay["result"]["context_pack_id"])
             audit = post(
