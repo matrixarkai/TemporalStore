@@ -53,6 +53,24 @@ RESOURCE_EVENTS = {
 }
 
 
+def selected_ref_count_from_retrieve(pack: Json | None) -> int:
+    if not isinstance(pack, dict):
+        return 0
+    refs = pack.get("selected_refs")
+    if isinstance(refs, list):
+        return len(refs)
+    groups = pack.get("selected_ref_groups")
+    if isinstance(groups, list):
+        total = 0
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            refs_in_group = group.get("refs", [])
+            total += int(group.get("count") or (len(refs_in_group) if isinstance(refs_in_group, list) else 0))
+        return total
+    return 0
+
+
 def normalized_event_name(event: str) -> str:
     return "".join(ch for ch in event.lower() if ch.isalnum() or ch == "_")
 
@@ -672,7 +690,7 @@ def main() -> int:
                 "resource_type": resource_type,
                 "retrieve": {
                     "context_pack_id": retrieve.get("context_pack_id"),
-                    "selected_ref_count": len(retrieve.get("selected_refs", [])) if retrieve else 0,
+                    "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
                     "used_context_tokens": retrieve.get("used_context_tokens", 0) if retrieve else 0,
                 },
                 "session_commit": {

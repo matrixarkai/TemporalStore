@@ -28,6 +28,7 @@ try:
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        selected_ref_count_from_retrieve,
         validate_hook_backend_policy,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
@@ -41,6 +42,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         payload_session_candidate,
         payload_text,
         read_stdin_payload,
+        selected_ref_count_from_retrieve,
         validate_hook_backend_policy,
     )
 
@@ -568,7 +570,7 @@ def main() -> int:
                 "resource_type": resource_type,
                 "retrieved": {
                     "context_pack_id": retrieve.get("context_pack_id"),
-                    "selected_ref_count": len(retrieve.get("selected_refs", [])) if retrieve else 0,
+                    "selected_ref_count": selected_ref_count_from_retrieve(retrieve),
                     "used_context_tokens": retrieve.get("used_context_tokens", 0) if retrieve else 0,
                 },
                 "committed": {
