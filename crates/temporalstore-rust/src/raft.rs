@@ -33,8 +33,10 @@ use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 
 mod membership;
+mod byteraft;
 mod readiness;
 use bytes::Bytes;
+pub use byteraft::*;
 pub use membership::*;
 pub use readiness::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
