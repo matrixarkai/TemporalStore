@@ -1369,7 +1369,7 @@ class MatrixArkLocalAdapter:
                         "name": message.get("name", ""),
                         "content": message.get("content", ""),
                         "summary_text": record.get("summary_text", ""),
-                        "classification": extraction.get("classification", ""),
+                        "classification": non_default_classification(extraction.get("classification", "")),
                         "event_type": extraction.get("event_type", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
@@ -1437,7 +1437,7 @@ class MatrixArkLocalAdapter:
                         "event_id_hash": record.get("event_id_hash", 0),
                         "text": record.get("text", ""),
                         "summary_text": record.get("summary_text", ""),
-                        "classification": record.get("internal_extraction", {}).get("classification", ""),
+                        "classification": non_default_classification(record.get("internal_extraction", {}).get("classification", "")),
                         "event_type": record.get("event_type", record.get("internal_extraction", {}).get("event_type", "")),
                         "source_chunk_hash": record.get("source_chunk_hash", 0),
                         "resource_hash": record.get("resource_hash", 0),
@@ -2863,7 +2863,7 @@ class MatrixArkLocalAdapter:
                 extraction.get("indexes")
                 or [
                     context_index_name("event_type", extraction.get("event_type") or infer_event_type(text)),
-                    context_index_name("classification", extraction.get("classification")),
+                    context_index_name("classification", non_default_classification(extraction.get("classification"))),
                     context_index_name("status", extraction.get("status") or "observed"),
                     context_index_name("source_type", envelope["kind"]),
                 ]
