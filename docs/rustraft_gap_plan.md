@@ -8,8 +8,10 @@ and observable apply lag.
 
 ## What Is Implemented Now
 
-- `crates/rustraft` is a standalone Rust library consumed by
-  `crates/temporalstore-rust`.
+- `RustRaft` now lives in its own repository:
+  `https://github.com/bjmeetsfo/RustRaft`.
+- `crates/temporalstore-rust` consumes the external `rustraft` crate through a
+  pinned git dependency.
 - The library owns:
   - `RustRaftSemanticRequirement`
   - `RustRaftParityContract`
@@ -28,17 +30,18 @@ and observable apply lag.
 
 | Gap | Why It Matters | Target Implementation | Shared Gate |
 |---|---|---|---|
-| Native log runtime | The contract is now separate, but runtime code still lives inside `temporalstore-rust`. | Move reusable log entry, hard-state, membership, snapshot-floor, and read-index primitives into `crates/rustraft`. | RustRaft unit tests plus TemporalStore integration tests. |
+| Native log runtime | The contract is now separate, but runtime code still lives inside `temporalstore-rust`. | Move reusable log entry, hard-state, membership, snapshot-floor, and read-index primitives into the `RustRaft` repo. | RustRaft unit tests plus TemporalStore integration tests. |
 | Transport abstraction | Production data-node and metaserver paths need a stable RPC contract independent of the app crate. | Add RustRaft transport traits for append, vote, install-snapshot, and read-index. | Shared Raft transport contract cases. |
 | Snapshot lifecycle | Snapshot floor, chunk retry, stale chunk rejection, and tail catch-up are still tested mostly through TemporalStore. | Add library-level snapshot state machine and fault tests. | `raft_rustraft_snapshot_lifecycle_depth`. |
-| Membership workflow | Learner catch-up, promote, remove, transfer leader, and joint membership need a reusable library state model. | Add membership planner/state transitions to `crates/rustraft`; TemporalStore metaserver consumes it. | `raft_rustraft_leader_transfer_high_write_fault_harness` and membership cases. |
+| Membership workflow | Learner catch-up, promote, remove, transfer leader, and joint membership need a reusable library state model. | Add membership planner/state transitions to the `RustRaft` repo; TemporalStore metaserver consumes it. | `raft_rustraft_leader_transfer_high_write_fault_harness` and membership cases. |
 | Metrics model | Runtime metrics are emitted in TemporalStore-specific structures. | Add RustRaft metric names and status snapshots so C++ and Rust deployments share dashboards. | Grafana/Prometheus parity checks. |
 | Fault harness API | Fault cases are currently driven by TemporalStore harnesses. | Add a library-level deterministic harness for partitions, packet loss, slow WAL, restart, compaction, and snapshot install. | `raft_rustraft_*_fault_harness` cases. |
 | Storage adapter boundary | Durable storage remains TemporalStore-specific. | Define RustRaft storage traits for log append/read, hard state, snapshots, and tombstoned compacted entries. | Storage recovery and compaction gates. |
 
 ## Implementation Order
 
-1. Keep `crates/rustraft` as the stable public RustRaft contract crate.
+1. Keep `https://github.com/bjmeetsfo/RustRaft` as the stable public RustRaft
+   contract crate.
 2. Move pure contract/state types first; keep TemporalStore process and storage code
    where it is until the library boundary is stable.
 3. Add RustRaft transport and storage traits without changing production behavior.
@@ -57,4 +60,3 @@ and observable apply lag.
 - This step does not claim production consensus replacement by itself. It creates
   the reusable Rust library boundary and keeps the existing TemporalStore tests as
   the proof path.
-

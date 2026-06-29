@@ -34,12 +34,10 @@ AREAS: tuple[ReadinessArea, ...] = (
         name="rustraft_library_boundary",
         evidence=(
             Evidence(
-                "crates/rustraft/src/lib.rs",
+                "crates/temporalstore-rust/Cargo.toml",
                 (
-                    "pub trait RustRaftReadinessEvidence",
-                    "pub struct RustRaftReadinessSnapshot",
-                    "pub fn rustraft_parity_contract",
-                    "pub fn rustraft_parity_report",
+                    'rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git"',
+                    'rev = "c7b0819"',
                 ),
             ),
             Evidence(
