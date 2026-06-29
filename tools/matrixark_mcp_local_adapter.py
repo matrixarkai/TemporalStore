@@ -1400,7 +1400,8 @@ class MatrixArkLocalAdapter:
                         "requested_raw_uri": record.get("requested_raw_uri", ""),
                         "resource_type": record.get("resource_type", ""),
                         "resource_version": record.get("resource_version", ""),
-                        "source_ref": record.get("source_ref", ""),
+                        "raw_uri_hash": record.get("raw_uri_hash", 0),
+                        "source_locator": record.get("source_locator", record.get("metadata", {}).get("source_locator", "")),
                         "unit_kind": record.get("unit_kind", record.get("metadata", {}).get("unit_kind", "")),
                         "token_estimate": record.get("token_estimate", 0),
                         "chunk_count": record.get("chunk_count", 0),
@@ -1439,7 +1440,8 @@ class MatrixArkLocalAdapter:
                         "classification": record.get("internal_extraction", {}).get("classification", ""),
                         "event_type": record.get("event_type", record.get("internal_extraction", {}).get("event_type", "")),
                         "source_chunk_hash": record.get("source_chunk_hash", 0),
-                        "source_ref": record.get("source_ref", ""),
+                        "resource_hash": record.get("resource_hash", 0),
+                        "source_locator": record.get("source_locator", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
                         "scope": record.get("envelope", {}).get("scope", record.get("scope", {})),
@@ -1457,6 +1459,8 @@ class MatrixArkLocalAdapter:
                         "status": record.get("status", ""),
                         "source_event_hash": record.get("source_event_hash", 0),
                         "source_chunk_hash": record.get("source_chunk_hash", 0),
+                        "resource_hash": record.get("resource_hash", 0),
+                        "source_locator": record.get("source_locator", ""),
                         "node_hash": record.get("node_hash", 0),
                         "node_path": record.get("node_path", []),
                         "scope": record.get("scope", {}),
@@ -2377,8 +2381,10 @@ class MatrixArkLocalAdapter:
                         "updated_at_ms": envelope["ingestion_time_ms"],
                     }
                 )
+            resource_manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
+            raw_uri_hash = stable_hash(raw_uri)
             if envelope["kind"] == "resource":
-                manifest_hash = stable_hash(f"resource_manifest:{raw_uri}:{node_hash}")
+                manifest_hash = resource_manifest_hash
                 self.append(
                     {
                         "record_type": "resource_manifest",
@@ -2442,7 +2448,9 @@ class MatrixArkLocalAdapter:
                 )
             for chunk, vector in zip(parsed_chunks, chunk_vectors):
                 resource_chunk_hashes.append(chunk.chunk_hash)
-                chunk_metadata = serving_resource_metadata(chunk.metadata)
+                source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
+                chunk_metadata_source = {**chunk.metadata, "source_locator": source_locator}
+                chunk_metadata = serving_resource_metadata(chunk_metadata_source)
                 chunk_debug_metadata = debug_resource_metadata(chunk.metadata)
                 if skill_hash is not None:
                     self.append(
@@ -2453,7 +2461,9 @@ class MatrixArkLocalAdapter:
                             "section_hash": chunk.chunk_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
-                            "source_ref": chunk.source_ref,
+                            "resource_hash": skill_hash,
+                            "raw_uri_hash": raw_uri_hash,
+                            "source_locator": source_locator,
                             "heading": chunk_metadata.get("heading", ""),
                             "text": chunk.text,
                             "token_estimate": chunk.token_estimate,
@@ -2471,9 +2481,10 @@ class MatrixArkLocalAdapter:
                         "chunk_hash": chunk.chunk_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
-                        "raw_uri": raw_uri,
+                        "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
+                        "raw_uri_hash": raw_uri_hash,
                         "resource_type": chunk_metadata.get("resource_type") or resource_type,
-                        "source_ref": chunk.source_ref,
+                        "source_locator": source_locator,
                         "text": chunk.text,
                         "token_estimate": chunk.token_estimate,
                         "metadata": chunk_metadata,
@@ -2494,7 +2505,10 @@ class MatrixArkLocalAdapter:
                             "import_task_hash": resource_import_task_hash,
                             "node_hash": node_hash,
                             "node_path": node_path,
+                            "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
+                            "raw_uri_hash": raw_uri_hash,
                             "raw_uri": raw_uri,
+                            "source_locator": source_locator,
                             "source_ref": chunk.source_ref,
                             "metadata_debug": chunk_debug_metadata,
                             "text_preview": clip_context_text(chunk.text),
@@ -2563,7 +2577,8 @@ class MatrixArkLocalAdapter:
                             "ref_type": "skill_section" if skill_hash is not None else "resource_chunk",
                             "ref_hash": chunk.chunk_hash,
                             "chunk_hash": chunk.chunk_hash,
-                            "source_ref": chunk.source_ref,
+                            "resource_hash": resource_manifest_hash if skill_hash is None else skill_hash,
+                            "source_locator": source_locator,
                             "node_hash": node_hash,
                             "node_path": node_path,
                             "scope": envelope["scope"],
@@ -2573,7 +2588,8 @@ class MatrixArkLocalAdapter:
             resource_fact_records: list[Json] = []
             fact_chunks = [chunk for chunk in parsed_chunks if skill_hash is None and should_extract_resource_fact(chunk.text, chunk.metadata)][:MAX_RESOURCE_FACT_CHUNKS]
             for chunk in fact_chunks:
-                chunk_metadata = serving_resource_metadata(chunk.metadata)
+                source_locator = source_locator_from_ref(chunk.source_ref, raw_uri)
+                chunk_metadata = serving_resource_metadata({**chunk.metadata, "source_locator": source_locator})
                 for fact_extraction in extract_resource_facts(
                     chunk,
                     chunk_metadata=chunk_metadata,
@@ -2598,7 +2614,8 @@ class MatrixArkLocalAdapter:
                             "envelope": {**envelope, "kind": "resource_fact"},
                             "internal_extraction": fact_extraction,
                             "source_chunk_hash": chunk.chunk_hash,
-                            "source_ref": chunk.source_ref,
+                            "resource_hash": resource_manifest_hash,
+                            "source_locator": source_locator,
                             "resource_version": resource_version_value,
                             "scope": envelope["scope"],
                             "updated_at_ms": envelope["ingestion_time_ms"],
@@ -2637,10 +2654,10 @@ class MatrixArkLocalAdapter:
                             "state": entity_state,
                             "confidence": fact_extraction.get("confidence", 0.78),
                             "operator": "LATEST",
-                            "source_refs": [chunk.source_ref],
                             "source_event_ids": [fact_event_hash],
                             "source_chunk_hash": chunk.chunk_hash,
-                            "source_ref": chunk.source_ref,
+                            "resource_hash": resource_manifest_hash,
+                            "source_locator": source_locator,
                             "resource_version": resource_version_value,
                             "updated_at_ms": envelope["ingestion_time_ms"],
                         }
@@ -3709,16 +3726,24 @@ class MatrixArkLocalAdapter:
         retrieval_scan_stats = retrieval_record_result.get("scan_stats", {})
         skill_controls = self.latest_skill_controls(records)
         include_superseded_resources = bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False))
-        latest_resource_version_by_uri: dict[str, str] = {}
+        latest_resource_version_by_hash: dict[int, str] = {}
+        resource_uri_by_hash: dict[int, str] = {}
         for manifest in reversed(records):
             if manifest.get("record_type") != "resource_manifest":
                 continue
             if not scope_matches(manifest.get("scope", {}), scope):
                 continue
+            try:
+                resource_hash_key = int(manifest.get("resource_hash") or 0)
+            except (TypeError, ValueError):
+                resource_hash_key = 0
             raw_uri_key = str(manifest.get("raw_uri") or "")
             resource_version_key = str(manifest.get("resource_version") or "")
-            if raw_uri_key and resource_version_key and raw_uri_key not in latest_resource_version_by_uri:
-                latest_resource_version_by_uri[raw_uri_key] = resource_version_key
+            if resource_hash_key:
+                if raw_uri_key and resource_hash_key not in resource_uri_by_hash:
+                    resource_uri_by_hash[resource_hash_key] = raw_uri_key
+                if resource_version_key and resource_hash_key not in latest_resource_version_by_hash:
+                    latest_resource_version_by_hash[resource_hash_key] = resource_version_key
         finish_retrieval_stage("candidate_fetch", stage_started_perf)
         stage_started_perf = time.perf_counter()
         if deadline_exceeded():
@@ -4273,6 +4298,13 @@ class MatrixArkLocalAdapter:
                 control = skill_controls.get(parent_skill_hash, {})
                 if str(control.get("status") or "active") != "active":
                     continue
+                resource_hash = parent_skill_hash
+                raw_uri_value = str(record.get("raw_uri") or "")
+                source_locator = str(record.get("source_locator") or "")
+                citation = str(record.get("source_ref") or source_ref_from_locator(raw_uri_value, source_locator))
+                resource_version_value = str(record.get("metadata", {}).get("resource_version") or record.get("resource_version") or "")
+                version_state = "current"
+                is_superseded_version = False
                 text = f"skill section {record.get('heading', '')}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = "skill"
@@ -4281,9 +4313,12 @@ class MatrixArkLocalAdapter:
                 ref_type = "resource_chunk"
                 ref_hash = int(record.get("chunk_hash") or 0)
                 metadata = record.get("metadata", {})
-                raw_uri_value = str(record.get("raw_uri") or "")
+                resource_hash = int(record.get("resource_hash") or 0)
+                raw_uri_value = str(record.get("raw_uri") or resource_uri_by_hash.get(resource_hash, ""))
+                source_locator = str(record.get("source_locator") or metadata.get("source_locator") or "")
+                citation = str(record.get("source_ref") or source_ref_from_locator(raw_uri_value, source_locator))
                 resource_version_value = str(metadata.get("resource_version") or record.get("resource_version") or "")
-                latest_version = latest_resource_version_by_uri.get(raw_uri_value, resource_version_value)
+                latest_version = latest_resource_version_by_hash.get(resource_hash, resource_version_value)
                 is_superseded_version = bool(
                     resource_version_value
                     and latest_version
@@ -4292,7 +4327,8 @@ class MatrixArkLocalAdapter:
                 if is_superseded_version and not include_superseded_resources:
                     secondary_index_dropped_count += 1
                     continue
-                text = f"resource {raw_uri_value} {record.get('source_ref', '')}: {record.get('text', '')}"
+                version_state = "historical" if is_superseded_version else "current"
+                text = f"resource {source_locator}: {record.get('text', '')}"
                 embedding_score = cosine(query_embedding, resource_embedding_vectors.get(ref_hash, embedding_for_text(text)))
                 business_type = str(record.get("resource_type") or "resource")
             sparse_score = sparse_lexical_score(query_terms, text)
@@ -4321,17 +4357,17 @@ class MatrixArkLocalAdapter:
                         ),
                         "event_type": business_type,
                         "context_class": ref_type,
-                        "raw_uri": record.get("raw_uri", ""),
-                        "source_ref": record.get("source_ref", ""),
+                        "resource_hash": resource_hash,
+                        "source_locator": source_locator,
                         "resource_type": record.get("resource_type", ""),
-                        "resource_version": metadata.get("resource_version", ""),
+                        "resource_version": resource_version_value,
                         "supersedes_chunk_hash": metadata.get("supersedes_chunk_hash"),
-                        "version_state": "historical" if ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", "")) else "current",
-                        "stale_or_superseded": bool(ref_type == "resource_chunk" and metadata.get("resource_version") != latest_resource_version_by_uri.get(str(record.get("raw_uri") or ""), metadata.get("resource_version", ""))),
+                        "version_state": version_state,
+                        "stale_or_superseded": is_superseded_version,
                         "access_decision": "allowed_by_registry_scope_before_scoring",
                         "access_scope": candidate_access_scope(record),
                         "deployment_scope": record.get("deployment_scope", "local"),
-                        "citation": record.get("source_ref", ""),
+                        "citation": citation,
                         "metadata": metadata,
                         "scope": record.get("scope", {}),
                         "updated_at_ms": record.get("updated_at_ms", now_ms()),
