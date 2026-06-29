@@ -985,6 +985,16 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub stale_scheduler_token_rejected: bool,
     #[serde(default)]
     pub data_node_membership_results_ready: bool,
+    #[serde(default)]
+    pub scheduler_mutations_proposed_through_process_api: bool,
+    #[serde(default)]
+    pub scheduler_task_replay_from_raft_log_observed: bool,
+    #[serde(default)]
+    pub membership_mutations_proposed_through_process_api: bool,
+    #[serde(default)]
+    pub data_node_membership_workflow_report_attached: bool,
+    #[serde(default)]
+    pub data_node_raft_group_results_observed: bool,
     pub read_index_validated: bool,
     pub snapshot_install_validated: bool,
     pub recovered_after_restart: bool,
@@ -1010,6 +1020,24 @@ pub struct MetaOwnedDataRaftMembershipReport {
     pub scale_down_validated: bool,
     pub secondary_replication_validated: bool,
     pub networked_process_api_used: bool,
+    #[serde(default)]
+    pub scheduler_process_api_calls_observed: u64,
+    #[serde(default)]
+    pub data_node_membership_apply_process_api_calls_observed: u64,
+    #[serde(default)]
+    pub data_node_raft_group_process_nodes_observed: usize,
+    #[serde(default)]
+    pub data_node_raft_group_commit_indexes_observed: Vec<u64>,
+    #[serde(default)]
+    pub learner_add_process_api_observed: bool,
+    #[serde(default)]
+    pub catchup_verification_process_api_observed: bool,
+    #[serde(default)]
+    pub promote_process_api_observed: bool,
+    #[serde(default)]
+    pub leader_transfer_process_api_observed: bool,
+    #[serde(default)]
+    pub voter_remove_process_api_observed: bool,
     pub persisted_through_meta_raft_replay: bool,
     pub ready: bool,
     pub blockers: Vec<String>,
