@@ -24,6 +24,16 @@ pub struct ShardCompactionReport {
     pub object_page_pack_group_count: usize,
     pub stale_page_segment_ids: Vec<u64>,
     #[serde(default)]
+    pub reclaimable_stale_page_segment_count: usize,
+    #[serde(default)]
+    pub model_policy_family_count: usize,
+    #[serde(default)]
+    pub tombstone_policy_model_count: usize,
+    #[serde(default)]
+    pub stale_density_policy_model_count: usize,
+    #[serde(default)]
+    pub layout_aware_policy_model_count: usize,
+    #[serde(default)]
     pub rewritten_object_pages: usize,
     #[serde(default)]
     pub slot_layout_transition_count: u64,

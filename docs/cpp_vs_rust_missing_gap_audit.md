@@ -2187,7 +2187,10 @@ it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and
 tombstone object preservation. Per-model policy rows identify stale-density
 triggers, tombstone-compaction triggers, and layout-aware rewrite requirements
-for string/hash/set/timestamped/Risk/Context sidecar pages. Rust now also has a StorageManager-style loop
+for string/hash/set/timestamped/Risk/Context sidecar pages. The report includes
+aggregate policy-family counts and reclaimable stale-segment counts, and the
+shared test verifies index summaries move to the compacted segment while old
+segments become reclaimable. Rust now also has a StorageManager-style loop
 report covering prepare, reclaim, evict, expire, compact, and index-GC phases.
 Rust now has a merged dump/load ownership policy report that coordinates
 dirty-slot dump selection, manifest checksum/generation validation, load

@@ -5396,6 +5396,23 @@ impl TemporalEngine {
             .difference(&after_segments)
             .copied()
             .collect::<Vec<_>>();
+        let reclaimable_stale_page_segment_count = stale_page_segment_ids.len();
+        let model_policy_family_count = before.model_policies.len();
+        let tombstone_policy_model_count = before
+            .model_policies
+            .iter()
+            .filter(|policy| policy.tombstone_compaction_triggered)
+            .count();
+        let stale_density_policy_model_count = before
+            .model_policies
+            .iter()
+            .filter(|policy| policy.stale_density_triggered)
+            .count();
+        let layout_aware_policy_model_count = before
+            .model_policies
+            .iter()
+            .filter(|policy| policy.layout_aware_rewrite_required)
+            .count();
         let index_bytes = serde_json::to_vec_pretty(shard)
             .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
         self.persist_index_bytes(shard_id, &index_bytes)
@@ -5441,6 +5458,8 @@ impl TemporalEngine {
                 "stale page density is removed from the compacted live set".to_string(),
                 "slot layout transition counts and states are reported after compaction"
                     .to_string(),
+                "per-model policies expose tombstone density, stale-page density, object-page packing, and cold-page rewrite eligibility".to_string(),
+                "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
             ],
             model_layout_compaction_blockers,
             previous_page_segment_id: roll.previous_page_segment_id,
@@ -5453,6 +5472,11 @@ impl TemporalEngine {
                 .map(|policy| policy.object_page_pack_group_count as usize)
                 .sum(),
             stale_page_segment_ids,
+            reclaimable_stale_page_segment_count,
+            model_policy_family_count,
+            tombstone_policy_model_count,
+            stale_density_policy_model_count,
+            layout_aware_policy_model_count,
             model_rewrite_policies: rewrite_stats.into_reports(&before),
             rewritten_object_pages,
             slot_layout_transition_count,

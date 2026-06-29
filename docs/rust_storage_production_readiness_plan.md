@@ -217,7 +217,9 @@ live refs, loses tombstones, lacks model-layout rows, fails to improve or preser
 or lacks slot-layout transition evidence. Per-model policy rows also expose stale-density triggers,
 tombstone-compaction triggers, and layout-aware rewrite requirements; the shared compaction test now
 covers string/hash/set/timestamped pages, Risk pages, and Context event/embedding/summary sidecar
-pages.
+pages. The report also exposes aggregate policy coverage counts and reclaimable stale segment
+counts, and the shared test verifies indexes move to the compacted segment while old page segments
+become reclaimable.
 
 ## Exact Evidence Fields For Current Storage Gaps
 
