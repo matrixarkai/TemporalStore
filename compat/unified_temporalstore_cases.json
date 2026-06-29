@@ -2907,6 +2907,36 @@
       ]
     },
     {
+      "name": "storage_cold_read_page_address_fallback",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "kind": "storage_cold_read_page_address_fallback",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "required_path": "slot_page_address_to_cache_disk_shared_store"
+          },
+          "name": "storage_cold_read_uses_page_address_cache_disk_shared_store",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_recovery_reconciles_slot_index_to_model_views",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "kind": "storage_recovery_reconciles_slot_index_to_model_views",
+            "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
+            "required_path": "slot_index_rebuilds_model_views_on_recovery"
+          },
+          "name": "storage_recovery_reconciles_slot_authority_to_secondary_views",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "dynamic_event_replication_mode_selection",
       "shard_id": 11,
       "steps": [
@@ -8843,6 +8873,8 @@
       "storage_fault_matrix",
       "storage_follower_safe_gc",
       "storage_cache_refill",
+      "storage_cold_read_page_address_fallback",
+      "storage_recovery_reconciles_slot_index_to_model_views",
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
       "raft_linearizable_hash_failover",

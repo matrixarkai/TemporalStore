@@ -6364,16 +6364,7 @@ fn execute_on_shard(
                 CommandResponse::Bytes {
                     value: read_slot_index_value(
                         cache, page_store, shard_id, shard, "string", &key, None,
-                    )
-                    .or_else(|| {
-                        if shard.slot_index.slot_map.is_empty() {
-                            shard.strings.get(&key).and_then(|address| {
-                                read_page_bytes(cache, page_store, shard_id, address)
-                            })
-                        } else {
-                            None
-                        }
-                    }),
+                    ),
                 }
             })
         }
@@ -6434,20 +6425,7 @@ fn execute_on_shard(
                         "hash",
                         &key,
                         Some(field.as_str()),
-                    )
-                    .or_else(|| {
-                        if shard.slot_index.slot_map.is_empty() {
-                            shard
-                                .hashes
-                                .get(&key)
-                                .and_then(|fields| fields.get(&field))
-                                .and_then(|address| {
-                                    read_page_bytes(cache, page_store, shard_id, address)
-                                })
-                        } else {
-                            None
-                        }
-                    }),
+                    ),
                 }
             })
         }
@@ -6474,19 +6452,6 @@ fn execute_on_shard(
                         &key,
                         Some(field.as_str()),
                     )
-                    .or_else(|| {
-                        if shard.slot_index.slot_map.is_empty() {
-                            shard
-                                .hashes
-                                .get(&key)
-                                .and_then(|entries| entries.get(field))
-                                .and_then(|address| {
-                                    read_page_bytes(cache, page_store, shard_id, address)
-                                })
-                        } else {
-                            None
-                        }
-                    })
                 })
                 .collect();
             CommandResponse::Values { values }
@@ -6540,17 +6505,6 @@ fn execute_on_shard(
                 &key,
                 Some(field.as_str()),
             )
-            .or_else(|| {
-                if shard.slot_index.slot_map.is_empty() {
-                    shard
-                        .hashes
-                        .get(&key)
-                        .and_then(|entries| entries.get(&field))
-                        .and_then(|address| read_page_bytes(cache, page_store, shard_id, address))
-                } else {
-                    None
-                }
-            })
             .and_then(|bytes| parse_i64(&bytes))
             .unwrap_or_default();
             let value = current.saturating_add(increment);
@@ -6597,31 +6551,13 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = if shard.slot_index.slot_map.is_empty() {
-                shard
-                    .hashes
-                    .get(&key)
-                    .map(|fields| {
-                        let mut entries = fields
-                            .iter()
-                            .filter_map(|(field, address)| {
-                                read_page_bytes(cache, page_store, shard_id, address)
-                                    .map(|value| (field.clone(), value))
-                            })
-                            .collect::<Vec<_>>();
-                        entries.sort_by(|a, b| a.0.cmp(&b.0));
-                        entries
-                    })
-                    .unwrap_or_default()
-            } else {
-                slot_index_component_page_addresses(shard, "hash", &key)
-                    .into_iter()
-                    .filter_map(|(field, address)| {
-                        read_page_bytes(cache, page_store, shard_id, &address)
-                            .map(|value| (field.unwrap_or_default(), value))
-                    })
-                    .collect()
-            };
+            let entries = slot_index_component_page_addresses(shard, "hash", &key)
+                .into_iter()
+                .filter_map(|(field, address)| {
+                    read_page_bytes(cache, page_store, shard_id, &address)
+                        .map(|value| (field.unwrap_or_default(), value))
+                })
+                .collect();
             CommandResponse::HashEntries { entries }
         }
         Command::HashLen { key } => {
@@ -6634,15 +6570,7 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: if shard.slot_index.slot_map.is_empty() {
-                    shard
-                        .hashes
-                        .get(&key)
-                        .map(|fields| fields.len() as i64)
-                        .unwrap_or_default()
-                } else {
-                    slot_index_component_page_addresses(shard, "hash", &key).len() as i64
-                },
+                value: slot_index_component_page_addresses(shard, "hash", &key).len() as i64,
             }
         }
         Command::HashDelete { key, field } => {
@@ -6698,26 +6626,12 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = if shard.slot_index.slot_map.is_empty() {
-                    shard
-                        .sets
-                        .get(&key)
-                        .map(|set| {
-                            set.values()
-                                .filter_map(|address| {
-                                    read_page_bytes(cache, page_store, shard_id, address)
-                                })
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                } else {
-                    slot_index_component_page_addresses(shard, "set", &key)
-                        .into_iter()
-                        .filter_map(|(_, address)| {
-                            read_page_bytes(cache, page_store, shard_id, &address)
-                        })
-                        .collect()
-                };
+                let members = slot_index_component_page_addresses(shard, "set", &key)
+                    .into_iter()
+                    .filter_map(|(_, address)| {
+                        read_page_bytes(cache, page_store, shard_id, &address)
+                    })
+                    .collect();
                 CommandResponse::Members { members }
             })
         }
