@@ -1,7 +1,7 @@
 # AWS Data-Node Raft-Forward Replication Test - 2026-06-07
 
 Status: historical. This run tested the old RPC-forwarded committed-oplog path. That path has
-been removed from active data-node Raft code after switching `raft_consensus` to Byteraft.
+been removed from active data-node Raft code after switching `raft_consensus` to RustRaft.
 
 ## Scope
 
@@ -36,7 +36,7 @@ The new path:
 
 This avoids using EFS/shared object storage for the normal write replication path.
 
-Important limitation: this was a standalone Raft-style forwarding/apply path, not a full quorum Raft implementation with durable per-shard Raft WAL, ReadIndex, automatic leader election, and snapshot installation. Active data-node Raft work now uses `--data_replication_mode=raft_consensus` with Byteraft instead.
+Important limitation: this was a standalone Raft-style forwarding/apply path, not a full quorum Raft implementation with durable per-shard Raft WAL, ReadIndex, automatic leader election, and snapshot installation. Active data-node Raft work now uses `--data_replication_mode=raft_consensus` with RustRaft instead.
 
 ## AWS Raft Result
 

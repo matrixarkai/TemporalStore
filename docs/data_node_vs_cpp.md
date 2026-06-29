@@ -17,7 +17,7 @@ The C++ data node is centered on `PartitionManager` and partition storage compon
 - `PageStore`, `SlotStore`, zones, page headers, page compaction, page GC
 - `StorageManager` for async dump/load/reclaim
 - `Replicator` for shared-store or primary-pull replay
-- `ByteraftReplicator` boundary for future strong data-plane replication
+- `RustRaftReplicator` boundary for future strong data-plane replication
 
 Important C++ files checked:
 
@@ -251,7 +251,7 @@ Still missing major data-node internals:
 - external deployment wiring for the shared distributed admission snapshots across every
   production data-node process
 - real readonly replicator loop
-- byteraft data FSM integration
+- rustraft data FSM integration
 
 ## Recommended Next Data-Node Chunk
 

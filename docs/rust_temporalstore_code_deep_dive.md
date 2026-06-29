@@ -218,7 +218,7 @@ Key Raft concerns represented in the Rust code and shared cases:
 - follower lag and catch-up
 - secondary-read eligibility
 - stale-read rejection
-- ByteRaft-style operational metrics and fault scenario coverage
+- RustRaft-style operational metrics and fault scenario coverage
 
 Production readiness should depend on multi-process OpenRaft evidence for both
 data-node and metaserver paths, not on local in-process fixtures.

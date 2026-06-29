@@ -122,7 +122,7 @@ Covered locally:
 
 ## Missing For Production Raft Parity
 
-Before claiming production parity with Byteraft or a real OpenRaft/raft-rs based
+Before claiming production parity with RustRaft or a real OpenRaft/raft-rs based
 system, the Rust code still needs:
 
 - HTTP transport for AppendEntries/Vote/InstallSnapshot exists; production still needs pooled/authenticated RPC with full observability

@@ -29,7 +29,7 @@ Expected result:
 - Each secondary visibility check prints `PASS replication smoke`.
 - No out-of-sync errors appear in the data-node logs.
 
-## Byteraft Replication Path
+## RustRaft Replication Path
 
 Purpose: guard the new third replication option without regressing existing paths.
 
@@ -60,6 +60,6 @@ Add these before calling data-node Raft production-ready:
 Do not run AWS replication/scale tests until the local suite passes. After local pass, run the same workload on AWS with:
 
 - EFS/shared file store path for shared-store mode.
-- Local disk plus `raft_consensus` path once multi-node Byteraft replication is production-ready.
+- Local disk plus `raft_consensus` path once multi-node RustRaft replication is production-ready.
 - Concurrent writes and reads.
 - Secondary visibility lag measurement with no artificial sleep in the measured path.

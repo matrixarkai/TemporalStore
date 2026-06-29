@@ -492,25 +492,25 @@ Completed since the last backlog update:
 
 ## P0 Correctness And Recovery
 
-- Complete Byteraft-backed data-node Raft replication mode.
+- Complete RustRaft-backed data-node Raft replication mode.
   - Design doc: `docs/data_node_raft_replication_design.md`.
   - Keep it separate from shared-store replay and `secondary_pull_stream_from_primary`.
   - Add partition-level Raft FSM that applies committed `storage::OpLog` through `ObjectManager::ReplayOplog()`.
   - Ack strong writes only after quorum commit.
   - Add leader-only write guard and explicit read modes: leader, linearizable/read-index, replica-stale, and replica-min-index.
   - Add snapshot/install-snapshot before allowing new/far-behind nodes to recover without the old primary's local files.
-  - Current code has a guarded flag `--data_replication_mode=raft_consensus` backed by Byteraft. Direct command writes still need to be refactored to propose through Raft before local mutation.
+  - Current code has a guarded flag `--data_replication_mode=raft_consensus` backed by RustRaft. Direct command writes still need to be refactored to propose through Raft before local mutation.
   - Added isolated `DataRaftCommandEntry` command envelope and codec.
   - Added committed command apply path through `Partition::ApplyDataRaftCommand` / `ApplyDataRaftEntry`.
-  - Added a first write-only leader path that proposes the command envelope through Byteraft and waits for the local FSM applied index before acknowledging.
+  - Added a first write-only leader path that proposes the command envelope through RustRaft and waits for the local FSM applied index before acknowledging.
   - Added pending apply-response tracking so the leader returns the response/status produced by the committed FSM apply.
-  - Added a fail-closed guard for empty Byteraft snapshots. Snapshot/checkpoint tests must opt in explicitly with `--data_raft_enable_empty_snapshot_for_tests=true`; production `file://` Raft snapshots should use the real partition snapshot path.
+  - Added a fail-closed guard for empty RustRaft snapshots. Snapshot/checkpoint tests must opt in explicitly with `--data_raft_enable_empty_snapshot_for_tests=true`; production `file://` Raft snapshots should use the real partition snapshot path.
   - Added partition-thread-safe FSM apply: Raft apply bounces to the partition's owning worker thread, while leader proposal waiting runs on the server background async pool to avoid self-deadlock.
   - Added ReadIndex, AddLearner, PromotePeer, and bounded-stale-read guardrail hooks.
   - Added an explicit Raft read policy gate: leader-only by default, linearizable leader reads through ReadIndex, bounded-stale secondary reads with an index-lag budget, and an unsafe bring-up mode.
   - Added ByteKV-style `FlexibleApply` handling for data Raft batches so data/no-op/meta/config-change entries advance applied index in order.
   - Added per-partition applied-index sidecar restore/advance under `--data_raft_work_dir/applied/<partition_id>`.
-  - Added data-Raft snapshot/load callback wiring from Byteraft FSM into `Partition`.
+  - Added data-Raft snapshot/load callback wiring from RustRaft FSM into `Partition`.
   - Changed data-Raft replicas to load their own local streams instead of restoring primary/shared-store stream metadata.
   - Changed data-Raft replicas to open local streams writable for committed Raft apply while keeping direct client writes blocked on readonly partitions.
   - Changed committed data-Raft apply to bypass local readonly/quota write-admission checks so committed entries apply deterministically on replicas.

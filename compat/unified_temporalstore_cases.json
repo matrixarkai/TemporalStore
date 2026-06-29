@@ -4615,12 +4615,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_read_safety_policy",
+      "name": "raft_rustraft_read_safety_policy",
       "shard_id": 40,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
+            "description": "RustRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4641,12 +4641,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_metrics_admin_pipeline_status",
+      "name": "raft_rustraft_metrics_admin_pipeline_status",
       "shard_id": 41,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived admin/status case: status, local-status, and Prometheus expose peer lag, apply health, read-index, leader transfer, and pipeline evidence.",
+            "description": "RustRaft-derived admin/status case: status, local-status, and Prometheus expose peer lag, apply health, read-index, leader transfer, and pipeline evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4671,12 +4671,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_snapshot_lifecycle_depth",
+      "name": "raft_rustraft_snapshot_lifecycle_depth",
       "shard_id": 42,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived snapshot lifecycle case: trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting.",
+            "description": "RustRaft-derived snapshot lifecycle case: trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4691,7 +4691,7 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive byteraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -4701,12 +4701,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_replication_backpressure",
+      "name": "raft_rustraft_replication_backpressure",
       "shard_id": 43,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, and apply batch sizing.",
+            "description": "RustRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, and apply batch sizing.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4727,12 +4727,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_election_controls",
+      "name": "raft_rustraft_election_controls",
       "shard_id": 44,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived election control case: pre-vote quorum gates, election prohibition, transfer timeout behavior, and offline peer state.",
+            "description": "RustRaft-derived election control case: pre-vote quorum gates, election prohibition, transfer timeout behavior, and offline peer state.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4757,7 +4757,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_packet_loss_fault_harness",
+      "name": "raft_rustraft_packet_loss_fault_harness",
       "shard_id": 45,
       "steps": [
         {
@@ -4767,7 +4767,7 @@
               "minority rejects stale reads and writes while isolated",
               "healed peer catches up before becoming read-eligible"
             ],
-            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
+            "description": "RustRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4788,7 +4788,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_slow_wal_fsync_fault_harness",
+      "name": "raft_rustraft_slow_wal_fsync_fault_harness",
       "shard_id": 46,
       "steps": [
         {
@@ -4798,7 +4798,7 @@
               "no committed write is lost during or after pressure",
               "lag and latency counters show WAL pressure"
             ],
-            "description": "ByteRaft fault case: slow disk/WAL fsync activates backpressure, preserves committed writes, and reports lag/pressure evidence.",
+            "description": "RustRaft fault case: slow disk/WAL fsync activates backpressure, preserves committed writes, and reports lag/pressure evidence.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4819,7 +4819,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_snapshot_during_membership_fault_harness",
+      "name": "raft_rustraft_snapshot_during_membership_fault_harness",
       "shard_id": 47,
       "steps": [
         {
@@ -4829,7 +4829,7 @@
               "membership generation remains consistent across snapshot install",
               "restart preserves the snapshot floor and membership generation"
             ],
-            "description": "ByteRaft fault case: snapshot trigger/install during membership change preserves snapshot floor, membership generation, and restart recovery.",
+            "description": "RustRaft fault case: snapshot trigger/install during membership change preserves snapshot floor, membership generation, and restart recovery.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4854,7 +4854,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_leader_transfer_high_write_fault_harness",
+      "name": "raft_rustraft_leader_transfer_high_write_fault_harness",
       "shard_id": 48,
       "steps": [
         {
@@ -4864,7 +4864,7 @@
               "no accepted committed write is lost or duplicated",
               "final leader has all committed entries after transfer"
             ],
-            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
+            "description": "RustRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4875,7 +4875,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -4885,7 +4885,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
+      "name": "raft_rustraft_follower_rejoin_compacted_logs_fault_harness",
       "shard_id": 49,
       "steps": [
         {
@@ -4895,7 +4895,7 @@
               "follower replays retained log tail after snapshot install",
               "follower becomes read-eligible only after catch-up"
             ],
-            "description": "ByteRaft fault case: follower rejoining with compacted logs installs snapshot, replays retained tail, and becomes read-eligible only after catch-up.",
+            "description": "RustRaft fault case: follower rejoining with compacted logs installs snapshot, replays retained tail, and becomes read-eligible only after catch-up.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4906,7 +4906,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -4916,7 +4916,7 @@
       ]
     },
     {
-      "name": "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
+      "name": "raft_rustraft_rolling_restart_joint_consensus_fault_harness",
       "shard_id": 50,
       "steps": [
         {
@@ -4926,7 +4926,7 @@
               "joint consensus either completes safely or rolls back safely",
               "membership state is not lost or partially applied after restart"
             ],
-            "description": "ByteRaft fault case: rolling restart during pending joint consensus preserves membership state and completes or rolls back safely.",
+            "description": "RustRaft fault case: rolling restart during pending joint consensus preserves membership state and completes or rolls back safely.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4951,12 +4951,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_shared_fault_gate",
+      "name": "raft_rustraft_shared_fault_gate",
       "shard_id": 51,
       "steps": [
         {
           "command": {
-            "description": "Combined shared ByteRaft-derived fault gate for data-node and metaserver Raft process evidence.",
+            "description": "Combined shared RustRaft-derived fault gate for data-node and metaserver Raft process evidence.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4976,12 +4976,12 @@
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1800
           },
-          "name": "combined_byteraft_fault_gate_for_data_and_meta_raft"
+          "name": "combined_rustraft_fault_gate_for_data_and_meta_raft"
         }
       ]
     },
     {
-      "name": "storage_byteraft_dump_load_atomicity",
+      "name": "storage_rustraft_dump_load_atomicity",
       "shard_id": 52,
       "steps": [
         {
@@ -4996,7 +4996,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_corruption_recovery_matrix",
+      "name": "storage_rustraft_corruption_recovery_matrix",
       "shard_id": 53,
       "steps": [
         {
@@ -5011,7 +5011,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_follower_cursor_gc",
+      "name": "storage_rustraft_follower_cursor_gc",
       "shard_id": 54,
       "steps": [
         {
@@ -5026,7 +5026,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_cache_refill_pressure",
+      "name": "storage_rustraft_cache_refill_pressure",
       "shard_id": 55,
       "steps": [
         {
@@ -5041,7 +5041,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_shared_store_sync_replay",
+      "name": "storage_rustraft_shared_store_sync_replay",
       "shard_id": 56,
       "steps": [
         {
@@ -5057,7 +5057,7 @@
       ]
     },
     {
-      "name": "storage_byteraft_shared_store_async_replay",
+      "name": "storage_rustraft_shared_store_async_replay",
       "shard_id": 57,
       "steps": [
         {
@@ -5985,12 +5985,12 @@
             "suite": "cpp_data_raft_parity",
             "description": "Shared Raft case requiring production TemporalRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
             "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-temporal-raft-process-read-safety",
-            "cpp_runner_contract": "C++ ByteRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
+            "cpp_runner_contract": "C++ RustRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
             "required_paths": [
               "crates/temporalstore-rust/src/raft.rs",
               "crates/temporalstore-rust/src/bin/metaserver_raft_harness.rs",
               "crates/temporalstore-rust/src/bin/raft_node.rs",
-              "src/byteraft",
+              "src/rustraft",
               "src/metaserver_v2"
             ],
             "acceptance": {
@@ -7522,7 +7522,7 @@
             "suite": "cpp_data_raft_parity",
             "description": "Unified Raft case for data-node and metaserver process rollout, leader election, failover, snapshot install, restart recovery, learner add/promote/remove, secondary reads, and lag gates.",
             "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness && cargo run -p temporalstore-rust --bin metaserver_raft_harness",
-            "cpp_runner_contract": "C++ ByteRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
+            "cpp_runner_contract": "C++ RustRaft scenarios emit the same election/failover/snapshot/membership/secondary-read report shape.",
             "required_paths": [
               "docs/distributed_raft_readiness.md"
             ],
@@ -7845,7 +7845,7 @@
         ]
       },
       {
-        "blocker": "Some legacy ByteRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
+        "blocker": "Some legacy RustRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
         "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
         "family": "raft",
@@ -8053,24 +8053,24 @@
       "context_temporal_compression_replayable_summary",
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates",
-      "raft_byteraft_read_safety_policy",
-      "raft_byteraft_metrics_admin_pipeline_status",
-      "raft_byteraft_snapshot_lifecycle_depth",
-      "raft_byteraft_replication_backpressure",
-      "raft_byteraft_election_controls",
-      "raft_byteraft_packet_loss_fault_harness",
-      "raft_byteraft_slow_wal_fsync_fault_harness",
-      "raft_byteraft_snapshot_during_membership_fault_harness",
-      "raft_byteraft_leader_transfer_high_write_fault_harness",
-      "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
-      "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
-      "raft_byteraft_shared_fault_gate",
-      "storage_byteraft_dump_load_atomicity",
-      "storage_byteraft_corruption_recovery_matrix",
-      "storage_byteraft_follower_cursor_gc",
-      "storage_byteraft_cache_refill_pressure",
-      "storage_byteraft_shared_store_sync_replay",
-      "storage_byteraft_shared_store_async_replay",
+      "raft_rustraft_read_safety_policy",
+      "raft_rustraft_metrics_admin_pipeline_status",
+      "raft_rustraft_snapshot_lifecycle_depth",
+      "raft_rustraft_replication_backpressure",
+      "raft_rustraft_election_controls",
+      "raft_rustraft_packet_loss_fault_harness",
+      "raft_rustraft_slow_wal_fsync_fault_harness",
+      "raft_rustraft_snapshot_during_membership_fault_harness",
+      "raft_rustraft_leader_transfer_high_write_fault_harness",
+      "raft_rustraft_follower_rejoin_compacted_logs_fault_harness",
+      "raft_rustraft_rolling_restart_joint_consensus_fault_harness",
+      "raft_rustraft_shared_fault_gate",
+      "storage_rustraft_dump_load_atomicity",
+      "storage_rustraft_corruption_recovery_matrix",
+      "storage_rustraft_follower_cursor_gc",
+      "storage_rustraft_cache_refill_pressure",
+      "storage_rustraft_shared_store_sync_replay",
+      "storage_rustraft_shared_store_async_replay",
       "storage_stream_cross_block_large_values",
       "storage_stream_random_size_reopen_scan",
       "storage_stream_backed_extent_runtime",
@@ -8204,18 +8204,18 @@
       "raft_metaserver_leader_snapshot_restart",
       "raft_metaserver_membership_add_promote_remove",
       "raft_temporal_raft_process_rollout_evidence",
-      "raft_byteraft_read_safety_policy",
-      "raft_byteraft_metrics_admin_pipeline_status",
-      "raft_byteraft_snapshot_lifecycle_depth",
-      "raft_byteraft_replication_backpressure",
-      "raft_byteraft_election_controls",
-      "raft_byteraft_packet_loss_fault_harness",
-      "raft_byteraft_slow_wal_fsync_fault_harness",
-      "raft_byteraft_snapshot_during_membership_fault_harness",
-      "raft_byteraft_leader_transfer_high_write_fault_harness",
-      "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
-      "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
-      "raft_byteraft_shared_fault_gate",
+      "raft_rustraft_read_safety_policy",
+      "raft_rustraft_metrics_admin_pipeline_status",
+      "raft_rustraft_snapshot_lifecycle_depth",
+      "raft_rustraft_replication_backpressure",
+      "raft_rustraft_election_controls",
+      "raft_rustraft_packet_loss_fault_harness",
+      "raft_rustraft_slow_wal_fsync_fault_harness",
+      "raft_rustraft_snapshot_during_membership_fault_harness",
+      "raft_rustraft_leader_transfer_high_write_fault_harness",
+      "raft_rustraft_follower_rejoin_compacted_logs_fault_harness",
+      "raft_rustraft_rolling_restart_joint_consensus_fault_harness",
+      "raft_rustraft_shared_fault_gate",
       "raft_temporal_raft_process_read_safety_and_membership_matrix"
     ],
     "required_response_kinds": [

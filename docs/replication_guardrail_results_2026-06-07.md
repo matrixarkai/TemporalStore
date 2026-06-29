@@ -20,7 +20,7 @@ Result directory:
 - Raft codec smoke: `/root/src/temporalstore/build/src/partition/storage/test/data_raft_replication_codec_smoke`
 - Runtime library path included `/root/src/temporalstore/build/lib` for `libthriftd.so.0.11.0`.
 
-## Byteraft Path Guardrails
+## RustRaft Path Guardrails
 
 Passed:
 

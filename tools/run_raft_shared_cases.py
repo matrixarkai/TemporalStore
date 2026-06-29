@@ -34,69 +34,52 @@ RAFT_CASES = {
     "raft_metaserver_membership_add_promote_remove",
     "raft_temporal_raft_process_rollout_evidence",
     "raft_production_gate",
-    "raft_byteraft_read_safety_policy",
-    "raft_byteraft_membership_roles",
-    "raft_byteraft_metrics_admin_pipeline_status",
-    "raft_byteraft_snapshot_lifecycle_depth",
-    "raft_byteraft_replication_backpressure",
-    "raft_byteraft_election_controls",
-    "raft_byteraft_packet_loss_fault_harness",
-    "raft_byteraft_slow_wal_fsync_fault_harness",
-    "raft_byteraft_snapshot_during_membership_fault_harness",
-    "raft_byteraft_leader_transfer_high_write_fault_harness",
-    "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
-    "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
-    "raft_byteraft_shared_fault_gate",
+    "raft_rustraft_read_safety_policy",
+    "raft_rustraft_metrics_admin_pipeline_status",
+    "raft_rustraft_snapshot_lifecycle_depth",
+    "raft_rustraft_replication_backpressure",
+    "raft_rustraft_election_controls",
+    "raft_rustraft_packet_loss_fault_harness",
+    "raft_rustraft_slow_wal_fsync_fault_harness",
+    "raft_rustraft_snapshot_during_membership_fault_harness",
+    "raft_rustraft_leader_transfer_high_write_fault_harness",
+    "raft_rustraft_follower_rejoin_compacted_logs_fault_harness",
+    "raft_rustraft_rolling_restart_joint_consensus_fault_harness",
+    "raft_rustraft_shared_fault_gate",
 }
 COMBINED_GATE = "tools/run_raft_distributed_parity.sh"
 COMBINED_VALIDATOR_JOB = "temporalstore-raft-distributed-parity-validation"
-BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS = {
-    "raft_byteraft_packet_loss_fault_harness": [
+RUSTRAFT_FAULT_ACCEPTANCE_KEYWORDS = {
+    "raft_rustraft_packet_loss_fault_harness": [
         ["majority", "continues"],
         ["minority", "rejects", "stale", "reads"],
         ["healed", "catches up"],
     ],
-    "raft_byteraft_slow_wal_fsync_fault_harness": [
+    "raft_rustraft_slow_wal_fsync_fault_harness": [
         ["backpressure", "activates"],
         ["no committed write", "lost"],
         ["lag", "latency", "pressure"],
     ],
-    "raft_byteraft_snapshot_during_membership_fault_harness": [
+    "raft_rustraft_snapshot_during_membership_fault_harness": [
         ["snapshot floor", "consistent"],
         ["membership generation", "consistent"],
         ["restart", "snapshot floor", "membership generation"],
     ],
-    "raft_byteraft_leader_transfer_high_write_fault_harness": [
+    "raft_rustraft_leader_transfer_high_write_fault_harness": [
         ["commit exactly once", "fail safely"],
         ["committed write", "lost", "duplicated"],
         ["final leader", "all committed entries"],
     ],
-    "raft_byteraft_follower_rejoin_compacted_logs_fault_harness": [
+    "raft_rustraft_follower_rejoin_compacted_logs_fault_harness": [
         ["installs snapshot"],
         ["replays retained", "tail"],
         ["read-eligible", "catch-up"],
     ],
-    "raft_byteraft_rolling_restart_joint_consensus_fault_harness": [
+    "raft_rustraft_rolling_restart_joint_consensus_fault_harness": [
         ["joint consensus", "survives"],
         ["completes safely", "rolls back safely"],
         ["membership state", "not lost"],
     ],
-}
-MEMBERSHIP_CASE = "raft_byteraft_membership_roles"
-MEMBERSHIP_EXPECTED_OPS = {
-    "setup_cluster",
-    "add_replica",
-    "assert_cluster_status",
-    "assert_peer_status",
-    "assert_local_status_report",
-    "assert_runtime_admin_report",
-    "propose_string_set",
-    "read_from_replica",
-    "elect_leader",
-    "setup_wal_cluster",
-    "begin_joint_consensus",
-    "restore_wal_cluster",
-    "commit_joint_consensus",
 }
 
 
@@ -119,17 +102,13 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
     for step in steps:
         command = step.get("command", {})
         location = f"{case.get('name')}/{step.get('name')}"
-        if case.get("name") == MEMBERSHIP_CASE:
-            validate_membership_step(command, location)
-            rust_runners += 1
-            continue
         if command.get("kind") != "existing_test":
             raise SystemExit(f"{location}: Raft step must use existing_test command")
         if command.get("suite") != RAFT_SUITE:
             raise SystemExit(f"{location}: unexpected suite {command.get('suite')!r}")
         if command.get("mode") not in {"runtime", "stress"}:
             raise SystemExit(f"{location}: Raft mode must be runtime or stress")
-        validate_byteraft_fault_acceptance(case, step)
+        validate_rustraft_fault_acceptance(case, step)
         rust_runner = command.get("rust_runner")
         if not isinstance(rust_runner, str) or not rust_runner:
             raise SystemExit(f"{location}: missing rust_runner")
@@ -164,56 +143,14 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
     return rust_runners, cpp_paths
 
 
-def validate_membership_step(command: dict, location: str) -> None:
-    if command.get("kind") != "raft_membership_op":
-        raise SystemExit(f"{location}: membership case must use raft_membership_op")
-    op = command.get("op")
-    if op not in MEMBERSHIP_EXPECTED_OPS:
-        raise SystemExit(f"{location}: unknown raft_membership_op {op!r}")
-    if op in {"setup_cluster", "setup_wal_cluster", "restore_wal_cluster"}:
-        nodes = command.get("nodes")
-        if not isinstance(nodes, list) or not nodes or not all(isinstance(node, int) for node in nodes):
-            raise SystemExit(f"{location}: {op} must declare integer nodes")
-    if op == "add_replica":
-        if command.get("role") not in {"voter", "learner", "witness"}:
-            raise SystemExit(f"{location}: add_replica must declare voter/learner/witness role")
-        if not isinstance(command.get("node_id"), int):
-            raise SystemExit(f"{location}: add_replica must declare node_id")
-    if op == "assert_peer_status":
-        required = ["node_id", "role", "participates_in_quorum", "can_serve_data", "can_be_leader"]
-        for field in required:
-            if field not in command:
-                raise SystemExit(f"{location}: assert_peer_status missing {field}")
-    if op == "assert_cluster_status":
-        if "expected_voters" in command and not all(
-            isinstance(node, int) for node in command.get("expected_voters", [])
-        ):
-            raise SystemExit(f"{location}: expected_voters must be integer nodes")
-    if op == "propose_string_set":
-        if not isinstance(command.get("key"), str) or not isinstance(command.get("value"), str):
-            raise SystemExit(f"{location}: propose_string_set must declare string key/value")
-    if op == "read_from_replica":
-        if not isinstance(command.get("node_id"), int) or not isinstance(command.get("key"), str):
-            raise SystemExit(f"{location}: read_from_replica must declare node_id and key")
-        if "expected_value" not in command and "expected_error" not in command:
-            raise SystemExit(f"{location}: read_from_replica must expect value or error")
-    if op == "elect_leader":
-        if not isinstance(command.get("node_id"), int) or "expected_error" not in command:
-            raise SystemExit(f"{location}: elect_leader must declare node_id and expected_error")
-    if op == "begin_joint_consensus":
-        voters = command.get("new_voters")
-        if not isinstance(voters, list) or not voters or not all(isinstance(node, int) for node in voters):
-            raise SystemExit(f"{location}: begin_joint_consensus must declare new_voters")
-
-
-def validate_byteraft_fault_acceptance(case: dict, step: dict) -> None:
-    expected = BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS.get(case.get("name"))
+def validate_rustraft_fault_acceptance(case: dict, step: dict) -> None:
+    expected = RUSTRAFT_FAULT_ACCEPTANCE_KEYWORDS.get(case.get("name"))
     if expected is None:
         return
     location = f"{case.get('name')}/{step.get('name')}"
     criteria = step.get("command", {}).get("acceptance_criteria")
     if not isinstance(criteria, list) or len(criteria) < len(expected):
-        raise SystemExit(f"{location}: ByteRaft fault case must declare acceptance_criteria")
+        raise SystemExit(f"{location}: RustRaft fault case must declare acceptance_criteria")
     normalized = [" ".join(str(item).lower().split()) for item in criteria]
     for keyword_group in expected:
         if not any(all(keyword in criterion for keyword in keyword_group) for criterion in normalized):

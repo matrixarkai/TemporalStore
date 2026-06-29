@@ -411,7 +411,7 @@ AREAS: tuple[ParityArea, ...] = (
         ),
     ),
     ParityArea(
-        name="byteraft_derived_readiness_contract",
+        name="rustraft_derived_readiness_contract",
         corpus_cases=(
             "cpp_data_raft_consensus_parity_surfaces",
             "cpp_data_raft_replication_parity_surfaces",
@@ -420,7 +420,7 @@ AREAS: tuple[ParityArea, ...] = (
         ),
         rust_evidence=(
             RustEvidence(
-                "tools/validate_byteraft_derived_readiness.py",
+                "tools/validate_rustraft_derived_readiness.py",
                 (
                     "production_mode_required",
                     "config_and_election_guards",

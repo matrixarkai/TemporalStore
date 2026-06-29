@@ -14,16 +14,16 @@ pub struct RaftDistributedReadiness {
     pub rpc_runtime_observability_present: bool,
     pub external_snapshot_refs_present: bool,
     pub timer_election_tested: bool,
-    pub byteraft_leader_write_authority_present: bool,
-    pub byteraft_operator_observability_present: bool,
-    pub byteraft_rpc_transport_contract_present: bool,
-    pub byteraft_log_retention_snapshot_trigger_present: bool,
-    pub byteraft_apply_snapshot_fence_present: bool,
+    pub rustraft_leader_write_authority_present: bool,
+    pub rustraft_operator_observability_present: bool,
+    pub rustraft_rpc_transport_contract_present: bool,
+    pub rustraft_log_retention_snapshot_trigger_present: bool,
+    pub rustraft_apply_snapshot_fence_present: bool,
     pub raft_storage_apply_fence_present: bool,
-    pub byteraft_snapshot_floor_log_matching_present: bool,
-    pub byteraft_snapshot_tail_catchup_present: bool,
-    pub byteraft_compacted_entry_rejection_present: bool,
-    pub byteraft_metaserver_snapshot_floor_election_present: bool,
+    pub rustraft_snapshot_floor_log_matching_present: bool,
+    pub rustraft_snapshot_tail_catchup_present: bool,
+    pub rustraft_compacted_entry_rejection_present: bool,
+    pub rustraft_metaserver_snapshot_floor_election_present: bool,
     pub durable_apply_index_snapshot_integrated: bool,
     pub learner_catchup_promotion_present: bool,
     pub metaserver_membership_workflow_present: bool,
@@ -187,7 +187,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and ByteRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft data-node multi-process rollout evidence with process API writes, real log-store validation, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );
@@ -199,7 +199,7 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
             .map(|items| format!("; missing operational fields: {}", items.join(", ")))
             .unwrap_or_default();
         missing.push(
-            "provide passing TemporalRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, scheduler replay, and ByteRaft-derived operational semantics evidence"
+            "provide passing TemporalRaft metaserver multi-process rollout evidence with process API mutations, real log-store validation, read-index, snapshot install, restart recovery, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence"
                 .to_string()
                 + &operational_missing,
         );
@@ -449,16 +449,16 @@ fn distributed_raft_readiness_from_rollout(
         rpc_runtime_observability_present: true,
         external_snapshot_refs_present: true,
         timer_election_tested: true,
-        byteraft_leader_write_authority_present: true,
-        byteraft_operator_observability_present: true,
-        byteraft_rpc_transport_contract_present: true,
-        byteraft_log_retention_snapshot_trigger_present: true,
-        byteraft_apply_snapshot_fence_present: true,
+        rustraft_leader_write_authority_present: true,
+        rustraft_operator_observability_present: true,
+        rustraft_rpc_transport_contract_present: true,
+        rustraft_log_retention_snapshot_trigger_present: true,
+        rustraft_apply_snapshot_fence_present: true,
         raft_storage_apply_fence_present: true,
-        byteraft_snapshot_floor_log_matching_present: true,
-        byteraft_snapshot_tail_catchup_present: true,
-        byteraft_compacted_entry_rejection_present: true,
-        byteraft_metaserver_snapshot_floor_election_present: true,
+        rustraft_snapshot_floor_log_matching_present: true,
+        rustraft_snapshot_tail_catchup_present: true,
+        rustraft_compacted_entry_rejection_present: true,
+        rustraft_metaserver_snapshot_floor_election_present: true,
         durable_apply_index_snapshot_integrated: atomic_apply.production_ready,
         learner_catchup_promotion_present: true,
         metaserver_membership_workflow_present: true,

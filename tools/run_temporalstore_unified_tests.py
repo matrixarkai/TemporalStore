@@ -50,33 +50,33 @@ COMBINED_RAFT_VALIDATOR = (
     "python3 tools/validate_aws_validation_log.py --job "
     "temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>"
 )
-BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS = {
-    "raft_byteraft_packet_loss_fault_harness": [
+RUSTRAFT_FAULT_ACCEPTANCE_KEYWORDS = {
+    "raft_rustraft_packet_loss_fault_harness": [
         ["majority", "continues"],
         ["minority", "rejects", "stale", "reads"],
         ["healed", "catches up"],
     ],
-    "raft_byteraft_slow_wal_fsync_fault_harness": [
+    "raft_rustraft_slow_wal_fsync_fault_harness": [
         ["backpressure", "activates"],
         ["no committed write", "lost"],
         ["lag", "latency", "pressure"],
     ],
-    "raft_byteraft_snapshot_during_membership_fault_harness": [
+    "raft_rustraft_snapshot_during_membership_fault_harness": [
         ["snapshot floor", "consistent"],
         ["membership generation", "consistent"],
         ["restart", "snapshot floor", "membership generation"],
     ],
-    "raft_byteraft_leader_transfer_high_write_fault_harness": [
+    "raft_rustraft_leader_transfer_high_write_fault_harness": [
         ["commit exactly once", "fail safely"],
         ["committed write", "lost", "duplicated"],
         ["final leader", "all committed entries"],
     ],
-    "raft_byteraft_follower_rejoin_compacted_logs_fault_harness": [
+    "raft_rustraft_follower_rejoin_compacted_logs_fault_harness": [
         ["installs snapshot"],
         ["replays retained", "tail"],
         ["read-eligible", "catch-up"],
     ],
-    "raft_byteraft_rolling_restart_joint_consensus_fault_harness": [
+    "raft_rustraft_rolling_restart_joint_consensus_fault_harness": [
         ["joint consensus", "survives"],
         ["completes safely", "rolls back safely"],
         ["membership state", "not lost"],
@@ -260,7 +260,7 @@ def validate_corpus(path: Path) -> dict:
                 seen_response_kinds.add(step["expect"]["kind"])
             if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
                 validate_cpp_raft_step(path, case, step)
-                validate_byteraft_fault_acceptance(path, case, step)
+                validate_rustraft_fault_acceptance(path, case, step)
             if step["command"].get("suite") == "cpp_context_benchmark_parity":
                 validate_context_benchmark_step(path, case, step)
             if step["command"].get("kind") == "existing_test":
@@ -436,14 +436,14 @@ def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:
         )
 
 
-def validate_byteraft_fault_acceptance(path: Path, case: dict, step: dict) -> None:
-    expected = BYTERAFT_FAULT_ACCEPTANCE_KEYWORDS.get(case["name"])
+def validate_rustraft_fault_acceptance(path: Path, case: dict, step: dict) -> None:
+    expected = RUSTRAFT_FAULT_ACCEPTANCE_KEYWORDS.get(case["name"])
     if expected is None:
         return
     location = f"{path}: case {case['name']} step {step['name']}"
     criteria = step["command"].get("acceptance_criteria")
     if not isinstance(criteria, list) or len(criteria) < len(expected):
-        raise SystemExit(f"{location}: ByteRaft fault case must declare acceptance_criteria")
+        raise SystemExit(f"{location}: RustRaft fault case must declare acceptance_criteria")
     normalized = [" ".join(str(item).lower().split()) for item in criteria]
     for keyword_group in expected:
         if not any(all(keyword in criterion for keyword in keyword_group) for criterion in normalized):

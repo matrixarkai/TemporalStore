@@ -10,9 +10,9 @@ TemporalStore currently has three data replication paths:
 | --- | --- | --- |
 | `shared_store` | Existing path | Primary and secondary use shared stream storage for index, oplog, and page recovery. |
 | `primary_pull` | Existing path | Secondary pulls stream bytes from the primary for catch-up instead of reading shared storage directly. |
-| `raft_consensus` | Backend linked, guarded write/read path active | Starts a Byteraft-backed data-node consensus backend with transport, WAL, snapshot server, membership operations, command proposal, and FSM apply hooks. Write-only batches propose before mutation; mixed read/write batches remain rejected. Reads are gated by `data_raft_read_mode`. |
+| `raft_consensus` | Backend linked, guarded write/read path active | Starts a RustRaft-backed data-node consensus backend with transport, WAL, snapshot server, membership operations, command proposal, and FSM apply hooks. Write-only batches propose before mutation; mixed read/write batches remain rejected. Reads are gated by `data_raft_read_mode`. |
 
-`raft_consensus` is the target production default for no-data-loss deployments, but it is still behind a production-readiness gate until real partition snapshots and failover validation are complete. It now has a Byteraft-backed backend and starts the Byteraft transport/WAL/snapshot stack. Write-only batches are serialized into `DataRaftCommandEntry`, proposed through Byteraft, applied from the committed FSM entry, and acknowledged with the committed apply response. The apply path is bounced onto the partition owning worker thread to preserve the share-nothing mutation model.
+`raft_consensus` is the target production default for no-data-loss deployments, but it is still behind a production-readiness gate until real partition snapshots and failover validation are complete. It now has a RustRaft-backed backend and starts the RustRaft transport/WAL/snapshot stack. Write-only batches are serialized into `DataRaftCommandEntry`, proposed through RustRaft, applied from the committed FSM entry, and acknowledged with the committed apply response. The apply path is bounced onto the partition owning worker thread to preserve the share-nothing mutation model.
 
 The only escape hatch is:
 
@@ -46,7 +46,7 @@ Use one of three explicit production profiles:
 | Conservative shared storage | `--data_replication_mode=shared_store --storage_async=false` | Depends on shared storage durability, usually no acknowledged-loss if the shared store commit succeeds | Use when EFS/object/shared storage is provisioned strongly enough and the Raft write path is not enabled yet. |
 | Streaming/ephemeral async | `--data_replication_mode=shared_store --storage_async=true` or a future async Raft profile | Possible loss inside the async flush window | Use for streaming features/events that can be replayed or recomputed from Kafka/offline logs. |
 
-If EFS/shared storage is scaled enough, conservative shared-store mode is the safe fallback today. If the workload is streaming and upstream replay is acceptable, async storage can trade RPO for write QPS. For primary data that must survive a primary-node loss, Byteraft quorum commit plus snapshots should become the default.
+If EFS/shared storage is scaled enough, conservative shared-store mode is the safe fallback today. If the workload is streaming and upstream replay is acceptable, async storage can trade RPO for write QPS. For primary data that must survive a primary-node loss, RustRaft quorum commit plus snapshots should become the default.
 
 ## What Full Data Raft Must Include
 
@@ -130,12 +130,12 @@ The clean repository must keep this behind a Raft adapter. It should not vendor 
 Phase 1: adapter interface
 
 - Add a `DataRaftConsensusBackend` interface with `Start`, `Stop`, `Propose`, snapshot, membership, transfer-leader, and status methods.
-- Use Byteraft as the concrete backend.
+- Use RustRaft as the concrete backend.
 - Keep the old RPC-forwarded data-node replication path removed; it was not quorum Raft.
 
-Phase 2: Byteraft consensus backend
+Phase 2: RustRaft consensus backend
 
-- Use the Byteraft backend adapter.
+- Use the RustRaft backend adapter.
 - Use node-level `MultiRaftServerImpl` and `MultiSnapshotServerImpl`, shared by partition Raft nodes on the same data node.
 - Use local disk WAL and snapshot directories first.
 - Test one leader and two followers in one process or one host.
@@ -145,7 +145,7 @@ Phase 3: production write path
 - Convert write commands into deterministic Raft log entries before local mutation.
   - `DataRaftCommandEntry` and `SerializeDataRaftCommand` now define the isolated command envelope.
   - `Partition::ApplyDataRaftCommand` now applies a committed command envelope from the FSM side.
-  - The write-only path now routes leader batches through this envelope, proposes with Byteraft, and waits for the local applied index before acknowledging.
+  - The write-only path now routes leader batches through this envelope, proposes with RustRaft, and waits for the local applied index before acknowledging.
 - Propose through `DataRaftConsensusBackend::Propose`.
 - Apply committed entries through the data FSM.
   - `ApplyDataRaftEntry` accepts both new command entries and the older committed-oplog codec for bring-up compatibility.
@@ -162,15 +162,15 @@ Phase 3: production write path
 Still open before calling the Raft path production-ready:
 
 - Implement real snapshot/checkpoint and install-snapshot for new or far-behind replicas.
-  - The Byteraft FSM now calls partition-owned snapshot/load callbacks.
-- `Partition::CreateDataRaftSnapshot()` and `Partition::LoadDataRaftSnapshot()` now export/import real local-filesystem partition state: condition, index stream, oplog stream, and page-zone streams are copied into the Byteraft snapshot directory and reinstalled by rebuilding the partition's in-memory managers before later Raft entries replay.
+  - The RustRaft FSM now calls partition-owned snapshot/load callbacks.
+- `Partition::CreateDataRaftSnapshot()` and `Partition::LoadDataRaftSnapshot()` now export/import real local-filesystem partition state: condition, index stream, oplog stream, and page-zone streams are copied into the RustRaft snapshot directory and reinstalled by rebuilding the partition's in-memory managers before later Raft entries replay.
 - Supported snapshot source/install URI schemes are `file://`, `shared-file://`, `shared://`, `efs://`, and `nfs://`. This covers local Docker/shared-file tests and AWS EFS/NFS-style shared filesystem tests.
-- Object-store snapshot exporters/importers still fail closed for `s3://` and S3-compatible schemes. Use local Raft streams plus Byteraft snapshot transfer for production Raft today; add an explicit S3 snapshot archive/import adapter before using S3 as the snapshot payload store.
-- Empty Byteraft snapshots remain test-only through `--data_raft_enable_empty_snapshot_for_tests=true`; production Raft should leave this false.
+- Object-store snapshot exporters/importers still fail closed for `s3://` and S3-compatible schemes. Use local Raft streams plus RustRaft snapshot transfer for production Raft today; add an explicit S3 snapshot archive/import adapter before using S3 as the snapshot payload store.
+- Empty RustRaft snapshots remain test-only through `--data_raft_enable_empty_snapshot_for_tests=true`; production Raft should leave this false.
 - The applied-index sidecar is now written through an fsync+rename+directory-fsync path, and startup fails closed if existing Raft WAL is present without an applied-index checkpoint.
 - Full transactional coupling between storage mutation and applied-index advancement still requires either an engine-native recovery metadata record or an idempotent command log format for every command type.
 - Wire membership changes, learner catch-up, promotion, and leader transfer into metaserver/autoscale.
-  - The data-node backend now guards membership changes behind an active leader lease, waits for config-change application, treats already-present peers idempotently, rejects learner leadership transfer, and prevents accidental removal of the local leader or the last voter. Pending Byteraft config indexes are logged but not used as a hard preflight rejection because Byteraft can continue applying while reporting the last config index.
+  - The data-node backend now guards membership changes behind an active leader lease, waits for config-change application, treats already-present peers idempotently, rejects learner leadership transfer, and prevents accidental removal of the local leader or the last voter. Pending RustRaft config indexes are logged but not used as a hard preflight rejection because RustRaft can continue applying while reporting the last config index.
   - `Partition::UpdateMembership()` now reconciles active replicas by adding learners, promoting caught-up replicas, transferring leadership to the intended primary, and removing every inactive peer instead of stopping after the first removal.
 - Read-index and bounded-stale replica-read mode hooks are now present. They still need local multi-node and AWS validation under concurrent writes before being enabled for correctness-sensitive all-replica serving.
 
@@ -187,7 +187,7 @@ Phase 5: AWS validation
 
 ## Guardrail Added
 
-`raft_consensus` is accepted as a flag value and starts the Byteraft backend. Direct local writes are still rejected by default; write-only command batches must go through the Raft proposal path. The guard is intentionally fail-closed; direct writes require `--data_raft_enable_experimental_direct_writes=true`.
+`raft_consensus` is accepted as a flag value and starts the RustRaft backend. Direct local writes are still rejected by default; write-only command batches must go through the Raft proposal path. The guard is intentionally fail-closed; direct writes require `--data_raft_enable_experimental_direct_writes=true`.
 
 For shared-store AWS tests, use:
 

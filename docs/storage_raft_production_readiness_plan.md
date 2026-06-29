@@ -99,7 +99,7 @@ Raft local coverage:
   lagging-voter tail catch-up, failover, and no-majority rejection parity.
 - Dedicated `run_raft_distributed_parity.sh` JSON gate that composes data-node distributed Raft,
   data-node secondary/fault tolerance, and metaserver Raft parity in one C++-mapped local run.
-- Dedicated `validate_byteraft_derived_readiness.py` static gate for ByteRaft-derived readiness:
+- Dedicated `validate_rustraft_derived_readiness.py` static gate for RustRaft-derived readiness:
   election/pre-vote guards, durable hard state and membership, safe joint-consensus scale changes,
   leader lease/read-index behavior, bounded stale reads, learner promotion, leader transfer,
   snapshot bootstrap, lag/catch-up, failover, operator status/local-status/metrics, and operator
@@ -107,7 +107,7 @@ Raft local coverage:
   applied-log-byte snapshot triggers.
 - WAL-backed node records now carry a durable apply/snapshot fence for commit index, applied index,
   installed snapshot floor, and first retained log index, giving the TemporalRaft path a concrete
-  ByteRaft-style applied-index/storage/snapshot atomicity contract to preserve.
+  RustRaft-style applied-index/storage/snapshot atomicity contract to preserve.
 - WAL-backed node records now also carry `RaftStorageApplyFence` for shard id, Raft term,
   committed/applied index, snapshot id, storage epoch, and checksum, so recovery rejects missing,
   corrupt, stale, or ahead-of-storage fence state before replay.

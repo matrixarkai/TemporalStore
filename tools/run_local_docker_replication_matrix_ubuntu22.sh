@@ -468,7 +468,7 @@ The failover harness starts a 3-node Raft data cluster, verifies replica reads, 
 
 ## Snapshot Coverage
 
-The local matrix records data-Raft working files under each raft case directory. Data-node Raft snapshot creation/loading is implemented in the partition path and is exercised indirectly by Byteraft when snapshots are triggered internally. This harness does not yet expose a direct data-node snapshot trigger RPC; that is the remaining gap for deterministic snapshot-install testing.
+The local matrix records data-Raft working files under each raft case directory. Data-node Raft snapshot creation/loading is implemented in the partition path and is exercised indirectly by RustRaft when snapshots are triggered internally. This harness does not yet expose a direct data-node snapshot trigger RPC; that is the remaining gap for deterministic snapshot-install testing.
 
 ## Artifacts
 

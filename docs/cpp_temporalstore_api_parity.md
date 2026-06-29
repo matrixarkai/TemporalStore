@@ -311,7 +311,7 @@ Partially covered, but still materially smaller than C++:
   There is still no production ByteStore stream backend parity.
 - Raft has local/distributed model coverage, HTTP transport contracts, WAL persistence, snapshots,
   external snapshot refs, membership safety models, and local harnesses. It is still not production
-  ByteRaft parity and still lacks real OpenRaft/raft-rs FSM/storage integration, actual mTLS
+  RustRaft parity and still lacks real OpenRaft/raft-rs FSM/storage integration, actual mTLS
   transport implementation, networked metaserver-driven data-Raft membership scheduling, and
   external multi-process/host chaos validation.
 

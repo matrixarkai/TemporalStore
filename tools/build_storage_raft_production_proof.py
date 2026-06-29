@@ -3,7 +3,7 @@
 
 The individual harnesses are still the source of truth. This script joins their
 JSON outputs into one readiness envelope so storage, cache, shared-store, Raft,
-and ByteRaft-derived contracts can be reviewed together.
+and RustRaft-derived contracts can be reviewed together.
 """
 
 from __future__ import annotations
@@ -97,9 +97,9 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
                 "temporal_raft_process_rollout"
             ),
         },
-        "byteraft_derived_semantics": {
+        "rustraft_derived_semantics": {
             "ready": raft_ready,
-            "source": "validate_byteraft_derived_readiness.py plus raft-distributed-parity.json",
+            "source": "validate_rustraft_derived_readiness.py plus raft-distributed-parity.json",
             "contracts": [
                 "leader transfer",
                 "membership add/promote/remove",

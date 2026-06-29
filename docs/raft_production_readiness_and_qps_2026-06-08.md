@@ -6,7 +6,7 @@ TemporalStore data-node Raft is not production-ready yet.
 
 The current source has an important guarded Raft shape:
 
-- Byteraft-backed `DataRaftConsensusBackend`
+- RustRaft-backed `DataRaftConsensusBackend`
 - write-only command proposal before mutation
 - committed FSM apply on the partition owner thread
 - direct-write fail-closed guard
@@ -172,7 +172,7 @@ Done in the current source:
 Still intentionally fail-closed:
 
 1. Real partition snapshots.
-   - `Partition::CreateDataRaftSnapshot()` now exports local-filesystem condition/index/oplog/page stream files into the Byteraft snapshot directory.
+   - `Partition::CreateDataRaftSnapshot()` now exports local-filesystem condition/index/oplog/page stream files into the RustRaft snapshot directory.
    - `Partition::LoadDataRaftSnapshot()` now reinstalls those files and rebuilds volatile partition managers before later Raft entries replay.
    - Supported snapshot/install URI schemes are `file://`, `shared-file://`, `shared://`, `efs://`, and `nfs://`.
    - Object-store snapshot adapters for `s3://` and S3-compatible schemes are still not implemented and intentionally fail closed.
@@ -185,7 +185,7 @@ Still intentionally fail-closed:
    - It is still not a single transaction with object/page/index/oplog mutation; closing that final crash window requires either an engine-native recovery metadata record or idempotent command-log application for every command type.
 
 3. Distributed membership control.
-   - Membership operations now require an active leader lease, wait for config-change application, log pending Byteraft config indexes, and make duplicate add/promote/remove requests idempotent where safe.
+   - Membership operations now require an active leader lease, wait for config-change application, log pending RustRaft config indexes, and make duplicate add/promote/remove requests idempotent where safe.
    - The backend rejects unsafe leader transfer to learners, local leader removal, and last-voter removal unless the single-voter smoke-test flag is explicitly enabled.
    - Partition membership reconciliation now adds/promotes active replicas, transfers leadership to the intended primary, and removes all inactive peers.
 

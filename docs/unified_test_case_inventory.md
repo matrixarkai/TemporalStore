@@ -106,7 +106,7 @@ Current grandfathered Rust test dispositions:
 | `cpp_out_of_scope` | 0 |
 | `duplicate/remove` | 0 |
 
-The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
+The next migration target is the Raft RustRaft-derived process/fault/readiness family, followed by
 storage/cache recovery cases and Context pipeline model cases.
 
 The standalone `TemporalStoreTestCorpus` repo also carries the full generated draft inventory:
@@ -178,12 +178,12 @@ C++ execution should progressively cover every executable case.
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
-| `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
-| `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
-| `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
-| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
-| `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and oplog/index-log ordering. |
-| `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up. |
+| `storage_rustraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
+| `storage_rustraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
+| `storage_rustraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
+| `storage_rustraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
+| `storage_rustraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and oplog/index-log ordering. |
+| `storage_rustraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up. |
 | `storage_recovery_sidecar_dependency_matrix` | Storage recovery validates index refs, page refs, manifest refs, context sidecar refs, follower cursor retention, and cache refill as one dependency matrix. |
 
 ## C++ Existing-Test Parity Surface Cases
@@ -224,18 +224,18 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
 | `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
-| `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
-| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |
-| `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
-| `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
-| `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
-| `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
-| `raft_byteraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
-| `raft_byteraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
-| `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |
-| `raft_byteraft_follower_rejoin_compacted_logs_fault_harness` | Follower rejoin after compaction installs snapshot, replays retained tail, and becomes read-eligible after catch-up. |
-| `raft_byteraft_rolling_restart_joint_consensus_fault_harness` | Rolling restart with pending joint consensus completes or rolls back safely. |
-| `raft_byteraft_shared_fault_gate` | Combined ByteRaft-derived data-node and metaserver Raft fault gate. |
+| `raft_rustraft_read_safety_policy` | RustRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
+| `raft_rustraft_metrics_admin_pipeline_status` | RustRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |
+| `raft_rustraft_snapshot_lifecycle_depth` | RustRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
+| `raft_rustraft_replication_backpressure` | RustRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
+| `raft_rustraft_election_controls` | RustRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
+| `raft_rustraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
+| `raft_rustraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
+| `raft_rustraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
+| `raft_rustraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |
+| `raft_rustraft_follower_rejoin_compacted_logs_fault_harness` | Follower rejoin after compaction installs snapshot, replays retained tail, and becomes read-eligible after catch-up. |
+| `raft_rustraft_rolling_restart_joint_consensus_fault_harness` | Rolling restart with pending joint consensus completes or rolls back safely. |
+| `raft_rustraft_shared_fault_gate` | Combined RustRaft-derived data-node and metaserver Raft fault gate. |
 | `raft_temporal_raft_process_read_safety_and_membership_matrix` | Production TemporalRaft multi-process read safety, membership, snapshot, restart, follower lag, and secondary-read evidence matrix. |
 | `cpp_redis_live_storage_smoke_parity_surfaces` | Redis live storage smoke surfaces. |
 | `cpp_local_docker_replication_matrix_parity_surfaces` | Local Docker replication matrix surfaces. |
@@ -291,9 +291,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `benchmark_longmemeval_rust_full_replay_contract` | Shared benchmark contract for LongMemEval_s full Rust TemporalStore replay, deterministic/OSS reader modes, and VikingMem-style archive fields. |
 | `benchmark_cpp_rust_vikingmem_report_comparator` | Shared benchmark contract for comparing C++ and Rust `matrixark_vikingmem_context_benchmark_report_v1` archives case-by-case. |
 
-### ByteRaft Fault Acceptance Criteria
+### RustRaft Fault Acceptance Criteria
 
-The ByteRaft-derived fault cases carry machine-validated
+The RustRaft-derived fault cases carry machine-validated
 `acceptance_criteria` in the shared corpus:
 
 | Scenario | Acceptance |
@@ -377,7 +377,7 @@ family has a C++ execution story:
 | Family | Status |
 | --- | --- |
 | Storage/cache | Temporary static surface gate with a native runner blocker. |
-| Raft | Mixed native runner plus static surface gate for legacy ByteRaft/C++ surfaces. |
+| Raft | Mixed native runner plus static surface gate for legacy RustRaft/C++ surfaces. |
 | Context | Temporary static surface gate with a native runner blocker. |
 | Client/proxy/control-plane | Temporary static surface gate with a native runner blocker. |
 | Ingestion | Temporary static surface gate with a native runner blocker. |
@@ -439,7 +439,7 @@ Those should follow the same rule:
 | --- | --- | --- |
 | Product/API smoke tests | Redis/API command behavior, Feature/Sequence/IPS/Risk/Context behavior, lifecycle workflows. | legacy C++ wire service glue and C++ fixture setup. |
 | Storage tests | Logical recovery, dump/load, compaction, GC, corruption, shared-store replay. | C++ object lifetime, allocator, and storage class ownership units. |
-| Raft tests | Log/snapshot/membership/failover behavior and durability outcomes. | byteraft integration wiring and C++ transport internals. |
+| Raft tests | Log/snapshot/membership/failover behavior and durability outcomes. | rustraft integration wiring and C++ transport internals. |
 | Scale/performance gates | Shared workload traces and SLO result formats. | Platform-specific packaging or benchmark harness mechanics. |
 | Build/deployment checks | Runtime behavior and readiness output. | CMake/linking, dependency discovery, and binary packaging details. |
 

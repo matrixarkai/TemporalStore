@@ -1,6 +1,6 @@
 # ByteKV Raft Blueprint For TemporalStore
 
-This note captures the concrete production shape to borrow from the local ByteKV codebase without vendoring ByteKV or Byteraft dependency code into the clean TemporalStore repo.
+This note captures the concrete production shape to borrow from the local ByteKV codebase without vendoring ByteKV or RustRaft dependency code into the clean TemporalStore repo.
 
 ## ByteKV Files Reviewed
 
@@ -27,7 +27,7 @@ ByteKV does not treat Raft as a background copy path. It makes Raft the partitio
 
 - `PartitionReplica` owns lifecycle, role, serving checks, shutdown, leadership events, and per-replica metrics.
 - `PartitionEngine` is the write proposal surface. Writes become deterministic redo entries before local mutation.
-- `RaftEngine` wraps Byteraft operations: propose, AddNode/AddLearner, RemoveNode, TransferLeader, Campaign, ReadIndex, and Checkpoint.
+- `RaftEngine` wraps RustRaft operations: propose, AddNode/AddLearner, RemoveNode, TransferLeader, Campaign, ReadIndex, and Checkpoint.
 - `PartitionFSM` applies committed entries, handles leader/follower callbacks, configuration changes, admin commands, snapshot creation, and snapshot load.
 - The storage engine persists applied index in the engine state. Snapshot export includes engine data plus replica metadata and applied index.
 - Reads are not casual follower reads. ByteKV checks leader/lease/read-index semantics before serving correctness-sensitive reads.
@@ -47,7 +47,7 @@ The biggest lesson is architectural: a production Raft path is not just "send th
    - This is the first production gap TemporalStore must close.
 
 3. **Snapshot is real data**
-   - Snapshot is not an empty Byteraft checkpoint.
+   - Snapshot is not an empty RustRaft checkpoint.
    - It contains data files plus replica metadata plus applied index.
    - Install-snapshot imports that state before the replica can serve.
 
@@ -124,14 +124,14 @@ These parts are ByteKV-specific and should not be copied into TemporalStore:
 
 - RocksDB/BlockDB MVCC storage-engine internals.
 - ByteKV transaction protocol, TSO, and MVCC conflict checks.
-- Internal dependency code, Byteraft source, or Byte libraries.
+- Internal dependency code, RustRaft source, or Byte libraries.
 - Master scheduler implementation details that assume ByteKV partition/table semantics.
 
 TemporalStore should borrow the shape, interfaces, and correctness checkpoints, while keeping the implementation clean and storage-model-specific.
 
 ## What Is Already In TemporalStore
 
-- Byteraft-backed `DataRaftConsensusBackend`.
+- RustRaft-backed `DataRaftConsensusBackend`.
 - Node-level transport and snapshot server startup.
 - Write-only command envelope: `DataRaftCommandEntry`.
 - Leader proposal path before local mutation for write-only batches.
@@ -145,7 +145,7 @@ TemporalStore should borrow the shape, interfaces, and correctness checkpoints, 
   - `linearizable`
   - `bounded_stale`
   - `unsafe_any_replica`
-- ByteKV-style `FlexibleApply` for batched Byteraft apply.
+- ByteKV-style `FlexibleApply` for batched RustRaft apply.
 
 ## Remaining Work Before Production Ready
 
