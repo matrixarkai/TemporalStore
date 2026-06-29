@@ -9,6 +9,10 @@ pub(super) struct ObjectRuntimeState {
     pub object_keys: Vec<String>,
     pub model_ids: Vec<String>,
     pub page_ref_count: usize,
+    pub hot_page_ref_count: usize,
+    pub cold_page_ref_count: usize,
+    pub deleted_page_ref_count: usize,
+    pub residency: String,
     pub dirty: bool,
     pub deleted: bool,
     pub loading: bool,
@@ -26,6 +30,10 @@ pub(super) struct ObjectManagerRuntimeReport {
     pub reused_object_ids: usize,
     pub dirty_object_count: usize,
     pub deleted_object_count: usize,
+    pub hot_object_count: usize,
+    pub cold_object_count: usize,
+    pub mixed_residency_object_count: usize,
+    pub object_page_transition_count: usize,
     pub loading_object_count: usize,
     pub in_memory_object_count: usize,
     pub ttl_object_count: usize,
@@ -43,6 +51,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     for slot in shard.slot_index.slot_map.values() {
         for object_id in &slot.object_index {
             object_ids.insert(*object_id);
+            let object_deleted = slot.deleted || slot.deleted_object_index.contains(object_id);
             let object = objects
                 .entry(*object_id)
                 .or_insert_with(|| ObjectRuntimeState {
@@ -51,13 +60,18 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
                     page_ref_count: 0,
+                    hot_page_ref_count: 0,
+                    cold_page_ref_count: 0,
+                    deleted_page_ref_count: 0,
+                    residency: "cold".to_string(),
                     dirty: slot.dirty,
-                    deleted: false,
+                    deleted: object_deleted,
                     loading: slot.loading,
                     in_memory: slot.in_memory,
                     ttl_ms: slot.ttl_ms,
                 });
             object.dirty |= slot.dirty;
+            object.deleted |= object_deleted;
             object.loading |= slot.loading;
             object.in_memory |= slot.in_memory;
             object.ttl_ms = match (object.ttl_ms, slot.ttl_ms) {
@@ -81,6 +95,10 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
                     page_ref_count: 0,
+                    hot_page_ref_count: 0,
+                    cold_page_ref_count: 0,
+                    deleted_page_ref_count: 0,
+                    residency: "cold".to_string(),
                     dirty: false,
                     deleted: false,
                     loading: false,
@@ -89,7 +107,16 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 });
             object.page_ref_count = object.page_ref_count.saturating_add(1);
             object.dirty |= page.dirty || slot.dirty;
-            object.deleted |= page.deleted;
+            let object_deleted =
+                page.deleted || slot.deleted || slot.deleted_object_index.contains(&page.object_id);
+            object.deleted |= object_deleted;
+            if object_deleted {
+                object.deleted_page_ref_count = object.deleted_page_ref_count.saturating_add(1);
+            } else if slot.in_memory && !page.log_backed {
+                object.hot_page_ref_count = object.hot_page_ref_count.saturating_add(1);
+            } else {
+                object.cold_page_ref_count = object.cold_page_ref_count.saturating_add(1);
+            }
             object.loading |= slot.loading;
             object.in_memory |= slot.in_memory;
             object.ttl_ms = match (object.ttl_ms, slot.ttl_ms) {
@@ -105,7 +132,26 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             }
         }
     }
-    let objects = objects.into_values().collect::<Vec<_>>();
+    let objects = objects
+        .into_values()
+        .map(|mut object| {
+            object.residency = if object.deleted
+                && (object.page_ref_count == 0
+                    || object.deleted_page_ref_count >= object.page_ref_count)
+            {
+                "deleted".to_string()
+            } else if object.hot_page_ref_count > 0 && object.cold_page_ref_count > 0 {
+                "mixed".to_string()
+            } else if object.hot_page_ref_count > 0
+                || (object.page_ref_count == 0 && object.in_memory)
+            {
+                "hot".to_string()
+            } else {
+                "cold".to_string()
+            };
+            object
+        })
+        .collect::<Vec<_>>();
 
     ObjectManagerRuntimeReport {
         object_manager_runtime_module: true,
@@ -116,6 +162,26 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         reused_object_ids: object_ref_counts.values().filter(|refs| **refs > 1).count(),
         dirty_object_count: objects.iter().filter(|object| object.dirty).count(),
         deleted_object_count: objects.iter().filter(|object| object.deleted).count(),
+        hot_object_count: objects
+            .iter()
+            .filter(|object| object.residency == "hot")
+            .count(),
+        cold_object_count: objects
+            .iter()
+            .filter(|object| object.residency == "cold")
+            .count(),
+        mixed_residency_object_count: objects
+            .iter()
+            .filter(|object| object.residency == "mixed")
+            .count(),
+        object_page_transition_count: objects
+            .iter()
+            .filter(|object| {
+                object.page_ref_count > 1
+                    || object.deleted_page_ref_count > 0
+                    || object.residency == "mixed"
+            })
+            .count(),
         loading_object_count: objects.iter().filter(|object| object.loading).count(),
         in_memory_object_count: objects.iter().filter(|object| object.in_memory).count(),
         ttl_object_count: objects

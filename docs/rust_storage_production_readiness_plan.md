@@ -198,9 +198,11 @@ through cache refill. These are readiness fields, not informal doc claims.
 
 Rust now also exposes a Rust-native ObjectManager runtime report. It covers hot/cold/mixed
 residency, tombstone objects, dirty/loading/meta/TTL object counters, dirty slot generations,
-layout classes, layout transition counters, missing owner refs, owner mismatches, and object-id
-reuse conflicts. That makes native Rust ObjectManager runtime mechanics readiness-backed rather
-than only doc-described.
+layout classes, layout transition counters, object-page ownership transition counters, hot/cold
+page-ref counts, deleted page-ref counts, missing owner refs, owner mismatches, and object-id reuse
+conflicts. The focused shared test now drives growth, delete/tombstone, page compaction, dump/load
+install, and unload/load recovery before comparing ObjectManager residency counters. That makes
+native Rust ObjectManager runtime mechanics readiness-backed rather than only doc-described.
 
 Rust also has stream-backed extent runtime evidence. The page store appends self-describing stream
 records, supports logical range reads that skip envelopes and decompress records across page

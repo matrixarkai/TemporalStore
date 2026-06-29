@@ -8929,7 +8929,8 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         });
         if !deleted_object_ids.is_empty() {
-            slot.object_index.extend(deleted_object_ids);
+            slot.object_index.extend(deleted_object_ids.iter().copied());
+            slot.deleted_object_index.extend(deleted_object_ids);
             slot.dirty = true;
             slot.deleted = slot.page_index.is_empty();
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
@@ -8950,11 +8951,13 @@ fn mark_slot_index_page_deleted(
     let mut removed = false;
     for slot in shard.slot_index.slot_map.values_mut() {
         let mut slot_removed = false;
+        let mut deleted_object_ids = BTreeSet::new();
         slot.page_index.retain(|_, page| {
             let matches = page.model_id == model_id
                 && page.object_key == key
                 && page.component.as_deref() == component;
             if matches {
+                deleted_object_ids.insert(page.object_id);
                 slot_removed = true;
                 removed = true;
                 false
@@ -8963,6 +8966,8 @@ fn mark_slot_index_page_deleted(
             }
         });
         if slot_removed {
+            slot.object_index.extend(deleted_object_ids.iter().copied());
+            slot.deleted_object_index.extend(deleted_object_ids);
             slot.dirty = true;
             slot.deleted = slot.page_index.is_empty();
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
@@ -9649,6 +9654,7 @@ fn sync_slot_index_object_pages(
         slot.loading = false;
         slot.in_memory = true;
         slot.object_index.insert(object_id);
+        slot.deleted_object_index.remove(&object_id);
         slot.page_index.insert(
             page_index_ref_key(&entry),
             PageIndex {
@@ -10514,9 +10520,20 @@ fn object_manager_runtime_report(
 ) -> ObjectManagerRuntimeReport {
     let ownership =
         slot_object_page_ownership_report(shard_id, shard, start_routing_slot, end_routing_slot);
+    let object_runtime = object_manager::runtime_report(shard);
     let mut report = ObjectManagerRuntimeReport {
         shard_id,
         routing_slot_count: shard.slot_index.slot_map.len() as u64,
+        object_count: object_runtime.live_object_count as u64,
+        page_ref_count: object_runtime.live_page_ref_count as u64,
+        hot_object_count: object_runtime.hot_object_count as u64,
+        cold_object_count: object_runtime.cold_object_count as u64,
+        mixed_residency_object_count: object_runtime.mixed_residency_object_count as u64,
+        tombstone_object_count: object_runtime.deleted_object_count as u64,
+        dirty_object_count: object_runtime.dirty_object_count as u64,
+        loading_object_count: object_runtime.loading_object_count as u64,
+        ttl_object_count: object_runtime.ttl_object_count as u64,
+        object_page_transition_count: object_runtime.object_page_transition_count as u64,
         dirty_slot_count: shard
             .slot_index
             .slot_map
@@ -10536,6 +10553,8 @@ fn object_manager_runtime_report(
             "runtime owns page refs in the first-class slot index".to_string(),
             "runtime tracks dirty generations and dirty routing slots in SlotNode".to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
+            "runtime tracks hot/cold/tombstone object state and object-page ownership transitions"
+                .to_string(),
         ],
         ..ObjectManagerRuntimeReport::default()
     };
@@ -10555,34 +10574,18 @@ fn object_manager_runtime_report(
                 object_count: slot.object_index.len() as u64,
             });
         }
-        report.object_count = report
-            .object_count
-            .saturating_add(slot.object_index.len() as u64);
-        report.page_ref_count = report
-            .page_ref_count
-            .saturating_add(slot.page_index.len() as u64);
-        if slot.loading {
-            report.loading_object_count = report.loading_object_count.saturating_add(1);
-        }
         if slot.meta_loaded {
             report.meta_object_count = report.meta_object_count.saturating_add(1);
-        }
-        if slot.ttl_ms.is_some() {
-            report.ttl_object_count = report.ttl_object_count.saturating_add(1);
         }
         match slot.layout {
             SlotLayoutState::Empty => {}
             SlotLayoutState::SingleObject | SlotLayoutState::SinglePageObject => {
-                report.hot_object_count = report.hot_object_count.saturating_add(1);
                 report.object_page_count = report.object_page_count.saturating_add(1);
             }
             SlotLayoutState::MultiPageObject => {
                 report.multi_page_object_count = report.multi_page_object_count.saturating_add(1);
             }
-            SlotLayoutState::MultiObject => {
-                report.mixed_residency_object_count =
-                    report.mixed_residency_object_count.saturating_add(1);
-            }
+            SlotLayoutState::MultiObject => {}
         }
     }
 
