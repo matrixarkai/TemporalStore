@@ -93,7 +93,10 @@ SECONDARY_INDEX_PRIORITY_PREFIXES = (
     "segment_topic:",
     "keyword:",
 )
-MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "16"))
+MAX_RESOURCE_FACT_CHUNKS = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACT_CHUNKS", "8"))
+MAX_RESOURCE_FACTS_PER_RESOURCE = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_RESOURCE", "8"))
+MAX_RESOURCE_FACTS_PER_CHUNK = int(os.environ.get("MATRIXARK_MAX_RESOURCE_FACTS_PER_CHUNK", "2"))
+ENABLE_GENERIC_RESOURCE_FACTS = os.environ.get("MATRIXARK_ENABLE_GENERIC_RESOURCE_FACTS", "0").strip().lower() in {"1", "true", "yes"}
 RESOURCE_ASYNC_DEFAULT_BYTES = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_BYTES", str(2 * 1024 * 1024)))
 RESOURCE_ASYNC_DEFAULT_TEXT_CHARS = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_TEXT_CHARS", "200000"))
 RESOURCE_ASYNC_DEFAULT_PATH_COUNT = int(os.environ.get("MATRIXARK_RESOURCE_ASYNC_DEFAULT_PATH_COUNT", "32"))
@@ -2458,8 +2461,8 @@ def matched_resource_fact_schemas(text: str, metadata: Json) -> list[Json]:
         if any(keyword in lower for keyword in schema["keywords"])
     ]
     if matches:
-        return matches
-    if should_extract_resource_fact(text, metadata):
+        return matches[: max(0, MAX_RESOURCE_FACTS_PER_CHUNK)]
+    if ENABLE_GENERIC_RESOURCE_FACTS and should_extract_resource_fact(text, metadata):
         return [{"fact_type": "resource_fact", "entity_type": "resource_fact", "entity_prefix": "fact", "keywords": []}]
     return []
 
