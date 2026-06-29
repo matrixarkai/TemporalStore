@@ -137,15 +137,36 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         self.assertIn("event_id_hash", result)
         self.assertIn("agent_hook", args)
 
-    def test_storage_options_are_validated_stored_and_audited(self) -> None:
+    def test_retrieval_audit_is_off_by_default(self) -> None:
         server = self._server()
-        ingest = server.call_tool(
-            "matrixark_ingest",
-            {
-                "messages": [{"role": "user", "content": "Alice approved the GPU budget."}],
-                "storage_options": {"oplog_mode": "async", "raft_mode": True, "consistency": "linearizable"},
-            },
-        )
+        server.call_tool("matrixark_ingest", {"messages": [{"role": "user", "content": "Alice approved the GPU budget."}]})
+        pack = server.call_tool("matrixark_retrieve", {"query": "what did Alice approve?"})
+        self.assertEqual("off", pack["operational_visibility_policy"]["audit_mode"])
+        records = server.adapter.read_all()
+        self.assertFalse(any(record.get("record_type") == "context_pack_audit" for record in records))
+        self.assertFalse(any(record.get("record_type") == "context_pack_telemetry" for record in records))
+
+    def test_storage_options_are_validated_stored_and_audited(self) -> None:
+        core_modules = []
+        for module_name in ("matrixark_mcp_core", "tools.matrixark_mcp_core"):
+            try:
+                module = importlib.import_module(module_name)
+                core_modules.append((module, module.ENABLE_CONTEXT_DEBUG_RECORDS))
+                module.ENABLE_CONTEXT_DEBUG_RECORDS = True
+            except ModuleNotFoundError:
+                pass
+        server = self._server()
+        try:
+            ingest = server.call_tool(
+                "matrixark_ingest",
+                {
+                    "messages": [{"role": "user", "content": "Alice approved the GPU budget."}],
+                    "storage_options": {"oplog_mode": "async", "raft_mode": True, "consistency": "linearizable"},
+                },
+            )
+        finally:
+            for module, old_debug in core_modules:
+                module.ENABLE_CONTEXT_DEBUG_RECORDS = old_debug
         self.assertEqual("accepted", ingest["status"])
         records = server.adapter.read_all()
         event = next(record for record in records if record.get("record_type") == "context_event")
@@ -222,6 +243,7 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
             {
                 "query": "Who approved the GPU budget?",
                 "storage_options": {"storage_mode": "shared_store", "oplog_mode": "sync"},
+                "audit_mode": "full",
             },
         )
         self.assertEqual("shared_store", pack["recall_policy"]["storage_options"]["storage_mode"])

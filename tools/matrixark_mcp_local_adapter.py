@@ -33,6 +33,54 @@ RETRIEVAL_HOT_RECORD_TYPES = {
 RESOURCE_IMPORT_IGNORE_DIRS = {".git", "node_modules", "target", "build", "dist", ".venv", "__pycache__"}
 
 
+def latest_value_record_key(record: Json) -> tuple[Any, ...] | None:
+    record_type = str(record.get("record_type") or "")
+    if record_type == "context_node":
+        return (record_type, record.get("node_hash"))
+    if record_type == "context_child_ref":
+        return (record_type, record.get("child_ref_hash"))
+    if record_type == "context_summary":
+        return (record_type, record.get("summary_type"), record.get("summary_hash") or record.get("node_hash"))
+    if record_type == "context_embedding":
+        return (record_type, record.get("embedding_type"), record.get("ref_type"), record.get("ref_hash"))
+    if record_type == "context_index":
+        return (record_type, record.get("index_hash") or (record.get("index_name"), record.get("ref_type"), record.get("ref_hash")))
+    if record_type == "context_entity":
+        return (record_type, record.get("entity_hash"))
+    if record_type == "context_summary_dirty":
+        return (record_type, record.get("dirty_hash"))
+    if record_type == "resource_manifest":
+        return (record_type, record.get("resource_hash"))
+    if record_type == "skill_registry_update":
+        return (record_type, record.get("skill_hash"))
+    if record_type == "resource_import_task":
+        return (record_type, record.get("resource_import_task_hash"))
+    return None
+
+
+def compact_latest_value_records(records: list[Json]) -> list[Json]:
+    latest: dict[tuple[Any, ...], Json] = {}
+    output: list[Json] = []
+    latest_positions: dict[tuple[Any, ...], int] = {}
+    for record in records:
+        key = latest_value_record_key(record)
+        if key is None or any(part in (None, "") for part in key[1:]):
+            output.append(record)
+            continue
+        existing = latest.get(key)
+        if existing is None:
+            latest[key] = record
+            latest_positions[key] = len(output)
+            output.append(record)
+            continue
+        if int(record.get("updated_at_ms") or record.get("created_at_ms") or 0) >= int(
+            existing.get("updated_at_ms") or existing.get("created_at_ms") or 0
+        ):
+            latest[key] = record
+            output[latest_positions[key]] = record
+    return output
+
+
 @dataclass
 class MatrixArkLocalAdapter:
     event_log: Path
@@ -331,7 +379,7 @@ class MatrixArkLocalAdapter:
                     line = line.strip()
                     if line:
                         records.append(json.loads(line))
-        return records
+        return compact_latest_value_records(records)
 
     def retrieval_records(
         self,
@@ -1019,8 +1067,8 @@ class MatrixArkLocalAdapter:
         completed_dirty_hashes = {
             int(record.get("dirty_hash"))
             for record in records
-            if record.get("record_type") == "context_summary_refresh_audit"
-            and record.get("status") == "refreshed"
+            if record.get("record_type") in {"context_summary_refresh_audit", "context_summary_dirty"}
+            and record.get("status") in {"refreshed", "completed"}
             and record.get("dirty_hash") is not None
         }
         pending_by_node: dict[int, Json] = {}
@@ -1196,35 +1244,47 @@ class MatrixArkLocalAdapter:
                 min_event_age_ms=min_compression_event_age_ms,
                 raw_event_ttl_after_compression_ms=raw_event_ttl_after_compression_ms,
             )
-            self.append(
-                {
-                    "record_type": "context_summary_refresh_audit",
-                    "dirty_hash": dirty.get("dirty_hash"),
-                    "node_hash": node_hash,
-                    "node_path": node_path,
-                    "summary_version_hash": version_hash,
-                    "source_event_ids": source_event_ids,
-                    "source_summary_hashes": source_summary_hashes,
-                    "source_event_count": len(source_event_ids),
-                    "source_summary_count": len(source_summary_hashes),
-                    "generated_summary_types": [spec[0] for spec in summary_specs],
-                    "summary_generation_policy": l1_policy,
-                    "time_compression_policy": {
-                        "automatic": True,
-                        "max_raw_events_per_node": max_raw_events_per_node,
-                        "compression_window_events": compression_window_events,
-                        "min_compression_events": min_compression_events,
-                        "max_compression_windows_per_node": max_compression_windows_per_node,
-                        "min_compression_event_age_ms": min_compression_event_age_ms,
-                        "raw_event_ttl_after_compression_ms": raw_event_ttl_after_compression_ms,
-                    },
-                    "time_compression": compression_refresh,
-                    "status": "refreshed",
-                    "worker": "matrixark-local-async-summary-worker",
-                    "refreshed_at_ms": refreshed_at_ms,
-                    "scope": dirty.get("scope", scope),
-                }
-            )
+            completion_marker = {
+                "record_type": "context_summary_dirty",
+                "dirty_hash": dirty.get("dirty_hash"),
+                "node_hash": node_hash,
+                "node_path": node_path,
+                "scope": dirty.get("scope", scope),
+                "status": "completed",
+                "updated_at_ms": refreshed_at_ms,
+                "completed_at_ms": refreshed_at_ms,
+            }
+            self.append(completion_marker)
+            if ENABLE_SUMMARY_REFRESH_AUDIT:
+                self.append(
+                    {
+                        "record_type": "context_summary_refresh_audit",
+                        "dirty_hash": dirty.get("dirty_hash"),
+                        "node_hash": node_hash,
+                        "node_path": node_path,
+                        "summary_version_hash": version_hash,
+                        "source_event_ids": source_event_ids,
+                        "source_summary_hashes": source_summary_hashes,
+                        "source_event_count": len(source_event_ids),
+                        "source_summary_count": len(source_summary_hashes),
+                        "generated_summary_types": [spec[0] for spec in summary_specs],
+                        "summary_generation_policy": l1_policy,
+                        "time_compression_policy": {
+                            "automatic": True,
+                            "max_raw_events_per_node": max_raw_events_per_node,
+                            "compression_window_events": compression_window_events,
+                            "min_compression_events": min_compression_events,
+                            "max_compression_windows_per_node": max_compression_windows_per_node,
+                            "min_compression_event_age_ms": min_compression_event_age_ms,
+                            "raw_event_ttl_after_compression_ms": raw_event_ttl_after_compression_ms,
+                        },
+                        "time_compression": compression_refresh,
+                        "status": "refreshed",
+                        "worker": "matrixark-local-async-summary-worker",
+                        "refreshed_at_ms": refreshed_at_ms,
+                        "scope": dirty.get("scope", scope),
+                    }
+                )
             refreshed.append(
                 {
                     "dirty_hash": dirty.get("dirty_hash"),
@@ -3626,7 +3686,7 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
-        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "full")).strip().lower()
+        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "off")).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
         raw_audit_sample_rate = args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 1.0))
@@ -4703,6 +4763,8 @@ class MatrixArkLocalAdapter:
         return self.ingest(args, hook=hook)
 
     def replay(self, args: Json) -> Json:
+        if not (ENABLE_CONTEXT_REPLAY or bool(args.get("enable_replay"))):
+            raise MatrixArkError("context replay is disabled; set MATRIXARK_ENABLE_REPLAY=1 or pass enable_replay=true for explicit debug runs")
         context_pack_id = require_string(args, "context_pack_id")
         self.flush_audits()
         return {
