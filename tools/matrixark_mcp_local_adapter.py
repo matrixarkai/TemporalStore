@@ -1147,11 +1147,12 @@ class MatrixArkLocalAdapter:
                 f"summary_version:{node_hash}:{dirty.get('dirty_hash')}:{source_event_ids}:{source_summary_hashes}:{refreshed_at_ms}:{l1_policy}"
             )
             for level, summary_text, embedding_type in summary_specs:
+                summary_hash = stable_hash(f"context_summary:{level}:{node_hash}")
                 self.append(
                     {
                         "record_type": "context_summary",
                         "summary_type": level,
-                        "summary_version_hash": version_hash,
+                        "summary_hash": summary_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "depth": len(node_path),
@@ -1168,15 +1169,14 @@ class MatrixArkLocalAdapter:
                     {
                         "record_type": "context_embedding",
                         "embedding_type": embedding_type,
-                        "ref_type": "node",
-                        "ref_hash": node_hash,
+                        "ref_type": "summary",
+                        "ref_hash": summary_hash,
                         "node_hash": node_hash,
                         "node_path": node_path,
                         "depth": len(node_path),
                         "dim": len(embedding_for_text(summary_text)),
                         "model": embedding_model_name(),
                         "vector": embedding_for_text(summary_text),
-                        "summary_version_hash": version_hash,
                         "summary_generation_policy": l1_policy,
                         "dirty_hash": dirty.get("dirty_hash"),
                         "scope": dirty.get("scope", scope),

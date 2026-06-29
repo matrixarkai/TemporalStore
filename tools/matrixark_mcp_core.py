@@ -898,7 +898,8 @@ def prior_context_payload(level: str, event_records: list[Json], all_records: li
             continue
         if record.get("source_event_hash") not in event_hashes:
             continue
-        summary_hash = record.get("node_hash")
+        summary_hash = record.get("summary_hash") or record.get("node_hash")
+        node_hash = record.get("node_hash")
         if summary_hash in seen_summaries:
             continue
         remaining = MAX_PRIOR_CHARS - char_count
@@ -911,11 +912,11 @@ def prior_context_payload(level: str, event_records: list[Json], all_records: li
             {
                 "ref_type": "summary",
                 "ref_hash": summary_hash,
-                "node_hash": summary_hash,
+                "node_hash": node_hash,
                 "text": text,
             }
         )
-        refs.append({"ref_type": "summary", "ref_hash": summary_hash, "node_hash": summary_hash})
+        refs.append({"ref_type": "summary", "ref_hash": summary_hash, "node_hash": node_hash})
 
     for record in event_records:
         text = str(record.get("text", ""))
