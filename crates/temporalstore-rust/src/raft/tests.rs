@@ -5007,51 +5007,103 @@ fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
 // shared-corpus: raft_rustraft_leader_transfer_high_write_fault_harness
 #[test]
 fn rustraft_leader_transfer_under_high_write_load_commits_once() {
-    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            transfer_timeout_tick: 50,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
     let mut accepted = Vec::new();
 
-    for index in 0..32 {
-        let key = format!("transfer-load-before-{index}");
-        let value = format!("before-{index}").into_bytes();
+    for index in 0..24 {
+        let key = format!("transfer-load-{index:02}");
+        let value = format!("before-{index:02}").into_bytes();
         cluster
             .propose(Command::StringSet {
                 key: key.clone(),
                 value: value.clone(),
             })
             .unwrap();
-        accepted.push((key, value));
+        accepted.push((key, value, cluster.status().commit_index));
+    }
+
+    cluster.begin_leader_transfer(2).unwrap();
+    for index in 24..48 {
+        let key = format!("transfer-load-{index:02}");
+        let value = format!("during-{index:02}").into_bytes();
+        cluster
+            .propose(Command::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+            })
+            .unwrap();
+        accepted.push((key, value, cluster.status().commit_index));
     }
 
     cluster.transfer_leader(2).unwrap();
     assert_eq!(cluster.leader_id(), 2);
 
-    for index in 0..32 {
-        let key = format!("transfer-load-after-{index}");
-        let value = format!("after-{index}").into_bytes();
+    for index in 48..72 {
+        let key = format!("transfer-load-{index:02}");
+        let value = format!("after-{index:02}").into_bytes();
         cluster
             .propose(Command::StringSet {
                 key: key.clone(),
                 value: value.clone(),
             })
             .unwrap();
-        accepted.push((key, value));
+        accepted.push((key, value, cluster.status().commit_index));
     }
 
+    let mut commit_indexes = accepted
+        .iter()
+        .map(|(_, _, index)| *index)
+        .collect::<Vec<_>>();
+    commit_indexes.sort_unstable();
+    assert_eq!(
+        commit_indexes,
+        (1..=accepted.len() as u64).collect::<Vec<_>>()
+    );
     assert_eq!(cluster.status().commit_index, accepted.len() as u64);
-    for node_id in [1, 2, 3] {
+    for replica_id in [1, 2, 3] {
         assert_eq!(
-            cluster.commit_index(node_id).unwrap(),
+            cluster.commit_index(replica_id).unwrap(),
             accepted.len() as u64
         );
     }
-    for (key, value) in accepted {
-        assert_eq!(
-            cluster
-                .read_from_replica(2, Command::StringGet { key })
-                .unwrap(),
-            CommandResponse::Bytes { value: Some(value) }
-        );
+
+    for replica_id in [1, 2, 3] {
+        for (key, value, _) in &accepted {
+            assert_eq!(
+                cluster
+                    .read_from_replica(replica_id, Command::StringGet { key: key.clone() },)
+                    .unwrap(),
+                CommandResponse::Bytes {
+                    value: Some(value.clone())
+                }
+            );
+        }
     }
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    let transferred_peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 2)
+        .expect("new leader peer status");
+    assert_eq!(transferred_peer.transfer_leader_requests, 2);
+    assert_eq!(transferred_peer.transfer_leader_accepted, 2);
+    assert_eq!(transferred_peer.transfer_leader_completed, 1);
+    assert_eq!(transferred_peer.transfer_leader_rejected, 0);
+    assert_eq!(transferred_peer.transfer_leader_timeouts, 0);
+    assert!(admin.admin_status_surface_complete);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "admin_status_surface" && item.ready));
 }
 
 #[test]
