@@ -6753,6 +6753,7 @@ fn wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership() {
     assert_eq!(rerestored.membership().voters, vec![1, 2, 3, 4]);
 }
 
+// shared-corpus: raft_rustraft_wal_log_codec_segment_lifecycle
 #[test]
 fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let dir = tempfile::tempdir().unwrap();
@@ -6776,6 +6777,16 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let recovery = wal.recover_node(78, 1).unwrap();
     let report = wal.segment_report(78, 1).unwrap();
     assert_eq!(report.segments.len(), 2);
+    assert!(report.active_segment_id >= 2);
+    assert!(report
+        .segments
+        .windows(2)
+        .all(|pair| pair[0].segment_id < pair[1].segment_id));
+    assert!(report.segments.iter().all(|segment| segment.bytes > 0));
+    assert!(report
+        .segments
+        .iter()
+        .all(|segment| segment.first_sequence <= segment.last_sequence));
     let record = recovery.record.unwrap();
     assert_eq!(record.hard_state.commit_index, 8);
     assert_eq!(record.entries.len(), 8);
@@ -6799,6 +6810,19 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
             value: Some(b"v7".to_vec())
         })
     );
+    let admin = restored.byteraft_runtime_admin_report();
+    assert!(admin.wal_segment_lifecycle_present);
+    assert_eq!(admin.wal_segment_count, 2);
+    assert!(admin.wal_active_segment_id >= admin.wal_first_retained_segment_id);
+    assert!(admin.wal_last_retained_segment_id >= admin.wal_first_retained_segment_id);
+    assert!(admin.wal_total_bytes > 0);
+    assert!(admin.wal_active_segment_bytes > 0);
+    assert!(admin.wal_total_records > 0);
+    assert!(admin.wal_last_sequence >= admin.wal_first_sequence);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "wal_segment_lifecycle" && item.ready));
 }
 
 #[test]
