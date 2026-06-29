@@ -346,7 +346,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues, minority rejects stale reads/writes, and healed followers catch up before read eligibility. |
 | `raft_byteraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
 | `raft_byteraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
-| `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |
+| `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes, backed by observed write IDs, unique write-ID accounting, and committed indexes before and after transfer. |
 | `raft_byteraft_follower_rejoin_compacted_logs_fault_harness` | Follower rejoin after compaction installs snapshot, replays retained tail, and becomes read-eligible after catch-up. |
 | `raft_byteraft_rolling_restart_joint_consensus_fault_harness` | Rolling restart with pending joint consensus completes or rolls back safely. |
 | `raft_byteraft_shared_fault_gate` | Combined ByteRaft-derived data-node and metaserver Raft fault gate. |

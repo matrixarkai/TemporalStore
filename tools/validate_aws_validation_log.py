@@ -670,6 +670,30 @@ def validate_byteraft_process_semantics(
         semantics.get("read_index_responses_observed", 0) > 0,
         f"{job}: {label} read-index responses were not observed",
     )
+    if label == "data-node":
+        write_ids = rollout.get("leader_transfer_write_ids_observed", [])
+        commit_indexes = rollout.get("leader_transfer_commit_indexes_observed", [])
+        require(
+            rollout.get("leader_transfer_under_load_observed") is True,
+            f"{job}: {label} leader transfer under load was not observed",
+        )
+        require(
+            rollout.get("leader_transfer_exact_once_observed") is True,
+            f"{job}: {label} leader transfer exact-once writes were not observed",
+        )
+        require(len(write_ids) >= 6, f"{job}: {label} leader transfer write IDs missing")
+        require(
+            len(set(write_ids)) == len(write_ids),
+            f"{job}: {label} duplicate leader transfer write IDs observed",
+        )
+        require(
+            len(commit_indexes) >= 2,
+            f"{job}: {label} leader transfer commit indexes missing",
+        )
+        require(
+            all(index > 0 for index in commit_indexes),
+            f"{job}: {label} leader transfer commit indexes were not committed",
+        )
     for field in [
         "per_peer_pipeline_state_observed",
         "append_pipeline_state_observed",

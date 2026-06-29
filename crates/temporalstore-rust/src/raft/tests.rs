@@ -2939,6 +2939,17 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         per_node_log_store_inspection_count: 3,
         write_proposed_through_process_api: true,
         leader_transfer_validated: true,
+        leader_transfer_under_load_observed: true,
+        leader_transfer_exact_once_observed: true,
+        leader_transfer_write_ids_observed: vec![
+            "leader-transfer-before-0".to_string(),
+            "leader-transfer-before-1".to_string(),
+            "leader-transfer-before-2".to_string(),
+            "leader-transfer-after-0".to_string(),
+            "leader-transfer-after-1".to_string(),
+            "leader-transfer-after-2".to_string(),
+        ],
+        leader_transfer_commit_indexes_observed: vec![6, 6, 6],
         failover_validated: true,
         recovered_after_restart: true,
         restart_recovery_validated: true,
@@ -2962,6 +2973,22 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     assert_eq!(
         json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
         true
+    );
+    assert_eq!(json["leader_transfer_under_load_observed"], true);
+    assert_eq!(json["leader_transfer_exact_once_observed"], true);
+    assert_eq!(
+        json["leader_transfer_write_ids_observed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        6
+    );
+    assert_eq!(
+        json["leader_transfer_commit_indexes_observed"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
     );
     assert_eq!(
         json["byteraft_process_semantics"]["replicate_inflight_limits_observed"],

@@ -914,6 +914,14 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     #[serde(default)]
     pub leader_transfer_validated: bool,
     #[serde(default)]
+    pub leader_transfer_under_load_observed: bool,
+    #[serde(default)]
+    pub leader_transfer_exact_once_observed: bool,
+    #[serde(default)]
+    pub leader_transfer_write_ids_observed: Vec<String>,
+    #[serde(default)]
+    pub leader_transfer_commit_indexes_observed: Vec<u64>,
+    #[serde(default)]
     pub failover_validated: bool,
     pub recovered_after_restart: bool,
     #[serde(default)]

@@ -5927,9 +5927,10 @@
             "acceptance_criteria": [
               "writes commit exactly once or fail safely during leader transfer",
               "no accepted committed write is lost or duplicated",
-              "final leader has all committed entries after transfer"
+              "final leader has all committed entries after transfer",
+              "report includes observed write IDs and commit indexes across the transfer"
             ],
-            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
+            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, final leader owns all committed entries, and the process rollout report includes unique observed write IDs plus committed indexes before and after transfer.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
