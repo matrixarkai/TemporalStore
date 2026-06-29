@@ -149,6 +149,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         keys = {entry["key"] for entry in call["entries"]}
         self.assertIn("matrixark:test:native-append:records:000000", keys)
         self.assertTrue(any("context_event_by_ingestion_time" in key for key in keys))
+        time_index_entry = next(entry for entry in call["entries"] if "context_event_by_ingestion_time" in entry["key"])
+        time_index_payload = json.loads(time_index_entry["value"])
+        self.assertEqual(time_index_payload["record_type"], "context_event_ref")
+        self.assertEqual(time_index_payload["ref_hash"], 123)
+        self.assertNotIn("text", time_index_payload)
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [
