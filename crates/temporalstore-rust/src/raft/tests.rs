@@ -6107,12 +6107,31 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         scale_down_validated: true,
         secondary_replication_validated: true,
         networked_process_api_used: true,
+        scheduler_process_api_calls_observed: 1,
+        data_node_membership_apply_process_api_calls_observed: 5,
+        data_node_raft_group_process_nodes_observed: 3,
+        data_node_raft_group_commit_indexes_observed: vec![9],
+        learner_add_process_api_observed: true,
+        catchup_verification_process_api_observed: true,
+        promote_process_api_observed: true,
+        leader_transfer_process_api_observed: true,
+        voter_remove_process_api_observed: true,
         persisted_through_meta_raft_replay: true,
         ready: true,
         blockers: Vec::new(),
     };
     assert!(report.ready);
     assert!(report.networked_process_api_used);
+    assert_eq!(report.scheduler_process_api_calls_observed, 1);
+    assert_eq!(
+        report.data_node_membership_apply_process_api_calls_observed,
+        5
+    );
+    assert!(report.learner_add_process_api_observed);
+    assert!(report.catchup_verification_process_api_observed);
+    assert!(report.promote_process_api_observed);
+    assert!(report.leader_transfer_process_api_observed);
+    assert!(report.voter_remove_process_api_observed);
     assert!(report.persisted_through_meta_raft_replay);
     assert!(report.stale_scheduler_token_rejected);
     assert_eq!(report.workflow.final_voters, vec![2, 3, 4]);

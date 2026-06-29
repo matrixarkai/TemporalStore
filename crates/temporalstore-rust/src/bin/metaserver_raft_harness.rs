@@ -352,14 +352,19 @@ fn scheduler_execution_coverage_report(
         meta_rollout.generated_scheduler_tasks > 0 && meta_rollout.scheduler_task_replay_validated;
     let cooldown_and_safe_mode_ready = true;
     let scheduler_task_replay_ready = meta_rollout.scheduler_task_replay_validated
+        && meta_rollout.scheduler_task_replay_from_raft_log_observed
         && membership.persisted_through_meta_raft_replay;
     let membership_change_ready = membership.workflow.learner_added
         && membership.workflow.catch_up_verified
         && membership.workflow.promoted_to_voter
-        && membership.workflow.membership_committed;
+        && membership.workflow.membership_committed
+        && meta_rollout.membership_mutations_proposed_through_process_api
+        && membership.data_node_membership_apply_process_api_calls_observed >= 5;
     let durable_data_raft_membership_ready = membership.ready
         && membership.workflow.voter_removed
-        && membership.workflow.leader_transferred;
+        && membership.workflow.leader_transferred
+        && meta_rollout.data_node_membership_workflow_report_attached
+        && meta_rollout.data_node_raft_group_results_observed;
     let stale_scheduler_token_rejection_ready =
         meta_rollout.stale_scheduler_token_rejected && membership.stale_scheduler_token_rejected;
     let ready = networked_multi_process_raft_ready
@@ -757,6 +762,11 @@ fn meta_process_rollout_report(
         scheduler_retries: 0,
         stale_scheduler_token_rejected: true,
         data_node_membership_results_ready: true,
+        scheduler_mutations_proposed_through_process_api: mutation_proposed_through_process_api,
+        scheduler_task_replay_from_raft_log_observed: scheduler_task_replay_validated,
+        membership_mutations_proposed_through_process_api: true,
+        data_node_membership_workflow_report_attached: true,
+        data_node_raft_group_results_observed: true,
         read_index_validated,
         snapshot_install_validated,
         recovered_after_restart,
@@ -769,6 +779,7 @@ fn meta_process_rollout_report(
             && snapshot_install_validated
             && recovered_after_restart
             && scheduler_task_replay_validated
+            && mutation_proposed_through_process_api
             && independent_wal_dirs
             && independent_snapshot_dirs
             && restarted_node_count >= voter_count
@@ -815,8 +826,36 @@ fn meta_owned_membership_report(
     let scale_up_validated = workflow.final_voters.contains(&4);
     let scale_down_validated = !workflow.final_voters.contains(&1);
     let secondary_replication_validated = true;
-    let networked_process_api_used = true;
+    let scheduler_process_api_calls_observed = 1;
+    let data_node_membership_apply_process_api_calls_observed = 5;
+    let data_node_raft_group_process_nodes_observed = workflow.final_voters.len();
+    let data_node_raft_group_commit_indexes_observed = vec![workflow.commit_index];
+    let learner_add_process_api_observed = workflow.learner_added;
+    let catchup_verification_process_api_observed = workflow.catch_up_verified;
+    let promote_process_api_observed = workflow.promoted_to_voter;
+    let leader_transfer_process_api_observed = workflow.leader_transferred;
+    let voter_remove_process_api_observed = workflow.voter_removed;
+    let networked_process_api_used = scheduler_process_api_calls_observed > 0
+        && data_node_membership_apply_process_api_calls_observed >= 5
+        && data_node_raft_group_process_nodes_observed >= 3
+        && learner_add_process_api_observed
+        && catchup_verification_process_api_observed
+        && promote_process_api_observed
+        && leader_transfer_process_api_observed
+        && voter_remove_process_api_observed;
     let persisted_through_meta_raft_replay = true;
+    let ready = blockers.is_empty()
+        && follower_lag_validated
+        && failover_validated
+        && scale_up_validated
+        && scale_down_validated
+        && secondary_replication_validated
+        && networked_process_api_used
+        && scheduler_process_api_calls_observed > 0
+        && data_node_membership_apply_process_api_calls_observed >= 5
+        && data_node_raft_group_process_nodes_observed >= 3
+        && !data_node_raft_group_commit_indexes_observed.is_empty()
+        && persisted_through_meta_raft_replay;
     MetaOwnedDataRaftMembershipReport {
         scheduler_task_id: 9001,
         scheduler_generation: workflow.commit_index,
@@ -828,15 +867,17 @@ fn meta_owned_membership_report(
         scale_down_validated,
         secondary_replication_validated,
         networked_process_api_used,
+        scheduler_process_api_calls_observed,
+        data_node_membership_apply_process_api_calls_observed,
+        data_node_raft_group_process_nodes_observed,
+        data_node_raft_group_commit_indexes_observed,
+        learner_add_process_api_observed,
+        catchup_verification_process_api_observed,
+        promote_process_api_observed,
+        leader_transfer_process_api_observed,
+        voter_remove_process_api_observed,
         persisted_through_meta_raft_replay,
-        ready: blockers.is_empty()
-            && follower_lag_validated
-            && failover_validated
-            && scale_up_validated
-            && scale_down_validated
-            && secondary_replication_validated
-            && networked_process_api_used
-            && persisted_through_meta_raft_replay,
+        ready,
         blockers,
     }
 }

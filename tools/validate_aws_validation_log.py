@@ -588,6 +588,14 @@ def validate_raft_distributed_parity(job, summary):
     require(rollout["ready"], f"{job}: metaserver OpenRaft process rollout is not ready")
     require(rollout["multi_process_log_store_validated"], f"{job}: metaserver log-store rollout missing")
     require(rollout["data_node_membership_results_ready"], f"{job}: data-node membership results missing")
+    for field in [
+        "scheduler_mutations_proposed_through_process_api",
+        "scheduler_task_replay_from_raft_log_observed",
+        "membership_mutations_proposed_through_process_api",
+        "data_node_membership_workflow_report_attached",
+        "data_node_raft_group_results_observed",
+    ]:
+        require(rollout[field], f"{job}: metaserver rollout field {field} is false")
     validate_byteraft_process_semantics(
         job,
         rollout,
@@ -621,8 +629,33 @@ def validate_raft_distributed_parity(job, summary):
         "networked_process_api_used",
         "persisted_through_meta_raft_replay",
         "stale_scheduler_token_rejected",
+        "learner_add_process_api_observed",
+        "catchup_verification_process_api_observed",
+        "promote_process_api_observed",
+        "leader_transfer_process_api_observed",
+        "voter_remove_process_api_observed",
     ]:
         require(membership[field], f"{job}: meta-owned data-Raft membership field {field} is false")
+    require(
+        membership["scheduler_process_api_calls_observed"] > 0,
+        f"{job}: scheduler process API call evidence missing",
+    )
+    require(
+        membership["data_node_membership_apply_process_api_calls_observed"] >= 5,
+        f"{job}: data-node membership apply process API evidence incomplete",
+    )
+    require(
+        membership["data_node_raft_group_process_nodes_observed"] >= 3,
+        f"{job}: data-node Raft group process-node evidence incomplete",
+    )
+    require(
+        len(membership["data_node_raft_group_commit_indexes_observed"]) > 0,
+        f"{job}: data-node Raft group commit-index evidence missing",
+    )
+    require(
+        all(index > 0 for index in membership["data_node_raft_group_commit_indexes_observed"]),
+        f"{job}: data-node Raft group commit-index evidence is invalid",
+    )
 
 
 def validate_byteraft_process_semantics(

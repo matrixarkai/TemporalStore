@@ -3834,7 +3834,7 @@
       "steps": [
         {
           "command": {
-            "description": "Unified C++/Rust control-plane Raft membership case; Rust readiness keeps this blocked for real networked metaserver orchestration until production rollout.",
+            "description": "Unified C++/Rust control-plane Raft membership case; Rust evidence must include metaserver scheduler mutation process-API evidence, scheduler replay through metaserver Raft, data-node membership apply process call counts, learner add, catch-up verification, promote, leader transfer, voter remove, stale scheduler token rejection, and data-node Raft group commit-index evidence.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
