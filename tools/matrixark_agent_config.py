@@ -97,6 +97,35 @@ def generic_json(repo_root: str, launcher: str) -> str:
     )
 
 
+def openclaw_json(repo_root: str, launcher: str) -> str:
+    return json.dumps(
+        {
+            "name": "matrixark",
+            "agent": "openclaw",
+            "transport": "stdio",
+            "server": stdio_server(repo_root, launcher),
+            "recommended_hook_command": f"python3 {repo_root}/tools/matrixark_agent_hook.py --agent openclaw --event UserPromptSubmit",
+            "lifecycle_events": [
+                "UserPromptSubmit",
+                "PostToolUse",
+                "ResourceAdded",
+                "Feedback",
+                "Stop",
+                "PostCompact",
+                "idle_timeout",
+            ],
+            "required_tools": [
+                "matrixark_retrieve",
+                "matrixark_ingest",
+                "matrixark_feedback",
+                "matrixark_session_commit",
+            ],
+        },
+        indent=2,
+        sort_keys=True,
+    )
+
+
 def agent_policy_text() -> str:
     return """# MatrixArk Agent Policy
 
@@ -190,7 +219,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--client",
-        choices=["codex", "claude", "claude-code", "cursor", "generic", "policy", "hooks", "all"],
+        choices=["codex", "claude", "claude-code", "cursor", "openclaw", "generic", "policy", "hooks", "all"],
         default="all",
         help="Config snippet to print.",
     )
@@ -203,6 +232,7 @@ def main() -> int:
         "claude": ("# Claude Desktop claude_desktop_config.json", claude_json),
         "claude-code": ("# Claude Code MCP server entry", claude_code_json),
         "cursor": ("# Cursor MCP config", cursor_json),
+        "openclaw": ("# OpenClaw / OpenCode-style MCP plus hook config", openclaw_json),
         "generic": ("# Generic MCP stdio config", generic_json),
     }
     if args.client == "policy":
