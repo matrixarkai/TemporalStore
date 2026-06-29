@@ -679,6 +679,7 @@ def validate_byteraft_process_semantics(
         "apply_batch_backpressure_observed",
         "append_queue_depth_observed",
         "replication_pressure_counters_observed",
+        "max_disk_replicate_log_num_observed",
         "snapshot_lifecycle_observed",
         "wal_segment_lifecycle_observed",
         "bounded_stale_partition_reads_observed",

@@ -620,6 +620,13 @@ fn data_node_process_rollout_report(
         node.wal_retained_segment_count == node.wal_segments_inspected
             && node.wal_release_floor <= node.wal_last_sequence
     });
+    let max_disk_replicate_log_num_observed = node_evidence.iter().all(|node| {
+        node.wal_retained_segment_count > 0
+            && node.wal_retained_segment_count <= 64
+            && node.wal_first_sequence > 0
+            && node.wal_last_sequence >= node.wal_first_sequence
+            && node.wal_release_floor <= node.wal_last_sequence
+    });
     let wal_first_last_index_status_observed = node_evidence.iter().all(|node| {
         node.wal_first_sequence > 0 && node.wal_last_sequence >= node.wal_first_sequence
     });
@@ -708,6 +715,7 @@ fn data_node_process_rollout_report(
         apply_batch_backpressure_observed,
         append_queue_depth_observed,
         replication_pressure_counters_observed,
+        max_disk_replicate_log_num_observed,
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
@@ -739,6 +747,7 @@ fn data_node_process_rollout_report(
             && apply_batch_backpressure_observed
             && append_queue_depth_observed
             && replication_pressure_counters_observed
+            && max_disk_replicate_log_num_observed
             && per_node_log_store_inspection_count >= voter_count
             && wal_segment_release_rules_observed
             && wal_first_last_index_status_observed
@@ -814,6 +823,10 @@ fn data_node_process_rollout_report(
         (
             byteraft_process_semantics.replication_pressure_counters_observed,
             "process_replication_pressure_counters_missing",
+        ),
+        (
+            byteraft_process_semantics.max_disk_replicate_log_num_observed,
+            "process_max_disk_replicate_log_num_missing",
         ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,

@@ -841,6 +841,8 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     #[serde(default)]
     pub replication_pressure_counters_observed: bool,
     #[serde(default)]
+    pub max_disk_replicate_log_num_observed: bool,
+    #[serde(default)]
     pub snapshot_lifecycle_observed: bool,
     #[serde(default)]
     pub wal_segment_lifecycle_observed: bool,
