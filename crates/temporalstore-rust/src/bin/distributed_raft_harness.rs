@@ -11,7 +11,9 @@ use temporalstore_rust::http::{
     HttpRequestOptions,
 };
 use temporalstore_rust::meta::ShardSnapshotRef;
-use temporalstore_rust::raft::{RaftReplicaBootstrapPlan, RaftSnapshotPublishReport};
+use temporalstore_rust::raft::{
+    RaftReplicaBootstrapPlan, RaftReplicaRole, RaftSnapshotPublishReport,
+};
 use temporalstore_rust::{
     handle_authenticated_raft_http, Command, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
@@ -56,6 +58,7 @@ struct DistributedRaftSummary {
     rescale_up_after_snapshot: Vec<MembershipSummary>,
     post_rescale_up_write: Status,
     rescale_up_reads: Vec<ReplicaReadSummary>,
+    membership_role_process_evidence: MembershipRoleProcessEvidence,
     rustraft_runtime_semantics: RustRaftRuntimeSemanticsReport,
 }
 
@@ -84,6 +87,21 @@ struct MembershipSummary {
     leader_id: RaftNodeId,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct MembershipRoleProcessEvidence {
+    witness_role_observed: bool,
+    witness_participates_in_quorum: bool,
+    witness_serves_no_data: bool,
+    learner_auto_promote_observed: bool,
+    pending_joint_consensus_persisted_across_restart: bool,
+    pending_joint_old_voters: Vec<RaftNodeId>,
+    pending_joint_new_voters: Vec<RaftNodeId>,
+    joint_consensus_completed_after_restart_check: bool,
+    final_voters: Vec<RaftNodeId>,
+    ready: bool,
+    blockers: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct RustRaftRuntimeSemanticsReport {
     process_path_validated: bool,
@@ -92,6 +110,7 @@ struct RustRaftRuntimeSemanticsReport {
     leader_transfer_exact_once_validated: bool,
     snapshot_bootstrap_validated: bool,
     membership_rescale_validated: bool,
+    membership_role_process_validated: bool,
     apply_pipeline_converged: bool,
     wal_persistence_observed: bool,
     ready: bool,
@@ -312,6 +331,15 @@ fn main() {
     let post_rescale_up_write = Status::ok();
     let rescale_up_reads = scale_up_reads.clone();
 
+    eprintln!("distributed_raft_harness: membership role process evidence");
+    let membership_role_process_evidence =
+        run_membership_role_process_evidence(&options, &nodes, &runtimes, &[1, 2, 3, 4, 5, 6]);
+    assert!(
+        membership_role_process_evidence.ready,
+        "membership role process evidence incomplete: {:?}",
+        membership_role_process_evidence.blockers
+    );
+
     eprintln!("distributed_raft_harness: final apply health and summary");
     wait_for_distributed_apply_health(&runtimes, &nodes, 1);
 
@@ -343,6 +371,7 @@ fn main() {
         &rescale_up_after_snapshot,
         &rescale_down_reads,
         &rescale_up_reads,
+        &membership_role_process_evidence,
     );
     assert!(
         rustraft_runtime_semantics.ready,
@@ -377,6 +406,7 @@ fn main() {
             rescale_up_after_snapshot,
             post_rescale_up_write,
             rescale_up_reads,
+            membership_role_process_evidence,
             rustraft_runtime_semantics,
         })
         .expect("summary should serialize")
@@ -395,8 +425,9 @@ fn build_rustraft_runtime_semantics_report(
     external_snapshot_read: &ReplicaReadSummary,
     rescale_down_after_snapshot: &[MembershipSummary],
     rescale_up_after_snapshot: &[MembershipSummary],
-    rescale_down_reads: &[ReplicaReadSummary],
-    rescale_up_reads: &[ReplicaReadSummary],
+    _rescale_down_reads: &[ReplicaReadSummary],
+    _rescale_up_reads: &[ReplicaReadSummary],
+    membership_role_process_evidence: &MembershipRoleProcessEvidence,
 ) -> RustRaftRuntimeSemanticsReport {
     let process_path_validated = nodes.len() >= 4
         && nodes.iter().all(|node| {
@@ -423,6 +454,7 @@ fn build_rustraft_runtime_semantics_report(
             .iter()
             .all(|item| item.status.ok)
         && rescale_up_after_snapshot.iter().all(|item| item.status.ok);
+    let membership_role_process_validated = membership_role_process_evidence.ready;
     let apply_pipeline_converged = nodes.iter().all(|node| {
         node.apply_health.healthy
             && node.apply_health.max_apply_lag <= node.apply_health.max_allowed_apply_lag
@@ -448,6 +480,14 @@ fn build_rustraft_runtime_semantics_report(
     if !membership_rescale_validated {
         blockers.push("membership_rescale_not_validated".to_string());
     }
+    if !membership_role_process_validated {
+        blockers.extend(
+            membership_role_process_evidence
+                .blockers
+                .iter()
+                .map(|blocker| format!("membership_roles:{blocker}")),
+        );
+    }
     if !apply_pipeline_converged {
         blockers.push("apply_pipeline_not_converged".to_string());
     }
@@ -463,9 +503,162 @@ fn build_rustraft_runtime_semantics_report(
         leader_transfer_exact_once_validated,
         snapshot_bootstrap_validated,
         membership_rescale_validated,
+        membership_role_process_validated,
         apply_pipeline_converged,
         wal_persistence_observed,
         ready,
+        blockers,
+    }
+}
+
+fn run_membership_role_process_evidence(
+    options: &HarnessOptions,
+    nodes: &[ProductionRaftNode],
+    runtimes: &[ProductionRaftRuntime],
+    final_voters: &[RaftNodeId],
+) -> MembershipRoleProcessEvidence {
+    let witness_id = 5;
+    let auto_promote_id = 6;
+    let mut blockers = Vec::new();
+
+    for runtime in runtimes {
+        let cluster = runtime.cluster();
+        if let Err(err) = cluster.add_node_with_role(witness_id, RaftReplicaRole::Witness) {
+            blockers.push(format!(
+                "witness_add_failed_on_node_{}:{err}",
+                runtime.local_node_id()
+            ));
+        }
+        if let Err(err) = cluster.add_learner_with_auto_promote(auto_promote_id, true) {
+            blockers.push(format!(
+                "auto_promote_failed_on_node_{}:{err}",
+                runtime.local_node_id()
+            ));
+        }
+        if let Err(err) = cluster.begin_joint_consensus(final_voters.iter().copied()) {
+            blockers.push(format!(
+                "begin_joint_consensus_failed_on_node_{}:{err}",
+                runtime.local_node_id()
+            ));
+        }
+    }
+
+    let mut restore_nodes = nodes.to_vec();
+    restore_nodes.push(ProductionRaftNode {
+        node_id: witness_id,
+        addr: free_local_addr(),
+    });
+    restore_nodes.push(ProductionRaftNode {
+        node_id: auto_promote_id,
+        addr: free_local_addr(),
+    });
+    let restored = ProductionRaftRuntime::start(runtime_options(options, &restore_nodes, 1));
+    let restored_joint = match restored {
+        Ok(runtime) => runtime.cluster().joint_membership(),
+        Err(err) => {
+            blockers.push(format!("pending_joint_restore_failed:{err}"));
+            None
+        }
+    };
+    let pending_joint_old_voters = restored_joint
+        .as_ref()
+        .map(|membership| membership.old_voters.clone())
+        .unwrap_or_default();
+    let pending_joint_new_voters = restored_joint
+        .as_ref()
+        .map(|membership| membership.new_voters.clone())
+        .unwrap_or_default();
+    let pending_joint_consensus_persisted_across_restart = restored_joint
+        .as_ref()
+        .map(|membership| membership.new_voters == final_voters)
+        .unwrap_or(false);
+
+    let mut joint_consensus_completed_after_restart_check = true;
+    for runtime in runtimes {
+        if let Err(err) = runtime.cluster().commit_joint_consensus() {
+            blockers.push(format!(
+                "commit_joint_consensus_failed_on_node_{}:{err}",
+                runtime.local_node_id()
+            ));
+            joint_consensus_completed_after_restart_check = false;
+        }
+    }
+
+    let admin = runtimes
+        .first()
+        .expect("distributed harness requires at least one runtime")
+        .cluster()
+        .byteraft_runtime_admin_report();
+    let local = runtimes
+        .first()
+        .expect("distributed harness requires at least one runtime")
+        .cluster()
+        .byteraft_local_status_report();
+
+    let witness_role_observed = admin.witness_membership_present
+        && local.peers.iter().any(|peer| {
+            peer.status.node_id == witness_id
+                && peer.status.replica_role == RaftReplicaRole::Witness
+        });
+    let witness_participates_in_quorum = local.peers.iter().any(|peer| {
+        peer.status.node_id == witness_id
+            && peer.status.replica_role == RaftReplicaRole::Witness
+            && peer.participates_in_quorum
+    });
+    let witness_serves_no_data = local.peers.iter().any(|peer| {
+        peer.status.node_id == witness_id
+            && peer.status.replica_role == RaftReplicaRole::Witness
+            && !peer.can_serve_data
+            && !peer.can_be_leader
+    });
+    let learner_auto_promote_observed = admin.learner_auto_promote_present
+        && local.peers.iter().any(|peer| {
+            peer.status.node_id == auto_promote_id
+                && peer.status.replica_role == RaftReplicaRole::Voter
+                && peer.pipeline_state.auto_promoted_from_learner
+        });
+    let final_voters_observed = local
+        .peers
+        .iter()
+        .filter(|peer| peer.participates_in_quorum)
+        .map(|peer| peer.status.node_id)
+        .collect::<Vec<_>>();
+
+    if !witness_role_observed {
+        blockers.push("witness_role_not_observed".to_string());
+    }
+    if !witness_participates_in_quorum {
+        blockers.push("witness_quorum_participation_not_observed".to_string());
+    }
+    if !witness_serves_no_data {
+        blockers.push("witness_no_data_guard_not_observed".to_string());
+    }
+    if !learner_auto_promote_observed {
+        blockers.push("learner_auto_promote_not_observed".to_string());
+    }
+    if !pending_joint_consensus_persisted_across_restart {
+        blockers.push("pending_joint_consensus_not_restored_from_wal".to_string());
+    }
+    if !joint_consensus_completed_after_restart_check {
+        blockers.push("joint_consensus_not_completed_after_restart_check".to_string());
+    }
+    if final_voters_observed != final_voters {
+        blockers.push(format!(
+            "final_voters_mismatch:observed={final_voters_observed:?}:expected={final_voters:?}"
+        ));
+    }
+
+    MembershipRoleProcessEvidence {
+        witness_role_observed,
+        witness_participates_in_quorum,
+        witness_serves_no_data,
+        learner_auto_promote_observed,
+        pending_joint_consensus_persisted_across_restart,
+        pending_joint_old_voters,
+        pending_joint_new_voters,
+        joint_consensus_completed_after_restart_check,
+        final_voters: final_voters_observed,
+        ready: blockers.is_empty(),
         blockers,
     }
 }
