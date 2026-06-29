@@ -208,6 +208,10 @@ Rust also has stream-backed extent runtime evidence. The page store appends self
 records, supports logical range reads that skip envelopes and decompress records across page
 boundaries, rolls segments by sealing the previous extent and opening a new active extent, persists the
 extent manifest across reopen, and tracks active/sealed/delayed-destroy/purged extent states.
+`StreamBackedExtentRuntimeReport` now also exposes stream record count, first/last page ids,
+page-id continuity, logical stream read bytes, manifest boundary validation, extent state transition
+count, and purge lifecycle readiness. The shared stream runtime test validates roll -> delayed
+destroy -> reopen -> purge using those fields.
 
 Page compaction is tied to model layout and tombstones through `ShardCompactionReport`.
 Compaction now reports `model_layout_compaction_ready`, per-model layout rows, packed timestamped

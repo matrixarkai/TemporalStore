@@ -305,13 +305,29 @@ pub struct StreamBackedExtentRuntimeReport {
     pub stream_segment_count: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
+    #[serde(default)]
+    pub stream_record_count: u64,
+    #[serde(default)]
+    pub first_page_id: Option<u64>,
+    #[serde(default)]
+    pub last_page_id: Option<u64>,
+    #[serde(default)]
+    pub page_id_continuity_ready: bool,
+    #[serde(default)]
+    pub logical_stream_bytes_read: u64,
+    #[serde(default)]
+    pub extent_state_transition_count: u64,
     pub logical_stream_read_ready: bool,
     pub append_roll_ready: bool,
     #[serde(alias = "zone_manifest_ready")]
     pub extent_manifest_ready: bool,
+    #[serde(default)]
+    pub extent_manifest_rebuild_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
     pub delayed_destroy_ready: bool,
+    #[serde(default)]
+    pub purge_lifecycle_ready: bool,
     pub blockers: Vec<String>,
     pub evidence: Vec<String>,
 }
@@ -1127,6 +1143,7 @@ impl LocalBlockStore {
         let extents = inner.extents.clone();
         let root = inner.root.clone();
         let options = inner.options;
+        let stats = inner.stats;
         drop(inner);
 
         let summary = summarize_extents(&extents);
@@ -1149,17 +1166,48 @@ impl LocalBlockStore {
             .iter()
             .map(|report| report.logical_bytes)
             .sum::<u64>();
+        let stream_record_count = segment_reports
+            .iter()
+            .map(|report| report.page_count)
+            .sum::<u64>();
+        let first_page_id = segment_reports
+            .iter()
+            .filter_map(|report| report.first_page_id)
+            .min();
+        let last_page_id = segment_reports
+            .iter()
+            .filter_map(|report| report.last_page_id)
+            .max();
+        let page_id_continuity_ready = match (first_page_id, last_page_id) {
+            (Some(first), Some(last)) => {
+                stream_record_count > 0
+                    && last >= first
+                    && last.saturating_sub(first).saturating_add(1) == stream_record_count
+            }
+            _ => stream_record_count == 0,
+        };
         let logical_stream_read_ready = segment_reports.iter().any(|report| report.page_count > 0);
         let append_roll_ready = summary.active_extents == 1
             && summary
                 .sealed_extents
                 .saturating_add(summary.delayed_destroy_extents)
+                .saturating_add(summary.purged_extents)
                 > 0;
         let extent_manifest_ready = extent_manifest_path(&root).exists()
             && !extents.is_empty()
             && extents
                 .values()
                 .all(|extent| extent.extent_id == extent_id_for_segment(extent.page_segment_id));
+        let extent_manifest_rebuild_ready = extent_manifest_ready
+            && segment_reports.iter().all(|report| {
+                extents
+                    .get(&report.page_segment_id)
+                    .map(|extent| {
+                        extent.first_page_id == report.first_page_id
+                            && extent.last_page_id == report.last_page_id
+                    })
+                    .unwrap_or(false)
+            });
         let envelope_checksum_ready = segment_reports
             .iter()
             .filter(|report| report.page_count > 0)
@@ -1170,6 +1218,16 @@ impl LocalBlockStore {
                 .any(|report| report.compressed_records > 0);
         let delayed_destroy_ready =
             summary.delayed_destroy_extents > 0 || summary.purged_extents > 0;
+        let purge_lifecycle_ready = summary.purged_extents > 0;
+        let extent_state_transition_count = [
+            summary.active_extents,
+            summary.sealed_extents,
+            summary.delayed_destroy_extents,
+            summary.purged_extents,
+        ]
+        .into_iter()
+        .filter(|count| *count > 0)
+        .count() as u64;
 
         let mut blockers = Vec::new();
         if !logical_stream_read_ready {
@@ -1184,8 +1242,14 @@ impl LocalBlockStore {
         if !extent_manifest_ready {
             blockers.push("extent manifest is missing or inconsistent".to_string());
         }
+        if !extent_manifest_rebuild_ready {
+            blockers.push("extent manifest does not match stream page-id boundaries".to_string());
+        }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
+        }
+        if !page_id_continuity_ready {
+            blockers.push("stream page ids are not contiguous across extents".to_string());
         }
 
         let runtime_ready = blockers.is_empty();
@@ -1199,12 +1263,20 @@ impl LocalBlockStore {
             stream_segment_count,
             physical_bytes,
             logical_bytes,
+            stream_record_count,
+            first_page_id,
+            last_page_id,
+            page_id_continuity_ready,
+            logical_stream_bytes_read: stats.logical_bytes_read,
+            extent_state_transition_count,
             logical_stream_read_ready,
             append_roll_ready,
             extent_manifest_ready,
+            extent_manifest_rebuild_ready,
             envelope_checksum_ready,
             compression_stream_ready,
             delayed_destroy_ready,
+            purge_lifecycle_ready,
             blockers,
             evidence: vec![
                 "page records are appended as self-describing stream envelopes".to_string(),
@@ -1212,6 +1284,10 @@ impl LocalBlockStore {
                     .to_string(),
                 "segment roll seals the previous extent and opens a new active extent".to_string(),
                 "extent manifest persists active/sealed/delayed-destroy/purged state".to_string(),
+                "stream runtime reports page-id continuity and logical read byte evidence"
+                    .to_string(),
+                "extent manifest descriptors are validated against inspected stream boundaries"
+                    .to_string(),
             ],
         })
     }
@@ -2228,6 +2304,17 @@ mod tests {
             .append_with_page_metadata(&third_payload, Some(13), Some(8))
             .unwrap();
         assert_eq!(third.page_segment_id, roll.new_page_segment_id);
+        let before_gc = store.stream_backed_extent_runtime_report().unwrap();
+        assert!(before_gc.runtime_ready, "{before_gc:?}");
+        assert_eq!(before_gc.active_extents, 1);
+        assert_eq!(before_gc.sealed_extents, 1);
+        assert_eq!(before_gc.stream_record_count, 3);
+        assert_eq!(before_gc.first_page_id, first.page_id);
+        assert_eq!(before_gc.last_page_id, third.page_id);
+        assert!(before_gc.page_id_continuity_ready);
+        assert!(before_gc.extent_manifest_rebuild_ready);
+        assert!(before_gc.logical_stream_bytes_read >= 16);
+        assert!(before_gc.extent_state_transition_count >= 2);
 
         let delayed = store
             .gc_segments_before_with_live_refs_delayed_destroy(
@@ -2251,15 +2338,43 @@ mod tests {
         assert!(report.logical_stream_read_ready);
         assert!(report.append_roll_ready);
         assert!(report.extent_manifest_ready);
+        assert!(report.extent_manifest_rebuild_ready);
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
         assert!(report.delayed_destroy_ready);
+        assert!(!report.purge_lifecycle_ready);
         assert!(report.logical_bytes >= third_payload.len() as u64);
+        assert_eq!(report.stream_record_count, 1);
+        assert_eq!(report.first_page_id, third.page_id);
+        assert_eq!(report.last_page_id, third.page_id);
+        assert!(report.page_id_continuity_ready);
         assert!(report.blockers.is_empty());
         assert!(report
             .evidence
             .iter()
             .any(|item| item.contains("logical stream reads span records")));
+        assert!(report
+            .evidence
+            .iter()
+            .any(|item| item.contains("page-id continuity")));
+
+        let purge = reopened
+            .purge_delayed_destroy_segments_with_report()
+            .unwrap();
+        assert_eq!(
+            purge.purged_page_segment_ids,
+            vec![roll.previous_page_segment_id]
+        );
+        let purged = LocalBlockStore::new(dir.path())
+            .stream_backed_extent_runtime_report()
+            .unwrap();
+        assert!(purged.runtime_ready, "{purged:?}");
+        assert_eq!(purged.active_extents, 1);
+        assert_eq!(purged.delayed_destroy_extents, 0);
+        assert_eq!(purged.purged_extents, 1);
+        assert!(purged.purge_lifecycle_ready);
+        assert!(purged.append_roll_ready);
+        assert!(purged.page_id_continuity_ready);
     }
 
     #[test]
