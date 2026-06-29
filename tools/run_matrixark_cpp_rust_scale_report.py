@@ -143,6 +143,15 @@ def raw_call_with_latency(fn) -> tuple[float, str | None]:
         return (time.perf_counter() - started) * 1000.0, f"{type(exc).__name__}: {exc}"
 
 
+def raw_batch_hget(client: Any, entries: list[Json]) -> None:
+    batch_hget = getattr(client, "batch_hget", None)
+    if callable(batch_hget):
+        batch_hget(entries)
+        return
+    for entry in entries:
+        client.hget(str(entry.get("key") or ""), str(entry.get("field") or ""))
+
+
 def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, client: Any | None = None) -> Json:
     owns_client = client is None
     if client is None:
@@ -170,12 +179,18 @@ def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, clie
     read_latencies: list[float] = []
     read_errors: list[str] = []
     read_count = min(args.raw_read_ops, args.raw_ops)
+    read_batches: list[list[Json]] = []
+    read_batch_size = max(1, args.raw_read_batch_size)
+    for start in range(0, read_count, read_batch_size):
+        read_batches.append(
+            [
+                {"key": key, "field": f"{seq:08d}"}
+                for seq in range(start, min(read_count, start + read_batch_size))
+            ]
+        )
     read_started = time.perf_counter()
     with ThreadPoolExecutor(max_workers=args.raw_workers) as pool:
-        futures = [
-            pool.submit(raw_call_with_latency, lambda seq=seq: client.hget(key, f"{seq:08d}"))
-            for seq in range(read_count)
-        ]
+        futures = [pool.submit(raw_call_with_latency, lambda b=batch: raw_batch_hget(client, b)) for batch in read_batches]
         for future in as_completed(futures):
             latency, error = future.result()
             read_latencies.append(latency)
@@ -201,6 +216,8 @@ def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, clie
         "read": {
             **summarize_latencies(read_latencies, total_ops=read_count, elapsed_s=read_elapsed, errors=len(read_errors)),
             "records": read_count,
+            "batch_size": read_batch_size,
+            "batches": len(read_batches),
         },
         "errors": {"write": write_errors[:10], "read": read_errors[:10]},
     }
@@ -384,9 +401,11 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         server.close()
 
 
-def comparison(cpp: Json | None, rust: Json | None) -> Json:
+def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | None = None) -> Json:
     if not cpp or not rust or cpp.get("status") != "passed" or rust.get("status") != "passed":
         return {"status": "not_comparable", "reason": "both backends must pass"}
+    min_qps_ratio = float(getattr(args, "perf_min_qps_ratio", 0.8) if args is not None else 0.8)
+    max_latency_ratio = float(getattr(args, "perf_max_latency_ratio", 2.0) if args is not None else 2.0)
     rows = []
     metrics = [
         ("raw_write_record_qps", ("raw_storage", "write", "record_qps"), "higher"),
@@ -411,6 +430,20 @@ def comparison(cpp: Json | None, rust: Json | None) -> Json:
             rust_value = rust_value.get(key, 0) if isinstance(rust_value, dict) else 0
         delta = float(rust_value or 0) - float(cpp_value or 0)
         percent_delta = (delta / float(cpp_value) * 100.0) if cpp_value else 0.0
+        rust_float = float(rust_value or 0)
+        cpp_float = float(cpp_value or 0)
+        ratio = (rust_float / cpp_float) if cpp_float else (1.0 if rust_float == 0 else float("inf"))
+        if direction == "higher":
+            passed = cpp_float == 0 or rust_float >= cpp_float * min_qps_ratio
+            threshold = round(cpp_float * min_qps_ratio, 6)
+            threshold_label = f">= {threshold}"
+        elif direction == "lower":
+            passed = cpp_float == 0 or rust_float <= cpp_float * max_latency_ratio
+            threshold = round(cpp_float * max_latency_ratio, 6)
+            threshold_label = f"<= {threshold}"
+        else:
+            passed = True
+            threshold_label = "informational"
         rows.append(
             {
                 "metric": name,
@@ -418,10 +451,28 @@ def comparison(cpp: Json | None, rust: Json | None) -> Json:
                 "rust": rust_value,
                 "rust_minus_cpp": round(delta, 3),
                 "percent_delta": round(percent_delta, 3),
+                "rust_to_cpp_ratio": round(ratio, 6) if ratio != float("inf") else "inf",
                 "direction": direction,
+                "parity_threshold": threshold_label,
+                "parity_passed": passed,
             }
         )
-    return {"status": "comparable", "rows": rows}
+    blockers = [
+        row
+        for row in rows
+        if not row.get("parity_passed")
+        and row.get("metric") != "selected_refs_avg"
+    ]
+    return {
+        "status": "passed" if not blockers else "failed",
+        "rows": rows,
+        "perf_parity": {
+            "passed": not blockers,
+            "min_qps_ratio": min_qps_ratio,
+            "max_latency_ratio": max_latency_ratio,
+            "blockers": blockers,
+        },
+    }
 
 
 def write_report(path: Path, report: Json) -> None:
@@ -466,7 +517,25 @@ def write_report(path: Path, report: Json) -> None:
             f"{len(errors.get('write', [])) if isinstance(errors, dict) else 0} | {len(errors.get('read', [])) if isinstance(errors, dict) else 0} |"
         )
     comp = report.get("comparison", {})
-    if comp.get("status") == "comparable":
+    if comp.get("status") in {"passed", "failed"}:
+        parity = comp.get("perf_parity", {})
+        lines.extend(
+            [
+                "",
+                "## Performance Parity Gate",
+                "",
+                f"- status: `{'passed' if parity.get('passed') else 'failed'}`",
+                f"- minimum QPS ratio: `{parity.get('min_qps_ratio')}`",
+                f"- maximum latency ratio: `{parity.get('max_latency_ratio')}`",
+                f"- blockers: `{len(parity.get('blockers', []))}`",
+            ]
+        )
+        if parity.get("blockers"):
+            lines.extend(["", "| metric | C++ | Rust | threshold | ratio |", "|---|---:|---:|---:|---:|"])
+            for row in parity.get("blockers", []):
+                lines.append(
+                    f"| {row['metric']} | {row['cpp']} | {row['rust']} | {row['parity_threshold']} | {row['rust_to_cpp_ratio']} |"
+                )
         lines.extend(["", "## Rust Minus C++", "", "| metric | C++ | Rust | delta | percent delta |", "|---|---:|---:|---:|---:|"])
         for row in comp.get("rows", []):
             lines.append(
@@ -483,6 +552,7 @@ def main() -> int:
     parser.add_argument("--raw-ops", type=int, default=1000)
     parser.add_argument("--raw-read-ops", type=int, default=500)
     parser.add_argument("--raw-batch-size", type=int, default=50)
+    parser.add_argument("--raw-read-batch-size", type=int, default=25)
     parser.add_argument("--raw-workers", type=int, default=4)
     parser.add_argument("--messages-per-ingest", type=int, default=20)
     parser.add_argument("--ingest-workers", type=int, default=4)
@@ -503,6 +573,9 @@ def main() -> int:
     parser.add_argument("--backends", nargs="+", choices=["cpp", "rust"], default=["cpp", "rust"])
     parser.add_argument("--artifact-dir", default="")
     parser.add_argument("--skip-context-pipeline", action="store_true")
+    parser.add_argument("--perf-min-qps-ratio", type=float, default=0.8)
+    parser.add_argument("--perf-max-latency-ratio", type=float, default=2.0)
+    parser.add_argument("--require-perf-parity", action="store_true")
     parsed = parser.parse_args()
 
     parsed.storage_options = {
@@ -523,6 +596,7 @@ def main() -> int:
             "raw_ops": parsed.raw_ops,
             "raw_read_ops": parsed.raw_read_ops,
             "raw_batch_size": parsed.raw_batch_size,
+            "raw_read_batch_size": parsed.raw_read_batch_size,
             "raw_workers": parsed.raw_workers,
             "messages_per_ingest": parsed.messages_per_ingest,
             "ingest_workers": parsed.ingest_workers,
@@ -534,17 +608,24 @@ def main() -> int:
             "table": parsed.table,
             "storage_options": parsed.storage_options,
             "skip_context_pipeline": parsed.skip_context_pipeline,
+            "perf_min_qps_ratio": parsed.perf_min_qps_ratio,
+            "perf_max_latency_ratio": parsed.perf_max_latency_ratio,
+            "require_perf_parity": parsed.require_perf_parity,
         },
         "backends": {},
     }
     for backend in parsed.backends:
         report["backends"][backend] = run_backend(backend, parsed, run_id)
         (artifact_dir / f"{backend}.json").write_text(json.dumps(report["backends"][backend], indent=2, sort_keys=True), encoding="utf-8")
-    report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"))
+    report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"), parsed)
     (artifact_dir / "comparison.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     write_report(artifact_dir / "comparison.md", report)
     print(json.dumps({"artifact_dir": str(artifact_dir), "comparison": report["comparison"]}, indent=2, sort_keys=True))
-    return 0 if all(report["backends"].get(b, {}).get("status") == "passed" for b in parsed.backends) else 1
+    backends_passed = all(report["backends"].get(b, {}).get("status") == "passed" for b in parsed.backends)
+    parity_passed = bool(report.get("comparison", {}).get("perf_parity", {}).get("passed", True))
+    if parsed.require_perf_parity and not parity_passed:
+        return 2
+    return 0 if backends_passed else 1
 
 
 if __name__ == "__main__":

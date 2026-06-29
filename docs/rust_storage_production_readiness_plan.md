@@ -203,6 +203,24 @@ transition counts, and tombstone object preservation. Blockers are emitted if co
 live refs, loses tombstones, lacks model-layout rows, fails to improve or preserve live-ref density,
 or lacks slot-layout transition evidence.
 
+## Exact Evidence Fields For Current Storage Gaps
+
+The Rust-native storage/cache gate should treat the following as covered only when the named
+evidence is present:
+
+| Gap | Required evidence |
+|---|---|
+| Merged dump/load recovery | `storage_merged_dump_load_policy_report.policy_ready`, manifest checksum/generation validation, multi-slot merged manifest source coverage, rollback/install markers, load preflight, stale object/page conflict reporting, and install/restart logical reads. |
+| StorageManager continuous phase loop | `run_storage_manager_cycle` stages for prepare, WAL reclaim, expire, evict, page GC, compaction, index-GC, and reap metrics with per-phase pressure, selected slots, skipped reasons, bytes reclaimed, and floors. |
+| GC/WAL/index-log reclaim rules | WAL/index-log reclaim reports must show slot-dump durability, follower cursor retention, Raft snapshot/install floor awareness, and recovery after reclaim/index-GC. |
+| Cache and eviction soak | `storage_cache_replacement_policy_soak` plus cold page-address read tests must show weighted replacement, pinned-skip accounting, disk/page fallback, memory refill, writeback/backpressure, latency samples, and restart refill. |
+| Stream/extent manifest rebuild | Page-store recovery must show stream record inspection, extent manifest rebuild from local segments, active/sealed/delayed-destroy state, and post-reopen append/read behavior. |
+| Risk/context page-backed parity | Risk and context model tests must verify page-backed storage, secondary view reconciliation from slot/object/page authority, and logical reads after reload/compaction. |
+
+Remaining blockers are deliberately narrower: direct CacheLib/mtcache binary/API compatibility,
+live external object-store integration, and broad deployment-scale evidence remain out of scope
+unless they are explicitly re-scoped.
+
 Rust now has a StorageManager-style background loop report that covers prepare, reclaim, evict,
 expire, compact, and index-GC phases in one readiness surface. The loop builds dirty-slot and
 live/stale segment plans, ranks reclaim candidates, invalidates cache entries with byte accounting,

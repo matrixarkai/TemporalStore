@@ -6359,27 +6359,21 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
-            key: "newer-after-dump".to_string(),
+            key: "merged-a".to_string(),
             value: b"v2".to_vec(),
         },
     });
-    let stale = engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
-        lifecycle: StorageLifecycleRequest {
-            shard_id: 1,
-            selected_dump_slots: Vec::new(),
-            ..StorageLifecycleRequest::default()
-        },
-        create_dump_manifest: false,
-        install_dump_manifest: true,
-    });
-    assert!(!stale.policy_ready);
-    assert!(!stale.load_preflight_safe);
-    assert!(stale
+    let stale_preflight = engine.slot_dump_install_preflight_report(&manifest);
+    assert!(!stale_preflight.install_safe, "{stale_preflight:?}");
+    assert!(stale_preflight
         .blockers
-        .contains(&"load_preflight_unsafe".to_string()));
-    assert!(stale
-        .blockers
-        .contains(&"stale_object_or_page_conflict".to_string()));
+        .contains(&"stale_page_conflicts".to_string()));
+    assert!(stale_preflight.stale_page_conflict_count > 0);
+    assert!(!engine
+        .install_slot_dump_manifest(&manifest)
+        .unwrap_err()
+        .code
+        .is_empty());
 }
 
 #[test]
