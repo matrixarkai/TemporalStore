@@ -2267,6 +2267,10 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
         apply_backpressure_response.reject_reason.as_deref(),
         Some("apply_batch_backpressure")
     );
+    cluster.add_learner_with_auto_promote(4, true).unwrap();
+    cluster
+        .add_node_with_role(5, RaftReplicaRole::Witness)
+        .unwrap();
     cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
     cluster.set_alive(3, false).unwrap();
     cluster
@@ -2293,8 +2297,6 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
             Err(RaftError::InvalidSnapshotChunk(_))
         ));
     }
-    cluster.abort_joint_consensus().unwrap();
-
     let report = cluster.byteraft_runtime_admin_report();
     assert!(report.ready, "{:?}", report.blockers);
     assert!(report.read_index_validated);
@@ -2325,6 +2327,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(report.wal_segment_lifecycle_present);
     assert!(report.pre_vote_enforced);
     assert!(report.election_controls_enforced);
+    assert!(report.witness_membership_present);
+    assert!(report.learner_auto_promote_present);
+    assert!(report.pending_joint_consensus_present);
     assert!(report.read_index_requests >= 5);
     assert!(report.read_index_accepted >= 2);
     assert!(report.read_index_rejected >= 3);
@@ -2438,6 +2443,15 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(
         metrics.contains("temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log")
     );
+    assert!(metrics.contains(
+        "temporalstore_raft_byteraft_local_pending_joint_consensus_present{kind=\"data\"} 1"
+    ));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_witness_membership_present"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_learner_auto_promote_present"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_role"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_participates_in_quorum"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_can_serve_data"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_can_be_leader"));
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_requests"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_accepted"));
@@ -2450,7 +2464,8 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(metrics.contains("temporalstore_raft_byteraft_wal_last_sequence"));
 
     let restored =
-        RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3], config).unwrap();
+        RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3, 4, 5], config)
+            .unwrap();
     let restored_report = restored.byteraft_runtime_admin_report();
     assert!(restored_report.ready, "{:?}", restored_report.blockers);
     assert_eq!(restored_report.wal_total_records, report.wal_total_records);
@@ -2466,6 +2481,9 @@ fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_
     assert!(restored_report.minority_partition_rejected_reads);
     assert!(restored_report.minority_partition_rejected_writes);
     assert!(restored_report.healed_follower_caught_up);
+    assert!(restored_report.witness_membership_present);
+    assert!(restored_report.learner_auto_promote_present);
+    assert!(restored_report.pending_joint_consensus_present);
     assert!(restored_report
         .peer_pipeline_states
         .iter()
