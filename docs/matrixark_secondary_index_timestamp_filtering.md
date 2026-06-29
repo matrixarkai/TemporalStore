@@ -13,7 +13,7 @@ Secondary-index rows also carry a timestamp, but that timestamp is not a second 
 - "Find skill sections triggered by replay."
 - "Find node-level batch hints newer than a given time."
 
-So repeated timestamps in the debug table usually mean one object or one batch produced multiple index terms. That is expected in the current visible debug format, but production serving should store these as compact TemporalStore-native index postings, not verbose rows in ContextPack.
+So repeated timestamps in the debug table usually mean one object or one batch produced multiple index terms. MatrixArk now materializes those as compact posting rows for serving/debug output, and the Rust TemporalStore engine stores them as timestamp-keyed index series rather than verbose per-ref records in ContextPack.
 
 ## ContextEvent Primary Key
 
@@ -58,12 +58,13 @@ context_batch_commit  event_type:confirmation     1782681920550              [] 
 context_batch_commit  classification:batch_memory 1782681920550              []          2100209595829882121
 ```
 
-This means:
+This compact posting shape means:
 
 - `index_name` is the lookup term.
-- `timestamp_key_ms` is the time ordering for that posting.
+- `timestamp_key_ms` is the time ordering for that posting bucket.
 - `ref_hashes=[]` means this posting is a node or batch hint, not a direct event/chunk/entity ref.
 - `node_hash=2100209595829882121` tells retrieval which node to enter after the index lookup.
+- `data_model` tells retrieval which candidate family the posting points at.
 
 In other words, the first row says:
 
@@ -96,7 +97,7 @@ keyword:gpu              -> 1782681920550:event_hash
 keyword:approval         -> 1782681920550:event_hash
 ```
 
-The timestamp repeats because each posting belongs to a different inverted list. It should not be included in the final ContextPack unless debug mode is enabled.
+The timestamp repeats because each posting belongs to a different inverted list. The final ContextPack should not include these posting internals unless debug mode is enabled.
 
 ## How Filtering Works
 
