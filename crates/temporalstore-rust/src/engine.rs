@@ -42,13 +42,11 @@ use crate::control::{
 use crate::index_log::LocalIndexLogStore;
 use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOptions};
 use crate::types::{
-    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
-    ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
-    ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
-    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
-    EventReplicationMode, EventReplicationSelectionReport, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
-    IpsSnapshotReport, IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
+    BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextEmbedding,
+    ContextEntity, ContextEvent, ContextIndexRef, ContextNode, ContextPackAudit,
+    ContextSummaryDirtyMarker, EventReplicationMode, EventReplicationSelectionReport,
+    ExecuteRequest, ExecuteResponse, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
+    IpsStats, ReplicatedBatchExecuteRequest, ReplicatedBatchExecuteResponse,
     ReplicatedExecuteRequest, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
     ShardId, Status, StringSetCondition,
 };
@@ -2236,7 +2234,7 @@ impl TemporalEngine {
     ) -> StorageWalReclaimPlan {
         let follower_replay_cursors = follower_replay_cursors.into_iter().collect::<Vec<_>>();
         let raft_snapshot_refs = raft_snapshot_refs.into_iter().collect::<Vec<_>>();
-        let current_oplog_sequence = self.oplog_store().stats(shard_id).last_sequence;
+        let current_oplog_sequence = self.write_ahead_log_store().stats(shard_id).last_sequence;
         let current_index_log_sequence = self.index_log_store.stats(shard_id).last_sequence;
         let slot_summaries = self.slot_storage_summaries(shard_id);
         let current_slot_fingerprints = self
@@ -2373,7 +2371,7 @@ impl TemporalEngine {
             };
         }
         let oplog_gc = self
-            .oplog_store()
+            .write_ahead_log_store()
             .gc_before_sequence(plan.shard_id, plan.retain_from_oplog_sequence)
             .ok();
         StorageWalReclaimReport {

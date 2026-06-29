@@ -50,10 +50,15 @@ pub struct LocalWriteAheadLogStore {
     inner: Arc<Mutex<WriteAheadLogInner>>,
 }
 
+#[allow(deprecated)]
 pub type WalError = OplogError;
+#[allow(deprecated)]
 pub type WalRecord = OplogRecord;
+#[allow(deprecated)]
 pub type WalStats = OplogStats;
+#[allow(deprecated)]
 pub type WalGcReport = OplogGcReport;
+#[allow(deprecated)]
 pub type LocalWalStore = LocalOplogStore;
 
 #[derive(Debug)]

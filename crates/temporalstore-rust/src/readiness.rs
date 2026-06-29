@@ -802,48 +802,6 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let production_ssd_tiering_ready = true;
     let admission_tuning_ready = true;
     let long_running_pressure_validation_ready = true;
-    let cache_pressure_soak_restart_ready = true;
-    let cache_pressure_soak_restart_evidence = vec![
-        "shared case storage_cache_replacement_policy_soak runs memory pressure and disk-cache refill under capacity churn"
-            .to_string(),
-        "cache soak test reopens the disk-cache directory and verifies a cold block refills after restart"
-            .to_string(),
-    ];
-    let native_deployment_contract_ready = true;
-    let native_deployment_contract_evidence = vec![
-        "Rust-native cache deployment contract covers access-refreshed memory/disk replacement policy with long-running soak evidence"
-            .to_string(),
-        "Rust-native cache deployment contract covers local memory read-through and disk-cache admission diagnostics"
-            .to_string(),
-    ];
-    let zero_copy_pinned_handle_ready = true;
-    let zero_copy_pinned_handle_evidence = vec![
-        "Rust exposes pinned cache handles backed by shared Arc blocks, pin/unpin accounting, and eviction-skip integration"
-            .to_string(),
-        "cache tests validate pinned handle access, pinned bytes, zero-copy handle hits/misses, and invalidation cleanup"
-            .to_string(),
-    ];
-    let dram_pmem_ssd_placement_ready = true;
-    let dram_pmem_ssd_placement_evidence = vec![
-        "Rust cache placement policy now models DRAM, PMEM, SSD, and reject outcomes with hotness and block-size thresholds"
-            .to_string(),
-        "placement tests cover hot DRAM, warm PMEM, slot-aware SSD, and oversized rejection decisions"
-            .to_string(),
-    ];
-    let async_writeback_backpressure_ready = true;
-    let async_writeback_backpressure_evidence = vec![
-        "Rust cache includes a bounded async writeback queue with enqueue, drain, depth, byte-pressure, max-depth, max-byte, and backpressure rejection counters"
-            .to_string(),
-        "cache tests validate queue saturation, queue byte gauges, drain accounting, and persisted writeback through the normal block writer"
-            .to_string(),
-    ];
-    let latency_metrics_ready = true;
-    let latency_metrics_evidence = vec![
-        "cache stats expose get/put plus read-through/refill/writeback/eviction/compaction latency samples and <=10us/<=100us/<=1ms/<=10ms/>10ms buckets"
-            .to_string(),
-        "cache tests validate latency sample totals equal bucket totals alongside pinned-handle, refill, compaction, and async writeback operations"
-            .to_string(),
-    ];
     let rust_native_weighted_eviction_ready = true;
     let rust_native_weighted_eviction_evidence = vec![
         "memory and disk cache entries carry hotness and routing-slot metadata".to_string(),

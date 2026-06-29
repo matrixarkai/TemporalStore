@@ -32,6 +32,7 @@ pub(super) struct ObjectManagerRuntimeReport {
     pub objects: Vec<ObjectRuntimeState>,
 }
 
+#[allow(dead_code)]
 pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let mut object_ids = std::collections::BTreeSet::new();
     let mut missing_object_owner_refs = 0usize;

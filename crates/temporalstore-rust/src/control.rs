@@ -178,11 +178,9 @@ pub struct ShardStats {
     pub page_store: BlockStoreStats,
     #[serde(default)]
     pub page_store_zones: BlockStoreExtentSummary,
-    #[serde(alias = "page_store")]
     pub block_store: BlockStoreStats,
     #[serde(default)]
     #[serde(alias = "block_store_zones")]
-    #[serde(alias = "page_store_zones")]
     pub block_store_extents: BlockStoreExtentSummary,
     #[serde(alias = "oplog")]
     pub write_ahead_log: WriteAheadLogStats,
@@ -227,9 +225,7 @@ pub enum StreamKind {
     IndexLog,
     #[serde(alias = "oplog")]
     Wal,
-    #[serde(alias = "page")]
     Block,
-    #[serde(alias = "block")]
     Page,
 }
 
