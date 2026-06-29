@@ -787,6 +787,20 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     #[serde(default)]
     pub read_index_responses_observed: u64,
     #[serde(default)]
+    pub read_index_and_lease_evidence_observed: bool,
+    #[serde(default)]
+    pub stale_leader_lease_rejected: bool,
+    #[serde(default)]
+    pub lagging_follower_read_rejected: bool,
+    #[serde(default)]
+    pub stale_follower_write_rejected: bool,
+    #[serde(default)]
+    pub bounded_stale_reads_observed: bool,
+    #[serde(default)]
+    pub minority_partition_rejected: bool,
+    #[serde(default)]
+    pub healed_follower_catchup_observed: bool,
+    #[serde(default)]
     pub per_peer_pipeline_state_observed: bool,
     #[serde(default)]
     pub append_pipeline_state_observed: bool,
