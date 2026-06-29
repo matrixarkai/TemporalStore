@@ -789,9 +789,9 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     ];
     let latency_metrics_ready = true;
     let latency_metrics_evidence = vec![
-        "cache stats expose get/put latency samples, total microseconds, max microseconds, and <=10us/<=100us/<=1ms/<=10ms/>10ms buckets"
+        "cache stats expose get/put plus read-through/refill/writeback/eviction/compaction latency samples and <=10us/<=100us/<=1ms/<=10ms/>10ms buckets"
             .to_string(),
-        "cache tests validate latency sample totals equal bucket totals alongside pinned-handle and async writeback operations"
+        "cache tests validate latency sample totals equal bucket totals alongside pinned-handle, refill, compaction, and async writeback operations"
             .to_string(),
     ];
     let local_pressure_ready = memory_read_through_ready

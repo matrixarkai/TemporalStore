@@ -189,6 +189,66 @@ pub struct CacheStats {
     pub put_latency_le_10ms: u64,
     #[serde(default)]
     pub put_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub read_through_latency_samples: u64,
+    #[serde(default)]
+    pub read_through_latency_le_10us: u64,
+    #[serde(default)]
+    pub read_through_latency_le_100us: u64,
+    #[serde(default)]
+    pub read_through_latency_le_1ms: u64,
+    #[serde(default)]
+    pub read_through_latency_le_10ms: u64,
+    #[serde(default)]
+    pub read_through_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub refill_latency_samples: u64,
+    #[serde(default)]
+    pub refill_latency_le_10us: u64,
+    #[serde(default)]
+    pub refill_latency_le_100us: u64,
+    #[serde(default)]
+    pub refill_latency_le_1ms: u64,
+    #[serde(default)]
+    pub refill_latency_le_10ms: u64,
+    #[serde(default)]
+    pub refill_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub writeback_latency_samples: u64,
+    #[serde(default)]
+    pub writeback_latency_le_10us: u64,
+    #[serde(default)]
+    pub writeback_latency_le_100us: u64,
+    #[serde(default)]
+    pub writeback_latency_le_1ms: u64,
+    #[serde(default)]
+    pub writeback_latency_le_10ms: u64,
+    #[serde(default)]
+    pub writeback_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub eviction_latency_samples: u64,
+    #[serde(default)]
+    pub eviction_latency_le_10us: u64,
+    #[serde(default)]
+    pub eviction_latency_le_100us: u64,
+    #[serde(default)]
+    pub eviction_latency_le_1ms: u64,
+    #[serde(default)]
+    pub eviction_latency_le_10ms: u64,
+    #[serde(default)]
+    pub eviction_latency_gt_10ms: u64,
+    #[serde(default)]
+    pub compaction_latency_samples: u64,
+    #[serde(default)]
+    pub compaction_latency_le_10us: u64,
+    #[serde(default)]
+    pub compaction_latency_le_100us: u64,
+    #[serde(default)]
+    pub compaction_latency_le_1ms: u64,
+    #[serde(default)]
+    pub compaction_latency_le_10ms: u64,
+    #[serde(default)]
+    pub compaction_latency_gt_10ms: u64,
     pub compressed_puts: u64,
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
@@ -382,6 +442,16 @@ pub struct CacheReplacementPolicySoakReport {
     pub observed_disk_refills: u64,
     pub get_latency_samples: u64,
     pub put_latency_samples: u64,
+    #[serde(default)]
+    pub read_through_latency_samples: u64,
+    #[serde(default)]
+    pub refill_latency_samples: u64,
+    #[serde(default)]
+    pub writeback_latency_samples: u64,
+    #[serde(default)]
+    pub eviction_latency_samples: u64,
+    #[serde(default)]
+    pub compaction_latency_samples: u64,
     pub passed: bool,
     pub reasons: Vec<String>,
 }
@@ -563,10 +633,12 @@ impl MultiLayerCache {
                 inner.stats.memory_hits += 1;
                 inner.touch_key(key);
                 inner.record_get_latency(started);
+                inner.record_read_through_latency(started);
                 return Ok(Some(value.to_vec()));
             }
         }
 
+        let refill_started = Instant::now();
         let path = {
             let inner = self.inner.read().expect("cache lock poisoned");
             inner.disk_path(key)
@@ -583,12 +655,15 @@ impl MultiLayerCache {
                     inner.stats.refill_failures += 1;
                 }
                 inner.record_get_latency(started);
+                inner.record_read_through_latency(started);
+                inner.record_refill_latency(refill_started);
                 Ok(Some(decoded))
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
                 let mut inner = self.inner.write().expect("cache lock poisoned");
                 inner.stats.misses += 1;
                 inner.record_get_latency(started);
+                inner.record_read_through_latency(started);
                 Ok(None)
             }
             Err(err) => Err(CacheError::Io(err)),
@@ -689,6 +764,7 @@ impl MultiLayerCache {
         &self,
         max_jobs: usize,
     ) -> Result<CacheWritebackDrainReport, CacheError> {
+        let started = Instant::now();
         let jobs = {
             let mut inner = self.inner.write().expect("cache lock poisoned");
             let mut jobs = Vec::new();
@@ -711,6 +787,7 @@ impl MultiLayerCache {
             .async_writeback_drained
             .saturating_add(drained as u64);
         inner.refresh_async_writeback_pressure_stats();
+        inner.record_writeback_latency(started);
         Ok(CacheWritebackDrainReport {
             requested: max_jobs,
             drained,
@@ -721,6 +798,13 @@ impl MultiLayerCache {
     pub fn set_async_writeback_queue_limit_for_test(&self, limit: usize) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.max_async_writeback_queue = limit;
+    }
+
+    pub fn record_compaction_latency_micros(&self, micros: u64) {
+        self.inner
+            .write()
+            .expect("cache lock poisoned")
+            .record_compaction_latency_micros(micros);
     }
 
     pub fn pin(&self, key: CacheKey) {
@@ -996,6 +1080,17 @@ impl MultiLayerCache {
             .iter()
             .filter(|key| recent_cold.contains(*key) && self.get_memory(key).is_some())
             .count();
+        self.set_async_writeback_queue_limit_for_test(1);
+        let _ = self.enqueue_async_writeback(
+            CacheKey::page_with_slot(7, 999, 0, 8, Some(9)),
+            b"writeback".to_vec(),
+        );
+        let _ = self.enqueue_async_writeback(
+            CacheKey::page_with_slot(7, 1_000, 0, 8, Some(9)),
+            b"overflow".to_vec(),
+        );
+        let _ = self.drain_async_writeback(8);
+        self.record_compaction_latency_micros(500);
         let stats = self.stats();
         let mut report = CacheReplacementPolicySoakReport {
             iterations,
@@ -1010,6 +1105,11 @@ impl MultiLayerCache {
             observed_disk_refills: stats.disk_hits,
             get_latency_samples: stats.get_latency_samples,
             put_latency_samples: stats.put_latency_samples,
+            read_through_latency_samples: stats.read_through_latency_samples,
+            refill_latency_samples: stats.refill_latency_samples,
+            writeback_latency_samples: stats.writeback_latency_samples,
+            eviction_latency_samples: stats.eviction_latency_samples,
+            compaction_latency_samples: stats.compaction_latency_samples,
             ..CacheReplacementPolicySoakReport::default()
         };
         if report.iterations < 64 {
@@ -1047,6 +1147,16 @@ impl MultiLayerCache {
         }
         if report.get_latency_samples == 0 || report.put_latency_samples == 0 {
             report.reasons.push("missing_latency_samples".to_string());
+        }
+        if report.read_through_latency_samples == 0
+            || report.refill_latency_samples == 0
+            || report.writeback_latency_samples == 0
+            || report.eviction_latency_samples == 0
+            || report.compaction_latency_samples == 0
+        {
+            report
+                .reasons
+                .push("missing_operation_latency_samples".to_string());
         }
         report.passed = report.reasons.is_empty();
         report
@@ -1177,6 +1287,7 @@ impl CacheInner {
     }
 
     fn put_memory(&mut self, key: CacheKey, value: Vec<u8>) -> bool {
+        let eviction_started = Instant::now();
         if self.memory_capacity_bytes == 0 || value.len() > self.memory_capacity_bytes {
             self.stats.memory_admission_rejected += 1;
             self.stats.eviction_oversize += 1;
@@ -1209,6 +1320,7 @@ impl CacheInner {
                     self.memory_bytes = self.memory_bytes.saturating_sub(old_value.len());
                     self.stats.memory_evictions += 1;
                     self.stats.eviction_capacity += 1;
+                    self.record_eviction_latency(eviction_started);
                     evicted = true;
                     break;
                 }
@@ -1250,8 +1362,10 @@ impl CacheInner {
         self.stats.get_latency_total_micros =
             self.stats.get_latency_total_micros.saturating_add(micros);
         self.stats.get_latency_max_micros = self.stats.get_latency_max_micros.max(micros);
+        let mut ignored_samples = 0;
         observe_latency_bucket(
             micros,
+            &mut ignored_samples,
             &mut self.stats.get_latency_le_10us,
             &mut self.stats.get_latency_le_100us,
             &mut self.stats.get_latency_le_1ms,
@@ -1266,13 +1380,79 @@ impl CacheInner {
         self.stats.put_latency_total_micros =
             self.stats.put_latency_total_micros.saturating_add(micros);
         self.stats.put_latency_max_micros = self.stats.put_latency_max_micros.max(micros);
+        let mut ignored_samples = 0;
         observe_latency_bucket(
             micros,
+            &mut ignored_samples,
             &mut self.stats.put_latency_le_10us,
             &mut self.stats.put_latency_le_100us,
             &mut self.stats.put_latency_le_1ms,
             &mut self.stats.put_latency_le_10ms,
             &mut self.stats.put_latency_gt_10ms,
+        );
+    }
+
+    fn record_read_through_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.read_through_latency_samples,
+            &mut self.stats.read_through_latency_le_10us,
+            &mut self.stats.read_through_latency_le_100us,
+            &mut self.stats.read_through_latency_le_1ms,
+            &mut self.stats.read_through_latency_le_10ms,
+            &mut self.stats.read_through_latency_gt_10ms,
+        );
+    }
+
+    fn record_refill_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.refill_latency_samples,
+            &mut self.stats.refill_latency_le_10us,
+            &mut self.stats.refill_latency_le_100us,
+            &mut self.stats.refill_latency_le_1ms,
+            &mut self.stats.refill_latency_le_10ms,
+            &mut self.stats.refill_latency_gt_10ms,
+        );
+    }
+
+    fn record_writeback_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.writeback_latency_samples,
+            &mut self.stats.writeback_latency_le_10us,
+            &mut self.stats.writeback_latency_le_100us,
+            &mut self.stats.writeback_latency_le_1ms,
+            &mut self.stats.writeback_latency_le_10ms,
+            &mut self.stats.writeback_latency_gt_10ms,
+        );
+    }
+
+    fn record_eviction_latency(&mut self, started: Instant) {
+        let micros = started.elapsed().as_micros().min(u128::from(u64::MAX)) as u64;
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.eviction_latency_samples,
+            &mut self.stats.eviction_latency_le_10us,
+            &mut self.stats.eviction_latency_le_100us,
+            &mut self.stats.eviction_latency_le_1ms,
+            &mut self.stats.eviction_latency_le_10ms,
+            &mut self.stats.eviction_latency_gt_10ms,
+        );
+    }
+
+    fn record_compaction_latency_micros(&mut self, micros: u64) {
+        observe_latency_bucket(
+            micros,
+            &mut self.stats.compaction_latency_samples,
+            &mut self.stats.compaction_latency_le_10us,
+            &mut self.stats.compaction_latency_le_100us,
+            &mut self.stats.compaction_latency_le_1ms,
+            &mut self.stats.compaction_latency_le_10ms,
+            &mut self.stats.compaction_latency_gt_10ms,
         );
     }
 }
@@ -1299,12 +1479,14 @@ impl CacheInner {
 
 fn observe_latency_bucket(
     micros: u64,
+    samples: &mut u64,
     le_10us: &mut u64,
     le_100us: &mut u64,
     le_1ms: &mut u64,
     le_10ms: &mut u64,
     gt_10ms: &mut u64,
 ) {
+    *samples = samples.saturating_add(1);
     if micros <= 10 {
         *le_10us = le_10us.saturating_add(1);
     } else if micros <= 100 {
@@ -1570,6 +1752,11 @@ mod tests {
         assert!(report.restart_disk_refill_ready);
         assert!(report.get_latency_samples > 0);
         assert!(report.put_latency_samples > 0);
+        assert!(report.read_through_latency_samples > 0);
+        assert!(report.refill_latency_samples > 0);
+        assert!(report.writeback_latency_samples > 0);
+        assert!(report.eviction_latency_samples > 0);
+        assert!(report.compaction_latency_samples > 0);
     }
 
     #[test]
@@ -1625,6 +1812,7 @@ mod tests {
         assert_eq!(handle.as_slice(), b"value");
         assert_eq!(cache.stats().pinned_entries, 1);
         assert_eq!(cache.stats().zero_copy_handle_hits, 1);
+        assert_eq!(cache.get(&key).unwrap(), Some(b"value".to_vec()));
 
         cache.set_async_writeback_queue_limit_for_test(1);
         cache
@@ -1649,8 +1837,13 @@ mod tests {
         assert_eq!(stats.async_writeback_queue_bytes, 0);
         assert_eq!(stats.async_writeback_max_queue_depth, 1);
         assert_eq!(stats.async_writeback_max_queue_bytes, 1);
+        cache.record_compaction_latency_micros(1_500);
+        let stats = cache.stats();
         assert!(stats.get_latency_samples > 0);
         assert!(stats.put_latency_samples > 0);
+        assert!(stats.read_through_latency_samples > 0);
+        assert!(stats.writeback_latency_samples > 0);
+        assert!(stats.compaction_latency_samples > 0);
         assert!(stats.get_latency_total_micros >= stats.get_latency_max_micros);
         assert!(stats.put_latency_total_micros >= stats.put_latency_max_micros);
         assert_eq!(
@@ -1669,6 +1862,40 @@ mod tests {
                 + stats.put_latency_le_10ms
                 + stats.put_latency_gt_10ms
         );
+        assert_latency_buckets_sum(
+            stats.read_through_latency_samples,
+            [
+                stats.read_through_latency_le_10us,
+                stats.read_through_latency_le_100us,
+                stats.read_through_latency_le_1ms,
+                stats.read_through_latency_le_10ms,
+                stats.read_through_latency_gt_10ms,
+            ],
+        );
+        assert_latency_buckets_sum(
+            stats.writeback_latency_samples,
+            [
+                stats.writeback_latency_le_10us,
+                stats.writeback_latency_le_100us,
+                stats.writeback_latency_le_1ms,
+                stats.writeback_latency_le_10ms,
+                stats.writeback_latency_gt_10ms,
+            ],
+        );
+        assert_latency_buckets_sum(
+            stats.compaction_latency_samples,
+            [
+                stats.compaction_latency_le_10us,
+                stats.compaction_latency_le_100us,
+                stats.compaction_latency_le_1ms,
+                stats.compaction_latency_le_10ms,
+                stats.compaction_latency_gt_10ms,
+            ],
+        );
+    }
+
+    fn assert_latency_buckets_sum(samples: u64, buckets: [u64; 5]) {
+        assert_eq!(samples, buckets.into_iter().sum::<u64>());
     }
 
     #[test]
