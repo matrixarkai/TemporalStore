@@ -4460,15 +4460,14 @@
         {
           "command": {
             "description": "Shared C++/Rust metaserver scheduler case for scheduler-issued load/reload/unload tokens, stale generation rejection, task retry persistence, and data-node lifecycle callback verification.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "metaserver_scheduler_control_plane",
             "required_paths": [
               "src/metaserver_v2/fsm.cc",
               "src/metaserver_v2/meta/partition.cc",
               "src/metaserver_v2/test/snapshot_test.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "partition_set_scheduler_tokens_raft_membership_safe_mode",
             "suite": "cpp_metaserver_control_plane_parity"
           },
           "name": "metaserver_scheduler_load_reload_unload_shared"
@@ -8498,6 +8497,7 @@
       "client_metasync_outage_churn",
       "client_pipeline_batch_partial_timeout",
       "client_deployment_placement_routing",
+      "metaserver_scheduler_control_plane",
       "raft_membership_op"
     ],
     "required_raft_case_names": [

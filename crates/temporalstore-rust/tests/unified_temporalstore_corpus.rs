@@ -18,14 +18,17 @@ use temporalstore_rust::types::{
     BatchExecuteRequest, BatchExecuteResponse, ExecuteResponse, SequenceFeatureRow,
 };
 use temporalstore_rust::{
-    execute_redis_command, production_readiness_report, ClientOptions, Command, CommandResponse,
-    EndToEndWorkflow, ExecuteRequest, GetTableTopologyRequest, MetaEntityState, ProxyOptions,
-    ProxyService, ProxyServingMode, ProxyTableBatchExecuteRequest, RaftCluster, RaftConfig,
-    RaftError, RegisterServerRequest, RegisterShardRequest, RespValue, ScanStreamRequest,
-    ServerEndpoint, SharedStoreReplicator, SharedStoreStorageMode, SingleNodeMeta,
-    SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind, StreamReadRequest,
-    StreamReadResponse, TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse,
-    TemporalEngine, TemporalStoreClient, TemporalStoreTable,
+    apply_data_raft_membership_from_topology, execute_redis_command,
+    metaserver_scheduler_execution_readiness_report, production_readiness_report, AddTableRequest,
+    ClientOptions, Command, CommandResponse, EndToEndWorkflow, ExecuteRequest,
+    GetTableTopologyRequest, LoadFinishRequest, MetaEntityState, ProxyOptions, ProxyService,
+    ProxyServingMode, ProxyTableBatchExecuteRequest, RaftCluster, RaftConfig, RaftError,
+    RegisterServerRequest, RegisterShardRequest, RespValue, ScanStreamRequest, ServerEndpoint,
+    ServerHeartbeatRequest, ServerRuntimeLoad, ServerShardServingState, SharedStoreReplicator,
+    SharedStoreStorageMode, SingleNodeMeta, SlotDumpFollowerReplayCursor, Status,
+    StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse, TableMetaInfo,
+    TableOptions, TablePartition, TableTopologyResponse, TemporalEngine, TemporalStoreClient,
+    TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -1192,6 +1195,24 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 step.name
             );
             verify_client_deployment_placement_routing();
+            true
+        }
+        "metaserver_scheduler_control_plane" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid metaserver scheduler command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("partition_set_scheduler_tokens_raft_membership_safe_mode"),
+                "case={} step={} unsupported metaserver scheduler scenario",
+                case.name,
+                step.name
+            );
+            verify_metaserver_scheduler_control_plane();
             true
         }
         "raft_linearizable_hash_failover" => {
@@ -2592,6 +2613,144 @@ fn verify_client_deployment_placement_routing() {
     assert_eq!(primary_reads.load(std::sync::atomic::Ordering::SeqCst), 0);
     assert_eq!(replica_reads.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(replica_writes.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+fn verify_metaserver_scheduler_control_plane() {
+    let meta = SingleNodeMeta::default();
+    for (node_id, addr, location) in [
+        (1, "127.0.0.1:27111", "zone-a"),
+        (2, "127.0.0.1:27112", "zone-b"),
+        (3, "127.0.0.1:27113", "zone-c"),
+    ] {
+        meta.register_server(RegisterServerRequest {
+            server_addr: addr.to_string(),
+            node_id,
+            location: location.to_string(),
+            binary_version: "unified-meta".to_string(),
+        });
+        meta.server_heartbeat(ServerHeartbeatRequest {
+            server_addr: addr.to_string(),
+            boot_time_ms: node_id,
+            binary_version: "unified-meta".to_string(),
+            shard_loads: Vec::new(),
+            partition_loads: Vec::new(),
+            runtime_load: ServerRuntimeLoad::default(),
+            shard_states: Vec::new(),
+        });
+    }
+
+    let added = meta.add_table(AddTableRequest {
+        namespace: "ns".to_string(),
+        table_name: "meta_parts".to_string(),
+        first_shard_id: 0,
+        shard_count: 2,
+        replica_count: 2,
+        use_cpp_partition_ids: true,
+        partition_version: 23,
+        serving_options: Default::default(),
+    });
+    assert!(added.status.ok, "{added:?}");
+
+    let first = PartitionId::new(1, 0, 0, 23).unwrap().id();
+    let second = PartitionId::new(1, 1, 0, 23).unwrap().id();
+    assert!(
+        meta.register(RegisterShardRequest {
+            shard_id: first,
+            server_addr: "127.0.0.1:27111".to_string(),
+        })
+        .status
+        .ok
+    );
+
+    let topology = meta.get_table_topology(GetTableTopologyRequest {
+        namespace: "ns".to_string(),
+        table_name: "meta_parts".to_string(),
+        old_topology_version: 0,
+    });
+    assert!(topology.status.ok, "{topology:?}");
+    let table = topology.table.as_ref().unwrap();
+    assert_eq!(table.table_id, 1);
+    assert!(table.use_cpp_partition_ids);
+    assert_eq!(table.partition_version, 23);
+    assert_eq!(table.shard_count, 2);
+    assert_eq!(topology.partitions.len(), 2);
+    assert_eq!(topology.partitions[0].shard_id, first);
+    assert_eq!(
+        topology.partitions[0].primary.as_deref(),
+        Some("127.0.0.1:27111")
+    );
+    assert!(topology.partitions[0]
+        .replicas
+        .contains(&"127.0.0.1:27112".to_string()));
+    assert_eq!(topology.partitions[1].shard_id, second);
+    assert_eq!(topology.partitions[1].start_slot, 536_870_912);
+    assert_eq!(topology.partitions[1].end_slot, 1_073_741_823);
+
+    meta.server_heartbeat(ServerHeartbeatRequest {
+        server_addr: "127.0.0.1:27111".to_string(),
+        boot_time_ms: 1,
+        binary_version: "unified-meta".to_string(),
+        shard_loads: Vec::new(),
+        partition_loads: Vec::new(),
+        runtime_load: ServerRuntimeLoad::default(),
+        shard_states: vec![ServerShardServingState {
+            shard_id: first,
+            load_version: 9,
+            serving_state: "serving".to_string(),
+            loaded: true,
+            ..ServerShardServingState::default()
+        }],
+    });
+    let stale = meta.finish_load(LoadFinishRequest {
+        server_addr: "127.0.0.1:27111".to_string(),
+        shard_id: first,
+        load_version: 8,
+        status: Status::ok(),
+        scheduler_task_id: Some(9001),
+        scheduler_generation: Some(41),
+    });
+    assert_eq!(stale.status.code, "stale_load_version");
+
+    let frozen = meta.freeze_server(temporalstore_rust::StateChangeRequest {
+        endpoint: "127.0.0.1:27113".to_string(),
+        freeze_cooldown_ms: 30_000,
+    });
+    assert!(frozen.status.ok, "{frozen:?}");
+    let safe_mode = meta.safe_mode_report();
+    assert!(safe_mode.status.ok);
+    assert!(safe_mode
+        .blocked_servers
+        .contains(&"127.0.0.1:27113".to_string()));
+
+    let cluster = RaftCluster::new_single_shard(first, [1]);
+    let servers = meta.list_servers().servers;
+    let membership = apply_data_raft_membership_from_topology(&cluster, &topology, &servers, first)
+        .expect("metaserver topology should drive data-node Raft membership");
+    assert!(membership.applied);
+    assert_eq!(membership.plan.shard_id, first);
+    assert_eq!(membership.plan.target_servers[0], "127.0.0.1:27111");
+    assert!(membership.plan.target_voters.contains(&1));
+    assert!(membership.plan.target_voters.contains(&2));
+    assert!(membership.membership_report.is_some());
+
+    let scheduler = metaserver_scheduler_execution_readiness_report();
+    assert!(scheduler.repair_task_coverage_ready);
+    assert!(scheduler.missing_primary_repair_ready);
+    assert!(scheduler.under_replicated_repair_ready);
+    assert!(scheduler.stale_dead_server_repair_ready);
+    assert!(scheduler.load_reload_unload_ready);
+    assert!(scheduler.scheduler_task_replay_ready);
+    assert!(scheduler.stale_scheduler_token_rejection_ready);
+    assert!(scheduler.cooldown_and_safe_mode_ready);
+
+    let raft = temporalstore_rust::distributed_raft_readiness();
+    assert_eq!(
+        raft.mode,
+        temporalstore_rust::RaftDeploymentMode::ProductionDistributed
+    );
+    assert!(raft.openraft_metaserver_process_startup_present);
+    assert!(raft.metaserver_membership_workflow_present);
+    assert!(raft.metaserver_driven_membership_present);
 }
 
 fn client_metasync_table_report(
