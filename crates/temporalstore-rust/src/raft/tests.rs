@@ -4597,6 +4597,8 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         .iter()
         .any(|item| item.capability == "membership_role_semantics" && item.ready));
     let local = cluster.byteraft_local_status_report();
+    assert_eq!(local.wal_first_log_index, admin.wal_first_log_index);
+    assert_eq!(local.wal_last_log_index, admin.wal_last_log_index);
     assert!(local.witness_membership_present);
     assert!(local.learner_auto_promote_present);
     assert!(local.pending_joint_consensus.is_some());
@@ -4605,6 +4607,24 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         && peer.participates_in_quorum
         && !peer.can_serve_data
         && !peer.can_be_leader));
+    let metrics = cluster.prometheus_metrics();
+    for metric in [
+        "temporalstore_raft_byteraft_local_wal_first_log_index",
+        "temporalstore_raft_byteraft_local_wal_last_log_index",
+        "temporalstore_raft_byteraft_local_peer_match_index",
+        "temporalstore_raft_byteraft_local_peer_next_index",
+        "temporalstore_raft_byteraft_local_peer_snapshot_sending",
+        "temporalstore_raft_byteraft_local_peer_snapshot_installing",
+        "temporalstore_raft_byteraft_local_peer_snapshot_installed_index",
+        "temporalstore_raft_byteraft_local_peer_transfer_leader_target",
+        "temporalstore_raft_byteraft_local_peer_pre_vote_rejections",
+        "temporalstore_raft_byteraft_local_peer_election_rejections",
+    ] {
+        assert!(
+            metrics.contains(metric),
+            "missing local-status metric {metric}"
+        );
+    }
 }
 
 #[test]

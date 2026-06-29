@@ -707,6 +707,10 @@ pub struct ByteRaftLocalStatusReport {
     pub leader_id: RaftNodeId,
     pub current_term: u64,
     pub commit_index: u64,
+    #[serde(default)]
+    pub wal_first_log_index: u64,
+    #[serde(default)]
+    pub wal_last_log_index: u64,
     pub has_majority: bool,
     pub leader_lease_valid: bool,
     pub pending_joint_consensus: Option<JointConsensusMembership>,
@@ -7639,6 +7643,8 @@ impl RaftCluster {
             leader_id: status.leader_id,
             current_term: status.current_term,
             commit_index: status.commit_index,
+            wal_first_log_index: admin.wal_first_log_index,
+            wal_last_log_index: admin.wal_last_log_index,
             has_majority: status.has_majority,
             leader_lease_valid: status.leader_lease_valid,
             pending_joint_consensus: self.joint_membership(),
@@ -10690,6 +10696,22 @@ fn append_byteraft_local_status_prometheus(
         &[("kind", kind.to_string())],
         u64::from(report.learner_auto_promote_present),
     );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_wal_first_log_index First retained WAL log index visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_wal_first_log_index gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_wal_first_log_index",
+        &[("kind", kind.to_string())],
+        report.wal_first_log_index,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_local_wal_last_log_index Last retained WAL log index visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_wal_last_log_index gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_local_wal_last_log_index",
+        &[("kind", kind.to_string())],
+        report.wal_last_log_index,
+    );
     out.push_str("# HELP temporalstore_raft_byteraft_local_peer_role ByteRaft-style local-status peer role as a labeled gauge.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_role gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_local_peer_participates_in_quorum Whether a peer participates in quorum.\n");
@@ -10698,6 +10720,22 @@ fn append_byteraft_local_status_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_serve_data gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_local_peer_can_be_leader Whether a peer can become leader.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_be_leader gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_match_index ByteRaft-style local peer match index.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_match_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_next_index ByteRaft-style local peer next index.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_next_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_sending Whether local status sees a snapshot sender active for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_sending gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_installing Whether local status sees a snapshot install active for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_installing gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_installed_index Last installed snapshot index for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_installed_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_transfer_leader_target Whether the peer is the active leader-transfer target.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_transfer_leader_target gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_pre_vote_rejections Pre-vote rejections visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_pre_vote_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_election_rejections Election rejections visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_election_rejections counter\n");
     for peer in report.peers {
         let labels = &[
             ("kind", kind.to_string()),
@@ -10734,6 +10772,54 @@ fn append_byteraft_local_status_prometheus(
             "temporalstore_raft_byteraft_local_peer_can_be_leader",
             labels,
             u64::from(peer.can_be_leader),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_match_index",
+            labels,
+            peer.pipeline_state.match_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_next_index",
+            labels,
+            peer.pipeline_state.next_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_snapshot_sending",
+            labels,
+            u64::from(peer.pipeline_state.snapshot_sending),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_snapshot_installing",
+            labels,
+            u64::from(peer.pipeline_state.snapshot_installing),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_snapshot_installed_index",
+            labels,
+            peer.pipeline_state.snapshot_installed_index,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_transfer_leader_target",
+            labels,
+            u64::from(peer.pipeline_state.transfer_leader_target),
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_pre_vote_rejections",
+            labels,
+            peer.pipeline_state.pre_vote_rejections,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_local_peer_election_rejections",
+            labels,
+            peer.pipeline_state.election_rejections,
         );
     }
 }
