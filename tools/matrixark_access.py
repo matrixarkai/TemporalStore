@@ -1904,7 +1904,6 @@ class MatrixArkAccessManager:
                     "node_name": record.get("node_name", ""),
                     "node_path": record.get("node_path", []),
                     "depth": record.get("depth", 0),
-                    "status": record.get("status", ""),
                     "updated_at_ms": record.get("updated_at_ms", 0),
                     "summary_count": summary_counts.get(record.get("node_hash"), 0),
                     "embedding_count": embedding_counts.get(record.get("node_hash"), 0),
