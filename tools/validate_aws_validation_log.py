@@ -769,6 +769,18 @@ def validate_byteraft_process_semantics(
             rollout.get("lagging_follower_observed_lag", 0) > 0,
             f"{job}: {label} lagging follower observed lag missing",
         )
+        for field in [
+            "per_peer_progress_observed",
+            "transport_fault_recovery_observed",
+            "wal_fsync_pressure_observed",
+            "snapshot_chunking_observed",
+            "snapshot_compaction_rejoin_observed",
+            "storage_log_idempotent_replay_observed",
+        ]:
+            require(
+                rollout.get(field) is True,
+                f"{job}: {label} runtime-under-load evidence field {field} is false",
+            )
         require(
             rollout.get("leader_transfer_under_load_observed") is True,
             f"{job}: {label} leader transfer under load was not observed",
