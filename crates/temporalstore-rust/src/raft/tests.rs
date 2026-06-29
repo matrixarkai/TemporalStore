@@ -1257,12 +1257,15 @@ fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
         .unwrap();
     assert_eq!(apply_peer.apply_inflight_limit, 1);
     assert_eq!(apply_peer.apply_batch_bytes_limit, 16);
+    assert!(apply_peer.apply_queue_max_depth >= apply_peer.apply_inflight_limit);
     assert!(apply_peer.apply_backpressure_rejections > 0);
 
     let metrics = cluster.prometheus_metrics();
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_limit"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_inflight_bytes_limit"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_inflight_limit"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_queue_max_depth"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_batch_bytes_limit"));
 }
 

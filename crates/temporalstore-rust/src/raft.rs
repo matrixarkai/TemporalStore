@@ -503,6 +503,10 @@ pub struct ByteRaftPeerPipelineState {
     #[serde(default)]
     pub apply_inflight_limit: u64,
     #[serde(default)]
+    pub apply_queue_depth: u64,
+    #[serde(default)]
+    pub apply_queue_max_depth: u64,
+    #[serde(default)]
     pub apply_batch_bytes_limit: u64,
     #[serde(default)]
     pub apply_backpressure_rejections: u64,
@@ -801,6 +805,10 @@ pub struct RaftPeerPipelineRuntimeState {
     pub append_queue_depth: u64,
     #[serde(default)]
     pub apply_inflight_tasks: u64,
+    #[serde(default)]
+    pub apply_queue_depth: u64,
+    #[serde(default)]
+    pub apply_queue_max_depth: u64,
     #[serde(default)]
     pub apply_backpressure_rejections: u64,
     #[serde(default)]
@@ -6032,6 +6040,11 @@ impl RaftCluster {
                 }
             }
             if received_bytes > max_apply_batch_bytes {
+                node.pipeline_state.apply_queue_depth = received_entries.max(1);
+                node.pipeline_state.apply_queue_max_depth = node
+                    .pipeline_state
+                    .apply_queue_max_depth
+                    .max(node.pipeline_state.apply_queue_depth);
                 node.pipeline_state.apply_backpressure_rejections = node
                     .pipeline_state
                     .apply_backpressure_rejections
@@ -6046,6 +6059,11 @@ impl RaftCluster {
                 return Ok(response);
             }
             if received_entries > max_inflights_apply_task {
+                node.pipeline_state.apply_queue_depth = received_entries;
+                node.pipeline_state.apply_queue_max_depth = node
+                    .pipeline_state
+                    .apply_queue_max_depth
+                    .max(node.pipeline_state.apply_queue_depth);
                 node.pipeline_state.apply_backpressure_rejections = node
                     .pipeline_state
                     .apply_backpressure_rejections
@@ -6097,8 +6115,14 @@ impl RaftCluster {
             if node.replica_role.can_serve_data() {
                 node.pipeline_state.apply_inflight_tasks =
                     node.pipeline_state.apply_inflight_tasks.saturating_add(1);
+                node.pipeline_state.apply_queue_depth = received_entries;
+                node.pipeline_state.apply_queue_max_depth = node
+                    .pipeline_state
+                    .apply_queue_max_depth
+                    .max(node.pipeline_state.apply_queue_depth);
                 apply_committed(node);
                 node.pipeline_state.apply_inflight_tasks = 0;
+                node.pipeline_state.apply_queue_depth = 0;
             }
             node.pipeline_state.match_index = node.commit_index;
             node.pipeline_state.next_index = node_next_log_index(node);
@@ -8385,6 +8409,8 @@ impl RaftClusterInner {
                     inflight_bytes_limit: self.config.max_memory_replicate_log_bytes,
                     apply_inflight_tasks: pipeline.apply_inflight_tasks,
                     apply_inflight_limit: self.config.max_inflights_apply_task,
+                    apply_queue_depth: pipeline.apply_queue_depth,
+                    apply_queue_max_depth: pipeline.apply_queue_max_depth,
                     apply_batch_bytes_limit: self.config.max_apply_batch_bytes,
                     apply_backpressure_rejections: pipeline.apply_backpressure_rejections,
                     memory_backpressure_rejections: pipeline.memory_backpressure_rejections,
@@ -8487,6 +8513,8 @@ impl RaftClusterInner {
                 peer.apply_backpressure_rejections > 0
                     && peer.apply_inflight_limit > 0
                     && peer.apply_batch_bytes_limit > 0
+                    && (peer.apply_queue_depth >= peer.apply_inflight_limit
+                        || peer.apply_queue_max_depth >= peer.apply_inflight_limit)
             });
         let memory_replicate_bytes_enforced = self.config.max_memory_replicate_log_bytes > 0
             && peer_pipeline_states
@@ -8661,7 +8689,7 @@ impl RaftClusterInner {
                     && apply_backpressure_enforced
                     && memory_replicate_bytes_enforced
                     && oversized_log_rejection_present,
-                evidence_field: "peer_pipeline_states[*].{match_index,next_index,inflight_bytes,inflight_bytes_limit,append_queue_depth,append_queue_limit,append_queue_max_depth,append_*,apply_inflight_limit,apply_batch_bytes_limit,apply_backpressure_rejections,memory_backpressure_rejections,oversized_log_rejections}".to_string(),
+                evidence_field: "peer_pipeline_states[*].{match_index,next_index,inflight_bytes,inflight_bytes_limit,append_queue_depth,append_queue_limit,append_queue_max_depth,append_*,apply_inflight_limit,apply_queue_depth,apply_queue_max_depth,apply_batch_bytes_limit,apply_backpressure_rejections,memory_backpressure_rejections,oversized_log_rejections}".to_string(),
                 detail: format!(
                     "{} peers reported; append_backpressure={append_backpressure_enforced}; apply_backpressure={apply_backpressure_enforced}; memory_bytes={memory_replicate_bytes_enforced}; oversized={oversized_log_rejection_present}",
                     peer_pipeline_states.len()
@@ -10185,6 +10213,10 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_bytes_limit gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_inflight_limit ByteRaft-style per-peer apply inflight task limit.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_inflight_limit gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_queue_depth ByteRaft-style per-peer apply queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_queue_max_depth ByteRaft-style per-peer max observed apply queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_queue_max_depth gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_batch_bytes_limit ByteRaft-style per-peer apply batch byte limit.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_batch_bytes_limit gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_queue_depth ByteRaft-style per-peer reorder queue depth.\n");
@@ -10340,6 +10372,18 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_apply_inflight_limit",
             labels,
             peer.apply_inflight_limit,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_apply_queue_depth",
+            labels,
+            peer.apply_queue_depth,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_apply_queue_max_depth",
+            labels,
+            peer.apply_queue_max_depth,
         );
         push_raft_metric(
             out,
