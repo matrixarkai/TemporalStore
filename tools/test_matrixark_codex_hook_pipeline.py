@@ -228,6 +228,15 @@ class MatrixArkCodexHookPipelineTest(unittest.TestCase):
             self.assertEqual("skill", skill_result["resource_type"])
             self.assertIsInstance(skill_result["ingest"].get("skill_hash"), int)
 
+            records = MatrixArkLocalAdapter(event_log).read_all()
+            context_tree_records = [
+                record
+                for record in records
+                if record.get("record_type") in {"context_node", "context_child_ref"}
+            ]
+            self.assertTrue(context_tree_records)
+            self.assertFalse(any("status" in record for record in context_tree_records))
+
             server = MatrixArkMcpServer(MatrixArkLocalAdapter(event_log), line_json=True, access_mode="dev")
             scope = {
                 "account_id": "acct_hook",

@@ -482,7 +482,6 @@ class MatrixArkLocalAdapter:
                         "node_path": prefix,
                         "depth": len(prefix),
                         "scope": scope,
-                        "status": "active",
                         "created_at_ms": updated_at_ms,
                         "updated_at_ms": updated_at_ms,
                     }
@@ -503,7 +502,6 @@ class MatrixArkLocalAdapter:
                             "child_path": prefix,
                             "depth": len(prefix),
                             "scope": scope,
-                            "status": "active",
                             "created_at_ms": updated_at_ms,
                             "updated_at_ms": updated_at_ms,
                         }
