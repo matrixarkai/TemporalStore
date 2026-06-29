@@ -1605,7 +1605,11 @@
                   3
                 ],
                 "confidence": 0.75,
+                "context_event_key": "context_event:context_node:700:00000000000000009000:9001",
+                "context_event_parent_hash": 700,
+                "context_event_parent_type": "context_node",
                 "event_id_hash": 9001,
+                "event_time_key": "00000000000000009000:9001",
                 "event_time_ms": 9000,
                 "importance": 0.5,
                 "kind": 3,
@@ -1626,7 +1630,11 @@
                   5
                 ],
                 "confidence": 0.8,
+                "context_event_key": "context_event:context_node:700:00000000000000009000:9002",
+                "context_event_parent_hash": 700,
+                "context_event_parent_type": "context_node",
                 "event_id_hash": 9002,
+                "event_time_key": "00000000000000009000:9002",
                 "event_time_ms": 9000,
                 "importance": 0.6,
                 "kind": 3,
@@ -6158,13 +6166,12 @@
         {
           "command": {
             "description": "Shared C++/Rust scale case for two Rust proxy instances converging through metaserver topology move churn while both proxies invalidate stale cached routes and recover onto the moved backend; backend quarantine/recovery remains covered by control_multi_proxy_convergence_and_quarantine.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_topology_churn_convergence",
             "required_paths": [
               "docs/proxy_vs_cpp.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_multi_proxy_converges_under_topology_churn_stale_cache_and_recovery -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "two_proxy_topology_move_stale_cache_recovery",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "multi_proxy_topology_churn_stale_cache_recovery_scale_shared"
@@ -6238,13 +6245,12 @@
         {
           "command": {
             "description": "Shared C++/Rust MetaSyncer production behavior case for per-table deadline propagation, exponential backoff with jitter, metaserver outage survival, and topology-version route refresh after churn.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "client_metasync_outage_churn",
             "required_paths": [
               "crates/temporalstore-rust/src/client/tests.rs"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "deadline_backoff_topology_refresh",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_metasync_outage_churn_stress_shared"
@@ -7324,13 +7330,13 @@
         {
           "command": {
             "field": "increment_would_overflow",
-            "increment": 9223372036854776000,
+            "increment": 9223372036854775807,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": 9223372036854776000
+            "value": 9223372036854775807
           },
           "name": "set_max_signed"
         },
@@ -7350,13 +7356,13 @@
         {
           "command": {
             "field": "decrement_would_overflow",
-            "increment": -9223372036854776000,
+            "increment": -9223372036854775808,
             "key": "unified:hash:incr",
             "kind": "hash_incr_by"
           },
           "expect": {
             "kind": "integer",
-            "value": -9223372036854776000
+            "value": -9223372036854775808
           },
           "name": "set_min_signed"
         },
@@ -8490,6 +8496,8 @@
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
       "object_store_backend_detect",
+      "proxy_topology_churn_convergence",
+      "client_metasync_outage_churn",
       "raft_membership_op"
     ],
     "required_raft_case_names": [

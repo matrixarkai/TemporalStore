@@ -76,14 +76,14 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 172
-total steps: 334
-executable shared behavior cases: 172
-executable shared behavior steps: 334
-C++ existing-test/static parity surfaces: 194
+total cases: 180
+total steps: 363
+executable shared behavior cases: 180
+executable shared behavior steps: 228
+C++ existing-test/static parity surfaces: 135 steps
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
-required command kinds: 64
+required command kinds: 66
 required response kinds: 20
 ```
 
@@ -153,6 +153,21 @@ local-status reports. Read-safety fields include read-index, lease-read, and pre
 counters. Rust now also validates that configured in-flight append entry/byte limits reject
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
+
+The latest migration pass moved two proxy/client churn cases out of Rust-local-only coverage into
+shared executable command kinds:
+
+- `control_multi_proxy_topology_churn_scale` now uses
+  `proxy_topology_churn_convergence` to exercise two proxies through metaserver topology movement,
+  stale-cache invalidation, route refresh, and recovery onto the moved backend.
+- `control_client_metasync_outage_churn_stress` now uses
+  `client_metasync_outage_churn` to exercise MetaSyncer deadlines, exponential backoff with jitter,
+  metaserver outage survival, and topology-version refresh.
+
+The shared runner also executes `raft_byteraft_membership_roles` through `raft_membership_op`
+steps instead of letting those operations remain declarative-only in Rust. Remaining `existing_test`
+steps are mostly C++ static surfaces or expensive harness entry points that still need native C++
+adapter execution before they can be fully removed.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 

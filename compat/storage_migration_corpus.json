@@ -476,6 +476,10 @@
               {
                 "event_id_hash": 900,
                 "event_time_ms": 5100,
+                "context_event_parent_type": "context_node",
+                "context_event_parent_hash": 700,
+                "event_time_key": "00000000000000005100:900",
+                "context_event_key": "context_event:context_node:700:00000000000000005100:900",
                 "kind": 3,
                 "type": 4,
                 "actor_hash": 1234,
