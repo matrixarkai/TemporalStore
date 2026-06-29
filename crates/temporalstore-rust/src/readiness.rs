@@ -1627,6 +1627,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, Rust-native weighted hotness/LRU eviction evidence, slot warmup, cache invalidation, tiering policy, admission tuning, long-running pressure validation evidence, the Rust-native multi-tier replacement policy, pinned handle accounting/eviction guards, and DRAM/PMEM/SSD placement semantics; remaining cache blockers are mtcache-class async writeback/backpressure and mature latency metrics"
                     .to_string(),
+                "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
+                    .to_string(),
                 "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed extent runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/oplog/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],

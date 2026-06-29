@@ -22,7 +22,7 @@ REQUIRED_PHRASES = [
     "`metaserver`",
     "`benchmarks`",
     "`scale_testing`",
-    "OpenRaft process rollout",
+    "TemporalRaft process rollout",
     "Slot dump/load",
     "full Rust TemporalStore replay",
     "VikingMem paper-comparable",

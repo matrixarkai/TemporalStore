@@ -1996,7 +1996,6 @@ pub struct DistributedRaftCommandResponse {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductionRaftEngineKind {
-    #[serde(alias = "open_raft", alias = "openraft")]
     TemporalRaft,
     RaftRs,
 }

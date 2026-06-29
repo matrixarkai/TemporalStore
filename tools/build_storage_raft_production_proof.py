@@ -68,10 +68,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             raft_summary.get("data_node", {}).get("follower_write_rejected"),
             raft_summary.get("data_node", {}).get("leader_crash_failover_ok"),
             raft_summary.get("data_node", {}).get("partition_isolated_read_rejected"),
-            (
-                raft_summary.get("metaserver", {}).get("temporal_raft_process_rollout")
-                or raft_summary.get("metaserver", {}).get("openraft_process_rollout", {})
-            ).get("ready"),
+            raft_summary.get("metaserver", {}).get("temporal_raft_process_rollout", {}).get("ready"),
             raft_summary.get("metaserver", {})
             .get("meta_owned_data_raft_membership", {})
             .get("ready"),
@@ -98,8 +95,7 @@ def build_report(artifact_dir: Path) -> dict[str, Any]:
             ),
             "metaserver_rollout": raft_summary.get("metaserver", {}).get(
                 "temporal_raft_process_rollout"
-            )
-            or raft_summary.get("metaserver", {}).get("openraft_process_rollout"),
+            ),
         },
         "byteraft_derived_semantics": {
             "ready": raft_ready,

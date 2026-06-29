@@ -111,7 +111,7 @@ The shared cases are:
   `raft_data_node_membership_secondary_reads`,
   `raft_metaserver_leader_snapshot_restart`,
   `raft_metaserver_membership_add_promote_remove`,
-  `raft_openraft_process_rollout_evidence`, and
+  `raft_temporal_raft_process_rollout_evidence`, and
   `raft_production_gate`.
 - Current C++ control-plane test unification adds shared Client/Proxy/DataNode/Meta workflow case
   names with Rust evidence metadata:

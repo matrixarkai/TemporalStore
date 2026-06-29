@@ -2878,36 +2878,36 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
+      "test_name": "temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
+      "test_name": "temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
+      "test_name": "temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::openraft_metaserver_backend_supports_membership_and_bounded_reads",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::temporal_raft_metaserver_backend_supports_membership_and_bounded_reads",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "openraft_metaserver_backend_supports_membership_and_bounded_reads",
+      "test_name": "temporal_raft_metaserver_backend_supports_membership_and_bounded_reads",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3247,9 +3247,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled",
+      "test_name": "production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
@@ -3760,9 +3760,9 @@
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence",
+      "test_id": "crates/temporalstore-rust/src/raft/tests.rs::production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence",
       "file": "crates/temporalstore-rust/src/raft/tests.rs",
-      "test_name": "production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence",
+      "test_name": "production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence",
       "family": "Raft",
       "classification": "move_to_shared",
       "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",

@@ -184,7 +184,7 @@ def main() -> int:
     locomo = load_json(locomo_report)
     backend = load_json(locomo_backend)
     shared_store = scale.get("shared_store") or {}
-    rollout = secondary.get("temporal_raft_process_rollout") or secondary.get("openraft_process_rollout") or {}
+    rollout = secondary.get("temporal_raft_process_rollout") or {}
     max_async_lag = (
         args.max_async_shared_store_lag
         if args.max_async_shared_store_lag is not None
