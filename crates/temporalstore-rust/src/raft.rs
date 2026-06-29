@@ -923,6 +923,22 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub leader_transfer_commit_indexes_observed: Vec<u64>,
     #[serde(default)]
     pub failover_validated: bool,
+    #[serde(default)]
+    pub secondary_lag_observed: bool,
+    #[serde(default)]
+    pub lagging_follower_read_rejection_observed: bool,
+    #[serde(default)]
+    pub stale_follower_write_rejection_observed: bool,
+    #[serde(default)]
+    pub catchup_read_eligibility_observed: bool,
+    #[serde(default)]
+    pub minority_partition_rejection_observed: bool,
+    #[serde(default)]
+    pub bounded_stale_read_eligibility_observed: bool,
+    #[serde(default)]
+    pub healed_follower_catchup_observed: bool,
+    #[serde(default)]
+    pub lagging_follower_observed_lag: u64,
     pub recovered_after_restart: bool,
     #[serde(default)]
     pub restart_recovery_validated: bool,
