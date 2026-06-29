@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 pub mod block_store;
 pub mod cache;
 pub mod client;

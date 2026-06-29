@@ -8,6 +8,7 @@ Rust TemporalStore worktree.
 ## Required Public Files
 
 - `README.md`
+- `crates/temporalstore-rust/README.md`
 - `LICENSE`
 - `NOTICE`
 - `CONTRIBUTING.md`
@@ -25,6 +26,11 @@ tokens without that scope.
 Rust TemporalStore is open-source ready as a Rust-native implementation path.
 The Rust repo should not imply that it is a brpc/thrift wire-compatible clone or
 a byte-for-byte C++ storage-layout clone.
+
+The Rust crate README and crate-level rustdoc now make the Raft library contract
+explicit: TemporalRaft/raft-rs is the production process path, local Raft models
+are test-only fixtures, and production readiness requires spawned process
+evidence with independent WAL/snapshot stores.
 
 Current Rust compatibility positioning:
 
