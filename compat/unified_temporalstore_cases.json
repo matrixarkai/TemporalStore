@@ -6002,10 +6002,14 @@
               ],
               "membership": [
                 "learner_add",
+                "witness_role_status",
                 "catch_up_verified",
+                "auto_promote_learner",
                 "promote",
                 "leader_transfer",
-                "voter_remove"
+                "voter_remove",
+                "pending_joint_consensus_restart",
+                "scheduler_generation_token_coupling"
               ],
               "faults": [
                 "failover",

@@ -661,6 +661,9 @@ def validate_raft_distributed_parity(job, summary):
         "promote_process_api_observed",
         "leader_transfer_process_api_observed",
         "voter_remove_process_api_observed",
+        "scheduler_generation_token_coupling_observed",
+        "stale_generation_rejection_observed",
+        "membership_generation_replayed_from_meta_raft",
     ]:
         require(membership[field], f"{job}: meta-owned data-Raft membership field {field} is false")
     require(

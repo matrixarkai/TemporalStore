@@ -222,7 +222,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove and secondary-read visibility as an explicit shared harness case. |
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
-| `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence. |
+| `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence, plus membership-role acceptance in the paired matrix for witness role status, learner auto-promote, pending joint-consensus restart, and scheduler generation/token replay. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `raft_rustraft_read_safety_policy` | RustRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
 | `raft_rustraft_metrics_admin_pipeline_status` | RustRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |

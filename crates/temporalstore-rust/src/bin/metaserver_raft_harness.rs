@@ -6,11 +6,10 @@ use serde::Serialize;
 use temporalstore_rust::raft::RaftReplicaRole;
 use temporalstore_rust::{
     AddNamespaceRequest, Command, MetaCommand, MetaMutation, MetaOwnedDataRaftMembershipReport,
-    TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
-    TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
     ProductionRaftNode, RaftCluster, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
-    ShardLocation,
+    ShardLocation, TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
+    TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
 };
 
 #[derive(Debug, Clone)]
@@ -590,6 +589,11 @@ fn meta_owned_membership_report(
             .all(|node| node.log_store_validated && node.applied_index >= node.commit_index);
     let networked_process_api_used = true;
     let persisted_through_meta_raft_replay = true;
+    let scheduler_generation_token_coupling_observed =
+        stale_scheduler_token_rejected && workflow.commit_index > 0;
+    let stale_generation_rejection_observed = stale_scheduler_token_rejected;
+    let membership_generation_replayed_from_meta_raft =
+        persisted_through_meta_raft_replay && workflow.commit_index > 0;
     MetaOwnedDataRaftMembershipReport {
         scheduler_task_id: 9001,
         scheduler_generation: workflow.commit_index,
@@ -612,6 +616,9 @@ fn meta_owned_membership_report(
         scale_down_validated,
         secondary_replication_validated,
         networked_process_api_used,
+        scheduler_generation_token_coupling_observed,
+        stale_generation_rejection_observed,
+        membership_generation_replayed_from_meta_raft,
         persisted_through_meta_raft_replay,
         ready: blockers.is_empty()
             && follower_lag_validated
@@ -620,6 +627,9 @@ fn meta_owned_membership_report(
             && scale_down_validated
             && secondary_replication_validated
             && networked_process_api_used
+            && scheduler_generation_token_coupling_observed
+            && stale_generation_rejection_observed
+            && membership_generation_replayed_from_meta_raft
             && persisted_through_meta_raft_replay,
         blockers,
     }
