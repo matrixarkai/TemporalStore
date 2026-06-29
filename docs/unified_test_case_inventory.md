@@ -79,11 +79,11 @@ Current inventory:
 total cases: 180
 total steps: 363
 executable shared behavior cases: 180
-executable shared behavior steps: 232
-C++ existing-test/static parity surfaces: 131 steps
+executable shared behavior steps: 238
+C++ existing-test/static parity surfaces: 125 steps
 C++ adapter coverage families: 9
 C++ required source/test/harness paths: 198 unique paths
-required command kinds: 70
+required command kinds: 76
 required response kinds: 20
 ```
 
@@ -154,12 +154,25 @@ counters. Rust now also validates that configured in-flight append entry/byte li
 saturated peer pipelines, and that the per-peer pipeline and read-safety state is persisted through
 WAL restore.
 
-The latest migration passes moved six proxy/client/SDK churn and compatibility cases out of
+The latest migration passes moved twelve proxy/client/SDK churn and compatibility cases out of
 Rust-local-only coverage into shared executable command kinds:
 
 - `control_multi_proxy_topology_churn_scale` now uses
   `proxy_topology_churn_convergence` to exercise two proxies through metaserver topology movement,
   stale-cache invalidation, route refresh, and recovery onto the moved backend.
+- `control_proxy_admission_policy` now uses `proxy_admission_policy` to validate readonly,
+  write-disabled, not-serving, degraded, drop-percent, and policy counter behavior.
+- `control_proxy_operational_surface_aliases` now uses `proxy_operational_surface_aliases` to
+  compare C++ proxy admin/config/heartbeat/status concepts against Rust-native HTTP aliases.
+- `control_proxy_tonic_streaming_maturity` now uses `proxy_tonic_streaming_contract` to validate
+  cancellation, backpressure, reconnect, callback acknowledgement, and preflight watch evidence.
+- `control_route_quarantine_recovery` now uses `proxy_route_quarantine_recovery` to exercise stale
+  backend failure, route refresh, and recovery onto a healthy backend through public proxy APIs.
+- `control_multi_proxy_convergence_and_quarantine` now uses
+  `proxy_multi_proxy_convergence_quarantine` to combine multi-proxy topology convergence with the
+  quarantine/recovery contract.
+- `ops_grafana_metrics_cpp_parity` now uses `proxy_grafana_prometheus_metric_parity` to check
+  proxy/readiness Prometheus families and the Grafana metric-family mapping contract.
 - `control_client_cpp_partition_set_route_cache` now uses
   `client_cpp_partition_set_route_cache` to validate table id, C++ partition ids, partition
   version, slot ranges, primary/replica members, topology version, and preflight evidence.

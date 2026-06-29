@@ -4316,15 +4316,14 @@
         {
           "command": {
             "description": "Shared C++/Rust proxy admission case for drop-percent, degraded/overload reporting, and request preflight policy counters.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_admission_policy",
             "required_paths": [
               "src/proxy/main.cc",
               "src/proxy/test/proxy_test.cc",
               "src/metaserver_v2/test/proxy_calibration_test.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "readonly_write_disabled_drop_percent_degraded_overload",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "proxy_admission_drop_and_degraded_shared"
@@ -4338,13 +4337,12 @@
         {
           "command": {
             "description": "Shared C++/Rust proxy operational surface case comparing C++ Proxy admin/config/heartbeat/status methods with Rust-native HTTP aliases for ports, config, heartbeat, preflight, service registry names, notify-stop, migration contract, policy, and metrics.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_operational_surface_aliases",
             "required_paths": [
               "docs/rust_control_plane_cpp_parity_25_cycle_plan.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_operational_surface_aliases_cover_cpp_admin_config_heartbeat_status -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "admin_config_heartbeat_status_http_aliases",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "proxy_operational_surface_aliases_shared"
@@ -4358,13 +4356,12 @@
         {
           "command": {
             "description": "Shared C++/Rust proxy streaming contract case for tonic long-running requests, client cancellation, backpressure, route callback reconnect, and preflight watch evidence through the Rust-native migration contract.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_tonic_streaming_contract",
             "required_paths": [
               "docs/client_sdk_contract.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_exposes_tonic_streaming_callback_contract -- --test-threads=1",
             "rust_validator": "python3 tools/validate_sdk_contract.py",
+            "scenario": "cancellation_backpressure_reconnect_callbacks",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "proxy_tonic_streaming_maturity_shared"
@@ -4400,15 +4397,14 @@
         {
           "command": {
             "description": "Shared C++/Rust route quarantine/recovery case for repeated backend failures, quarantined route avoidance, recovery probing, and degraded preflight evidence.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_route_quarantine_recovery",
             "required_paths": [
               "src/metaserver_v2/ha/failure_detector.cc",
               "src/metaserver_v2/ha/failure_detector.h",
               "src/metaserver_v2/test/proxy_ha_test.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "backend_failure_quarantine_probe_recovery",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "backend_quarantine_and_recovery_shared"
@@ -6145,13 +6141,12 @@
         {
           "command": {
             "description": "Shared control-plane case for multi-proxy topology convergence, backend quarantine, recovery probing, and stale-cache comparison.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_multi_proxy_convergence_quarantine",
             "required_paths": [
               "src/proxy/proxy_server.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
+            "scenario": "two_proxy_stale_cache_quarantine_recovery",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "multi_proxy_convergence_quarantine_shared"
@@ -6684,16 +6679,15 @@
           "command": {
             "description": "Shared C++/Rust ops case for Grafana dashboard, alert, and Prometheus metric-family parity across readiness, Raft, metaserver scheduler, proxy/client, storage/cache, data-node, ingestion, secondary replication, and scale SLO evidence.",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-metrics-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
+            "kind": "proxy_grafana_prometheus_metric_parity",
             "required_paths": [
               "docs/ops/temporalstore-dashboard.json",
               "docs/ops/temporalstore-alerts.yml",
               "docs/ops/temporalstore-grafana-metrics-parity.md",
               "crates/temporalstore-rust/src/bin/ops_scale_readiness_harness.rs"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust --bin ops_scale_readiness_harness grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters -- --test-threads=1",
             "rust_validator": "python3 tools/validate_grafana_metrics_parity.py",
+            "scenario": "proxy_metric_families_dashboard_alerts",
             "suite": "cpp_ops_scale_parity"
           },
           "name": "grafana_prometheus_metric_family_parity"
@@ -8493,6 +8487,12 @@
       "redis_feature_module_flow",
       "object_store_backend_detect",
       "proxy_topology_churn_convergence",
+      "proxy_admission_policy",
+      "proxy_operational_surface_aliases",
+      "proxy_tonic_streaming_contract",
+      "proxy_route_quarantine_recovery",
+      "proxy_multi_proxy_convergence_quarantine",
+      "proxy_grafana_prometheus_metric_parity",
       "client_cpp_partition_set_route_cache",
       "client_retry_budget_topology_refresh",
       "client_metasync_outage_churn",
