@@ -80,6 +80,8 @@ pub(super) struct SlotNode {
     pub(super) last_dump_sequence: u64,
     #[serde(default, alias = "object_ids")]
     pub(super) object_index: ObjectIndex,
+    #[serde(default, alias = "deleted_object_ids")]
+    pub(super) deleted_object_index: ObjectIndex,
     #[serde(default, alias = "page_refs")]
     pub(super) page_index: PageIndexMap,
 }

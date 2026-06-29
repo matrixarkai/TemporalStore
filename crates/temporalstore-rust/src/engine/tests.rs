@@ -6505,6 +6505,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert!(report.dirty_slot_count >= 1);
     assert!(report.max_dirty_generation >= 1);
     assert!(report.object_page_count >= 2);
+    assert!(report.object_page_transition_count >= 1);
     assert!(report.packed_timestamped_page_count >= 1);
     assert_eq!(report.missing_owner_page_ref_count, 0);
     assert_eq!(report.owner_mismatch_page_ref_count, 0);
@@ -6514,6 +6515,31 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
         .evidence
         .iter()
         .any(|item| item.contains("hot/cold/tombstone object state")));
+
+    let compaction = engine.compact_shard_pages(1).unwrap();
+    assert!(compaction.model_layout_compaction_ready, "{compaction:?}");
+    let after_compaction = engine.object_manager_runtime_report(1);
+    assert!(after_compaction.runtime_ready, "{after_compaction:?}");
+    assert_eq!(after_compaction.object_count, report.object_count);
+    assert_eq!(
+        after_compaction.tombstone_object_count,
+        report.tombstone_object_count
+    );
+    assert!(after_compaction.object_page_transition_count >= 1);
+
+    let manifest = engine
+        .create_slot_dump_manifest(1, Vec::new())
+        .expect("slot dump manifest should persist");
+    engine
+        .install_slot_dump_manifest(&manifest)
+        .expect("slot dump manifest should install");
+    let after_dump_load = engine.object_manager_runtime_report(1);
+    assert!(after_dump_load.runtime_ready, "{after_dump_load:?}");
+    assert_eq!(after_dump_load.object_count, after_compaction.object_count);
+    assert_eq!(
+        after_dump_load.tombstone_object_count,
+        after_compaction.tombstone_object_count
+    );
 
     engine.unload_shard(1);
     engine.load_shard_with(LoadShardRequest {
@@ -6537,6 +6563,10 @@ fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     assert_eq!(
         reloaded.packed_timestamped_page_count,
         report.packed_timestamped_page_count
+    );
+    assert_eq!(
+        reloaded.object_page_transition_count,
+        after_dump_load.object_page_transition_count
     );
 }
 

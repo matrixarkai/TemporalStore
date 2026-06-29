@@ -443,6 +443,7 @@ pub struct ObjectManagerRuntimeReport {
     pub dirty_slot_count: u64,
     pub max_dirty_generation: u64,
     pub layout_transition_count: u64,
+    pub object_page_transition_count: u64,
     #[serde(default)]
     pub layout_states: Vec<SlotLayoutStateCount>,
     pub object_page_count: u64,
