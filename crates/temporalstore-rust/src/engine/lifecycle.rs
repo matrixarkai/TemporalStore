@@ -2,25 +2,25 @@ use super::*;
 
 impl Default for TemporalEngine {
     fn default() -> Self {
-        Self::with_cache_and_block_store(MultiLayerCache::default(), LocalBlockStore::default())
+        Self::with_cache_and_block_store(MultiLayerCache::default(), LocalPageStore::default())
     }
 }
 
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
-        Self::with_cache_and_block_store(cache, LocalBlockStore::default())
+        Self::with_cache_and_block_store(cache, LocalPageStore::default())
     }
 
     pub fn with_cache_and_block_store(
         cache: MultiLayerCache,
-        block_store: LocalBlockStore,
+        block_store: LocalPageStore,
     ) -> Self {
         Self::with_cache_block_store_and_index_dir(cache, block_store, unique_temp_path("indexes"))
     }
 
     pub fn with_cache_block_store_and_index_dir(
         cache: MultiLayerCache,
-        block_store: LocalBlockStore,
+        block_store: LocalPageStore,
         index_dir: impl Into<PathBuf>,
     ) -> Self {
         let index_dir = index_dir.into();
@@ -29,7 +29,7 @@ impl TemporalEngine {
         Self {
             shards: Arc::default(),
             cache,
-            block_store,
+            page_store: block_store,
             wal_store,
             index_log_store,
             index_dir,
@@ -43,15 +43,15 @@ impl TemporalEngine {
         self.cache.clone()
     }
 
-    pub fn block_store(&self) -> LocalBlockStore {
-        self.block_store.clone()
+    pub fn block_store(&self) -> LocalPageStore {
+        self.page_store.clone()
     }
 
     #[deprecated(
         since = "0.1.0",
         note = "use block_store; page naming remains only for legacy compatibility"
     )]
-    pub fn page_store(&self) -> LocalBlockStore {
+    pub fn page_store(&self) -> LocalPageStore {
         self.block_store()
     }
 
@@ -86,7 +86,7 @@ impl TemporalEngine {
             cache_dir,
             block_store_dir,
             index_dir,
-            BlockStoreOptions::default(),
+            PageStoreOptions::default(),
         )
     }
 
@@ -95,11 +95,11 @@ impl TemporalEngine {
         cache_dir: impl Into<PathBuf>,
         block_store_dir: impl Into<PathBuf>,
         index_dir: impl Into<PathBuf>,
-        block_store_options: BlockStoreOptions,
+        block_store_options: PageStoreOptions,
     ) -> Self {
         Self::with_cache_block_store_and_index_dir(
             MultiLayerCache::new(memory_capacity_bytes, cache_dir),
-            LocalBlockStore::with_options(block_store_dir, block_store_options),
+            LocalPageStore::with_options(block_store_dir, block_store_options),
             index_dir,
         )
     }

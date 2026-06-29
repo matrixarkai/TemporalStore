@@ -28,6 +28,7 @@ use self::context::*;
 use self::packed_pages::*;
 use self::product_model::*;
 use self::reports::*;
+use self::slot_store::{read_slot_index_value, slot_index_component_page_addresses};
 use self::state::*;
 use crate::cache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
 use crate::control::{
@@ -3362,7 +3363,7 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
-        let mut merged_dump_load_policy = self.storage_merged_dump_load_policy_report(
+        let mut merged_dump_load_policy = self.storage_merged_dump_load_policy_report_internal(
             request.shard_id,
             request.dry_run,
             &plan,
@@ -3516,7 +3517,26 @@ impl TemporalEngine {
         }
     }
 
-    fn storage_merged_dump_load_policy_report(
+    pub fn storage_merged_dump_load_policy_report(
+        &self,
+        request: StorageMergedDumpLoadPolicyRequest,
+    ) -> StorageMergedDumpLoadPolicyReport {
+        let plan = self.storage_lifecycle_plan(request.lifecycle.clone());
+        let lifecycle = if request.create_dump_manifest || request.install_dump_manifest {
+            Some(self.apply_storage_lifecycle(request.lifecycle.clone()))
+        } else {
+            None
+        };
+        self.storage_merged_dump_load_policy_report_internal(
+            request.lifecycle.shard_id,
+            false,
+            &plan,
+            lifecycle.as_ref(),
+            None,
+        )
+    }
+
+    fn storage_merged_dump_load_policy_report_internal(
         &self,
         shard_id: ShardId,
         dry_run: bool,
@@ -3689,6 +3709,20 @@ impl TemporalEngine {
             }
         }
         report.production_slice_ready = report.blockers.is_empty();
+        report.policy_ready = report.production_slice_ready;
+        report.dump_manifest_created = report.manifest_id.is_some();
+        report.load_preflight_safe = report.install_preflight_safe;
+        report.replay_boundary_safe = report.sequence_boundaries_validated;
+        report.manifest_chain_valid =
+            report.manifest_checksum_validated && report.manifest_generation_validated;
+        report.follower_retention_safe =
+            report.live_page_refs_validated && report.object_lifecycle_validated;
+        report.index_gc_ready = report.index_gc_policy_applied;
+        report.manifest_slot_ids = lifecycle
+            .dump_manifest
+            .as_ref()
+            .map(|manifest| manifest.slot_ids.clone())
+            .unwrap_or_default();
         report
     }
 
@@ -9279,6 +9313,63 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     collect_model_live_page_entries(shard)
 }
 
+fn collect_live_page_entries_from_model_maps(shard: &ShardState) -> Vec<LivePageEntry> {
+    collect_model_live_page_entries(shard)
+}
+
+fn rebuild_slot_page_ownership(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) {
+    shard.slot_index.slots.clear();
+    for entry in collect_model_live_page_entries(shard) {
+        let routing_slot = entry.address.routing_slot.unwrap_or_default();
+        if routing_slot < start_routing_slot || routing_slot > end_routing_slot {
+            continue;
+        }
+        let object_id = stable_page_object_id(
+            shard_id,
+            &entry.kind,
+            &entry.object_key,
+            entry.component.as_deref(),
+        );
+        let slot = shard
+            .slot_index
+            .slots
+            .entry(routing_slot)
+            .or_insert_with(|| SlotNodeIndex {
+                routing_slot,
+                ..SlotNodeIndex::default()
+            });
+        slot.object_ids.insert(object_id);
+        slot.page_refs.insert(
+            format!(
+                "{}:{}:{}:{}:{}",
+                entry.kind,
+                entry.object_key,
+                entry.component.clone().unwrap_or_default(),
+                entry.address.page_segment_id,
+                entry.address.offset
+            ),
+            PageIndexEntry {
+                object_key: entry.object_key,
+                model_id: entry.kind,
+                component: entry.component,
+                object_id,
+                address: entry.address,
+                dirty: entry.dirty,
+                deleted: entry.deleted,
+                log_backed: entry.log_backed,
+            },
+        );
+    }
+    for slot in shard.slot_index.slots.values_mut() {
+        slot.layout = classify_slot_layout(slot.object_ids.len(), slot.page_refs.len());
+    }
+}
+
 fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
     for slot in shard.slot_index.slots.values() {
@@ -10421,93 +10512,61 @@ fn object_manager_runtime_report(
 ) -> ObjectManagerRuntimeReport {
     let ownership =
         slot_object_page_ownership_report(shard_id, shard, start_routing_slot, end_routing_slot);
-    let lifecycle = storage_object_lifecycle_report(shard_id, shard);
     let mut report = ObjectManagerRuntimeReport {
         shard_id,
-        routing_slot_count: shard.slot_objects.len() as u64,
-        dirty_slot_count: shard.dirty_slots.len() as u64,
-        max_dirty_generation: shard
-            .slot_dirty_generations
+        routing_slot_count: shard.slot_index.slots.len() as u64,
+        dirty_slot_count: shard
+            .slot_index
+            .slots
             .values()
-            .copied()
+            .filter(|slot| slot.dirty)
+            .count() as u64,
+        max_dirty_generation: shard
+            .slot_index
+            .slots
+            .values()
+            .map(|slot| slot.dirty_generation)
             .max()
             .unwrap_or_default(),
         missing_owner_page_ref_count: ownership.missing_owner_page_ref_count,
         owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
-        reused_object_id_conflict_count: lifecycle.reused_object_id_conflicts,
         evidence: vec![
-            "runtime owns hot/cold/tombstone object state in slot_objects".to_string(),
-            "runtime tracks dirty generations and dirty routing slots".to_string(),
-            "runtime tracks model layout state and transitions per object".to_string(),
+            "runtime owns page refs in the first-class slot index".to_string(),
+            "runtime tracks dirty generations and dirty routing slots in SlotNodeIndex"
+                .to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
         ],
         ..ObjectManagerRuntimeReport::default()
     };
 
-    for objects in shard.slot_objects.values() {
-        for object in objects.values() {
-            report.object_count = report.object_count.saturating_add(1);
-            report.page_ref_count = report
-                .page_ref_count
-                .saturating_add(object.pages.len() as u64);
-            if object.dirty {
-                report.dirty_object_count = report.dirty_object_count.saturating_add(1);
+    for slot in shard.slot_index.slots.values() {
+        report.object_count = report
+            .object_count
+            .saturating_add(slot.object_ids.len() as u64);
+        report.page_ref_count = report
+            .page_ref_count
+            .saturating_add(slot.page_refs.len() as u64);
+        if slot.loading {
+            report.loading_object_count = report.loading_object_count.saturating_add(1);
+        }
+        if slot.meta_loaded {
+            report.meta_object_count = report.meta_object_count.saturating_add(1);
+        }
+        if slot.ttl_ms.is_some() {
+            report.ttl_object_count = report.ttl_object_count.saturating_add(1);
+        }
+        match slot.layout {
+            SlotLayoutState::Empty => {}
+            SlotLayoutState::SingleObject | SlotLayoutState::SinglePageObject => {
+                report.hot_object_count = report.hot_object_count.saturating_add(1);
+                report.object_page_count = report.object_page_count.saturating_add(1);
             }
-            if object.loading {
-                report.loading_object_count = report.loading_object_count.saturating_add(1);
+            SlotLayoutState::MultiPageObject => {
+                report.multi_page_object_count = report.multi_page_object_count.saturating_add(1);
             }
-            if object.meta {
-                report.meta_object_count = report.meta_object_count.saturating_add(1);
-            }
-            if object.ttl_expires_at_ms.is_some() {
-                report.ttl_object_count = report.ttl_object_count.saturating_add(1);
-            }
-            report.layout_transition_count = report
-                .layout_transition_count
-                .saturating_add(object.layout_transition_count);
-
-            let state = if object.layout_state == SlotLayoutState::Unknown {
-                slot_layout_state_for_object(object)
-            } else {
-                object.layout_state.clone()
-            };
-            match state {
-                SlotLayoutState::MemoryHot => {
-                    report.hot_object_count = report.hot_object_count.saturating_add(1);
-                }
-                SlotLayoutState::ObjectPage => {
-                    report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    report.object_page_count = report.object_page_count.saturating_add(1);
-                }
-                SlotLayoutState::PackedTimestampedPage => {
-                    report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    report.packed_timestamped_page_count =
-                        report.packed_timestamped_page_count.saturating_add(1);
-                }
-                SlotLayoutState::MultiPageObject => {
-                    let has_hot = object
-                        .pages
-                        .iter()
-                        .any(|page| page.address.page_segment_id == HOT_PAGE_SEGMENT_ID);
-                    let has_cold = object
-                        .pages
-                        .iter()
-                        .any(|page| page.address.page_segment_id != HOT_PAGE_SEGMENT_ID);
-                    if has_hot && has_cold {
-                        report.mixed_residency_object_count =
-                            report.mixed_residency_object_count.saturating_add(1);
-                    } else if has_hot {
-                        report.hot_object_count = report.hot_object_count.saturating_add(1);
-                    } else {
-                        report.cold_object_count = report.cold_object_count.saturating_add(1);
-                    }
-                    report.multi_page_object_count =
-                        report.multi_page_object_count.saturating_add(1);
-                }
-                SlotLayoutState::Tombstone => {
-                    report.tombstone_object_count = report.tombstone_object_count.saturating_add(1);
-                }
-                SlotLayoutState::Unknown => {}
+            SlotLayoutState::MultiObject => {
+                report.mixed_residency_object_count =
+                    report.mixed_residency_object_count.saturating_add(1);
             }
         }
     }
@@ -10527,12 +10586,45 @@ fn object_manager_runtime_report(
             .blockers
             .push("page refs disagree with expected object owners".to_string());
     }
-    if lifecycle.reused_object_id_conflicts > 0 {
-        report
-            .blockers
-            .push("object id reuse conflicts are present".to_string());
-    }
     report.runtime_ready = report.blockers.is_empty();
+    report
+}
+
+fn slot_object_page_ownership_report(
+    shard_id: ShardId,
+    shard: &ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> SlotObjectPageOwnershipReport {
+    let mut report = SlotObjectPageOwnershipReport {
+        shard_id,
+        first_class_index_present: !shard.slot_index.slots.is_empty(),
+        derived_from_model_maps: shard.slot_index.slots.is_empty(),
+        ..SlotObjectPageOwnershipReport::default()
+    };
+    let entries = collect_live_page_entries(shard);
+    report.page_ref_count = entries.len();
+    for entry in entries {
+        let routing_slot = entry.address.routing_slot.unwrap_or_default();
+        if routing_slot < start_routing_slot || routing_slot > end_routing_slot {
+            continue;
+        }
+        let expected_object_id = stable_page_object_id(
+            shard_id,
+            &entry.kind,
+            &entry.object_key,
+            entry.component.as_deref(),
+        );
+        let Some(slot) = shard.slot_index.slots.get(&routing_slot) else {
+            report.missing_owner_page_ref_count =
+                report.missing_owner_page_ref_count.saturating_add(1);
+            continue;
+        };
+        if !slot.object_ids.contains(&expected_object_id) {
+            report.owner_mismatch_page_ref_count =
+                report.owner_mismatch_page_ref_count.saturating_add(1);
+        }
+    }
     report
 }
 

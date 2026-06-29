@@ -2191,7 +2191,7 @@ fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
         },
     });
 
-    let scheduler = runtime.start_storage_manager_scheduler(
+    let scheduler = runtime.start_storage_manager_cycle_scheduler(
         Duration::from_millis(5),
         StorageManagerCycleRequest {
             shard_id: 1,
