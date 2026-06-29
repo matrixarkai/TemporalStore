@@ -5170,7 +5170,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, manifest validation, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
+      "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, multi-slot merged manifests, manifest validation, rollback/install markers, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
       "family": "storage/cache",
       "name": "storage_merged_dump_load_policy",
       "shard_id": 92,
@@ -5185,7 +5185,11 @@
             "expect_replay_boundary": true,
             "expect_roll_forward": true,
             "expect_follower_safe_index_gc": true,
-            "expect_stale_load_rejection": true
+            "expect_stale_load_rejection": true,
+            "expect_multi_slot_merged_manifest": true,
+            "expect_rollback_markers": true,
+            "expect_load_version_handoff": true,
+            "expect_stale_object_page_conflict_report": true
           },
           "name": "storage_merged_policy_dump_load_replay_index_gc",
           "skip_client": true
@@ -8289,9 +8293,9 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "suite": "cpp_storage_parity",
-            "description": "Shared data-node cache pressure case for memory miss, disk/page/shared-store fallback, refill, eviction counters, and restart recovery.",
+            "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
             "required_paths": [],
-            "rust_runner": "cargo test -p temporalstore-rust storage_byteraft_cache_refill_pressure --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
           }
@@ -8309,9 +8313,9 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "suite": "cpp_storage_parity",
-            "description": "Shared StorageManager runtime case for continuous prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC with phase reports.",
+            "description": "Shared StorageManager runtime case for continuous prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC with real pressure signals and per-phase reports.",
             "required_paths": [],
-            "rust_runner": "cargo test -p temporalstore-rust storage_manager_continuous_background_runtime --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case."
           }
