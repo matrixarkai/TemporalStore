@@ -8,7 +8,7 @@ Make TemporalStore data-node Raft production-ready, avoid regressions on the sha
 
 - Commit `1445c42` was already pushed to the private `main-no-deps` branch.
 - That commit hardened the data-Raft replica apply path:
-  - data-Raft snapshot/load callbacks are wired from the Byteraft FSM to `Partition`;
+  - data-Raft snapshot/load callbacks are wired from the RustRaft FSM to `Partition`;
   - a per-partition applied-index sidecar is restored and advanced under `--data_raft_work_dir/applied/<partition_id>`;
   - data-Raft replicas load local streams instead of restoring primary/shared-store stream metadata;
   - data-Raft replicas open local streams writable for committed FSM apply;
@@ -35,13 +35,13 @@ The clean repo intentionally has no dependency tree. A local-only `thirdparty` b
 | openssl | 0 |
 | brpc | 0 |
 | byte | 0 |
-| byteraft | 0 |
+| rustraft | 0 |
 | mtcache | 0 |
 | thrift | 0 |
 | rapidjson | 0 |
 | rocketmq | 0 |
 
-CMake failed because OpenSSL and Boost source directories were empty. Byte/Byteraft sources are also absent, so a current-source server binary cannot be produced from this machine yet.
+CMake failed because OpenSSL and Boost source directories were empty. Byte/RustRaft sources are also absent, so a current-source server binary cannot be produced from this machine yet.
 
 ## AWS Status
 
@@ -91,7 +91,7 @@ The remaining real blockers are:
 Populate or mount a real local dependency tree for:
 
 - `byte`
-- `byteraft`
+- `rustraft`
 - `brpc`
 - `boost`
 - `openssl`

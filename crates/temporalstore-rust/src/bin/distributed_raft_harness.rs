@@ -56,7 +56,7 @@ struct DistributedRaftSummary {
     rescale_up_after_snapshot: Vec<MembershipSummary>,
     post_rescale_up_write: Status,
     rescale_up_reads: Vec<ReplicaReadSummary>,
-    byteraft_runtime_semantics: ByteraftRuntimeSemanticsReport,
+    rustraft_runtime_semantics: RustRaftRuntimeSemanticsReport,
 }
 
 #[derive(Debug, Serialize)]
@@ -85,7 +85,7 @@ struct MembershipSummary {
 }
 
 #[derive(Debug, Serialize)]
-struct ByteraftRuntimeSemanticsReport {
+struct RustRaftRuntimeSemanticsReport {
     process_path_validated: bool,
     read_index_and_lease_validated: bool,
     stale_follower_write_rejected: bool,
@@ -392,7 +392,7 @@ fn main() {
             }
         })
         .collect::<Vec<_>>();
-    let byteraft_runtime_semantics = build_byteraft_runtime_semantics_report(
+    let rustraft_runtime_semantics = build_rustraft_runtime_semantics_report(
         &node_summaries,
         &replica_reads,
         &options.value,
@@ -407,9 +407,9 @@ fn main() {
         &rescale_up_reads,
     );
     assert!(
-        byteraft_runtime_semantics.ready,
-        "Byteraft runtime semantics are incomplete: {:?}",
-        byteraft_runtime_semantics.blockers
+        rustraft_runtime_semantics.ready,
+        "RustRaft runtime semantics are incomplete: {:?}",
+        rustraft_runtime_semantics.blockers
     );
 
     println!(
@@ -439,14 +439,14 @@ fn main() {
             rescale_up_after_snapshot,
             post_rescale_up_write,
             rescale_up_reads,
-            byteraft_runtime_semantics,
+            rustraft_runtime_semantics,
         })
         .expect("summary should serialize")
     );
 }
 
 #[allow(clippy::too_many_arguments)]
-fn build_byteraft_runtime_semantics_report(
+fn build_rustraft_runtime_semantics_report(
     nodes: &[NodeSummary],
     replica_reads: &[ReplicaReadSummary],
     expected_replica_read_value: &[u8],
@@ -459,7 +459,7 @@ fn build_byteraft_runtime_semantics_report(
     rescale_up_after_snapshot: &[MembershipSummary],
     rescale_down_reads: &[ReplicaReadSummary],
     rescale_up_reads: &[ReplicaReadSummary],
-) -> ByteraftRuntimeSemanticsReport {
+) -> RustRaftRuntimeSemanticsReport {
     let process_path_validated = nodes.len() >= 4
         && nodes.iter().all(|node| {
             !node.addr.is_empty()
@@ -530,7 +530,7 @@ fn build_byteraft_runtime_semantics_report(
     }
     let ready = blockers.is_empty();
 
-    ByteraftRuntimeSemanticsReport {
+    RustRaftRuntimeSemanticsReport {
         process_path_validated,
         read_index_and_lease_validated,
         stale_follower_write_rejected,

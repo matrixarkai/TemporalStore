@@ -31,7 +31,7 @@ Grafana panels cover global readiness, area blockers, and service blockers. Aler
 
 ### raft
 
-C++/ByteRaft parity question: is the group healthy, are followers lagging, is apply stuck, and is the leader lease safe?
+C++/RustRaft parity question: is the group healthy, are followers lagging, is apply stuck, and is the leader lease safe?
 
 Rust metrics:
 

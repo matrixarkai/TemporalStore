@@ -4,7 +4,7 @@
 
 Do not run AWS performance comparisons for `raft_consensus` as a production replication mode yet.
 
-The current Byteraft-backed data-node path is intentionally fail-closed for writes:
+The current RustRaft-backed data-node path is intentionally fail-closed for writes:
 
 ```text
 --data_replication_mode=raft_consensus
@@ -16,7 +16,7 @@ This is correct for safety because the existing command path still mutates local
 ```text
 client write
 -> serialize deterministic command or mutation
--> Byteraft propose
+-> RustRaft propose
 -> quorum commit
 -> FSM apply on leader and replicas
 -> local object/oplog/page/index mutation
@@ -51,7 +51,7 @@ The right AWS comparison matrix after production Raft is complete:
 
 | Mode | Write durability | Reads to test | Metrics |
 | --- | --- | --- | --- |
-| `raft_consensus` | Ack after Byteraft quorum commit and FSM apply | Leader read, linearizable/read-index, stale replica read, min-index replica read | write QPS, read QPS, p50/p95/p99, CPU, network, Raft commit lag, applied lag, failover RTO/RPO |
+| `raft_consensus` | Ack after RustRaft quorum commit and FSM apply | Leader read, linearizable/read-index, stale replica read, min-index replica read | write QPS, read QPS, p50/p95/p99, CPU, network, Raft commit lag, applied lag, failover RTO/RPO |
 | `shared_store --storage_async=false` | Ack after shared-store commit | Primary and replica reads | write/read QPS, EFS latency, replica lag, recovery time |
 | `shared_store --storage_async=true` | Ack may precede durable shared-store flush | Primary and replica reads | write/read QPS, async flush lag, possible RPO window |
 
@@ -59,7 +59,7 @@ The right AWS comparison matrix after production Raft is complete:
 
 1. Add command serialization before local mutation.
 2. Propose writes through `DataRaftConsensusBackend::Propose`.
-3. Apply committed entries only from the Byteraft FSM.
+3. Apply committed entries only from the RustRaft FSM.
 4. Implement real partition snapshots: index metadata, live page data, oplog checkpoint, applied Raft index.
 5. Add read policies so all replicas can serve reads safely:
    - leader read

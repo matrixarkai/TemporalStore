@@ -38,8 +38,8 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 | Area | Main files | What it does |
 | --- | --- | --- |
 | Public API model | `crates/temporalstore-rust/src/types.rs` | Defines `Command`, `CommandResponse`, request/response structs, shard id, feature/risk/sequence shapes. |
-| Engine | `crates/temporalstore-rust/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/page store. |
-| Page storage | `crates/temporalstore-rust/src/page_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `PageAddress { page_segment_id, offset, length }`. |
+| Engine | `crates/temporalstore-rust/src/engine.rs` | Owns loaded shard state, executes commands, appends values to page files, updates indexes, persists index JSON, reads through cache/block store. |
+| Page storage | `crates/temporalstore-rust/src/block_store.rs` | Appends raw bytes to local `page_segment_*.seg` files and returns `BlockAddress { page_segment_id, offset, length }`. |
 | Multi-layer cache | `crates/temporalstore-rust/src/cache.rs` | L1 in-memory cache plus L2 local disk block cache. Disk blocks use a versioned envelope with optional zstd compression. Disk hits are decoded and promoted back to memory. Writes invalidate affected keys. |
 | Control API | `crates/temporalstore-rust/src/control.rs` | Load/unload shard, config, info/stats, membership update, stream read/scan structs. |
 | HTTP transport | `crates/temporalstore-rust/src/http.rs`, `meta.rs`, `client.rs` | Small synchronous JSON-over-HTTP surface for local server/proxy/metaserver/client workflows. |
@@ -56,7 +56,7 @@ So the right framing is: the Rust code is a good open-source v1 skeleton and loc
 TemporalStore Rust read/write path:
 
 ```text
-HTTP/Redis/client request -> proxy/client -> shard_id -> TemporalEngine -> ShardState index -> PageAddress { segment, offset, length } -> LocalPageStore page_segment file -> MultiLayerCache -> response
+HTTP/Redis/client request -> proxy/client -> shard_id -> TemporalEngine -> ShardState index -> BlockAddress { segment, offset, length } -> LocalBlockStore page_segment file -> MultiLayerCache -> response
 ```
 
 Modeled distributed path:
@@ -75,50 +75,16 @@ key -> crc64 slot -> partition set -> primary/secondary server -> worker -> obje
 
 `TemporalEngine` owns loaded shard maps behind an `RwLock`. A `ShardState` contains separate indexes per logical data type:
 
-- `strings: key -> PageAddress`
-- `hashes: key -> field -> PageAddress`
-- `sets: key -> member -> PageAddress`
-- `features: key -> timestamp -> PageAddress`
-- `sequences: key -> timestamp -> PageAddress`
-- `ips: key -> timestamp -> PageAddress`
+- `strings: key -> BlockAddress`
+- `hashes: key -> field -> BlockAddress`
+- `sets: key -> member -> BlockAddress`
+- `features: key -> timestamp -> BlockAddress`
+- `sequences: key -> timestamp -> BlockAddress`
+- `ips: key -> timestamp -> BlockAddress`
 - `risk: key -> timestamp -> i64`
 - `expires_at_ms: key -> expire timestamp`
 
-For C++ storage parity, Rust also exposes a physical slot-first view over those
-logical maps. `storage_physical_index_report` projects live page refs as:
-
-```text
-Index -> SlotNode -> PageIndex
-```
-
-Each `PageIndex` carries the object key, model id, optional component, routing
-slot, segment/offset/length, page id, object id, zone id, checksum, and
-dirty/deleted/log-backed flags. The focused shared case
-`storage_slot_first_physical_index` verifies that mixed page-backed
-string/hash/set/Feature/Sequence/IPS/Risk writes all populate the persisted
-`SlotFirstIndex -> SlotNodeIndex -> PageIndexEntry` authority in `ShardState`.
-Storage lifecycle enumeration now prefers that native slot index instead of
-rebuilding ownership from product maps when the slot index is present. Core
-object writes for string/hash/set/Risk now register PageIndex entries into the
-slot index at write time; model-map reconciliation remains a repair/migration
-fallback for delete/trim/rewrite operations and still-migrating timestamped or
-context families. Slot nodes now carry C++ SlotStore-style layout state
-(`empty`, `single_object`, `single_page_object`, `multi_page_object`,
-`multi_object`) and the shared case `storage_slot_layout_transitions` verifies
-growth, delete, compaction, slot dump/load, and restart transitions. The report
-also emits model-layout compaction policies for string/hash/set/timestamped and
-context families, with stale-page and tombstone-density fields covered by
-`storage_model_layout_compaction_policies`. It also emits C++-size packed evidence
-bytes for the 17-byte `PageIndex` and 24-byte `SlotNode` layouts. Rust still keeps
-Rust-native in-memory structs rather than adopting C++ ABI-packed internals,
-and product read maps remain the API lookup layer during migration, but Risk
-now participates in the same page-backed ownership, recovery, compaction, and
-GC paths as the other product models. The merged dump/load lifecycle now has a
-shared case, `storage_merged_dump_load_lifecycle`, covering multi-slot source
-manifests, rollback marker evidence, load-version handoff, and stale
-object/page conflict reports.
-
-For most data types, Rust stores bytes in the local page store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `PageAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
+For most data types, Rust stores bytes in the local block store and keeps only the page address in the index. On mutation, the engine appends a new value, updates the per-shard index, invalidates related cache entries, and persists the full shard index as JSON. On read miss, it follows the stored `BlockAddress` into the page segment file, reads the bytes, caches the page bytes under a page-address block key, builds the response, and caches the serialized response.
 
 Important current behavior:
 
@@ -130,7 +96,7 @@ Important current behavior:
   at the engine/API layer rather than creating TTL metadata. Redis `EXPIRE` still returns `0` for
   that case.
 - `feature_max_size` defaults to `5000`
-- `StreamKind::Page` and `StreamKind::Index` can read local page/index bytes
+- `StreamKind::Block` and `StreamKind::Index` can read local page/index bytes
 - `StreamKind::Oplog` currently returns empty bytes
 
 The big difference from C++ is that Rust has no separate hot object manager or C++ dirty-slot
@@ -142,7 +108,7 @@ JSON after mutations instead of using the full C++ merged page/slot dump and rec
 
 The Rust `MultiLayerCache` has two local layers:
 
-- L1: process memory with byte capacity and FIFO-style eviction
+- L1: process memory with byte capacity and weighted hotness/LRU eviction
 - L2: local disk cache files under shard/type directories
 
 Read behavior:
@@ -150,17 +116,17 @@ Read behavior:
 ```text
 response/page memory hit -> return
 response/page disk hit -> decode block envelope -> promote to memory -> return
-cache miss -> engine reads page file by PageAddress -> cache page bytes and response -> return
+cache miss -> engine reads page file by BlockAddress -> cache page bytes and response -> return
 ```
 
-This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, and legacy raw-block decode. The Rust-native cache also has tier-placement policy evidence for DRAM/PMEM/SSD decisions, pinned `Arc` block handles, eviction-skip accounting, bounded async writeback with queue-depth/byte backpressure counters, warmup, admission/eviction counters, bucketed get/put latency metrics, and `storage_cache_replacement_policy_soak` evidence that access-refreshed hot blocks and pinned blocks survive sustained capacity churn while colder blocks refill from disk. It is still not the C++ CacheLib/mtcache implementation; exact engine parity would require direct CacheLib/mtcache integration.
+This proves the desired memory -> local block cache -> local page file path. The L2 cache now has page-address keys, a serialized `TSBCACHE` block envelope, zstd compression for compressible blocks, legacy raw-block decode, policy-driven memory/SSD admission, bounded SSD capacity eviction, weighted hotness/LRU victim selection, per-entry hotness metadata, cold/low-hit/stale eviction reason counters, pin-aware memory/SSD eviction skips, write-through admission accounting, warmup, invalidation, and admin inspection. It is still not CacheLib, mtcache, or blockcache binary/API compatibility; the Rust production target is a Rust-native mtcache-like tier with shared behavioral tests.
 
 ## Page Store Deep Dive
 
-`LocalPageStore` is an append/read abstraction over local segment files. Each append returns:
+`LocalBlockStore` is an append/read abstraction over local segment files. Each append returns:
 
 ```text
-PageAddress {
+BlockAddress {
   page_segment_id: u64,
   offset: u64,
   length: u64
@@ -283,7 +249,7 @@ From the C++ deep-dive docs and local source, C++ TemporalStore is a mature serv
 - heartbeat/load reporting
 - quota and admission control
 - legacy C++ wire/protobuf SDK/runtime integration
-- ByteRaft/internal raft dependency
+- RustRaft/internal raft dependency
 - richer Feature, IPS, and Risk modules
 
 That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. It means replacing a storage engine, routing layer, distributed metadata service, replication runtime, model-specific feature stores, deployment flow, and internal dependencies.
@@ -297,11 +263,11 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 | Sequence API | Typed rows, filters, and batch query | Part of richer feature/data modules | Need exact C++ sequence edge-case policy if required by callers. |
 | IPS | Add/query-last/range/batch/remove/delete/count plus idempotent/dimensional add, dimension-filtered range, local load, range snapshot, stats, and named filter with typed client and RESP coverage | Rich add/batch query/remove/load/delete/stat/filter/snap behavior | Missing production snap metadata and server aggregation. |
 | Risk | Increment/count plus precision/TTL increment, sum/min/max/first/last/events/detail with typed client and RESP coverage | Rich H/CPC/FOL/query/manager/window/precision semantics | Missing CPC/list-specific behavior and manager APIs. |
-| Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, bounded data-node StorageManager worker scheduling, local live-page rewrite compaction, C++-ordered StorageManager cycle with per-stage pressure/candidate/byte reports, and Rust-native merged dump/load policy evidence for manifest validation, sequence boundaries, install preflight, reclaim, compaction, index-GC, and cache policy | Oplog + page/slot store + dump/recover | Need binary log/header parity, deeper C++ object/page/slot layout, C++ allocator/stream-backend internals, and byte-for-byte C++ zone/page-header compaction parity. |
-| Cache | Rust-native memory + disk cache with page-address keys, versioned block envelope, zstd compression, tier-placement policy, pinned handles, bounded async writeback/backpressure, warmup, admission/eviction counters, and bucketed latency metrics | mtcache/blockcache-like production cache | Need only CacheLib/mtcache FFI/byte-for-byte runtime replacement if Rust must embed the exact C++ cache engine; otherwise validate Rust-native soak/SLO evidence. |
-| Replication | OpenRaft/raft-rs production path plus local fixtures, with ByteRaft-style admin evidence for per-peer pipeline state, WAL segments, snapshot lifecycle, read-index/lease safety, stale follower rejection, and leader transfer | ByteRaft-backed production replication | Need deeper OpenRaft FSM/storage rollout and long-running external chaos/soak evidence. |
+| Local storage | Local page segments + JSON index, oplog/index-log, periodic dirty-shard dump scheduling, and local live-page rewrite compaction | Oplog + page/slot store + dump/recover | Need native ObjectManager runtime mechanics, SlotStore layout transitions, stream-backed zones, page compaction tied to model layout/tombstones, mature StorageManager loops, merged dump/load, and optional binary log/header parity if migration requires it. |
+| Cache | Rust-native memory + bounded SSD block cache with policy admission, hotness, pinning, write-through accounting, weighted hotness/LRU pressure eviction, warmup, and inspection metrics | mtcache/blockcache-like production cache | Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are covered by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in Rust. CacheLib/mtcache binary/API compatibility remains optional only if that compatibility is re-scoped. |
+| Replication | In-process behavior model | RustRaft-backed production replication | Need real Raft library and networked nodes. |
 | Metaserver | Simple route + in-process raft model | Full topology and routing control plane | Need namespace/table/shard/slot topology and heartbeat. |
-| Read policy | Pin-primary default, optional replica reads, bounded-stale policy, read-index/lease rejection for lagging followers, and process-path evidence in `ByteRaftRuntimeAdminReport` | Primary/secondary serving with readonly replay | Need broader multi-process soak and deployment-specific read-SLO evidence. |
+| Read policy | Pin-primary default, optional replica reads | Primary/secondary serving with readonly replay | Need real lag control/read-index/lease semantics. |
 | Snapshot | S3-compatible snapshot store crate | C++ storage/load ecosystem, ByteStore/local streams | Need actual engine/Raft integration. |
 | Redis | Useful RESP adapter | C++ has product protocol/SDKs, not just Redis | Need exact client compatibility depending on migration target. |
 | Deployment | Docker + existing-EKS Terraform | Internal production deployment system | Need service discovery, autoscale controllers, dashboards, runbooks. |
@@ -309,11 +275,11 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 
 ## Pros Of The Rust Rewrite
 
-- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `byteraft`, `mtcache`, ByteStore, and related infrastructure.
+- **Open-source friendly:** avoids direct dependence on internal non-open-source `byte`, `rustraft`, `mtcache`, ByteStore, and related infrastructure.
 - **Safer implementation base:** Rust reduces memory safety and lifetime bugs common in large C++ storage engines.
 - **Clear API model:** one central `Command` enum makes behavior easy to inspect, serialize, test, and wrap with Redis/HTTP/proxy layers.
 - **Fast local iteration:** TemporalStore Rust engine and in-process workflow tests run without a full internal deployment.
-- **Cleaner naming:** uses `shard`, `page_segment`, `PageAddress`, and typed APIs instead of carrying every historical C++ name forward.
+- **Cleaner naming:** uses `shard`, `page_segment`, `BlockAddress`, and typed APIs instead of carrying every historical C++ name forward.
 - **S3 snapshot design is explicit:** snapshot code has immutable object layout, checksum verification, retention, and metrics from the start.
 - **Good migration harness:** compatibility-style tests can be expanded from C++ behavior into Rust without booting a whole production stack.
 
@@ -333,11 +299,11 @@ That is why "rewrite C++ TemporalStore in Rust" is not just translating syntax. 
 - **Operational reality:** metaserver routing, primary/secondary roles, readonly replay, and internal deployment assumptions are already represented.
 - **Complete domain semantics:** Feature, IPS, Risk, and related models are much richer than the Rust subset.
 - **Existing clients:** C++ protocol/SDK integration is already aligned with current callers.
-- **Performance history:** cache, page store, background dump, and worker architecture were designed for low-latency serving.
+- **Performance history:** cache, block store, background dump, and worker architecture were designed for low-latency serving.
 
 ## Cons Of Keeping/Using The C++ Code
 
-- **Hard to open source:** critical dependencies like `byte`, `byteraft`, `mtcache`, ByteStore, and likely internal build/runtime pieces are not open source.
+- **Hard to open source:** critical dependencies like `byte`, `rustraft`, `mtcache`, ByteStore, and likely internal build/runtime pieces are not open source.
 - **Complex build/dependency graph:** legacy C++ RPC/protobuf/library ABI details make external builds harder.
 - **Harder to simplify:** historical naming and internal architecture make a clean public product harder to explain and maintain.
 - **Memory safety risk:** C++ needs stricter review and testing discipline for lifetime, concurrency, and ABI issues.
@@ -361,10 +327,8 @@ P1, required for production-like parity:
 
 - full C++ Feature/IPS/Risk semantics
 - C++ protobuf/legacy C++ wire compatibility or a documented migration API
-- production cache backend choice: keep the current Rust-native memory/disk cache with
-  DRAM/PMEM/SSD placement policy, pinned handles, async writeback/backpressure, and latency
-  buckets, or add CacheLib/mtcache FFI only if exact C++ cache-engine embedding becomes a
-  requirement
+- production cache backend, likely CacheLib via FFI or a Rust cache with SSD tier support; the
+  current Rust cache is a local memory plus disk read-through cache
 - page/index compaction and full C++ page rewrite garbage collection; local GC retention boundaries
   exist for oplog/index-log/page segment files
 - production Raft snapshot lifecycle wired to engine freeze/flush/download/verify/install; local and

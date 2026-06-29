@@ -41,7 +41,7 @@ def build_summary(artifact_dir: Path) -> dict:
             "post_rescale_down_write_ok": distributed["post_rescale_down_write"]["ok"],
             "post_rescale_up_write_ok": distributed["post_rescale_up_write"]["ok"],
             "external_snapshot_read": distributed["external_snapshot_read"]["value"],
-            "byteraft_runtime_semantics": distributed["byteraft_runtime_semantics"],
+            "rustraft_runtime_semantics": distributed["rustraft_runtime_semantics"],
             "secondary_restart_reads": secondary["reads_after_restart"],
             "partition_isolated_read_rejected": not secondary["partition"]["isolated_read_status"]["ok"],
             "lagging_follower_observed_lag": secondary["lagging_follower"]["observed_lag"],

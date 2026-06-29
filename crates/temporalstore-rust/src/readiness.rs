@@ -1339,7 +1339,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft TemporalRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
-                "TemporalRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "TemporalRaft process rollout reports must include RustRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
@@ -1487,7 +1487,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft TemporalRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
-                "TemporalRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "TemporalRaft process rollout reports must include RustRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
@@ -1499,7 +1499,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "Raft metaserver membership readiness covers topology membership plans, data-Raft apply reports, learner catch-up/promotion, leader transfer, voter removal, networked scheduler /raft/membership/apply transport, persisted scheduler task state, and real data-node group execution under follower lag, failover, scale up/down, and secondary replication"
                     .to_string(),
-                "ByteRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
+                "RustRaft-style leader write authority, ReadIndex guards, learner catch-up/promotion checks, and fail-closed stale leader-transfer checks are modeled locally"
                     .to_string(),
                 "Raft transport security readiness covers auth-token validation, mTLS cert/key/CA config validation, service-process mTLS runtime selection, authenticated HTTP transport, and plaintext-only local chaos guardrails"
                     .to_string(),
@@ -3253,7 +3253,7 @@ mod tests {
             .any(|item| item.contains("rolling restart of every voter")));
         assert!(covered
             .iter()
-            .any(|item| item.contains("ByteRaft-style leader write authority")));
+            .any(|item| item.contains("RustRaft-style leader write authority")));
         assert!(covered
             .iter()
             .any(|item| item.contains("ProductionRaftEngineKind::TemporalRaft")));

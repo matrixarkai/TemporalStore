@@ -73,7 +73,7 @@ The twelve checked areas are storage object/page/slot lifecycle, slot dump/load 
 compaction/GC delayed destroy, shared-store sync/async replication and cursor-safe GC, Raft
 command/log/WAL codec, Raft snapshot/membership scale, data-node Raft consensus contract, Raft
 metaserver distributed fault contract, Raft failover secondary replication, exact C++ Raft case
-names, local scale/fault readiness gates, and ByteRaft-derived readiness contracts.
+names, local scale/fault readiness gates, and RustRaft-derived readiness contracts.
 `tools/run_raft_shared_cases.py` now adds a focused shared-case bridge for the Raft rows: it
 validates C++ required paths and Rust process/harness runners, and its Rust combined mode runs
 `tools/run_raft_distributed_parity.sh` once to produce data-node plus metaserver evidence.

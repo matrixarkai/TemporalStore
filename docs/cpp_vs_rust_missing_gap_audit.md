@@ -13,15 +13,15 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
 - local page segment files
 - memory plus disk read-through cache
 - whole index snapshot stream
-- WAL stream
+- oplog stream
 - index-log stream
 - page stream
-- shared-store checkpoint and WAL replay model
+- shared-store checkpoint and oplog replay model
 - production-wrapped data-node Raft behavior and in-process metaserver Raft behavior
 - local Raft snapshot behavior
-- ByteKV/ByteRaft-style Raft configuration defaults, validation, read options, oversized log rejection, and election prohibition
-- ByteRaft-style local Raft status, local status, read-index guard, leader transfer, and Prometheus raft metrics
-- ByteRaft-style commit-to-apply lag health reports and Prometheus apply-lag metrics for data and
+- ByteKV/RustRaft-style Raft configuration defaults, validation, read options, oversized log rejection, and election prohibition
+- RustRaft-style local Raft status, local status, read-index guard, leader transfer, and Prometheus raft metrics
+- RustRaft-style commit-to-apply lag health reports and Prometheus apply-lag metrics for data and
   metaserver Raft
 - proxy/client/metaserver/server binaries
 - table-aware Rust client with typed string/hash/common methods, pipeline batching, HTTP timeout/retry options, optional direct route refresh, and primary/secondary endpoint selection from metaserver topology
@@ -33,11 +33,11 @@ The Rust code now covers the local correctness skeleton for TemporalStore-style 
   to compact placement load signals
 - data-node worker runtime with bounded async queue, job status, dirty-object ids, dump/compact/GC hooks, and load-finish callback endpoint
 - Redis RESP adapter, including conditional `SET NX/XX`, `GET`, `EX`, and `PX`
-- Prometheus scrape output for shard records, cache, page-store, WAL, data-node runtime
+- Prometheus scrape output for shard records, cache, page-store, oplog, data-node runtime
   counters, proxy request/policy/cache counters, and metaserver inventory/scheduler/resource-state
   counters
 - S3-compatible snapshot store crate
-- replica replay loop consuming checkpoint index/pages, index-log tail, and WAL tail with a persisted cursor
+- replica replay loop consuming checkpoint index/pages, index-log tail, and oplog tail with a persisted cursor
 - remote HTTP stream source for replica replay over `/read_stream` and `/scan_stream`
 - server-side `/replica/replay` endpoint for secondary data-node catch-up from a primary stream
   source
@@ -147,7 +147,7 @@ control-plane Prometheus backlog item forward:
    server/proxy/table state gauges, topology version, scheduler queue depth, and scheduler
    execution result counters.
 5. Raft-backed metaserver metrics append existing metaserver Raft Prometheus output, preserving
-   the ByteRaft-style commit/apply/lag scrape surface.
+   the RustRaft-style commit/apply/lag scrape surface.
 6. Regression coverage validates proxy metrics after policy rejection and metaserver errors, plus
    metaserver inventory/state/scheduler metrics after resource registration and freeze.
 
@@ -856,7 +856,7 @@ production blockers above are closed, instead of treating local model coverage a
 
 This pass closed one concrete feature/raft gap found by scale testing:
 
-- A 5k-row `SequenceAdd` command is larger than the default ByteRaft-style `32 KiB`
+- A 5k-row `SequenceAdd` command is larger than the default RustRaft-style `32 KiB`
   `max_memory_replicate_log_bytes` in the Rust JSON command shape.
 - `RaftCluster::propose` and `RaftCluster::propose_distributed` now split oversized
   `SequenceAdd` commands into ordered smaller Raft entries before appending.
@@ -877,9 +877,9 @@ This pass repeated the C++ vs Rust audit and closed eight smaller, test-backed p
 
 These are open-source Rust API and behavior increments. They are not legacy C++ wire wire compatibility.
 
-This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
+This pass closed another RustRaft/ByteKV `RaftEngine` API/configuration gap:
 
-- `RaftConfig` exposes the ByteKV/ByteRaft-style knobs used by the local C++ codebase: election cycle ticks, leader-transfer timeout, offline timeout, lease settings, startup lease assumption, max memory replicate-log bytes, max disk replicate-log count, max cache memory bytes, max apply batch bytes, reorder queue controls, in-flight apply/replication limits, pre-vote/election prohibition, snapshot send timeout, transport timeout, WAL sync, segment sizing, retained segment count, snapshot trigger switch, and max applied-log bytes.
+- `RaftConfig` exposes the ByteKV/RustRaft-style knobs used by the local C++ codebase: election cycle ticks, leader-transfer timeout, offline timeout, lease settings, startup lease assumption, max memory replicate-log bytes, max disk replicate-log count, max cache memory bytes, max apply batch bytes, reorder queue controls, in-flight apply/replication limits, pre-vote/election prohibition, snapshot send timeout, transport timeout, WAL sync, segment sizing, retained segment count, snapshot trigger switch, and max applied-log bytes.
 - Defaults match the local C++/ByteKV defaults where the C++ source exposed them: election cycle `3`, max memory replicate-log bytes `32 KiB`, max disk replicate-log count `64`, max cache memory bytes `32 MiB`, max apply batch bytes `64 KiB`, raft transport timeout `1000 ms`, max segment bytes `64 MiB`, WAL sync disabled, and max applied-log bytes `1 GiB`.
 - `RaftConfig::validate()` rejects unusable settings before constructing a data-node or metaserver Raft group.
 - `RaftReadOptions` and `RaftReadStrategy` model the C++ `ReadOptions` shape: relaxed read, lease read, read-index, follower-read switch, fill-cache flag, ignore-write-intent flag, and wait timeout.
@@ -892,50 +892,6 @@ This pass closed another ByteRaft/ByteKV `RaftEngine` API/configuration gap:
 - WAL-backed data Raft clusters now compact old local WAL records using `RaftConfig.max_disk_replicate_log_num`, preserving the latest recoverable state without unbounded JSONL growth in the local model.
 - WAL-backed data Raft clusters now use segmented local WAL persistence with sync, bounded segment retention from `RaftConfig.min_keep_segment_num`, ordered recovery, and corrupt-tail truncation while still reading the older single-file WAL format.
 - WAL-backed data Raft clusters now persist installed snapshot payload and snapshot-index floor in WAL records, so a restarted replica can recover trimmed pre-snapshot state without replaying old log entries.
-- Rust now emits a `ByteRaftRuntimeAdminReport` from the Raft process path. It makes the
-  ByteRaft-derived runtime fields executable instead of only documented: per-peer match/next index,
-  append request/accept/reject counters, inflight bytes/entries, append queue depth/max depth,
-  active apply backpressure, memory replicate-byte backpressure, oversized-log rejection,
-  out-of-order append handling, append and reorder queue depth, reorder accept/release/reject counters,
-  snapshot sender/downloader lifecycle state, snapshot send attempt/complete/failure counters,
-  snapshot send elapsed/timeout counters,
-  snapshot install start/complete/reject/rollback counters, install received/total chunks, install
-  progress, chunk retry, rate-limit, membership-change snapshot evidence, compacted-log rejoin
-  evidence, retry/backpressure counters,
-  leader-transfer target state, request/accept/reject/complete counters, and
-  elapsed/timeout counters,
-  offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
-  pre-vote/election rejection counters, read-index and lease-read
-  request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
-  retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and admin-status
-  completeness. The standalone Raft node `/metrics` route and raft-enabled data-node `/metrics`
-  output now also export those ByteRaft-style readiness, peer pipeline, snapshot, WAL, and
-  read-safety gauges for scrape-based operator parity. Append request construction now enforces
-  configured in-flight entry/byte limits, rejects saturated peer pipelines with explicit
-  backpressure, and records the outcome in per-peer counters. Top-level proposal paths record
-  oversized-log and memory-byte rejections even when a command is rejected before append fanout.
-  Append receive now rejects batches that exceed configured apply-batch bytes or reorder windows,
-  records out-of-order append rejection, and records accepted/released/rejected entries.
-  Snapshot sender construction now
-  rejects concurrent single-shot or chunked transfers for the same peer, records snapshot
-  backpressure and chunk rate-limit pressure, tracks install progress plus duplicate chunk retries,
-  and preserves rollback diagnostics for membership-change snapshots and follower rejoin after
-  compacted logs; successful, failed, rejected, and rolled-back snapshot lifecycle outcomes are
-  counted per peer. WAL segment lifecycle evidence now includes per-segment valid record counts and
-  sequence bounds, plus aggregate byte and retained-record gauges. The report now also carries a
-  `capability_matrix` with explicit rows and evidence-field names for per-peer pipeline state,
-  reorder queue runtime, snapshot sender/downloader lifecycle, lease/read-index/pre-vote semantics,
-  WAL segment lifecycle, and admin/status surface completeness; Prometheus exports the same rows via
-  `temporalstore_raft_byteraft_capability_ready`. The per-peer pipeline/reorder/snapshot
-  fields plus the read-safety counters now live in Rust Raft runtime state and are serialized into
-  local WAL records, so the process-path evidence survives restart instead of being only a
-  report-time derivation.
-- Rust now exposes ByteRaft-style membership-role evidence in the same admin/status family:
-  witnesses count toward quorum but cannot serve data or lead, learners can serve caught-up reads
-  without counting toward quorum, `add_learner_with_auto_promote` catches up and promotes a learner
-  to voter, and `/raft/control/byteraft_local_status` joins local status with per-peer pipeline
-  state. Pending joint consensus is visible in local-status reports and survives WAL-backed rolling
-  restore before safe commit.
 - data-node and metaserver Raft election paths now reject stale candidates whose logs are not up-to-date with a voting majority before leadership can move.
 - data-node Raft `RequestVote` receive path now follows Raft term monotonicity more closely: higher terms update local hard state and clear old votes before grant/reject decisions, including the candidate-log-behind rejection path.
 - data-node Raft now exposes a safe membership-change unit for add/remove/replace voter plans: it validates target quorum, opens joint consensus, catches up live followers, commits the new voter set, aborts on failure, and returns a scheduler-friendly report with old/new voters and deltas.
@@ -962,18 +918,14 @@ operational parity gaps without adding legacy C++ wire:
    so the new metaserver preflight aliases work in both backend modes.
 - metaserver Raft now exposes the same membership-change plan/apply report shape for add/remove/replace voters, including target-quorum validation, follower catch-up, committed voter reporting, and metadata availability on added voters.
 
-This is now API/config parity plus explicit process-path evidence for the major ByteRaft-derived
-operational surfaces. It is still not a byte-for-byte C++ ByteRaft runtime and does not claim the
-same mature network pipeline implementation, storage engine integration, or production history.
+This is API/config parity plus local-model enforcement. It is not yet the actual optimization implementation for reorder queues, inflight replication windows, WAL sync/segments, network transport timeout, or pre-vote. Those fields become operationally meaningful when the in-process model is replaced by OpenRaft/raft-rs plus durable WAL and transport.
 
-The previous pass closed a ByteRaft/ByteKV `RaftEngine` behavior gap:
+The previous pass closed a RustRaft/ByteKV `RaftEngine` behavior gap:
 
 - `RaftClusterStatus` and `RaftNodeStatus` for leader, term, commit index, majority, live voters, lease-valid state, per-node lag, and per-node role
 - `ReadIndexResponse` and `read_index(node_id)` for safe local-model reads; lagging replicas are rejected before serving read-index
 - `transfer_leader(node_id)` for both data Raft and metaserver Raft; lagging or dead targets are rejected
-  and per-peer transfer request/accept/reject/complete counters are surfaced through the
-  ByteRaft-style admin report and Prometheus metrics
-- `local_status(node_id)` matching the shape of ByteRaft's local status inspection
+- `local_status(node_id)` matching the shape of RustRaft's local status inspection
 - `prometheus_metrics()` for data Raft and metaserver Raft with commit index, live voters, majority, lease validity, per-node commit, lag, and liveness
 - tests for data-Raft status/read-index/leader-transfer, lagging replica rejection, and metaserver-Raft status/read-index/leader-transfer
 - `RaftApplyHealth` / `RaftApplyLag` for data-node and metaserver Raft, plus
@@ -1085,7 +1037,7 @@ and the Rust `rust-main` branch:
 
 - C++ TemporalStore first-party service code: about 96,293 LOC across 566
   C/C++/proto/legacy framed RPC files.
-- C++ byteraft dependency: about 37,629 LOC.
+- C++ rustraft dependency: about 37,629 LOC.
 - C++ byte dependency: about 65,828 LOC.
 - Rust TemporalStore code: about 47,034 total Rust LOC, with about 23,971
   non-test Rust LOC after subtracting test/harness code.
@@ -1093,7 +1045,7 @@ and the Rust `rust-main` branch:
 The largest C++ first-party areas are partition/storage, model modules,
 metaserver, client, stream, server, and extensions. The Rust implementation has
 substantial local models for those areas, but still omits large production
-pieces such as full ByteRaft/byte integration, object-manager/page-layout
+pieces such as full RustRaft/byte integration, object-manager/page-layout
 internals, production model internals, legacy C++ wire SDKs, dashboards, and
 deployment automation.
 
@@ -1112,7 +1064,7 @@ delete, expire, and TTL handling, so lifecycle operations do not leave hidden
 
 The storage pass compared C++ `src/partition/storage`, `src/partition/index`,
 `src/stream`, and `src/blockcache` with the Rust page/oplog/index/shared-store
-modules. It closed page-store integrity gaps: new Rust `PageAddress` records now
+modules. It closed page-store integrity gaps: new Rust `BlockAddress` records now
 carry optional SHA-256 checksums, newly appended page bytes are wrapped in a
 self-describing segment record envelope with magic/version/length/checksum
 fields, durable page reads verify the envelope and checksum when present, old
@@ -1185,7 +1137,7 @@ Production-readiness storage pass repeated the comparison in ten narrower loops:
 Feature-parity storage pass repeated the comparison in six narrower loops:
 
 1. C++ page headers carry stable page identity; Rust page record envelopes now
-   persist a monotonic `page_id` and return it in `PageAddress`.
+   persist a monotonic `page_id` and return it in `BlockAddress`.
 2. C++ reopen does not reuse committed page ids; Rust now scans existing v2 page
    envelopes on reopen and resumes allocation after the highest persisted id.
 3. C++ restore/install preserves source page identity; Rust `install_segment`
@@ -1222,7 +1174,7 @@ Production-readiness repeat focused on slot ownership in ten loops:
    pages.
 2. C++ routes objects through the shard's owned slot range. Rust now passes the
    loaded shard routing range into the engine write path and stamps the computed
-   owned slot into `PageAddress`.
+   owned slot into `BlockAddress`.
 3. C++ hash fields and time-series points are owned by the base record key's
    slot. Rust uses the base key for `routing_slot` while keeping field/timestamp
    in the stable object id.
@@ -1234,7 +1186,7 @@ Production-readiness repeat focused on slot ownership in ten loops:
    routing-slot ranges and dirty-slot counts; this pass connects page metadata to
    the same range.
 7. C++ compaction rewrites live pages while preserving object ownership context.
-   Rust compaction now carries `PageAddress` metadata forward through normal
+   Rust compaction now carries `BlockAddress` metadata forward through normal
    reads/writes, though it still rewrites through local append-only segments.
 8. C++ zone GC uses richer utility/delay policy. Rust still has floor/current/live
    segment retention rather than utility-based zone cleanup.
@@ -1326,7 +1278,7 @@ Production-readiness repeat focused on page compression observability in ten loo
 Production-readiness repeat focused on page compression policy in ten loops:
 
 1. C++ production storage can tune compression behavior. Rust page-store
-   construction now accepts `PageStoreOptions` for compression enablement,
+   construction now accepts `BlockStoreOptions` for compression enablement,
    minimum compression size, and zstd level.
 2. C++ operators can disable compression for compatibility or diagnosis. Rust
    now writes v6 page envelopes with the no-compression codec when compression
@@ -1359,8 +1311,8 @@ Production-readiness repeat focused on page compression runtime wiring in ten lo
 4. C++ can tune codec level. Rust server startup now honors
    `TS_PAGE_STORE_COMPRESSION_LEVEL`.
 5. C++ service constructors carry storage policy into the storage layer. Rust
-   `TemporalEngine::with_local_dirs_and_page_store_options` now carries
-   `PageStoreOptions` into the local page store.
+   `TemporalEngine::with_local_dirs_and_block_store_options` now carries
+   `BlockStoreOptions` into the local page store.
 6. C++ policy changes must not change read compatibility. Rust tests now verify
    engine write/read behavior with page compression disabled.
 7. C++ production startup policy should be testable. Rust server tests now cover
@@ -1496,7 +1448,7 @@ Repeat C++ gap-fill pass focused on segment-level page-store inspection:
 1. Compared C++ page/zone operator tooling with Rust recovery reports: Rust
    exposed live page-read failures, but not per-segment scan summaries.
 2. Compared C++ page header scans with Rust envelopes: Rust now has
-   `PageStoreSegmentReport` with physical/logical bytes, page count,
+   `BlockStoreSegmentReport` with physical/logical bytes, page count,
    compressed-record count, page-id range, and first scan error.
 3. Compared clean restart diagnostics: `StorageRecoveryReport` now includes the
    page segment reports beside zone descriptors and live page-ref readability.
@@ -1677,9 +1629,9 @@ accounting:
 
 1. Compared C++ page/zone GC reporting with Rust page segment GC: Rust reported
    removed and retained segment ids, but not reclaimed or retained byte impact.
-2. Compared C++ operator-facing reclaim diagnostics: `PageStoreGcReport` now
+2. Compared C++ operator-facing reclaim diagnostics: `BlockStoreGcReport` now
    reports `removed_physical_bytes`.
-3. Compared C++ retained-zone visibility: `PageStoreGcReport` now reports
+3. Compared C++ retained-zone visibility: `BlockStoreGcReport` now reports
    `retained_physical_bytes`.
 4. Compared delayed-destroy GC policy: Rust now reports
    `delayed_destroy_physical_bytes` for quarantined stale page segments.
@@ -1717,11 +1669,11 @@ purge accounting:
 1. Compared C++ delayed zone destruction with Rust delayed-destroy quarantine:
    Rust could list quarantined segment ids but not their pending byte impact.
 2. Compared C++ cleaner inventory needs: Rust now exposes
-   `PageStoreDelayedDestroySegmentReport` with segment id and physical bytes.
+   `BlockStoreDelayedDestroySegmentReport` with segment id and physical bytes.
 3. Compared C++ operator preflight diagnostics: Rust callers can inspect
    delayed-destroy bytes before final purge.
 4. Compared C++ reclaim accounting at destroy time: Rust now exposes
-   `PageStorePurgeDelayedDestroyReport`.
+   `BlockStorePurgeDelayedDestroyReport`.
 5. Compared purge id reporting: the new purge report carries sorted
    `purged_page_segment_ids`.
 6. Compared purge byte reporting: the new purge report carries
@@ -1754,10 +1706,10 @@ purge accounting:
 Eighteen-loop storage-specific C++ gap-fill pass focused on zone lifecycle
 capacity accounting:
 
-1. Compared C++ zone cleaner inputs with Rust zone descriptors: Rust exposed
+1. Compared C++ zone cleaner inputs with Rust extent descriptors: Rust exposed
    per-zone bytes but not aggregate lifecycle capacity.
 2. Compared C++ active-zone accounting: Rust now reports active zone count and
-   active physical bytes in `PageStoreZoneSummary`.
+   active physical bytes in `BlockStoreExtentSummary`.
 3. Compared C++ sealed-zone accounting: Rust now reports sealed zone count and
    sealed physical bytes.
 4. Compared C++ delayed-destroy accounting: Rust now reports delayed-destroy
@@ -1770,11 +1722,11 @@ capacity accounting:
    bytes as delayed-destroy bytes.
 8. Compared C++ capacity snapshots: Rust now reports total known physical bytes
    across all zone lifecycle states.
-9. Compared direct page-store diagnostics: `LocalPageStore::zone_summary`
+9. Compared direct page-store diagnostics: `LocalBlockStore::extent_summary`
    returns the lifecycle aggregate without manual descriptor folding.
 10. Compared recovery diagnostics: `StorageRecoveryReport` now includes
-    `zone_summary`.
-11. Compared serde compatibility: `StorageRecoveryReport.zone_summary` has a
+    `extent_summary`.
+11. Compared serde compatibility: `StorageRecoveryReport.extent_summary` has a
     default so older JSON remains readable.
 12. Compared sealed-to-active transitions: unit tests assert sealed and active
     counts/bytes after segment roll.
@@ -1797,13 +1749,13 @@ metrics:
 1. Compared C++ storage dashboards with Rust metrics: Rust had page-store
    read/write/compression counters but not zone lifecycle capacity metrics.
 2. Compared C++ active-zone metrics: Rust now exports active zone count through
-   `temporalstore_page_store_zone_count`.
+   `temporalstore_block_store_extent_count`.
 3. Compared C++ sealed-zone metrics: Rust now exports sealed zone count.
 4. Compared C++ delayed-destroy metrics: Rust now exports delayed-destroy zone
    count.
 5. Compared C++ purged-zone metrics: Rust now exports purged zone count.
 6. Compared C++ physical-byte gauges: Rust now exports active physical bytes
-   through `temporalstore_page_store_zone_bytes`.
+   through `temporalstore_block_store_extent_bytes`.
 7. Compared sealed capacity gauges: Rust now exports sealed physical bytes.
 8. Compared delayed-destroy backlog gauges: Rust now exports delayed-destroy
    physical bytes.
@@ -1815,8 +1767,8 @@ metrics:
 12. Compared total capacity snapshots: Rust now exports total known zone
     physical bytes.
 13. Compared JSON stats surfaces: `ShardStats` now includes
-    `page_store_zones`.
-14. Compared serde compatibility: `ShardStats.page_store_zones` defaults when
+    `block_store_extents`.
+14. Compared serde compatibility: `ShardStats.block_store_extents` defaults when
     old JSON omits it.
 15. Compared `GetStats` tests: shard stats now assert zone summary is populated.
 16. Compared Prometheus tests: metrics tests now assert zone count and byte
@@ -1829,11 +1781,11 @@ metrics:
 Eighteen-loop storage-specific C++ gap-fill pass focused on page-zone age
 metadata:
 
-1. Compared C++ zone cleaner policy inputs with Rust zone manifests: Rust had
+1. Compared C++ zone cleaner policy inputs with Rust extent manifests: Rust had
    zone state and byte accounting but no age metadata.
-2. Compared C++ zone creation tracking: Rust `PageStoreZoneDescriptor` now
+2. Compared C++ zone creation tracking: Rust `BlockStoreExtentDescriptor` now
    carries optional `created_unix_ms`.
-3. Compared C++ zone transition tracking: Rust `PageStoreZoneDescriptor` now
+3. Compared C++ zone transition tracking: Rust `BlockStoreExtentDescriptor` now
    carries optional `updated_unix_ms`.
 4. Compared write-path freshness: normal appends initialize and update active
    zone timestamps.
@@ -1877,7 +1829,7 @@ candidate reporting:
 4. Compared C++ age ranking inputs: Rust GC candidates now carry optional
    `age_ms`.
 5. Compared manifest integration: candidate age fields are derived from
-   `PageStoreZoneDescriptor` timestamp metadata.
+   `BlockStoreExtentDescriptor` timestamp metadata.
 6. Compared missing timestamp compatibility: candidate age fields remain
    optional for legacy manifests.
 7. Compared bounded utility GC: selected destroy candidates can now be inspected
@@ -1909,9 +1861,9 @@ planning:
 
 1. Compared C++ cleaner policy selection with Rust utility GC: Rust could rank
    candidates but only selected by raw segment count.
-2. Compared C++ policy inputs: Rust now has `PageStoreGcPolicy` for max segment
+2. Compared C++ policy inputs: Rust now has `BlockStoreGcPolicy` for max segment
    count, max physical bytes, max utility score, and minimum age.
-3. Compared C++ dry-run tooling: Rust now has `PageStoreGcPolicyPlan` for
+3. Compared C++ dry-run tooling: Rust now has `BlockStoreGcPolicyPlan` for
    non-destructive policy inspection before delete/quarantine.
 4. Compared reclaim budgeting: Rust plans selected physical bytes before
    destructive GC.
@@ -1920,7 +1872,7 @@ planning:
 6. Compared candidate transparency: policy plans include the ordered candidate
    list used for selection.
 7. Compared old utility GC behavior: the existing max-segment utility API now
-   delegates through `PageStoreGcPolicy::max_segments`.
+   delegates through `BlockStoreGcPolicy::max_segments`.
 8. Compared delayed-destroy behavior: policy-selected segments still route
    through delayed-destroy quarantine when requested.
 9. Compared age filters: `min_age_ms` can suppress younger candidates using the
@@ -1949,7 +1901,7 @@ accounting:
 
 1. Compared C++ reclaim planning diagnostics with Rust policy plans: Rust
    counted skipped candidates but did not account skipped bytes by reason.
-2. Compared total candidate capacity: Rust `PageStoreGcPolicyPlan` now reports
+2. Compared total candidate capacity: Rust `BlockStoreGcPolicyPlan` now reports
    `candidate_physical_bytes`.
 3. Compared policy-filter impact: Rust now reports
    `skipped_by_policy_physical_bytes`.
@@ -1988,9 +1940,9 @@ accounting:
 Eighteen-loop storage-specific C++ gap-fill pass focused on zone-summary age
 signals:
 
-1. Compared C++ zone cleaner dashboards with Rust zone summaries: Rust exposed
+1. Compared C++ zone cleaner dashboards with Rust extent summaries: Rust exposed
    lifecycle bytes and counts but not aggregate age signals.
-2. Compared total zone age visibility: Rust `PageStoreZoneSummary` now reports
+2. Compared total extent age visibility: Rust `BlockStoreExtentSummary` now reports
    `oldest_known_zone_unix_ms`.
 3. Compared total zone age duration: Rust now reports
    `oldest_known_zone_age_ms`.
@@ -2028,17 +1980,17 @@ Eighteen-loop storage-specific C++ gap-fill pass focused on zone-age metrics:
 1. Compared C++ zone cleaner dashboards with Rust metrics: Rust had zone count
    and byte gauges but not zone age gauges.
 2. Compared oldest known zone timestamp visibility: Rust now exports
-   `temporalstore_page_store_zone_oldest_unix_ms{scope="known"}`.
+   `temporalstore_block_store_extent_oldest_unix_ms{scope="known"}`.
 3. Compared oldest live zone timestamp visibility: Rust now exports
-   `temporalstore_page_store_zone_oldest_unix_ms{scope="live"}`.
+   `temporalstore_block_store_extent_oldest_unix_ms{scope="live"}`.
 4. Compared reclaimable zone timestamp visibility: Rust exports the same metric
    with `scope="reclaimable"` when delayed-destroy zones exist.
 5. Compared oldest known age visibility: Rust now exports
-   `temporalstore_page_store_zone_oldest_age_ms{scope="known"}`.
+   `temporalstore_block_store_extent_oldest_age_ms{scope="known"}`.
 6. Compared oldest live age visibility: Rust now exports
-   `temporalstore_page_store_zone_oldest_age_ms{scope="live"}`.
+   `temporalstore_block_store_extent_oldest_age_ms{scope="live"}`.
 7. Compared reclaimable age visibility: Rust exports
-   `temporalstore_page_store_zone_oldest_age_ms{scope="reclaimable"}` when
+   `temporalstore_block_store_extent_oldest_age_ms{scope="reclaimable"}` when
    applicable.
 8. Compared absent-scope behavior: gauges are omitted when the zone summary has
    no timestamp for that lifecycle scope.
@@ -2068,7 +2020,7 @@ corruption diagnostics:
 
 1. Compared C++ page/zone inspection with Rust segment reports: Rust exposed a
    first error string but not structured corruption status.
-2. Compared operator-safe health flags: `PageStoreSegmentReport` now reports
+2. Compared operator-safe health flags: `BlockStoreSegmentReport` now reports
    `has_corruption`.
 3. Compared first-corruption location reporting: segment reports now include
    `first_error_offset`.
@@ -2193,24 +2145,6 @@ planning:
     needed by a lagging follower, reports the follower/manifest block reason,
     and allows pruning again once the follower cursor advances past the latest
     retained generation.
-27. Closed the C++ `StorageManager` runtime-loop gap for the Rust-native
-    data-node path: `DataNodeRuntime` can now submit the full C++-ordered
-    StorageManager cycle as bounded background work, exposes async
-    `/storage_manager/cycle` and `/server/storage/manager/cycle` admin routes,
-    exposes a stoppable periodic StorageManager scheduler, de-duplicates
-    pending per-shard StorageManager jobs, preserves foreground priority, and
-    reports `storage_manager_runs` in runtime stats. Focused tests verify the
-    queued cycle executes prepare/reclaim/expire/evict/page-reclaim/index-GC/
-    compact/metrics stages and that the periodic scheduler does not overflow
-    the background queue.
-28. Closed the next C++ `StorageManager` pressure-evidence gap: every Rust
-    cycle stage now reports its pressure signal, score, threshold,
-    triggered/not-triggered decision, candidate/skipped counts, before/after
-    bytes, and live/stale bytes. This makes prepare, dirty-WAL reclaim,
-    expire, cache evict, page reclaim, index-GC, compaction, and metrics reap
-    auditable in the same style as the C++ prepare/reclaim/evict/expire/
-    compact/index-GC loop, while still using Rust-native page and index
-    storage.
 
 Eight storage audit passes completed against C++ storage code:
 
@@ -2222,30 +2156,50 @@ Eight storage audit passes completed against C++ storage code:
 5. `storage_dump_slots_per_round` -> Rust max dump slots per lifecycle round.
 6. `PageGc`/delayed destroy -> Rust live-ref page GC and delayed purge.
 7. `PageCompactor` -> Rust live-page compaction and stale-segment reports.
-8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, bounded
-   data-node background StorageManager scheduling, per-stage pressure signal
-   reports, runtime stats, Prometheus storage metrics, and local scale
-   validation.
+8. `Evicter`/`Expirer`/metrics loop -> Rust cache eviction, TTL sweep, runtime
+   stats, Prometheus storage metrics, and local scale validation.
 
 Remaining explicit non-goals for this pass: legacy C++ wire surfaces, S3/ByteStore
 integration, C++ byte-for-byte page/header compatibility, and CacheLib/mtcache
-FFI. Remaining future parity depth is the larger C++ object/page allocator and
-stream-backend internals, but the Rust storage lifecycle now has concrete
-slot-scoped ownership summaries, dump/install validation, bounded data-node
-StorageManager worker scheduling, cursor-safe local shared-store oplog/checkpoint
-GC, and local cache warmup coverage.
-13. Remaining gap: Rust still does not have C++ binary/protobuf logs,
-    production cleaner weights, or direct CacheLib/mtcache FFI embedding.
-    The Rust-native cache evidence now covers mtcache-class blocker fields for
-    pinned zero-copy handles, DRAM/PMEM/SSD placement policy, bounded async
-    writeback/backpressure with queue-depth/byte gauges, and bucketed get/put
-    latency metrics.
-    Rust-native merged dump/load policy is now covered through the
-    StorageManager cycle report: dirty-slot dump selection, manifest
-    checksum/generation validation, sequence boundaries, page-ref install
-    preflight, object lifecycle validation, install markers/roll-forward,
-    page reclaim, compaction, index-GC, cache policy evidence, and per-stage
-    pressure/candidate/byte accounting.
+FFI. Rust now persists and reports a first-class slot/object/page ownership index,
+with an admin-facing ownership report that distinguishes the core slot index from
+model-map fallback derivation. The write path updates changed objects into the
+slot index incrementally, tracks slot dirty generations, and records
+PageIndex-like model id, page id, dirty/deleted/log flags, size, and address
+metadata. Rust lifecycle behavior evidence now covers slot-first ownership
+updates, recovery validation, slot-scoped dump/load manifest validation,
+local/shared-store sync and async replay, follower-cursor retention, model-layout
+compaction, tombstone preservation, stale-page-density accounting, and cold
+BlockAddress reads through cache refill. Slot layout transition evidence is now
+covered for writes, rebuilds, compaction, tombstones, and dump/load validation.
+Rust now has a native ObjectManager runtime report for hot/cold/mixed residency,
+tombstones, dirty/loading/meta/TTL objects, dirty slot generations, layout
+classes, layout transition counters, missing owner refs, owner mismatches, and
+object-id reuse conflicts. Rust stream-backed zone runtime evidence covers
+self-describing page stream records, logical range reads across envelopes and
+compressed records, segment roll/seal/open transitions, persisted zone
+manifests, and active/sealed/delayed-destroy/purged lifecycle states. The C++
+model-layout/tombstone compaction gap is now covered by `ShardCompactionReport`:
+it reports readiness, per-model layouts, packed timestamped page preservation,
+rewritten object/page counts, stale-page density, slot layout transitions, and
+tombstone object preservation. Rust now also has a StorageManager-style loop
+report covering prepare, reclaim, evict, expire, compact, and index-GC phases.
+Rust now has a merged dump/load ownership policy report that coordinates
+dirty-slot dump selection, manifest checksum/generation validation, load
+preflight, recovery replay boundaries, interrupted-install roll-forward,
+follower-safe manifest retention, and index-GC as one fail-closed policy
+surface. The C++ runtime still has deeper mechanics that are not ready in Rust:
+byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream
+backend layout, C++ cleaner internals, binary/protobuf log layout, and
+CacheLib/mtcache-equivalent SSD cache. The readiness gate names those remaining
+runtime mechanics as storage_cache blockers rather than treating Rust lifecycle
+reports as complete byte-for-byte runtime parity.
+13. Closed merged dump/load policy gap: Rust now exposes
+    `StorageMergedDumpLoadPolicyReport` and the shared
+    `storage_merged_dump_load_policy` case verifies restore-engine install,
+    replay-boundary safety, generation validation, follower-safe retention, and
+    stale-load rejection. Binary/protobuf logs, production cleaner weights, and
+    CacheLib/mtcache-equivalent SSD cache remain separate blockers.
 14. Closed storage visibility gap: Rust recovery, recovery-boundary, and
     lifecycle reports now expose object lifecycle counters for live object IDs,
     live page refs, stale physical page estimates, dirty tombstones, reused
@@ -2278,7 +2232,7 @@ GC, and local cache warmup coverage.
     add/promote/remove, follower rejoin after compaction, secondary-read
     eligibility, apply convergence, and WAL persistence. This hardens the Rust
     OpenRaft process-path claim, but it remains Rust-native behavior evidence,
-    not a claim of implementation identity with C++ ByteRaft.
+    not a claim of implementation identity with C++ RustRaft.
 
 | Area | C++ TemporalStore | Rust Today | Missing |
 | --- | --- | --- | --- |
@@ -2288,20 +2242,20 @@ GC, and local cache warmup coverage.
 | Routing | namespace/table/partition-set/slot routing | key-to-shard routing from table options using C++ CRC64 slot formula, explicit `shard_id` request, simple metaserver route, topology-cached primary/replica endpoint choice, C++ `PartitionId` bit layout helper and opt-in C++-encoded table partition ids | full partition-set hierarchy, route versioning, placement hierarchy |
 | Metaserver | full topology, heartbeat, placement, scheduling, Raft-backed metadata | shard route map, namespace/table topology, C++ `MasterService`-named JSON aliases for implemented table/server control-plane operations, table update/delete lifecycle with topology-version bumps, dropped-table state, and topology rejection, table serving-option catalog for client routing/retry/drop/read-policy/timeouts, opt-in C++ `PartitionId` generation for table partitions, load-aware replica fill with location and host diversity, heartbeat runtime-load and shard-serving-state scoring, server/proxy register/list/heartbeat, data-node runtime load and per-shard serving-state heartbeat persistence, stale resource failure-detector loop with safe-mode cooldown gates for server/proxy rejoin, durable local JSONL mutation log/replay, single-node metabase snapshot export/import and atomic local snapshot save/load, Raft-mode metabase snapshot export/save/load/restore through the metaserver admin routes, meta stats and `MetaPreflightReport` for normal/frozen server/proxy inventory and shard-route counts, optional Raft-backed HTTP mutation path through `ProductionMetaRaftRuntime`, rebalance model with C++-style balance partition counts and placement-failure counters, C++-style update-membership task model with sibling filtering, threshold checks, not-found-as-reboot success, FSM-submit gating, deterministic priority task scheduler model with retry-later backoff and abort handling, scheduler HTTP admin surface, scheduler snapshot/restore, optional local scheduler snapshot persistence, freezing-shard repair into UpdateMembership tasks | networked multi-process metaserver Raft transport, full C++ placement rule chain, full background scheduler loop executing tasks against real data-node processes |
 | Data node execution | partition workers, async callbacks, load-version guards | `TemporalEngine` plus `DataNodeRuntime` shard-affine worker lanes, bounded foreground/background queue admission, foreground-over-background scheduler priority, per-shard FIFO single-lane execution, cross-shard parallelism, async jobs, immediate in-flight cancel-request status, cooperative cancellation checkpoints before destructive background phases, dirty tracking, slot-selected dump requests with persisted slot dump manifests, storage lifecycle dry-run/apply reports, `DataNodePreflightReport` for queue saturation, dirty backlog, queued shard workers, rejections, and timeouts, C++-style server runtime load reports, per-shard serving-state heartbeat payloads with worker/readonly/load-version/storage/cache/oplog/dirty state, checked execute/batch routes, invalid stream range rejection, background expiry sweep, C++-style duplicate-load/not-found-unload/config-not-found handling, C++-style membership update version guards and local-membership validity reporting, C++ `Partition::SetConfig` stale/equal/newer version semantics, shard/table/tenant scoped QPS admission, readonly replica replay route-change reset and metrics, Rust-native `DataNodeService` tonic streaming/callback contract, distributed admission aggregation across data-node peer snapshots, and multi-process lifecycle validation for load/reload/unload/restart reports | legacy C++ RPC closure wire compatibility, preemptive hard cancellation of arbitrary running user work, external deployment wiring for distributed admission snapshots across all production data-node processes |
-| Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `PageAddress` plus stable page/object/routing-slot metadata, per-slot storage summaries for object/page refs, logical/physical bytes, dirty generation/counts, page segments and last zone, a slot-first physical index report shaped as `Index -> SlotNode -> PageIndex` with object id, model id, page id, dirty/deleted/log flags, physical address, routing slot, zone id, and checksum evidence, C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, partition info, and recovery/lifecycle object counters for live object IDs, stale page estimates, tombstones, reused object-id conflicts, missing owner refs, and owner mismatches | full model-specific memory layout and native C++ packed object/slot structs |
-| WAL | binary mutation log with replay/reclaim semantics | JSONL command WAL with synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests; legacy `oplog` identifiers remain as compatibility aliases | binary/protobuf compatibility where needed by migration API, replay into hot object manager |
-| Index log | binary metadata/index log | JSONL index-log with current index metadata, synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | compact incremental deltas, page/object ids, checksums, replay ordering with WAL and page dumps |
-| Page store | slot/page/zone layout, protobuf page headers, dump/merge/load | append-only local page segment files plus a durable Rust zone manifest, zone descriptors with creation/update timestamps and aggregate zone summaries for active/sealed/delayed-destroy/purged lifecycle plus known/live/reclaimable oldest-zone age signals, manifest rebuild from existing segment files including delayed-destroy trash byte sizes/timestamps, dump/compact/GC task hooks, slot-scoped dump manifests with checksum validation, oplog/index-log sequence boundaries, selected-slot object lifecycle metadata, and lifecycle/index mismatch rejection, storage lifecycle plans/reports for dirty slots, stale segments, delayed-destroy purge, cache invalidation, and recovery boundaries, local live-page rewrite compaction into fresh segments, page-GC reports for removed/retained/delayed-destroy/live-retained/current-retained physical bytes, delayed-destroy inventory reports, purge reports with final reclaimed bytes, before/after compaction utility summaries with live refs, stale-page estimate, live-segment count, total page count, and density, age-aware utility-bounded stale segment selection, dry-run GC policy plans with count/byte/utility/age filters plus candidate/selected/skipped byte accounting, delayed-destroy quarantine and explicit purge for stale local page segments, self-describing page record envelopes with magic/version/length/SHA-256/page-id/object-id/routing-slot/zone-id/compression/stored-length fields for new durable appends, zstd-compressed physical page records when compression reduces size, segment inspection reports with physical/logical bytes, page count, distinct object count, distinct routing-slot count, routing-slot range, compressed-record count, page-id range, structured corruption flag/error offset, readable-prefix physical bytes, and first corruption error, recovery live-density reports with per-segment live/readable/unreadable refs, stale-page estimate, live physical/logical bytes, live object/slot counts, and live-ref density, constructor/server-env compression policy for enablement/min-size/zstd-level, physical/logical/compressed-record/compression-saved page-store stats plus zone lifecycle and slot gauges exported through Prometheus, logical page-stream reads that skip Rust envelopes and decompress records across boundaries, highest-segment reopen for future appends, restored higher segment install becomes the current append target, persisted page-id allocation recovered from existing/install segments, page-id/object-id/routing-slot/zone-id mismatch rejection on reads, segment-roll zone-id changes for future pages, SHA-256 checksums on newly written logical page bytes, checksum verification on reads after decompression, v1/v2/v3/v4/v5 envelope and legacy raw/no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, atomic segment install through temp-file rename, and StorageManager-cycle merged dump/load policy evidence for dirty-slot dump, manifest validation, install preflight, markers, reclaim, compaction, index-GC, and cache policy | deeper C++ object/page/slot layout, distributed/control-plane compression policy, full C++ background utility/age zone GC scheduler, and byte-for-byte C++ page/header/log compatibility |
-| Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async WAL publish, bounded async flush, checksum-enveloped WAL objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, cursor-safe WAL GC, and cursor-anchor checkpoint GC | automatic lifecycle safety tied to Raft snapshots; no S3/ByteStore integration target now |
-| Raft | ByteRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction plus receive-side peer RPC auth enforcement, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, deterministic applied-log-byte snapshot trigger reports for data and metaserver Raft, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, commit-to-apply health reports, process-level `/raft/apply_health`, apply-lag metrics, networked `/raft/membership/apply` plus C++-style `/raft/control/{list_membership,add_node,remove_node,trigger_snapshot,read_index,transfer_leader}` on raft_node and raft-enabled server, process-level external snapshot bootstrap route, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, deterministic leader-lease expiry guard for data-Raft reads/writes, local partition/heal chaos coverage, ByteKV/ByteRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, offline timeout state/rejection metrics, snapshot sender timeout/retry metrics, raft metrics, and `ByteRaftRuntimeAdminReport` evidence for per-peer pipeline state, reorder queues, snapshot sender/downloader lifecycle, WAL segments, read-index/lease semantics, stale follower rejection, offline peer controls, and admin status completeness | deeper OpenRaft/raft-rs FSM/storage integration, production engine snapshot freeze/flush lifecycle, metaserver scheduler loop applying membership plans, external multi-process chaos, and long-running C++ ByteRaft production soak history |
+| Hot object model | `ObjectManager`, model objects, dirty slots | per-type maps of key/field/timestamp to `BlockAddress` plus stable page/object/routing-slot metadata, persisted first-class slot/object/page ownership index updated incrementally on changed objects, slot dirty generations, PageIndex-like model id/page id/dirty/deleted/log/size/address metadata, ownership report separating core index use from model-map fallback derivation, per-slot storage summaries for object/page refs, logical/physical bytes, dirty generation/counts, page segments and last zone, C++-style stats for logical object count, page refs, dirty objects, dirty routing slots, partition info, and recovery/lifecycle object counters for live object IDs, stale page estimates, tombstones, reused object-id conflicts, missing owner refs, and owner mismatches | native ObjectManager runtime mechanics, full model-specific memory layout |
+| Oplog | binary mutation log with replay/reclaim semantics | JSONL command oplog with synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | binary/protobuf compatibility where needed by migration API, replay into hot object manager |
+| Index log | binary metadata/index log | JSONL index-log with current index metadata, synced append, corrupt-tail truncation on recovery, explicit retain-from-sequence GC rewrite, synced temp-file GC rewrite, and reopen-after-GC tests | compact incremental deltas, page/object ids, checksums, replay ordering with oplog and page dumps |
+| Page store | slot/page/zone layout, protobuf page headers, dump/merge/load | append-only local page segment files plus a durable Rust extent manifest, zone descriptors with creation/update timestamps and aggregate zone summaries for active/sealed/delayed-destroy/purged lifecycle plus known/live/reclaimable oldest-zone age signals, manifest rebuild from existing segment files including delayed-destroy trash byte sizes/timestamps, dump/compact/GC task hooks, slot-scoped dump manifests with checksum validation, oplog/index-log sequence boundaries, selected-slot object lifecycle metadata, and lifecycle/index mismatch rejection, storage lifecycle plans/reports for dirty slots, stale segments, delayed-destroy purge, cache invalidation, recovery boundaries, and merged dump/load ownership policy, native slot layout state transitions for memory-hot/object-page/packed-timestamped/multi-page/tombstone objects, local live-page rewrite compaction into fresh segments, page-GC reports for removed/retained/delayed-destroy/live-retained/current-retained physical bytes, delayed-destroy inventory reports, purge reports with final reclaimed bytes, before/after compaction utility summaries with live refs, stale-page estimate, live-segment count, total page count, density, model-layout reports, tombstone preservation, object-page rewrite counts, and slot layout transition counts, age-aware utility-bounded stale segment selection, dry-run GC policy plans with count/byte/utility/age filters plus candidate/selected/skipped byte accounting, delayed-destroy quarantine and explicit purge for stale local page segments, self-describing page record envelopes with magic/version/length/SHA-256/page-id/object-id/routing-slot/zone-id/compression/stored-length fields for new durable appends, zstd-compressed physical page records when compression reduces size, segment inspection reports with physical/logical bytes, page count, distinct object count, distinct routing-slot count, routing-slot range, compressed-record count, page-id range, structured corruption flag/error offset, readable-prefix physical bytes, and first corruption error, recovery live-density reports with per-segment live/readable/unreadable refs, stale-page estimate, live physical/logical bytes, live object/slot counts, and live-ref density, constructor/server-env compression policy for enablement/min-size/zstd-level, physical/logical/compressed-record/compression-saved page-store stats plus zone lifecycle and slot gauges exported through Prometheus, logical page-stream reads that skip Rust envelopes and decompress records across boundaries, highest-segment reopen for future appends, restored higher segment install becomes the current append target, persisted page-id allocation recovered from existing/install segments, page-id/object-id/routing-slot/zone-id mismatch rejection on reads, segment-roll zone-id changes for future pages, SHA-256 checksums on newly written logical page bytes, checksum verification on reads after decompression, v1/v2/v3/v4/v5 envelope and legacy raw/no-checksum read compatibility, synced appends, synced segment roll, parent-dir sync for segment creation/install, and atomic segment install through temp-file rename | distributed/control-plane compression policy and byte-for-byte C++ page/protobuf layout remain out of scope |
+| Shared store | local/ByteStore stream backends and replica replay | file-backed shared-store checkpoint, sync/async oplog publish, bounded async flush, checksum-enveloped oplog objects, strict gap-rejecting replay, persisted replay cursor, bounded object-store retry and async requeue-on-failure, cursor-safe oplog GC, and cursor-anchor checkpoint GC | automatic lifecycle safety tied to Raft snapshots; no S3/ByteStore integration target now |
+| Raft | RustRaft-backed production groups | separate-node data-node Raft runtime wrapper with OpenRaft/raft-rs engine selection, production metaserver Raft runtime wrapper, mTLS config validation, authenticated RPC runtime construction plus receive-side peer RPC auth enforcement, timer supervisors, metaserver stale-server detection in Raft mode, multi-process chaos plan validation, in-process behavior model plus snapshot semantics, deterministic applied-log-byte snapshot trigger reports for data and metaserver Raft, HTTP Raft transport for AppendEntries/Vote/InstallSnapshot/chunked InstallSnapshot, timeout tick election with pre-vote, randomized scheduler model, hard-state/membership inspection, local durable segmented WAL record export/load/recovery with sync, retention, corrupt-tail truncation, and installed-snapshot recovery floor, auto-persisting WAL-backed cluster mode, bounded follower catch-up with replay progress and lag reports, commit-to-apply health reports, process-level `/raft/apply_health`, apply-lag metrics, networked `/raft/membership/apply` plus C++-style `/raft/control/{list_membership,add_node,remove_node,trigger_snapshot,read_index,transfer_leader}` on raft_node and raft-enabled server, process-level external snapshot bootstrap route, bounded local WAL retention, AppendEntries/Vote/InstallSnapshot local receive behavior, joint-consensus old/new majority safety model, safe add/remove/replace membership-change planner and report, metaserver topology to data-Raft voter-plan bridge with no-op and server-state validation, Raft RPC retry/backpressure/auth/deadline wrapper, deterministic leader-lease expiry guard for data-Raft reads/writes, local partition/heal chaos coverage, ByteKV/RustRaft-style config/read options, oversized log guard, election prohibition, status/local-status, read-index guard, leader transfer, raft metrics | OpenRaft/raft-rs FSM/storage integration, actual mTLS transport, production engine snapshot freeze/flush lifecycle, metaserver scheduler loop applying membership plans, external multi-process chaos |
 | Snapshots | integrated storage/load pipeline | snapshot crate plus local Raft snapshot model, external snapshot refs, manifest/checksum/size verification, stale-local-state preflight, and process-level bootstrap restore into data-node Raft engine state | production engine freeze/flush/install lifecycle and local object-store E2E validation |
-| Cache | mtcache/blockcache production cache | memory plus local disk block cache with page-address keys, versioned block envelope, zstd compression, atomic synced disk-block writes, metrics, shard-level GC eviction, admission/eviction counters, warmup, pinned `Arc` handles with eviction-skip accounting, DRAM/PMEM/SSD placement policy, bounded async writeback/backpressure queue gauges, and bucketed get/put latency metrics | direct CacheLib/mtcache FFI embedding and long-running C++ cache-engine soak history if exact engine replacement is required |
+| Cache | mtcache/blockcache production cache | Rust-native memory plus bounded SSD block cache with page-address keys, versioned block envelope, zstd compression, atomic synced disk-block writes, policy-driven memory/SSD admission, write-through accounting, per-entry hotness/routing-slot metadata, weighted hotness/LRU victim selection, pin-aware memory/SSD eviction skips, cold/low-hit/stale eviction reason counters, warmup, invalidation, metrics, and shard/slot inspection. The Rust-native multi-tier replacement policy, pinned-handle accounting/eviction guards, DRAM/PMEM/SSD placement semantics, async writeback/backpressure counters, and mature latency metrics are evidence-backed by weighted hotness/LRU memory plus SSD eviction, pin/unpin state, pinned-skip counters, `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency metrics. PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract. | CacheLib/mtcache binary/API compatibility remains out of scope unless re-scoped. |
 | Feature | richer feature proto semantics | append/query/replace/delete/agg, write-policy append, 5k long-sequence coverage, shared nested/proto-shaped payload roundtrip, C++ row filtering, and sum/avg/min/max/count aggregate semantics | deeper production proto edge cases beyond the shared executable corpus |
 | Sequence | C++ feature/data-module behavior | typed rows, timestamp ordering, inclusive/equality/inequality filters, count, batch query | exact C++ options and remaining edge-case policy |
 | IPS | rich IPS add/query/remove/load/delete/stat/filter/snap | add, idempotent/dimensional add, query-last, query range, dimension-filtered range, batch query-last, remove timestamp, delete key, count range, load, range snapshot, stats, and named filter; typed client and RESP coverage | production snap metadata and server aggregation |
 | Risk | H/CPC/FOL query/update/manager semantics | increment/count plus precision/TTL increment, sum/min/max/first/last/event aggregation, C++-style `CHANGE` distinct-field counting, detail list, H/CPC family set/query/set-and-get command shape, logical-key lifecycle handling for H/CPC/FOL records, explicit C++-style FOL first/last string selection, and local manager summary; typed client and RESP coverage | production CPC/list internals and full manager/debug APIs |
 | Redis | not the main C++ wire API; C++ server also exposes admin commands such as `INFO`, `CONFIG`, `SLAVEOF`, and `PARTITION` | useful RESP compatibility, including `SET NX/XX GET EX/PX`, hash/set commands, feature commands, C++-style `INFO`/`CONFIG`/`SLAVEOF`/`AUTH`/`BGSAVE`/`PARTITION` smoke commands, and CRC64 slot/hash helpers | sorted sets/lists if needed; real partition-manager backing for admin commands |
-| Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/WAL/runtime/object-manager/partition plus page-store zone lifecycle count/byte gauges, per-slot page-ref/byte/dirty gauges, and snapshot metric names; local raft metrics renderer | dashboards and alerts |
+| Metrics | production metrics/logging | Prometheus `/metrics` for shard/cache/page/oplog/runtime/object-manager/partition plus page-store zone lifecycle count/byte gauges, per-slot page-ref/byte/dirty gauges, and snapshot metric names; local raft metrics renderer | dashboards and alerts |
 | Deployment | internal production environment | Docker and existing-EKS Terraform skeleton | service discovery, autoscale controller, rolling upgrade, runbooks, auth/TLS |
 | Testing | mature internal tests and production history | local unit/integration/compat tests, storage recovery report tests covering oplog/index-log/page stream/zone manifest reopen, missing-manifest rebuild, zone lifecycle timestamps and capacity summaries, segment inspection summaries, live-density/stale-page estimates, page-GC byte accounting, delayed-destroy inventory/purge byte accounting, before/after compaction utility reporting, and process-level local storage abort/recover harness with page-segment corruption diagnostics | multi-process chaos, broader disk-fault crash recovery, perf benchmarks, C++ golden corpus |
 

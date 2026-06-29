@@ -66,7 +66,7 @@
         "rust_internal": 6
       }
     },
-    "next_migration_target": "Raft ByteRaft-derived process/fault/readiness cases, then storage/cache recovery and context pipeline model cases."
+    "next_migration_target": "Raft RustRaft-derived process/fault/readiness cases, then storage/cache recovery and context pipeline model cases."
   },
   "entries": [
     {
@@ -273,7 +273,7 @@
       "test_name": "raft_control_routes_list_add_remove_and_trigger_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -282,7 +282,7 @@
       "test_name": "raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2820,7 +2820,7 @@
       "test_name": "data_raft_log_codec_round_trips_cxx_style_header",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2829,7 +2829,7 @@
       "test_name": "data_raft_log_codec_rejects_bad_header_and_sequence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2838,7 +2838,7 @@
       "test_name": "cpp_data_raft_replication_rejects_corrupt_log_payload",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2847,7 +2847,7 @@
       "test_name": "data_raft_command_codec_round_trips_batch_request",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2856,7 +2856,7 @@
       "test_name": "data_raft_command_codec_round_trips_chunked_timestamped_kv_payload",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2865,7 +2865,7 @@
       "test_name": "cpp_data_raft_replication_rejects_invalid_command_payload",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2874,7 +2874,7 @@
       "test_name": "cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2883,7 +2883,7 @@
       "test_name": "temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2892,7 +2892,7 @@
       "test_name": "temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2901,7 +2901,7 @@
       "test_name": "temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2910,7 +2910,7 @@
       "test_name": "temporal_raft_metaserver_backend_supports_membership_and_bounded_reads",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2919,7 +2919,7 @@
       "test_name": "committed_data_raft_applier_replays_once_and_rejects_wrong_shard",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2928,7 +2928,7 @@
       "test_name": "committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2937,7 +2937,7 @@
       "test_name": "raft_replicates_committed_write_to_majority_and_followers",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2946,7 +2946,7 @@
       "test_name": "raft_replicates_chunked_timestamped_kv_page_format_to_followers",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2955,7 +2955,7 @@
       "test_name": "raft_snapshot_install_preserves_chunked_timestamped_kv_page_format",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2964,7 +2964,7 @@
       "test_name": "raft_rejects_write_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2973,7 +2973,7 @@
       "test_name": "raft_follower_catches_up_after_outage",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2982,7 +2982,7 @@
       "test_name": "raft_rejects_electing_stale_replica_until_it_catches_up",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -2991,7 +2991,7 @@
       "test_name": "raft_transport_append_entries_catches_up_lagging_replica",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3000,7 +3000,7 @@
       "test_name": "raft_transport_rejects_stale_append_entries_and_behind_vote",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3009,7 +3009,7 @@
       "test_name": "append_entries_updates_observed_leader_for_standalone_node_status",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3018,7 +3018,7 @@
       "test_name": "observer_apply_health_reports_local_replica_without_remote_false_lag",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3027,7 +3027,7 @@
       "test_name": "request_vote_higher_term_resets_prior_vote_before_decision",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3036,7 +3036,7 @@
       "test_name": "request_vote_higher_term_updates_term_even_when_candidate_log_is_behind",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3045,7 +3045,7 @@
       "test_name": "raft_hard_state_membership_and_snapshot_transport_are_exposed",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3054,7 +3054,7 @@
       "test_name": "raft_install_snapshot_request_carries_external_snapshot_reference",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3063,7 +3063,7 @@
       "test_name": "snapshot_transfer_policy_streams_small_snapshots_to_peer",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3072,7 +3072,7 @@
       "test_name": "snapshot_transfer_policy_requires_external_ref_for_large_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3081,7 +3081,7 @@
       "test_name": "leader_snapshot_upload_records_meta_and_bootstraps_replica_from_uri",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3090,7 +3090,7 @@
       "test_name": "external_snapshot_bootstrap_rejects_stale_local_replica_before_download",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3099,7 +3099,7 @@
       "test_name": "http_raft_transport_sends_append_vote_and_snapshot_over_tcp",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3108,7 +3108,7 @@
       "test_name": "streaming_snapshot_chunks_install_only_after_all_chunks_arrive",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3117,7 +3117,7 @@
       "test_name": "raft_snapshot_transport_rejects_stale_term_before_install",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3126,7 +3126,7 @@
       "test_name": "raft_snapshot_chunk_transport_rejects_stale_term_before_buffering",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3135,7 +3135,7 @@
       "test_name": "joint_consensus_requires_old_and_new_majorities_before_commit_or_write",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3144,7 +3144,7 @@
       "test_name": "joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3153,7 +3153,7 @@
       "test_name": "raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3162,7 +3162,7 @@
       "test_name": "raft_rpc_runtime_attaches_auth_and_deadline_metadata",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3171,7 +3171,7 @@
       "test_name": "raft_scheduler_randomizes_election_timeout_and_emits_heartbeats",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3180,7 +3180,7 @@
       "test_name": "partition_chaos_majority_side_continues_and_healed_replica_catches_up",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3189,7 +3189,7 @@
       "test_name": "distributed_propose_does_not_wait_for_failed_followers_after_quorum",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3198,7 +3198,7 @@
       "test_name": "distributed_raft_readiness_reports_remaining_production_blockers",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3207,7 +3207,7 @@
       "test_name": "raft_atomic_apply_readiness_covers_data_node_atomic_durability",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3216,7 +3216,7 @@
       "test_name": "raft_metaserver_membership_readiness_reports_real_scheduler_execution",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3225,7 +3225,7 @@
       "test_name": "raft_transport_security_readiness_covers_service_mtls",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3234,7 +3234,7 @@
       "test_name": "raft_external_chaos_readiness_covers_external_faults",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3243,7 +3243,7 @@
       "test_name": "local_raft_deployment_mode_is_rejected",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3252,7 +3252,7 @@
       "test_name": "production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3261,7 +3261,7 @@
       "test_name": "production_raft_runtime_validates_security_timer_and_chaos_contracts",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3270,7 +3270,7 @@
       "test_name": "production_raft_mtls_requires_readable_nonempty_files",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3279,7 +3279,7 @@
       "test_name": "production_raft_security_env_selects_mtls_runtime_mode",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3288,7 +3288,7 @@
       "test_name": "raft_security_and_external_chaos_readiness_are_implemented",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3297,7 +3297,7 @@
       "test_name": "production_raft_runtime_replicates_over_separate_http_nodes",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3306,7 +3306,7 @@
       "test_name": "raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3315,7 +3315,7 @@
       "test_name": "raft_can_elect_new_leader_and_continue",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3324,7 +3324,7 @@
       "test_name": "raft_tick_election_waits_for_timeout_and_prevotes_before_promotion",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3333,7 +3333,7 @@
       "test_name": "raft_prevote_rejects_candidate_without_quorum",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3342,7 +3342,7 @@
       "test_name": "raft_status_read_index_and_transfer_leader_match_engine_control_shape",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3351,7 +3351,7 @@
       "test_name": "raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3360,7 +3360,7 @@
       "test_name": "raft_config_matches_cpp_defaults_and_validates_required_limits",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3369,7 +3369,7 @@
       "test_name": "raft_config_rejects_oversized_log_entries_and_prohibited_elections",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3378,7 +3378,7 @@
       "test_name": "raft_chunks_large_sequence_add_under_default_entry_limit",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3387,7 +3387,7 @@
       "test_name": "distributed_raft_chunks_large_sequence_add_under_default_entry_limit",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3396,7 +3396,7 @@
       "test_name": "raft_read_options_enforce_leader_and_follower_read_paths",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3405,7 +3405,7 @@
       "test_name": "data_raft_read_policy_matches_cpp_partition_manager_modes",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3414,7 +3414,7 @@
       "test_name": "raft_read_index_and_transfer_reject_lagging_replica",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3423,7 +3423,7 @@
       "test_name": "raft_wait_for_applied_index_matches_cpp_backend_contract",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3432,7 +3432,7 @@
       "test_name": "raft_apply_health_reports_commit_to_apply_lag",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3441,7 +3441,7 @@
       "test_name": "raft_apply_health_excludes_dead_replicas_behind_leader_commit",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3450,7 +3450,7 @@
       "test_name": "secondary_is_promoted_automatically_when_primary_is_down",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3459,7 +3459,7 @@
       "test_name": "scale_up_adds_caught_up_replica",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3468,7 +3468,7 @@
       "test_name": "learner_and_witness_roles_match_cpp_membership_shape",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3477,7 +3477,7 @@
       "test_name": "learner_does_not_count_for_majority_but_witness_does",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3486,7 +3486,7 @@
       "test_name": "replica_roles_survive_wal_restore",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3495,7 +3495,7 @@
       "test_name": "replication_health_reports_lag_and_heartbeat_catches_up_secondary",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3504,7 +3504,7 @@
       "test_name": "bounded_replica_catchup_replays_limited_log_entries_per_loop",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3513,7 +3513,7 @@
       "test_name": "safe_scale_up_adds_replica_only_after_catchup",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3522,7 +3522,7 @@
       "test_name": "safe_membership_change_adds_voter_through_joint_consensus",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3531,7 +3531,7 @@
       "test_name": "safe_membership_change_removes_leader_after_caught_up_successor_exists",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3540,7 +3540,7 @@
       "test_name": "safe_membership_change_replaces_voter_and_rejects_invalid_targets",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3549,7 +3549,7 @@
       "test_name": "topology_membership_planner_maps_metaserver_replicas_to_raft_voters",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3558,7 +3558,7 @@
       "test_name": "topology_membership_planner_reports_noop_and_rejects_bad_servers",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3567,7 +3567,7 @@
       "test_name": "topology_membership_apply_updates_data_raft_voters",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3576,7 +3576,7 @@
       "test_name": "topology_membership_apply_is_noop_when_voters_match",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3585,7 +3585,7 @@
       "test_name": "scale_down_removes_replica_and_continues_with_majority",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3594,7 +3594,7 @@
       "test_name": "safe_scale_down_rejects_quorum_loss_and_promotes_caught_up_leader_successor",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3603,7 +3603,7 @@
       "test_name": "primary_crash_promotes_caught_up_secondary_and_old_primary_recovers",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3612,7 +3612,7 @@
       "test_name": "raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3621,7 +3621,7 @@
       "test_name": "raft_snapshot_lifecycle_report_installs_and_replays_tail",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3630,7 +3630,7 @@
       "test_name": "raft_snapshot_lifecycle_report_rolls_back_stale_snapshot",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3639,7 +3639,7 @@
       "test_name": "raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3648,7 +3648,7 @@
       "test_name": "append_entries_matches_snapshot_floor_after_leader_compaction",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3657,7 +3657,7 @@
       "test_name": "add_node_after_leader_snapshot_installs_snapshot_and_tail",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3666,7 +3666,7 @@
       "test_name": "append_entries_ignores_entries_at_or_below_snapshot_floor",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3675,7 +3675,7 @@
       "test_name": "data_raft_snapshot_trigger_compacts_applied_log_bytes",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3684,7 +3684,7 @@
       "test_name": "raft_snapshot_cannot_overwrite_newer_data_state",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3693,7 +3693,7 @@
       "test_name": "raft_election_does_not_depend_on_snapshot_availability",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3702,7 +3702,7 @@
       "test_name": "metaserver_raft_replicates_shard_location_metadata",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3711,7 +3711,7 @@
       "test_name": "metaserver_raft_replays_scheduler_state_and_cpp_partition_set_topology",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3720,7 +3720,7 @@
       "test_name": "metaserver_raft_replicates_full_metadata_mutation_api",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3729,7 +3729,7 @@
       "test_name": "metaserver_raft_freeze_stale_server_is_replicated_mutation",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3738,7 +3738,7 @@
       "test_name": "production_meta_raft_runtime_ticks_failover_and_failure_detection",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3747,7 +3747,7 @@
       "test_name": "production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3756,7 +3756,7 @@
       "test_name": "metaserver_owns_data_raft_membership_workflow",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3765,7 +3765,7 @@
       "test_name": "production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3774,7 +3774,7 @@
       "test_name": "meta_owned_membership_report_covers_networked_scheduler_contract",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3783,7 +3783,7 @@
       "test_name": "metaserver_membership_workflow_requires_meta_majority",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3792,7 +3792,7 @@
       "test_name": "metaserver_raft_mutation_api_rejects_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3801,7 +3801,7 @@
       "test_name": "metaserver_raft_can_read_from_any_live_committed_replica",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3810,7 +3810,7 @@
       "test_name": "metaserver_raft_supports_promotion_and_membership_changes",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3819,7 +3819,7 @@
       "test_name": "metaserver_raft_health_catchup_safe_scale_and_failover_work",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3828,7 +3828,7 @@
       "test_name": "metaserver_raft_apply_health_reports_commit_to_apply_lag",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3837,7 +3837,7 @@
       "test_name": "metaserver_raft_membership_plan_and_apply_match_data_raft_shape",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3846,7 +3846,7 @@
       "test_name": "metaserver_raft_membership_apply_rejects_noop_and_quorum_loss",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3855,7 +3855,7 @@
       "test_name": "metaserver_raft_status_read_index_and_transfer_leader_work",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3864,7 +3864,7 @@
       "test_name": "metaserver_raft_promotes_follower_after_leader_failure_and_keeps_metadata_available",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3873,7 +3873,7 @@
       "test_name": "metaserver_raft_rejects_reads_and_writes_without_majority",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3882,7 +3882,7 @@
       "test_name": "metaserver_snapshot_bootstraps_lagging_meta_replica",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3891,7 +3891,7 @@
       "test_name": "metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3900,7 +3900,7 @@
       "test_name": "metaserver_snapshot_floor_survives_failover_and_add_node",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3909,7 +3909,7 @@
       "test_name": "metaserver_snapshot_cannot_overwrite_newer_meta_state",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3918,7 +3918,7 @@
       "test_name": "local_raft_wal_persists_hard_state_membership_and_entries",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3927,7 +3927,7 @@
       "test_name": "local_raft_wal_recovers_latest_valid_record_and_truncates_corrupt_tail",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3936,7 +3936,7 @@
       "test_name": "local_raft_wal_segments_roll_retain_and_recover_latest_state",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3945,7 +3945,7 @@
       "test_name": "local_raft_wal_segment_recovery_truncates_corrupt_tail_only",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3954,7 +3954,7 @@
       "test_name": "raft_cluster_recovers_committed_state_from_local_wal",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3963,7 +3963,7 @@
       "test_name": "local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_pages",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3972,7 +3972,7 @@
       "test_name": "wal_backed_raft_cluster_auto_persists_commits_leadership_and_membership",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3981,7 +3981,7 @@
       "test_name": "wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3990,7 +3990,7 @@
       "test_name": "wal_backed_installed_snapshot_survives_restart_without_old_log_entries",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -3999,7 +3999,7 @@
       "test_name": "wal_backed_apply_snapshot_fence_survives_snapshot_restart",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4008,7 +4008,7 @@
       "test_name": "wal_recovery_rejects_inconsistent_apply_snapshot_fence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4017,7 +4017,7 @@
       "test_name": "wal_backed_storage_apply_fence_survives_snapshot_restart",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4026,7 +4026,7 @@
       "test_name": "wal_recovery_rejects_missing_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4035,7 +4035,7 @@
       "test_name": "wal_recovery_rejects_corrupt_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {
@@ -4044,7 +4044,7 @@
       "test_name": "wal_recovery_rejects_ahead_of_storage_apply_fence",
       "family": "Raft",
       "classification": "move_to_shared",
-      "next_migration_target": "Raft shared cases for ByteRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
+      "next_migration_target": "Raft shared cases for RustRaft-derived process behavior, snapshots, membership, failover, and fault harnesses",
       "notes": "Grandfathered product behavior; migrate into shared executable C++/Rust corpus case or fold into an existing shared case."
     },
     {

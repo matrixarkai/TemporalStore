@@ -348,7 +348,7 @@ On the Windows-mounted local workspace, the in-process Raft/engine model is inte
 correctness-heavy and writes local page/index data. Treat the output as a local regression signal
 for scale/failover behavior, not as production throughput.
 
-The default Raft config still exposes the ByteRaft-style `32 KiB` max memory replicate-log entry
+The default Raft config still exposes the RustRaft-style `32 KiB` max memory replicate-log entry
 limit. A 5k-row sequence command is larger than that in the Rust JSON command shape, so the Raft
 proposal path now chunks `SequenceAdd` commands into ordered smaller entries. `--max-log-entry-bytes`
 is still available for stress testing and for future command shapes where one logical row is larger

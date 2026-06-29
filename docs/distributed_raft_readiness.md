@@ -123,10 +123,10 @@ The Rust code currently has:
 - metaserver snapshot-floor election and catch-up, so compacted metaserver voters remain electable
   and new voters inherit the installed snapshot boundary before replaying retained meta-log entries
 - leader election rejects stale candidates unless their log is up-to-date with a voting majority
-- deterministic ByteRaft-style snapshot trigger reports for data-node and metaserver Raft when
+- deterministic RustRaft-style snapshot trigger reports for data-node and metaserver Raft when
   applied log bytes since the latest snapshot floor exceed `max_applied_log_bytes`
 - RequestVote receive path updates higher terms and clears prior votes before grant/reject decisions
-- ByteRaft-derived readiness guard covering config/election guards, durable WAL hard state, joint
+- RustRaft-derived readiness guard covering config/election guards, durable WAL hard state, joint
   membership, linearizable and bounded reads, learner promotion, leader transfer, snapshot
   bootstrap, replication lag/catch-up, failover, operator status/local-status/metrics, and
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
@@ -174,11 +174,11 @@ compatibility tests, and harness validation, but they are not an accepted runtim
 mode.
 
 The Rust production target is Rust-native behavior parity: keep TemporalRaft/raft-rs as the production
-path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
-ByteRaft-derived evidence is now paired with the Rust TemporalRaft process rollout evidence, and the
+path and borrow RustRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
+RustRaft-derived evidence is now paired with the Rust TemporalRaft process rollout evidence, and the
 process-path gate fails closed if that evidence is absent. This makes the runtime parity claim
 harder to fake, but it is still Rust-native TemporalRaft readiness evidence, not a claim that Rust is
-byte-for-byte or implementation-identical to C++ ByteRaft. Direct C++ ByteRaft FFI is not part of
+byte-for-byte or implementation-identical to C++ RustRaft. Direct C++ RustRaft FFI is not part of
 the readiness target.
 
 The local WAL now has the applied-index/storage/snapshot atomicity contract represented as durable

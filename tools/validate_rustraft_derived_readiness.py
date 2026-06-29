@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Validate ByteRaft-derived production-readiness evidence in Rust Raft.
+"""Validate RustRaft-derived production-readiness evidence in Rust Raft.
 
-TemporalStore C++ relies on ByteRaft behavior beyond basic log replication:
+TemporalStore C++ relies on RustRaft behavior beyond basic log replication:
 durable hard state, joint membership, bounded reads, leader transfer, learner
 promotion, lag-aware catch-up, snapshot install, election guards, and operator
 control surfaces. This guard keeps those Rust readiness contracts explicit and
@@ -215,7 +215,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "raft_apply_health_reports_commit_to_apply_lag",
                     "metaserver_raft_status_read_index_and_transfer_leader_work",
                     "metaserver_raft_apply_health_reports_commit_to_apply_lag",
-                    "byteraft_operator_observability_present",
+                    "rustraft_operator_observability_present",
                 ),
             ),
             Evidence(
@@ -247,7 +247,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "auth_token_required",
                     "raft_rpc_runtime_retries_transport_errors_and_releases_inflight",
                     "raft_rpc_runtime_attaches_auth_and_deadline_metadata",
-                    "byteraft_rpc_transport_contract_present",
+                    "rustraft_rpc_transport_contract_present",
                 ),
             ),
             Evidence(
@@ -281,12 +281,12 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state",
                     "data_raft_snapshot_trigger_compacts_applied_log_bytes",
                     "metaserver_raft_snapshot_trigger_compacts_applied_log_bytes",
-                    "byteraft_log_retention_snapshot_trigger_present",
+                    "rustraft_log_retention_snapshot_trigger_present",
                 ),
             ),
             Evidence(
                 "docs/distributed_raft_readiness.md",
-                ("bounded local WAL retention", "deterministic ByteRaft-style snapshot trigger reports"),
+                ("bounded local WAL retention", "deterministic RustRaft-style snapshot trigger reports"),
             ),
         ),
     ),
@@ -311,7 +311,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "wal_recovery_rejects_corrupt_storage_apply_fence",
                     "wal_recovery_rejects_ahead_of_storage_apply_fence",
                     "wal_recovery_rejects_inconsistent_apply_snapshot_fence",
-                    "byteraft_apply_snapshot_fence_present",
+                    "rustraft_apply_snapshot_fence_present",
                     "raft_storage_apply_fence_present",
                 ),
             ),
@@ -336,7 +336,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "build_append_entries_request",
                     "receive_append_entries",
                     "append_entries_matches_snapshot_floor_after_leader_compaction",
-                    "byteraft_snapshot_floor_log_matching_present",
+                    "rustraft_snapshot_floor_log_matching_present",
                 ),
             ),
             Evidence(
@@ -359,7 +359,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "raft_snapshot_lifecycle_report_installs_and_replays_tail",
                     "raft_snapshot_lifecycle_report_rolls_back_stale_snapshot",
                     "add_node_after_leader_snapshot_installs_snapshot_and_tail",
-                    "byteraft_snapshot_tail_catchup_present",
+                    "rustraft_snapshot_tail_catchup_present",
                 ),
             ),
             Evidence(
@@ -381,7 +381,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "append_entry",
                     "last_included_index",
                     "append_entries_ignores_entries_at_or_below_snapshot_floor",
-                    "byteraft_compacted_entry_rejection_present",
+                    "rustraft_compacted_entry_rejection_present",
                 ),
             ),
             Evidence(
@@ -400,7 +400,7 @@ AREAS: tuple[ReadinessArea, ...] = (
                     "meta_node_last_log_or_snapshot_term",
                     "install_meta_leader_snapshot_tail",
                     "metaserver_snapshot_floor_survives_failover_and_add_node",
-                    "byteraft_metaserver_snapshot_floor_election_present",
+                    "rustraft_metaserver_snapshot_floor_election_present",
                 ),
             ),
             Evidence(
@@ -469,10 +469,10 @@ def main() -> int:
 
     if missing:
         details = "\n".join(f"- {item}" for item in missing)
-        raise SystemExit(f"missing ByteRaft-derived readiness evidence:\n{details}")
+        raise SystemExit(f"missing RustRaft-derived readiness evidence:\n{details}")
 
-    print(f"byteraft_derived_readiness_areas={len(AREAS)}")
-    print(f"byteraft_derived_readiness_snippets={checked_snippets}")
+    print(f"rustraft_derived_readiness_areas={len(AREAS)}")
+    print(f"rustraft_derived_readiness_snippets={checked_snippets}")
     return 0
 
 

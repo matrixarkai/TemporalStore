@@ -11,8 +11,8 @@ use crate::types::{Command, FeatureFilter, FeatureFilterOp, FeaturePoint, Sequen
 use std::time::{Duration, Instant};
 
 #[test]
-fn byteraft_parity_contract_is_library_consumable_and_openraft_free() {
-    let contract = byteraft_parity_contract();
+fn rustraft_parity_contract_is_library_consumable_and_openraft_free() {
+    let contract = rustraft_parity_contract();
     assert!(contract.openraft_dependency_removed);
     assert_eq!(
         contract.consensus_backend_boundary,
@@ -27,14 +27,14 @@ fn byteraft_parity_contract_is_library_consumable_and_openraft_free() {
         .iter()
         .all(|requirement| requirement.required_for_production));
 
-    let cargo_toml = include_str!("../../../Cargo.toml").to_ascii_lowercase();
+    let cargo_toml = include_str!("../../Cargo.toml").to_ascii_lowercase();
     assert!(!cargo_toml.contains("openraft"));
 }
 
 #[test]
-fn byteraft_parity_report_tracks_distributed_readiness_fields() {
+fn rustraft_parity_report_tracks_distributed_readiness_fields() {
     let readiness = distributed_raft_readiness();
-    let report = byteraft_parity_report(&readiness);
+    let report = rustraft_parity_report(&readiness);
     assert!(report.contract.openraft_dependency_removed);
     assert!(report.satisfied.contains(&"leader_write_authority".to_string()));
     assert!(report.satisfied.contains(&"snapshot_tail_catchup".to_string()));
@@ -1599,9 +1599,9 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     );
 }
 
-// shared-corpus: raft_byteraft_snapshot_lifecycle_depth
+// shared-corpus: raft_rustraft_snapshot_lifecycle_depth
 #[test]
-fn byteraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
+fn rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
     let transport = FlakyTransport {
         cluster: RaftCluster::new_single_shard(213, [1, 2, 3]),
         failures_left: Arc::new(Mutex::new(1)),
@@ -2062,16 +2062,16 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
     );
     assert!(readiness.temporal_raft_data_node_process_startup_present);
     assert!(readiness.temporal_raft_metaserver_process_startup_present);
-    assert!(readiness.byteraft_leader_write_authority_present);
-    assert!(readiness.byteraft_operator_observability_present);
-    assert!(readiness.byteraft_rpc_transport_contract_present);
-    assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
-    assert!(readiness.byteraft_apply_snapshot_fence_present);
+    assert!(readiness.rustraft_leader_write_authority_present);
+    assert!(readiness.rustraft_operator_observability_present);
+    assert!(readiness.rustraft_rpc_transport_contract_present);
+    assert!(readiness.rustraft_log_retention_snapshot_trigger_present);
+    assert!(readiness.rustraft_apply_snapshot_fence_present);
     assert!(readiness.raft_storage_apply_fence_present);
-    assert!(readiness.byteraft_snapshot_floor_log_matching_present);
-    assert!(readiness.byteraft_snapshot_tail_catchup_present);
-    assert!(readiness.byteraft_compacted_entry_rejection_present);
-    assert!(readiness.byteraft_metaserver_snapshot_floor_election_present);
+    assert!(readiness.rustraft_snapshot_floor_log_matching_present);
+    assert!(readiness.rustraft_snapshot_tail_catchup_present);
+    assert!(readiness.rustraft_compacted_entry_rejection_present);
+    assert!(readiness.rustraft_metaserver_snapshot_floor_election_present);
     assert!(readiness.learner_catchup_promotion_present);
     assert!(readiness.metaserver_membership_workflow_present);
     assert!(readiness.durable_apply_index_snapshot_integrated);
@@ -3036,7 +3036,7 @@ fn raft_can_elect_new_leader_and_continue() {
     assert_eq!(cluster.commit_index(3).unwrap(), 1);
 }
 
-// shared-corpus: raft_byteraft_election_controls
+// shared-corpus: raft_rustraft_election_controls
 #[test]
 fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -3078,7 +3078,7 @@ fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
     assert_eq!(cluster.leader_id(), 2);
 }
 
-// shared-corpus: raft_byteraft_election_controls
+// shared-corpus: raft_rustraft_election_controls
 #[test]
 fn raft_prevote_rejects_candidate_without_quorum() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -3135,7 +3135,7 @@ fn raft_status_read_index_and_transfer_leader_match_engine_control_shape() {
     assert!(metrics.contains("temporalstore_raft_node_lag"));
 }
 
-// shared-corpus: raft_byteraft_read_safety_policy
+// shared-corpus: raft_rustraft_read_safety_policy
 #[test]
 fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -3434,7 +3434,7 @@ fn data_raft_read_policy_matches_cpp_partition_manager_modes() {
         .is_ok());
 }
 
-// shared-corpus: raft_byteraft_read_safety_policy
+// shared-corpus: raft_rustraft_read_safety_policy
 #[test]
 fn raft_read_index_and_transfer_reject_lagging_replica() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -4323,7 +4323,7 @@ fn raft_snapshot_only_replica_keeps_commit_index_after_empty_heartbeat() {
     );
 }
 
-// shared-corpus: raft_byteraft_follower_rejoin_compacted_logs_fault_harness
+// shared-corpus: raft_rustraft_follower_rejoin_compacted_logs_fault_harness
 #[test]
 fn append_entries_matches_snapshot_floor_after_leader_compaction() {
     let cluster = RaftCluster::new_single_shard_with_config(
@@ -4390,9 +4390,9 @@ fn append_entries_matches_snapshot_floor_after_leader_compaction() {
     );
 }
 
-// shared-corpus: raft_byteraft_follower_rejoin_compacted_logs_fault_harness
+// shared-corpus: raft_rustraft_follower_rejoin_compacted_logs_fault_harness
 #[test]
-fn byteraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail() {
+fn rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
         [1, 2, 3],
@@ -4534,9 +4534,9 @@ fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
     );
 }
 
-// shared-corpus: raft_byteraft_leader_transfer_high_write_fault_harness
+// shared-corpus: raft_rustraft_leader_transfer_high_write_fault_harness
 #[test]
-fn byteraft_leader_transfer_under_high_write_load_commits_once() {
+fn rustraft_leader_transfer_under_high_write_load_commits_once() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     let mut accepted = Vec::new();
 

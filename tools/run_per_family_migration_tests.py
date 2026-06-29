@@ -88,12 +88,12 @@ FAMILIES: dict[str, FamilyConfig] = {
     "Raft": FamilyConfig(
         "Raft",
         (
-            "raft_byteraft_read_safety_policy",
-            "raft_byteraft_metrics_admin_pipeline_status",
-            "raft_byteraft_snapshot_lifecycle_depth",
-            "raft_byteraft_replication_backpressure",
-            "raft_byteraft_election_controls",
-            "raft_byteraft_shared_fault_gate",
+            "raft_rustraft_read_safety_policy",
+            "raft_rustraft_metrics_admin_pipeline_status",
+            "raft_rustraft_snapshot_lifecycle_depth",
+            "raft_rustraft_replication_backpressure",
+            "raft_rustraft_election_controls",
+            "raft_rustraft_shared_fault_gate",
             "storage_data_raft_replication_gtest",
         ),
         (
