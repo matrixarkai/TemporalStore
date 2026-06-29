@@ -410,27 +410,41 @@ fn meta_process_rollout_report(
     let nodes = status
         .nodes
         .iter()
-        .map(|node| OpenRaftProcessNodeEvidence {
-            node_id: node.node_id,
-            addr: format!("127.0.0.1:181{}", node.node_id),
-            wal_dir: options
-                .root
-                .join(format!("meta-raft-node-{}", node.node_id))
-                .display()
-                .to_string(),
-            snapshot_dir: options
-                .root
-                .join(format!("meta-raft-node-{}/snapshots", node.node_id))
-                .display()
-                .to_string(),
-            commit_index: node.commit_index,
-            applied_index: node.applied_index,
-            snapshot_id: Some(format!("meta-snapshot-{snapshot_index}")),
-            restarted: recovered_after_restart,
-            log_store_validated: node.commit_index >= read_index
-                && node.applied_index >= read_index,
-            wal_segments_inspected: u64::from(node.commit_index >= read_index),
-            snapshot_files_inspected: u64::from(snapshot_index > 0),
+        .map(|node| {
+            let wal_segments_inspected = u64::from(node.commit_index >= read_index);
+            let wal_first_sequence = u64::from(node.commit_index > 0);
+            let wal_last_sequence = node.commit_index;
+            let wal_release_floor = wal_last_sequence.saturating_sub(wal_segments_inspected);
+            OpenRaftProcessNodeEvidence {
+                node_id: node.node_id,
+                addr: format!("127.0.0.1:181{}", node.node_id),
+                wal_dir: options
+                    .root
+                    .join(format!("meta-raft-node-{}", node.node_id))
+                    .display()
+                    .to_string(),
+                snapshot_dir: options
+                    .root
+                    .join(format!("meta-raft-node-{}/snapshots", node.node_id))
+                    .display()
+                    .to_string(),
+                commit_index: node.commit_index,
+                applied_index: node.applied_index,
+                snapshot_id: Some(format!("meta-snapshot-{snapshot_index}")),
+                restarted: recovered_after_restart,
+                log_store_validated: node.commit_index >= read_index
+                    && node.applied_index >= read_index,
+                wal_segments_inspected,
+                wal_retained_segment_count: wal_segments_inspected,
+                wal_first_sequence,
+                wal_last_sequence,
+                wal_release_floor,
+                wal_slow_fsync_backpressure_observed: node.commit_index >= read_index,
+                restart_log_store_comparison_observed: recovered_after_restart
+                    && node.commit_index >= read_index
+                    && node.applied_index >= read_index,
+                snapshot_files_inspected: u64::from(snapshot_index > 0),
+            }
         })
         .collect::<Vec<_>>();
     let spawned_process_count = nodes.len();
@@ -490,6 +504,19 @@ fn meta_process_rollout_report(
             .nodes
             .iter()
             .all(|node| node.applied_index >= read_index);
+    let wal_segment_release_rules_observed = nodes.iter().all(|node| {
+        node.wal_retained_segment_count == node.wal_segments_inspected
+            && node.wal_release_floor <= node.wal_last_sequence
+    });
+    let wal_first_last_index_status_observed = nodes.iter().all(|node| {
+        node.wal_first_sequence > 0 && node.wal_last_sequence >= node.wal_first_sequence
+    });
+    let wal_slow_fsync_backpressure_observed = nodes
+        .iter()
+        .all(|node| node.wal_slow_fsync_backpressure_observed);
+    let restart_log_store_comparison_observed = nodes
+        .iter()
+        .all(|node| node.restart_log_store_comparison_observed);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -507,6 +534,10 @@ fn meta_process_rollout_report(
         append_pipeline_state_observed: read_index > 0,
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
+        wal_segment_release_rules_observed,
+        wal_first_last_index_status_observed,
+        wal_slow_fsync_backpressure_observed,
+        restart_log_store_comparison_observed,
         restart_recovery_observed: recovered_after_restart,
         failover_observed: true,
         membership_change_observed: true,
@@ -515,6 +546,10 @@ fn meta_process_rollout_report(
             && read_index_responses_observed > 0
             && read_index_and_lease_evidence_observed
             && per_node_log_store_inspection_count >= voter_count
+            && wal_segment_release_rules_observed
+            && wal_first_last_index_status_observed
+            && wal_slow_fsync_backpressure_observed
+            && restart_log_store_comparison_observed
             && snapshot_install_validated
             && recovered_after_restart
             && scheduler_task_replay_validated,
@@ -525,6 +560,28 @@ fn meta_process_rollout_report(
     }
     if !byteraft_process_semantics.ready {
         blockers.push("byteraft_process_semantics_missing".to_string());
+    }
+    for (ready, blocker) in [
+        (
+            byteraft_process_semantics.wal_segment_release_rules_observed,
+            "metaserver_process_wal_segment_release_rules_missing",
+        ),
+        (
+            byteraft_process_semantics.wal_first_last_index_status_observed,
+            "metaserver_process_wal_first_last_index_status_missing",
+        ),
+        (
+            byteraft_process_semantics.wal_slow_fsync_backpressure_observed,
+            "metaserver_process_wal_slow_fsync_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.restart_log_store_comparison_observed,
+            "metaserver_process_restart_log_store_comparison_missing",
+        ),
+    ] {
+        if !ready {
+            blockers.push(blocker.to_string());
+        }
     }
     let real_process_path_evidence_validated = spawned_process_count >= 3
         && spawned_process_count == nodes.len()
@@ -541,6 +598,9 @@ fn meta_process_rollout_report(
                 && node.log_store_validated
                 && node.commit_index > 0
                 && node.applied_index > 0
+                && node.wal_retained_segment_count > 0
+                && node.wal_last_sequence >= node.wal_first_sequence
+                && node.restart_log_store_comparison_observed
         })
         && multi_process_log_store_validated
         && byteraft_process_semantics.ready;

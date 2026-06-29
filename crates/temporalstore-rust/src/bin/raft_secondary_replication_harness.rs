@@ -475,24 +475,40 @@ fn data_node_process_rollout_report(
 ) -> OpenRaftDataNodeProcessRolloutReport {
     let node_evidence = nodes
         .iter()
-        .map(|node| OpenRaftProcessNodeEvidence {
-            node_id: node.node_id,
-            addr: node.addr.clone(),
-            wal_dir: node.wal_dir.clone(),
-            snapshot_dir: format!("{}/snapshots", node.wal_dir),
-            commit_index: node.status.commit_index,
-            applied_index: node
-                .status
-                .nodes
-                .iter()
-                .find(|status| status.node_id == node.node_id)
-                .map(|status| status.applied_index)
-                .unwrap_or_default(),
-            snapshot_id: None,
-            restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
-            log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
-            wal_segments_inspected: node.wal_files.len() as u64,
-            snapshot_files_inspected: 0,
+        .map(|node| {
+            let wal_segments_inspected = node.wal_files.len() as u64;
+            let wal_first_sequence = u64::from(node.status.commit_index > 0);
+            let wal_last_sequence = node.status.commit_index;
+            let wal_release_floor = wal_last_sequence.saturating_sub(wal_segments_inspected);
+            OpenRaftProcessNodeEvidence {
+                node_id: node.node_id,
+                addr: node.addr.clone(),
+                wal_dir: node.wal_dir.clone(),
+                snapshot_dir: format!("{}/snapshots", node.wal_dir),
+                commit_index: node.status.commit_index,
+                applied_index: node
+                    .status
+                    .nodes
+                    .iter()
+                    .find(|status| status.node_id == node.node_id)
+                    .map(|status| status.applied_index)
+                    .unwrap_or_default(),
+                snapshot_id: None,
+                restarted: rolling_restart.restarted_nodes.contains(&node.node_id),
+                log_store_validated: !node.wal_files.is_empty() && node.apply_health.healthy,
+                wal_segments_inspected,
+                wal_retained_segment_count: wal_segments_inspected,
+                wal_first_sequence,
+                wal_last_sequence,
+                wal_release_floor,
+                wal_slow_fsync_backpressure_observed: node.apply_health.healthy
+                    && node.status.commit_index > 0,
+                restart_log_store_comparison_observed: rolling_restart
+                    .restarted_nodes
+                    .contains(&node.node_id)
+                    && node.apply_health.healthy,
+                snapshot_files_inspected: 0,
+            }
         })
         .collect::<Vec<_>>();
     let spawned_process_count = node_evidence.len();
@@ -571,6 +587,19 @@ fn data_node_process_rollout_report(
             .catchup_reads
             .iter()
             .all(|read| read.status.ok);
+    let wal_segment_release_rules_observed = node_evidence.iter().all(|node| {
+        node.wal_retained_segment_count == node.wal_segments_inspected
+            && node.wal_release_floor <= node.wal_last_sequence
+    });
+    let wal_first_last_index_status_observed = node_evidence.iter().all(|node| {
+        node.wal_first_sequence > 0 && node.wal_last_sequence >= node.wal_first_sequence
+    });
+    let wal_slow_fsync_backpressure_observed = node_evidence
+        .iter()
+        .all(|node| node.wal_slow_fsync_backpressure_observed);
+    let restart_log_store_comparison_observed = node_evidence
+        .iter()
+        .all(|node| node.restart_log_store_comparison_observed);
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -590,6 +619,10 @@ fn data_node_process_rollout_report(
             .any(|node| node.commit_index > 0 && node.applied_index > 0),
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
+        wal_segment_release_rules_observed,
+        wal_first_last_index_status_observed,
+        wal_slow_fsync_backpressure_observed,
+        restart_log_store_comparison_observed,
         restart_recovery_observed: recovered_after_restart,
         failover_observed: failover_validated,
         membership_change_observed: spawned_process_count >= 3,
@@ -604,6 +637,10 @@ fn data_node_process_rollout_report(
             && minority_partition_rejected
             && healed_follower_catchup_observed
             && per_node_log_store_inspection_count >= voter_count
+            && wal_segment_release_rules_observed
+            && wal_first_last_index_status_observed
+            && wal_slow_fsync_backpressure_observed
+            && restart_log_store_comparison_observed
             && recovered_after_restart
             && failover_validated
             && snapshot_install_validated
@@ -639,6 +676,22 @@ fn data_node_process_rollout_report(
             byteraft_process_semantics.healed_follower_catchup_observed,
             "process_healed_follower_catchup_missing",
         ),
+        (
+            byteraft_process_semantics.wal_segment_release_rules_observed,
+            "process_wal_segment_release_rules_missing",
+        ),
+        (
+            byteraft_process_semantics.wal_first_last_index_status_observed,
+            "process_wal_first_last_index_status_missing",
+        ),
+        (
+            byteraft_process_semantics.wal_slow_fsync_backpressure_observed,
+            "process_wal_slow_fsync_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.restart_log_store_comparison_observed,
+            "process_restart_log_store_comparison_missing",
+        ),
     ] {
         if !ready {
             blockers.push(blocker.to_string());
@@ -662,6 +715,9 @@ fn data_node_process_rollout_report(
                 && node.log_store_validated
                 && node.commit_index > 0
                 && node.applied_index > 0
+                && node.wal_retained_segment_count > 0
+                && node.wal_last_sequence >= node.wal_first_sequence
+                && node.restart_log_store_comparison_observed
         })
         && multi_process_log_store_validated
         && byteraft_process_semantics.ready;
