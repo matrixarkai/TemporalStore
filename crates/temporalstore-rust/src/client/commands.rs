@@ -114,6 +114,7 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ContextQueryEvents { .. }
         | Command::ContextWriteIndexRef { .. }
         | Command::ContextQueryIndex { .. }
+        | Command::ContextQueryIndexIntersection { .. }
         | Command::ContextWritePackAudit { .. }
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextMarkSummaryDirty { .. }
@@ -184,6 +185,18 @@ pub(super) fn context_command_key(command: &Command) -> Option<String> {
             *index_value_hash,
             *scope_hash,
         )),
+        Command::ContextQueryIndexIntersection {
+            tenant_hash,
+            predicates,
+            ..
+        } => predicates.first().map(|predicate| {
+            context_index_key(
+                *tenant_hash,
+                &predicate.index_name,
+                predicate.index_value_hash,
+                predicate.scope_hash,
+            )
+        }),
         Command::ContextWritePackAudit { tenant_hash, audit } => {
             Some(context_audit_key(*tenant_hash, audit.session_hash))
         }

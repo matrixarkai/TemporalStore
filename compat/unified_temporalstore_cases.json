@@ -1699,6 +1699,110 @@
         },
         {
           "command": {
+            "event_time_ms": 9001,
+            "index_name": "topic",
+            "index_ref": {
+              "event_id_hash": 9001,
+              "primary_event_time_ms": 9000,
+              "primary_node_hash": 700
+            },
+            "index_value_hash": 333,
+            "kind": "context_write_index_ref",
+            "scope_hash": 0,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:101:topic:333:0"
+          },
+          "name": "context_write_duplicate_topic_index_ref_model"
+        },
+        {
+          "command": {
+            "event_time_ms": 9000,
+            "index_name": "status",
+            "index_ref": {
+              "event_id_hash": 9001,
+              "primary_event_time_ms": 9000,
+              "primary_node_hash": 700
+            },
+            "index_value_hash": 444,
+            "kind": "context_write_index_ref",
+            "scope_hash": 0,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:101:status:444:0"
+          },
+          "name": "context_write_status_index_ref_model"
+        },
+        {
+          "command": {
+            "event_time_ms": 9000,
+            "index_name": "source",
+            "index_ref": {
+              "event_id_hash": 9001,
+              "primary_event_time_ms": 9000,
+              "primary_node_hash": 700
+            },
+            "index_value_hash": 555,
+            "kind": "context_write_index_ref",
+            "scope_hash": 0,
+            "tenant_hash": 101
+          },
+          "expect": {
+            "kind": "context_object_key",
+            "object_key": "ctxidx:101:source:555:0"
+          },
+          "name": "context_write_source_index_ref_model"
+        },
+        {
+          "command": {
+            "kind": "context_query_index_intersection",
+            "limit": 10,
+            "predicates": [
+              {
+                "end_time_ms": 9010,
+                "index_name": "topic",
+                "index_value_hash": 333,
+                "scope_hash": 0,
+                "start_time_ms": 8990
+              },
+              {
+                "end_time_ms": 9010,
+                "index_name": "status",
+                "index_value_hash": 444,
+                "scope_hash": 0,
+                "start_time_ms": 8990
+              },
+              {
+                "end_time_ms": 9010,
+                "index_name": "source",
+                "index_value_hash": 555,
+                "scope_hash": 0,
+                "start_time_ms": 8990
+              }
+            ],
+            "tenant_hash": 101
+          },
+          "expect": {
+            "deduped_ref_count": 1,
+            "kind": "context_index_intersection",
+            "matched_index_count": 3,
+            "refs": [
+              {
+                "event_id_hash": 9001,
+                "primary_event_time_ms": 9000,
+                "primary_node_hash": 700
+              }
+            ],
+            "scanned_ref_count": 4
+          },
+          "name": "context_secondary_index_intersection"
+        },
+        {
+          "command": {
             "audit": {
               "blocked_refs": [
                 {
@@ -4788,6 +4892,29 @@
             "suite": "cpp_context_pipeline_parity"
           },
           "name": "context_extracted_event_default_index_fanout_shared"
+        }
+      ]
+    },
+    {
+      "name": "context_secondary_index_intersection",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/implement.cc",
+            "description": "Shared C++/Rust Context case for secondary-index filter-group intersection: multiple index predicates must return only common refs, suppress duplicate refs, and preserve scope/range isolation.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/extension/context/interface.proto",
+              "src/extension/context/implement.cc",
+              "docs/rust_context_pipeline_debug_trace.md"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust context_secondary_index_intersection_matches_cpp_filter_groups --lib -- --test-threads=1",
+            "rust_validator": "tools/run_context_workflow_local.sh",
+            "suite": "cpp_context_pipeline_parity"
+          },
+          "name": "context_secondary_index_intersection_shared"
         }
       ]
     },
@@ -8368,6 +8495,7 @@
       "context_openviking_blocks_provider_switches",
       "context_injection_prompt_pack_ordering",
       "context_benchmark_injection_entity_segment_index",
+      "context_secondary_index_intersection",
       "context_tree_embedding_summary_compression",
       "context_temporal_compression_replayable_summary",
       "context_benchmark_fixture_gates",

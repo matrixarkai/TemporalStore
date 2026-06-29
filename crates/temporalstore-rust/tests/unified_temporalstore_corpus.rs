@@ -334,6 +334,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
         CommandResponse::ContextExtractedEventWrite { .. } => "context_extracted_event_write",
         CommandResponse::ContextEvents { .. } => "context_events",
         CommandResponse::ContextIndexRefs { .. } => "context_index_refs",
+        CommandResponse::ContextIndexIntersection { .. } => "context_index_intersection",
         CommandResponse::ContextPackAudits { .. } => "context_pack_audits",
         CommandResponse::ContextSummaryDirtyMarkers { .. } => "context_summary_dirty_markers",
         CommandResponse::ContextEntity { .. } => "context_entity",
