@@ -151,7 +151,10 @@ real-process harnesses have emitted durable data-node and metaserver rollout evi
 now covers data-node applied Raft index atomicity with storage mutations and snapshot install,
 metaserver-owned learner add/catch-up/promotion/leader-movement/removal for data-node Raft groups,
 production mTLS process selection, failover, membership changes, follower lag, secondary reads, and
-external packet-loss/disk-pressure/process-chaos validation.
+external packet-loss/disk-pressure/process-chaos validation. Read-index/lease evidence must be
+process-observed: stale leader lease rejection, follower lease expiration, lagging follower read
+rejection, bounded-stale accept/reject, minority partition read rejection, and healed follower
+catch-up are separate required fields and cannot be replaced by a final healthy cluster status.
 
 Production callers should use the hard guard:
 
