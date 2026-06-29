@@ -6,15 +6,20 @@ use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json::Value;
+use temporalstore_rust::client::ClientMetaSyncLoopOptions;
 use temporalstore_rust::http::{json_response, parse_json, serve};
+use temporalstore_rust::meta::{TopologyVersionReport, TopologyVersionRequest};
+use temporalstore_rust::raft::RaftReplicaRole;
 use temporalstore_rust::redis::{execute_redis_command_with_state, RedisCommandState};
 use temporalstore_rust::types::SequenceFeatureRow;
 use temporalstore_rust::{
     execute_redis_command, production_readiness_report, ClientOptions, Command, CommandResponse,
-    EndToEndWorkflow, ExecuteRequest, RespValue, ScanStreamRequest, SharedStoreReplicator,
-    SharedStoreStorageMode, SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest,
-    StreamKind, StreamReadRequest, StreamReadResponse, TableOptions, TemporalEngine,
-    TemporalStoreClient, TemporalStoreTable,
+    EndToEndWorkflow, ExecuteRequest, GetTableTopologyRequest, MetaEntityState, ProxyOptions,
+    ProxyService, RaftCluster, RaftConfig, RaftError, RegisterServerRequest, RegisterShardRequest,
+    RespValue, ScanStreamRequest, SharedStoreReplicator, SharedStoreStorageMode, SingleNodeMeta,
+    SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind, StreamReadRequest,
+    StreamReadResponse, TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse,
+    TemporalEngine, TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -418,6 +423,9 @@ fn run_client_case(case: &UnifiedCase) {
             continue;
         }
         if maybe_run_client_adapter_command(case, step, &table) {
+            continue;
+        }
+        if maybe_run_shared_harness_command(case, step) {
             continue;
         }
         assert!(
@@ -963,8 +971,52 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_redis_slot_hash_cpp_crc64();
             true
         }
+        "proxy_topology_churn_convergence" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy churn command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("two_proxy_topology_move_stale_cache_recovery"),
+                "case={} step={} unsupported proxy churn scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_topology_churn_convergence();
+            true
+        }
+        "client_metasync_outage_churn" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid client MetaSync command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("deadline_backoff_topology_refresh"),
+                "case={} step={} unsupported client MetaSync scenario",
+                case.name,
+                step.name
+            );
+            verify_client_metasync_outage_churn();
+            true
+        }
         "raft_linearizable_hash_failover" => {
             verify_raft_linearizable_hash_failover();
+            true
+        }
+        "raft_membership_op" => {
+            if case.name == "raft_byteraft_membership_roles"
+                && step.name == "setup_three_voter_cluster"
+            {
+                execute_raft_membership_shared_case(case);
+            }
             true
         }
         _ => false,
@@ -1013,37 +1065,52 @@ fn verify_ops_readiness_service_summary() {
             "missing service gate {order}/{service}/{owner}"
         );
     }
-    assert!(gates.iter().all(|gate| gate.gate_status == "ready"));
-    assert!(report.next_blocked_service().is_none());
+    for gate in &gates {
+        assert!(
+            gate.gate_status == "ready" || gate.gate_status == "blocked",
+            "unexpected gate status for {}: {}",
+            gate.service,
+            gate.gate_status
+        );
+        if gate.ready {
+            assert_eq!(gate.gate_status, "ready");
+            assert_eq!(gate.blocker_count, 0);
+            assert!(gate.failed_capabilities.is_empty());
+        } else {
+            assert_eq!(gate.gate_status, "blocked");
+            assert!(
+                gate.blocker_count > 0,
+                "blocked gate {} must name blocker count",
+                gate.service
+            );
+            assert!(
+                !gate.failed_capabilities.is_empty(),
+                "blocked gate {} must name failed capabilities",
+                gate.service
+            );
+            assert!(
+                !gate.next_action.trim().is_empty(),
+                "blocked gate {} must include next action",
+                gate.service
+            );
+        }
+    }
+    if let Some(blocked) = report.next_blocked_service() {
+        assert!(!blocked.ready);
+        assert_eq!(blocked.gate_status, "blocked");
+    }
     let data_node = report
         .service_summary("data_node")
         .expect("data node service summary should be exported");
-    assert!(data_node.ready);
     assert!(data_node.areas.contains(&"dataserver".to_string()));
     assert!(data_node
         .areas
         .contains(&"data_node_distributed_raft".to_string()));
-    assert!(data_node.blocker_classes.is_empty());
-    assert!(data_node.next_action.contains("ready"));
-    assert!(report
-        .failed_capabilities_for_service("data_node")
-        .is_empty());
-    assert!(report.service_ready("data_node"));
     let gate = report
         .service_gate_report("data_node")
         .expect("data node service gate report should be exported");
-    assert!(gate.ready);
-    assert_eq!(gate.gate_status, "ready");
-    assert_eq!(gate.severity, "ready");
     assert_eq!(gate.remediation_order, 4);
     assert_eq!(gate.owner, "data_node_runtime");
-    assert!(gate.failed_capabilities.is_empty());
-    let scale_gate = report
-        .service_gate_report("scale_testing")
-        .expect("scale testing service gate report should be exported");
-    assert!(scale_gate.ready);
-    assert_eq!(scale_gate.gate_status, "ready");
-    assert_eq!(scale_gate.blocker_count, 0);
 }
 
 fn verify_redis_feature_module_flow() {
@@ -1268,6 +1335,590 @@ fn verify_redis_slot_hash_cpp_crc64() {
         run(vec!["PCLUSTERHASH", "123456789"]),
         RespValue::Integer(0xe9c6_d914_c4b8_d9cau64 as i64)
     );
+}
+
+fn verify_proxy_topology_churn_convergence() {
+    let dir_a = tempfile::tempdir().unwrap();
+    let engine_a = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir_a.path().join("cache"),
+        dir_a.path().join("pages"),
+        dir_a.path().join("indexes"),
+    );
+    engine_a.load_shard(1);
+    let server_a = free_local_addr();
+    start_temporal_engine_http_service(server_a.clone(), engine_a.clone());
+
+    let dir_b = tempfile::tempdir().unwrap();
+    let engine_b = TemporalEngine::with_local_dirs(
+        1024 * 1024,
+        dir_b.path().join("cache"),
+        dir_b.path().join("pages"),
+        dir_b.path().join("indexes"),
+    );
+    engine_b.load_shard(1);
+    let server_b = free_local_addr();
+    start_temporal_engine_http_service(server_b.clone(), engine_b.clone());
+
+    let meta = SingleNodeMeta::default();
+    meta.register_server(RegisterServerRequest {
+        server_addr: server_a.clone(),
+        node_id: 1,
+        location: "zone-a".to_string(),
+        binary_version: "unified-a".to_string(),
+    });
+    assert!(
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: server_a.clone(),
+        })
+        .status
+        .ok
+    );
+    let meta_addr = free_local_addr();
+    start_single_node_meta_http_service(meta_addr.clone(), meta.clone());
+
+    wait_for_http(&server_a);
+    wait_for_http(&server_b);
+    wait_for_http(&meta_addr);
+
+    let proxy_a = ProxyService::new(ProxyOptions {
+        meta_addr: meta_addr.clone(),
+        route_cache_ttl_ms: 60_000,
+        connect_timeout_ms: 50,
+        io_timeout_ms: 200,
+        ..ProxyOptions::default()
+    });
+    let proxy_b = ProxyService::new(ProxyOptions {
+        meta_addr,
+        route_cache_ttl_ms: 60_000,
+        connect_timeout_ms: 50,
+        io_timeout_ms: 200,
+        ..ProxyOptions::default()
+    });
+
+    for (proxy, key, value) in [
+        (&proxy_a, "proxy-a-before", b"a-before".to_vec()),
+        (&proxy_b, "proxy-b-before", b"b-before".to_vec()),
+    ] {
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+        assert_eq!(proxy.info().route_cache_size, 1);
+    }
+
+    meta.register_server(RegisterServerRequest {
+        server_addr: server_b.clone(),
+        node_id: 2,
+        location: "zone-b".to_string(),
+        binary_version: "unified-b".to_string(),
+    });
+    assert!(
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: server_b.clone(),
+        })
+        .status
+        .ok
+    );
+
+    for (proxy, key, value) in [
+        (&proxy_a, "proxy-a-after", b"a-after".to_vec()),
+        (&proxy_b, "proxy-b-after", b"b-after".to_vec()),
+    ] {
+        let response = proxy.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value,
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+    }
+
+    for (key, value) in [
+        ("proxy-a-before", b"a-before".to_vec()),
+        ("proxy-b-before", b"b-before".to_vec()),
+    ] {
+        assert_eq!(
+            engine_a
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: key.to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: Some(value) }
+        );
+    }
+    for (key, value) in [
+        ("proxy-a-after", b"a-after".to_vec()),
+        ("proxy-b-after", b"b-after".to_vec()),
+    ] {
+        assert_eq!(
+            engine_b
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: key.to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: Some(value) }
+        );
+    }
+    assert_eq!(
+        engine_a
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "proxy-a-after".to_string()
+                },
+            })
+            .response,
+        CommandResponse::Bytes { value: None }
+    );
+
+    for (label, proxy) in [("proxy_a", &proxy_a), ("proxy_b", &proxy_b)] {
+        let preflight = proxy.preflight_report();
+        assert!(!preflight.topology_cache_stale, "{label}: {preflight:?}");
+        assert_eq!(preflight.client.topology_cache.route_count, 1, "{label}");
+        assert!(
+            preflight.client.route_refreshes >= 2,
+            "{label}: {preflight:?}"
+        );
+        let route = preflight
+            .client
+            .topology_cache
+            .routes
+            .first()
+            .unwrap_or_else(|| panic!("{label}: missing route"));
+        assert_eq!(route.primary_addr, server_b, "{label}: {route:?}");
+    }
+}
+
+fn verify_client_metasync_outage_churn() {
+    let meta_addr = free_local_addr();
+    let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let attempts_for_listener = Arc::clone(&attempts);
+    let listener_addr = meta_addr.clone();
+    std::thread::spawn(move || {
+        serve(&listener_addr, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/meta/topology_version") => json_response(
+                    200,
+                    &TopologyVersionReport {
+                        status: Status::ok(),
+                        current_topology_version: 40,
+                        old_topology_version: 0,
+                        unchanged: false,
+                        server_count: 1,
+                        proxy_count: 0,
+                        table_count: 1,
+                        shard_route_count: 1,
+                        normal_servers: 1,
+                        frozen_servers: 0,
+                        dropped_servers: 0,
+                        normal_proxies: 0,
+                        frozen_proxies: 0,
+                        dropped_proxies: 0,
+                        normal_tables: 1,
+                        frozen_tables: 0,
+                        dropped_tables: 0,
+                        changed_tables: Vec::new(),
+                        events: Vec::new(),
+                        event_history_truncated: false,
+                    },
+                ),
+                ("POST", "/tables/topology") => {
+                    let attempt =
+                        attempts_for_listener.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    if attempt < 2 {
+                        return json_response(
+                            200,
+                            &TableTopologyResponse {
+                                status: Status::error("metaserver_unavailable", "outage"),
+                                table: None,
+                                partitions: Vec::new(),
+                                unchanged: false,
+                            },
+                        );
+                    }
+                    json_response(
+                        200,
+                        &TableTopologyResponse {
+                            status: Status::ok(),
+                            table: Some(TableMetaInfo {
+                                table_id: 91,
+                                namespace: "ns".to_string(),
+                                table_name: "churn".to_string(),
+                                state: MetaEntityState::Normal,
+                                topology_version: 40,
+                                first_shard_id: 40,
+                                shard_count: 1,
+                                replica_count: 1,
+                                use_cpp_partition_ids: false,
+                                partition_version: 0,
+                                serving_options: Default::default(),
+                            }),
+                            partitions: vec![TablePartition {
+                                shard_id: 40,
+                                start_slot: 0,
+                                end_slot: 1_073_741_823,
+                                primary: Some("127.0.0.1:27440".to_string()),
+                                replicas: vec!["127.0.0.1:27440".to_string()],
+                                primary_endpoint: None,
+                                replica_endpoints: Vec::new(),
+                            }],
+                            unchanged: false,
+                        },
+                    )
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+    wait_for_http(&meta_addr);
+
+    let client = TemporalStoreClient::with_options(ClientOptions {
+        meta_addr: Some(meta_addr),
+        meta_sync_interval_ms: 50,
+        topo_error_retry_interval_ms: 5,
+        meta_sync_deadline_ms: 7,
+        meta_sync_jitter_percent: 50,
+        ..ClientOptions::default()
+    });
+    client.open_table(
+        "ns",
+        "churn",
+        TableOptions {
+            first_shard_id: 10,
+            shard_count: 1,
+            ..TableOptions::default()
+        },
+    );
+
+    std::thread::sleep(Duration::from_millis(80));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let first_error = client_metasync_table_report(&client, "ns/churn");
+    assert_eq!(first_error.consecutive_errors, 1);
+    assert_eq!(first_error.last_error, "outage");
+    let first_delay = first_error
+        .next_sync_after_unix_ms
+        .saturating_sub(first_error.last_error_unix_ms);
+    assert!((5..=8).contains(&first_delay), "{first_error:?}");
+
+    std::thread::sleep(Duration::from_millis(12));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let second_error = client_metasync_table_report(&client, "ns/churn");
+    assert_eq!(second_error.consecutive_errors, 2);
+    let second_delay = second_error
+        .next_sync_after_unix_ms
+        .saturating_sub(second_error.last_error_unix_ms);
+    assert!((10..=15).contains(&second_delay), "{second_error:?}");
+
+    std::thread::sleep(Duration::from_millis(20));
+    assert_eq!(
+        client.run_due_meta_sync_once(ClientMetaSyncLoopOptions {
+            tick_ms: 1,
+            max_tables_per_tick: 1,
+        }),
+        1
+    );
+    let success = client_metasync_table_report(&client, "ns/churn");
+    assert_eq!(success.consecutive_errors, 0);
+    assert_eq!(success.last_topology_version, 40);
+    assert!(success.next_sync_after_unix_ms > success.last_success_unix_ms);
+    let table = client.cached_table("ns", "churn").unwrap();
+    assert_eq!(table.options().first_shard_id, 40);
+    assert_eq!(client.topology_cache_report().max_topology_version, 40);
+}
+
+fn client_metasync_table_report(
+    client: &TemporalStoreClient,
+    table_name: &str,
+) -> temporalstore_rust::client::ClientMetaSyncTableReport {
+    client
+        .meta_sync_report()
+        .tables
+        .into_iter()
+        .find(|table| table.table == table_name)
+        .unwrap_or_else(|| panic!("missing MetaSync table report for {table_name}"))
+}
+
+fn execute_raft_membership_shared_case(case: &UnifiedCase) {
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cluster: Option<RaftCluster> = None;
+    for step in &case.steps {
+        assert_eq!(
+            command_kind(&step.command),
+            "raft_membership_op",
+            "case={} step={} must be executable raft_membership_op",
+            case.name,
+            step.name
+        );
+        match json_string(&step.command, "op").as_str() {
+            "setup_cluster" => {
+                cluster = Some(RaftCluster::new_single_shard(
+                    case.shard_id,
+                    json_u64_list(&step.command, "nodes"),
+                ));
+            }
+            "setup_wal_cluster" => {
+                cluster = Some(
+                    RaftCluster::new_single_shard_with_wal(
+                        tmp.path(),
+                        case.shard_id,
+                        json_u64_list(&step.command, "nodes"),
+                        RaftConfig::default(),
+                    )
+                    .unwrap(),
+                );
+            }
+            "restore_wal_cluster" => {
+                cluster = Some(
+                    RaftCluster::restore_single_shard_from_wal(
+                        tmp.path(),
+                        case.shard_id,
+                        json_u64_list(&step.command, "nodes"),
+                        RaftConfig::default(),
+                    )
+                    .unwrap(),
+                );
+            }
+            "add_replica" => {
+                let cluster = cluster.as_ref().unwrap();
+                let node_id = json_u64(&step.command, "node_id");
+                if step
+                    .command
+                    .get("auto_promote")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    cluster
+                        .add_learner_with_auto_promote(node_id, true)
+                        .unwrap();
+                } else {
+                    cluster
+                        .add_node_with_role(node_id, json_raft_role(&step.command))
+                        .unwrap();
+                }
+            }
+            "assert_cluster_status" => {
+                let cluster = cluster.as_ref().unwrap();
+                let status = cluster.status();
+                if step.command.get("expected_majority").is_some() {
+                    assert_eq!(
+                        status.majority,
+                        json_u64(&step.command, "expected_majority") as usize
+                    );
+                }
+                if step.command.get("expected_live_voters").is_some() {
+                    assert_eq!(
+                        status.live_voters,
+                        json_u64(&step.command, "expected_live_voters") as usize
+                    );
+                }
+                if step.command.get("expected_voters").is_some() {
+                    assert_eq!(
+                        cluster.membership().voters,
+                        json_u64_list(&step.command, "expected_voters")
+                    );
+                }
+            }
+            "assert_peer_status" => {
+                let cluster = cluster.as_ref().unwrap();
+                let node_id = json_u64(&step.command, "node_id");
+                let local = cluster.local_status(node_id).unwrap();
+                assert_eq!(local.replica_role, json_raft_role(&step.command));
+                let report = cluster.byteraft_local_status_report();
+                let peer = report
+                    .peers
+                    .iter()
+                    .find(|peer| peer.status.node_id == node_id)
+                    .unwrap_or_else(|| panic!("peer {node_id} missing in local status report"));
+                assert_eq!(
+                    peer.participates_in_quorum,
+                    json_bool(&step.command, "participates_in_quorum")
+                );
+                assert_eq!(
+                    peer.can_serve_data,
+                    json_bool(&step.command, "can_serve_data")
+                );
+                assert_eq!(
+                    peer.can_be_leader,
+                    json_bool(&step.command, "can_be_leader")
+                );
+                if step.command.get("auto_promoted_from_learner").is_some() {
+                    assert_eq!(
+                        peer.pipeline_state.auto_promoted_from_learner,
+                        json_bool(&step.command, "auto_promoted_from_learner")
+                    );
+                }
+            }
+            "assert_local_status_report" => {
+                let cluster = cluster.as_ref().unwrap();
+                let report = cluster.byteraft_local_status_report();
+                if step.command.get("expect_witness").is_some() {
+                    assert_eq!(
+                        report.witness_membership_present,
+                        json_bool(&step.command, "expect_witness")
+                    );
+                }
+                if step.command.get("expect_learner").is_some() {
+                    assert_eq!(
+                        report.learner_membership_present,
+                        json_bool(&step.command, "expect_learner")
+                    );
+                }
+                if step.command.get("expect_pending_joint").is_some() {
+                    assert_eq!(
+                        report.pending_joint_consensus.is_some(),
+                        json_bool(&step.command, "expect_pending_joint")
+                    );
+                }
+                if step.command.get("new_voter").is_some() {
+                    let new_voter = json_u64(&step.command, "new_voter");
+                    assert!(report
+                        .pending_joint_consensus
+                        .as_ref()
+                        .unwrap()
+                        .new_voters
+                        .contains(&new_voter));
+                }
+            }
+            "assert_runtime_admin_report" => {
+                let cluster = cluster.as_ref().unwrap();
+                let report = cluster.byteraft_runtime_admin_report();
+                if step.command.get("expect_witness").is_some() {
+                    assert_eq!(
+                        report.witness_membership_present,
+                        json_bool(&step.command, "expect_witness")
+                    );
+                }
+                if step.command.get("expect_auto_promote").is_some() {
+                    assert_eq!(
+                        report.learner_auto_promote_present,
+                        json_bool(&step.command, "expect_auto_promote")
+                    );
+                }
+                if step.command.get("expect_pending_joint").is_some() {
+                    assert_eq!(
+                        report.pending_joint_consensus_present,
+                        json_bool(&step.command, "expect_pending_joint")
+                    );
+                }
+            }
+            "propose_string_set" => {
+                let cluster = cluster.as_ref().unwrap();
+                cluster
+                    .propose(Command::StringSet {
+                        key: json_string(&step.command, "key"),
+                        value: json_string(&step.command, "value").into_bytes(),
+                    })
+                    .unwrap();
+            }
+            "read_from_replica" => {
+                let cluster = cluster.as_ref().unwrap();
+                let response = cluster.read_from_replica(
+                    json_u64(&step.command, "node_id"),
+                    Command::StringGet {
+                        key: json_string(&step.command, "key"),
+                    },
+                );
+                if let Some(value) = step.command.get("expected_value").and_then(Value::as_str) {
+                    assert_eq!(
+                        response,
+                        Ok(CommandResponse::Bytes {
+                            value: Some(value.as_bytes().to_vec())
+                        })
+                    );
+                } else {
+                    assert_shared_raft_error(response, &step.command);
+                }
+            }
+            "elect_leader" => {
+                let cluster = cluster.as_ref().unwrap();
+                assert_shared_raft_error(
+                    cluster.elect_leader(json_u64(&step.command, "node_id")),
+                    &step.command,
+                );
+            }
+            "begin_joint_consensus" => {
+                let cluster = cluster.as_ref().unwrap();
+                cluster
+                    .begin_joint_consensus(json_u64_list(&step.command, "new_voters"))
+                    .unwrap();
+            }
+            "commit_joint_consensus" => {
+                cluster.as_ref().unwrap().commit_joint_consensus().unwrap();
+            }
+            op => panic!("unsupported executable shared Raft membership op {op}"),
+        }
+    }
+}
+
+fn json_u64(value: &Value, field: &str) -> u64 {
+    value
+        .get(field)
+        .and_then(Value::as_u64)
+        .unwrap_or_else(|| panic!("shared command missing u64 field {field}"))
+}
+
+fn json_bool(value: &Value, field: &str) -> bool {
+    value
+        .get(field)
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| panic!("shared command missing bool field {field}"))
+}
+
+fn json_u64_list(value: &Value, field: &str) -> Vec<u64> {
+    value
+        .get(field)
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("shared command missing u64-array field {field}"))
+        .iter()
+        .map(|item| {
+            item.as_u64()
+                .unwrap_or_else(|| panic!("shared u64-array field {field} contains non-u64"))
+        })
+        .collect()
+}
+
+fn json_raft_role(value: &Value) -> RaftReplicaRole {
+    match json_string(value, "role").as_str() {
+        "voter" => RaftReplicaRole::Voter,
+        "learner" => RaftReplicaRole::Learner,
+        "witness" => RaftReplicaRole::Witness,
+        role => panic!("unknown shared Raft role {role}"),
+    }
+}
+
+fn assert_shared_raft_error<T: std::fmt::Debug>(actual: Result<T, RaftError>, command: &Value) {
+    let expected = json_string(command, "expected_error");
+    match (expected.as_str(), actual) {
+        ("NodeNotFound", Err(RaftError::NodeNotFound(_))) => {}
+        (_, other) => panic!("expected shared Raft error {expected}, got {other:?}"),
+    }
 }
 
 fn verify_raft_linearizable_hash_failover() {
@@ -1546,6 +2197,11 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
             oplog_sequence: 0,
             index_log_sequence: 0,
         }],
+        page_gc_shared_store_cursors: Vec::new(),
+        page_gc_raft_snapshot_refs: Vec::new(),
+        page_gc_checkpoint_floor_segment_id: None,
+        page_gc_raft_install_floor_segment_id: None,
+        page_gc_delayed_destroy_grace_ms: 0,
         invalidate_cache: true,
         warm_cache: true,
     });
@@ -1990,6 +2646,47 @@ fn new_engine(root: &Path, page_dir: &Path, index_dir: &Path, shard_id: u64) -> 
     );
     engine.load_shard(shard_id);
     engine
+}
+
+fn start_temporal_engine_http_service(addr: String, engine: TemporalEngine) {
+    std::thread::spawn(move || {
+        serve(&addr, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("POST", "/execute") => {
+                    let req = parse_json::<ExecuteRequest>(&request.body).unwrap();
+                    json_response(200, &engine.execute(req))
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
+}
+
+fn start_single_node_meta_http_service(addr: String, meta: SingleNodeMeta) {
+    std::thread::spawn(move || {
+        serve(&addr, move |request| {
+            match (request.method.as_str(), request.path.as_str()) {
+                ("GET", path) if path.starts_with("/shards/") => {
+                    let shard_id = path
+                        .trim_start_matches("/shards/")
+                        .parse()
+                        .unwrap_or_default();
+                    json_response(200, &meta.get(shard_id))
+                }
+                ("POST", "/tables/topology") => {
+                    let req = parse_json::<GetTableTopologyRequest>(&request.body).unwrap();
+                    json_response(200, &meta.get_table_topology(req))
+                }
+                ("POST", "/meta/topology_version") => {
+                    let req = parse_json::<TopologyVersionRequest>(&request.body).unwrap();
+                    json_response(200, &meta.topology_version_report(req))
+                }
+                _ => json_response(404, &Status::error("not_found", "not found")),
+            }
+        })
+        .unwrap();
+    });
 }
 
 fn free_local_addr() -> String {

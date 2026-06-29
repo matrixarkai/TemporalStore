@@ -203,6 +203,37 @@ Run local scale and distributed Raft harnesses:
 tools/run_ops_scale_readiness.sh --run-local-scale --run-distributed-raft
 ```
 
+Latest focused local scale evidence, run from the Rust repo on 2026-06-28:
+
+```bash
+TS_SCALE_STRING_OPS=60 \
+TS_SCALE_HASH_OPS=15 \
+TS_SCALE_SEQUENCE_KEYS=2 \
+TS_SCALE_SEQUENCE_LEN=120 \
+TS_SCALE_SHARED_STORE_OPS=60 \
+TS_SCALE_FAILOVER_EVERY=15 \
+TS_SCALE_READ_SAMPLE_EVERY=15 \
+tools/run_ops_scale_readiness.sh --run-local-scale
+```
+
+Observed result:
+
+- `docker_scale_run_ready=true`, `distributed_raft_load_ready=true`,
+  `cplusplus_workload_replay_ready=true`, and `production_ready=true` for the ops/scale harness
+  report.
+- Three Raft data nodes completed the run with final nodes `[2, 3, 4]`, leader `2`,
+  `commit_index=77`, `max_replica_lag=0`, and `replication_healthy=true`.
+- The run exercised `failovers=3` and `scale_events=2`.
+- Raft write latency was `p50=53.902 ms`, `p95=70.331 ms`, `p99=102.976 ms`; sampled replica-read
+  latency was `p50=5.222 ms`, `p95=89.561 ms`, `p99=89.561 ms`.
+- Shared-store replay covered both sync and async modes: `sync_max_lag=0`, `async_max_lag=9`,
+  sync primary write `p95=22.364 ms`, async primary write `p95=22.248 ms`, and async enqueue
+  `p95=11 us`.
+- The generated readiness service report still fails closed on `raft_replication` only, with
+  concrete process-path blockers for durable OpenRaft rollout, independent WAL/snapshot evidence,
+  read-index responses, restart recovery, mTLS transport, and external chaos coverage. This scale
+  evidence should not be read as a complete production OpenRaft parity claim.
+
 ## Client Scale Harness
 
 `client_scale_harness` focuses on the Rust client library and the proxy/client serving path. It
