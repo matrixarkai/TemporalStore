@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
@@ -474,6 +475,7 @@ fn data_node_process_rollout_report(
             node_id: node.node_id,
             addr: node.addr.clone(),
             wal_dir: node.wal_dir.clone(),
+            snapshot_dir: format!("{}/snapshot", node.wal_dir),
             commit_index: node.status.commit_index,
             applied_index: node
                 .status
@@ -537,6 +539,34 @@ fn data_node_process_rollout_report(
         .iter()
         .map(|node| node.node_id)
         .collect::<Vec<_>>();
+    let spawned_process_count = node_evidence.len() as u64;
+    let independent_wal_dirs = node_evidence
+        .iter()
+        .map(|node| node.wal_dir.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == node_evidence.len();
+    let independent_snapshot_dirs = node_evidence
+        .iter()
+        .map(|node| node.snapshot_dir.as_str())
+        .collect::<BTreeSet<_>>()
+        .len()
+        == node_evidence.len();
+    let observed_process_requests = 2u64
+        .saturating_add(lagging_follower.majority_writes.len() as u64)
+        .saturating_add(lagging_follower.catchup_reads.len() as u64)
+        .saturating_add(rolling_restart.writes_after_each_restart.len() as u64)
+        .saturating_add(rolling_restart.reads_after_each_restart.len() as u64);
+    let read_index_responses_observed = lagging_follower
+        .catchup_reads
+        .iter()
+        .filter(|read| read.status.ok)
+        .count() as u64;
+    let restarted_node_count = rolling_restart.restarted_nodes.len() as u64;
+    let per_node_log_store_inspection_count = node_evidence
+        .iter()
+        .filter(|node| node.log_store_validated)
+        .count() as u64;
     let operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: node_evidence.len() >= 3 && multi_process_log_store_validated,
@@ -579,6 +609,13 @@ fn data_node_process_rollout_report(
         voters,
         learners: Vec::new(),
         nodes: node_evidence,
+        spawned_process_count,
+        independent_wal_dirs,
+        independent_snapshot_dirs,
+        observed_process_requests,
+        read_index_responses_observed,
+        restarted_node_count,
+        per_node_log_store_inspection_count,
         write_proposed_through_process_api,
         leader_transfer_validated,
         failover_validated,

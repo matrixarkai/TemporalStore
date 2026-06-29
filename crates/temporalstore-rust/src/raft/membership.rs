@@ -85,6 +85,8 @@ pub struct TemporalRaftProcessNodeEvidence {
     pub node_id: RaftNodeId,
     pub addr: String,
     pub wal_dir: String,
+    #[serde(default)]
+    pub snapshot_dir: String,
     pub commit_index: u64,
     pub applied_index: u64,
     pub snapshot_id: Option<String>,
@@ -299,6 +301,20 @@ pub struct TemporalRaftDataNodeProcessRolloutReport {
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<TemporalRaftProcessNodeEvidence>,
+    #[serde(default)]
+    pub spawned_process_count: u64,
+    #[serde(default)]
+    pub independent_wal_dirs: bool,
+    #[serde(default)]
+    pub independent_snapshot_dirs: bool,
+    #[serde(default)]
+    pub observed_process_requests: u64,
+    #[serde(default)]
+    pub read_index_responses_observed: u64,
+    #[serde(default)]
+    pub restarted_node_count: u64,
+    #[serde(default)]
+    pub per_node_log_store_inspection_count: u64,
     pub write_proposed_through_process_api: bool,
     #[serde(default)]
     pub leader_transfer_validated: bool,
@@ -353,6 +369,20 @@ pub struct TemporalRaftMetaProcessRolloutReport {
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
     pub nodes: Vec<TemporalRaftProcessNodeEvidence>,
+    #[serde(default)]
+    pub spawned_process_count: u64,
+    #[serde(default)]
+    pub independent_wal_dirs: bool,
+    #[serde(default)]
+    pub independent_snapshot_dirs: bool,
+    #[serde(default)]
+    pub observed_process_requests: u64,
+    #[serde(default)]
+    pub read_index_responses_observed: u64,
+    #[serde(default)]
+    pub restarted_node_count: u64,
+    #[serde(default)]
+    pub per_node_log_store_inspection_count: u64,
     pub mutation_proposed_through_process_api: bool,
     #[serde(default)]
     pub applied_raft_mutations: u64,
