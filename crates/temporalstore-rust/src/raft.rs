@@ -33,12 +33,12 @@ use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 
 mod membership;
-mod rustraft;
 mod readiness;
+mod rustraft;
 use bytes::Bytes;
-pub use rustraft::*;
 pub use membership::*;
 pub use readiness::*;
+pub use rustraft::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
 pub type RaftNodeId = u64;
@@ -510,6 +510,10 @@ pub struct ByteRaftPeerPipelineState {
     pub reorder_entries_accepted: u64,
     pub reorder_entries_released: u64,
     pub reorder_entries_rejected: u64,
+    #[serde(default)]
+    pub reorder_entry_timeouts: u64,
+    #[serde(default)]
+    pub reorder_dropped_packages: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -769,6 +773,10 @@ pub struct RaftPeerPipelineRuntimeState {
     pub reorder_entries_accepted: u64,
     pub reorder_entries_released: u64,
     pub reorder_entries_rejected: u64,
+    #[serde(default)]
+    pub reorder_entry_timeouts: u64,
+    #[serde(default)]
+    pub reorder_dropped_packages: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -3220,7 +3228,9 @@ pub mod temporal_raft_integration {
                     .unwrap_or_else(|err| {
                         panic!("failed to load durable TemporalRaft state from {path:?}: {err}")
                     })
-                    .unwrap_or_else(|| TemporalRaftDurableState::new(kind, &options, voters, learners)),
+                    .unwrap_or_else(|| {
+                        TemporalRaftDurableState::new(kind, &options, voters, learners)
+                    }),
                 None => TemporalRaftDurableState::new(kind, &options, voters, learners),
             };
             Self {
@@ -3248,7 +3258,8 @@ pub mod temporal_raft_integration {
                 leader_transfer_supported: true,
                 campaign_supported: true,
                 learner_bootstrap_supported: true,
-                temporal_raft_entry_boundary: std::any::type_name::<TemporalRaftEntry>().to_string(),
+                temporal_raft_entry_boundary: std::any::type_name::<TemporalRaftEntry>()
+                    .to_string(),
             }
         }
 
@@ -3312,8 +3323,9 @@ pub mod temporal_raft_integration {
                 return Ok(None);
             }
             let bytes = fs::read(path).map_err(|err| RaftError::Wal(err.to_string()))?;
-            let state = serde_json::from_slice(&bytes)
-                .map_err(|err| RaftError::Wal(format!("temporal raft state decode failed: {err}")))?;
+            let state = serde_json::from_slice(&bytes).map_err(|err| {
+                RaftError::Wal(format!("temporal raft state decode failed: {err}"))
+            })?;
             validate_temporal_raft_storage_apply_fence(&state)?;
             Ok(Some(state))
         }
@@ -5768,6 +5780,12 @@ impl RaftCluster {
                 .get_mut(&target_id)
                 .ok_or(RaftError::NodeNotFound(target_id))?;
             if term < node.current_term {
+                node.pipeline_state.append_rejected =
+                    node.pipeline_state.append_rejected.saturating_add(1);
+                node.pipeline_state.reorder_entries_rejected = node
+                    .pipeline_state
+                    .reorder_entries_rejected
+                    .saturating_add(received_entries.max(1));
                 return Ok(AppendEntriesResponse {
                     term: node.current_term,
                     success: false,
@@ -5778,6 +5796,8 @@ impl RaftCluster {
             if request.prev_log_index > 0 {
                 let prev_term = node_term_at_log_or_snapshot_index(node, request.prev_log_index);
                 if prev_term != Some(request.prev_log_term) {
+                    let last_index = node_last_log_or_snapshot_index(node);
+                    let missing_gap = request.prev_log_index.saturating_sub(last_index);
                     node.pipeline_state.out_of_order_append_rejections = node
                         .pipeline_state
                         .out_of_order_append_rejections
@@ -5786,6 +5806,31 @@ impl RaftCluster {
                         .pipeline_state
                         .reorder_entries_rejected
                         .saturating_add(received_entries.max(1));
+                    if enable_reorder_queue && missing_gap > 0 {
+                        node.pipeline_state.reorder_queue_depth = node
+                            .pipeline_state
+                            .reorder_queue_depth
+                            .saturating_add(received_entries.max(1));
+                        let reject_reason = if missing_gap > reorder_window_size {
+                            node.pipeline_state.reorder_entry_timeouts =
+                                node.pipeline_state.reorder_entry_timeouts.saturating_add(1);
+                            node.pipeline_state.reorder_dropped_packages = node
+                                .pipeline_state
+                                .reorder_dropped_packages
+                                .saturating_add(1);
+                            "reorder_window_timeout"
+                        } else {
+                            "out_of_order_append_queued"
+                        };
+                        let response = AppendEntriesResponse {
+                            term: node.current_term,
+                            success: false,
+                            match_index: last_index,
+                            reject_reason: Some(reject_reason.to_string()),
+                        };
+                        inner.persist_configured_wal()?;
+                        return Ok(response);
+                    }
                     return Ok(AppendEntriesResponse {
                         term: node.current_term,
                         success: false,
@@ -5834,6 +5879,12 @@ impl RaftCluster {
                     .pipeline_state
                     .reorder_entries_rejected
                     .saturating_add(received_entries);
+                node.pipeline_state.reorder_entry_timeouts =
+                    node.pipeline_state.reorder_entry_timeouts.saturating_add(1);
+                node.pipeline_state.reorder_dropped_packages = node
+                    .pipeline_state
+                    .reorder_dropped_packages
+                    .saturating_add(1);
                 let response = AppendEntriesResponse {
                     term: node.current_term,
                     success: false,
@@ -8117,6 +8168,8 @@ impl RaftClusterInner {
                     reorder_entries_accepted: pipeline.reorder_entries_accepted,
                     reorder_entries_released: pipeline.reorder_entries_released,
                     reorder_entries_rejected: pipeline.reorder_entries_rejected,
+                    reorder_entry_timeouts: pipeline.reorder_entry_timeouts,
+                    reorder_dropped_packages: pipeline.reorder_dropped_packages,
                     snapshot_sending: pipeline.snapshot_sending,
                     snapshot_installing: pipeline.snapshot_installing,
                     snapshot_installed_index: pipeline.snapshot_installed_index,
@@ -8211,7 +8264,10 @@ impl RaftClusterInner {
             .iter()
             .any(|peer| peer.oversized_log_rejections > 0);
         let out_of_order_append_handling_present = peer_pipeline_states.iter().any(|peer| {
-            peer.out_of_order_append_rejections > 0 || peer.reorder_entries_rejected > 0
+            peer.out_of_order_append_rejections > 0
+                || peer.reorder_entries_rejected > 0
+                || peer.reorder_entry_timeouts > 0
+                || peer.reorder_dropped_packages > 0
         });
         let reorder_queue_enabled = self.config.enable_reorder_queue
             && self.config.reorder_window_size > 0
@@ -8358,10 +8414,11 @@ impl RaftClusterInner {
                         .iter()
                         .all(|peer| peer.reorder_queue_depth <= peer.match_index),
                 evidence_field:
-                    "peer_pipeline_states[*].{reorder_queue_depth,out_of_order_append_rejections,reorder_entries_*}".to_string(),
+                    "peer_pipeline_states[*].{reorder_queue_depth,out_of_order_append_rejections,reorder_entries_*,reorder_entry_timeouts,reorder_dropped_packages}".to_string(),
                 detail: format!(
-                    "enabled={reorder_queue_enabled}; out_of_order={out_of_order_append_handling_present}; window={}",
-                    self.config.reorder_window_size
+                    "enabled={reorder_queue_enabled}; out_of_order={out_of_order_append_handling_present}; window={}; timeout_us={}",
+                    self.config.reorder_window_size,
+                    self.config.reorder_timeout_us
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -9721,6 +9778,10 @@ fn append_byteraft_runtime_admin_prometheus(
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_released counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_rejected ByteRaft-style per-peer reorder entries rejected by window overflow.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entry_timeouts ByteRaft-style per-peer reorder entry timeout count.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entry_timeouts counter\n");
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_dropped_packages ByteRaft-style per-peer dropped reordered append packages.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_dropped_packages counter\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_sending Whether a peer is sending a snapshot.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_sending gauge\n");
     out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installing Whether a peer is installing a snapshot.\n");
@@ -9892,6 +9953,18 @@ fn append_byteraft_runtime_admin_prometheus(
             "temporalstore_raft_byteraft_peer_reorder_entries_rejected",
             labels,
             peer.reorder_entries_rejected,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_entry_timeouts",
+            labels,
+            peer.reorder_entry_timeouts,
+        );
+        push_raft_metric(
+            out,
+            "temporalstore_raft_byteraft_peer_reorder_dropped_packages",
+            labels,
+            peer.reorder_dropped_packages,
         );
         push_raft_metric(
             out,

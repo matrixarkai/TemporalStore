@@ -4706,7 +4706,7 @@
       "steps": [
         {
           "command": {
-            "description": "RustRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, and apply batch sizing.",
+            "description": "RustRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, out-of-order append queue/drop/timeout metrics, stale-term rejection, packet-loss recovery, and apply batch sizing.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4717,7 +4717,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200

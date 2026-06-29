@@ -1045,6 +1045,182 @@ fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
     );
 }
 
+// shared-corpus: raft_rustraft_replication_backpressure
+#[test]
+fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            enable_reorder_queue: true,
+            reorder_window_size: 4,
+            reorder_timeout_us: 1_000,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "reorder-a".to_string(),
+            value: b"a".to_vec(),
+        })
+        .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "reorder-b".to_string(),
+            value: b"b".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+
+    let queued = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 2,
+            prev_log_term: 1,
+            entries: vec![RaftLogEntry {
+                term: 1,
+                index: 3,
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "reorder-c".to_string(),
+                    value: b"c".to_vec(),
+                },
+            }],
+            leader_commit: 3,
+        })
+        .unwrap();
+    assert!(!queued.success);
+    assert_eq!(
+        queued.reject_reason.as_deref(),
+        Some("out_of_order_append_queued")
+    );
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    let peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .unwrap();
+    assert_eq!(peer.reorder_queue_depth, 1);
+    assert_eq!(peer.out_of_order_append_rejections, 1);
+    assert_eq!(peer.reorder_entries_rejected, 1);
+    assert_eq!(peer.reorder_entry_timeouts, 0);
+    assert!(admin.out_of_order_append_handling_present);
+
+    let prefix = cluster.build_append_entries_request(3).unwrap();
+    assert_eq!(prefix.prev_log_index, 0);
+    assert_eq!(
+        prefix
+            .entries
+            .iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>(),
+        vec![1, 2]
+    );
+    let recovered = cluster.receive_append_entries(prefix).unwrap();
+    assert!(recovered.success);
+    assert_eq!(cluster.commit_index(3).unwrap(), 2);
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "reorder-b".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"b".to_vec())
+        }
+    );
+}
+
+// shared-corpus: raft_rustraft_replication_backpressure
+#[test]
+fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            enable_reorder_queue: true,
+            reorder_window_size: 1,
+            reorder_timeout_us: 1,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster.set_alive(3, false).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "timeout-a".to_string(),
+            value: b"a".to_vec(),
+        })
+        .unwrap();
+    cluster.set_alive(3, true).unwrap();
+
+    let timed_out = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 8,
+            prev_log_term: 1,
+            entries: vec![RaftLogEntry {
+                term: 1,
+                index: 9,
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "timeout-gap".to_string(),
+                    value: b"gap".to_vec(),
+                },
+            }],
+            leader_commit: 9,
+        })
+        .unwrap();
+    assert!(!timed_out.success);
+    assert_eq!(
+        timed_out.reject_reason.as_deref(),
+        Some("reorder_window_timeout")
+    );
+
+    let stale = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 0,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: Vec::new(),
+            leader_commit: 0,
+        })
+        .unwrap();
+    assert!(!stale.success);
+    assert_eq!(stale.reject_reason.as_deref(), Some("stale_term"));
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    let peer = admin
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .unwrap();
+    assert_eq!(peer.reorder_entry_timeouts, 1);
+    assert_eq!(peer.reorder_dropped_packages, 1);
+    assert!(peer.reorder_entries_rejected >= 2);
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entry_timeouts"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_dropped_packages"));
+}
+
 #[test]
 fn append_entries_updates_observed_leader_for_standalone_node_status() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);

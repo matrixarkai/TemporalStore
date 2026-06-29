@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
-use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
+use crate::block_store::{
+    BlockAddress, BlockStoreError, LocalBlockStore, LocalPageStore, PageAddress,
+};
 use crate::cache::MultiLayerCache;
 use crate::types::{FeaturePoint, ShardId};
 

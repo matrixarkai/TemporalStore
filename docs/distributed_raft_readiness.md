@@ -269,6 +269,11 @@ case-to-Rust-runner mapping report, and execute the Rust data-node plus metaserv
 
 The Rust multi-node Raft checks were rerun against the C++ coverage above:
 
+The RustRaft replication-backpressure shared case now includes explicit
+reordered append gap handling, stale-term rejection, packet-loss recovery, and
+ByteRaft-style reorder queue timeout/drop metrics in addition to oversized-log,
+in-flight append, and apply-batch pressure evidence.
+
 ```bash
 CARGO_TARGET_DIR=/tmp/temporalstore-local-validation-target \
 cargo run -p temporalstore-rust --bin distributed_raft_harness -- \

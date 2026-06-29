@@ -225,9 +225,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence, plus membership-role acceptance in the paired matrix for witness role status, learner auto-promote, pending joint-consensus restart, and scheduler generation/token replay. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
 | `raft_rustraft_read_safety_policy` | RustRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
-| `raft_rustraft_metrics_admin_pipeline_status` | RustRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |
+| `raft_rustraft_metrics_admin_pipeline_status` | RustRaft-derived status/local-status/Prometheus peer pipeline, reorder queue depth/timeouts/dropped packages, apply health, read-index, and leader-transfer evidence. |
 | `raft_rustraft_snapshot_lifecycle_depth` | RustRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
-| `raft_rustraft_replication_backpressure` | RustRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
+| `raft_rustraft_replication_backpressure` | RustRaft-derived oversized-log, in-flight append, backpressure, reordered append gap handling, stale-term rejection, packet-loss recovery, reorder timeout/drop metrics, and apply-batch behavior. |
 | `raft_rustraft_election_controls` | RustRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
 | `raft_rustraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
 | `raft_rustraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
