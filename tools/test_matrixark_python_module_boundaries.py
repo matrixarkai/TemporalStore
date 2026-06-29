@@ -93,6 +93,25 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("test_deadline", dropped["deadline_reason"])
         self.assertEqual(4, dropped["deadline"])
 
+    def test_serving_pack_lifts_repeated_session_continuity(self) -> None:
+        core_mod = importlib.import_module("tools.matrixark_mcp_core")
+        pack = core_mod.compact_context_pack_for_serving(
+            {
+                "context_pack_id": "pack-1",
+                "selected_refs": [
+                    {"ref_type": "event", "text": "same session fact", "token_estimate": 3, "session_continuity": "same_session"},
+                    {"ref_type": "entity", "text": "same session entity", "token_estimate": 3, "session_continuity": "same_session"},
+                    {"ref_type": "summary", "text": "cross session summary", "token_estimate": 4, "session_continuity": "cross_session"},
+                ],
+                "used_context_tokens": 10,
+            }
+        )
+        self.assertEqual("same_session", pack["context_groups"]["session_continuity"]["default"])
+        self.assertEqual(2, pack["context_groups"]["session_continuity"]["counts"]["same_session"])
+        self.assertNotIn("session_continuity", pack["selected_refs"][0])
+        self.assertNotIn("session_continuity", pack["selected_refs"][1])
+        self.assertEqual("cross_session", pack["selected_refs"][2]["session_continuity"])
+
 
 class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
     def _server(self):
