@@ -5756,8 +5756,11 @@ fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership
     let readiness = distributed_raft_readiness();
     assert_eq!(readiness.mode, RaftDeploymentMode::ProductionDistributed);
     assert!(readiness.metaserver_driven_membership_present);
-    assert!(readiness.production_ready);
-    assert!(readiness.missing.is_empty());
+    assert!(!readiness.production_ready);
+    assert!(readiness.missing.iter().any(|item| {
+        item.contains("durable OpenRaft data-node process rollout")
+            || item.contains("durable OpenRaft metaserver process rollout")
+    }));
     assert!(matches!(
         validate_raft_deployment_mode(RaftDeploymentMode::LocalModel),
         Err(RaftProductionReadinessError { message, .. })

@@ -2515,6 +2515,7 @@ pub fn raft_byteraft_runtime_readiness() -> RaftByteRaftRuntimeReadiness {
     let mut config = RaftConfig {
         enable_pre_vote: true,
         lease_duration_ms: 1_000,
+        max_inflights_replicate: 2,
         max_segment_bytes: 512,
         min_keep_segment_num: 1,
         ..RaftConfig::default()
@@ -2523,7 +2524,7 @@ pub fn raft_byteraft_runtime_readiness() -> RaftByteRaftRuntimeReadiness {
     let cluster = RaftCluster::new_single_shard_with_wal(&root, 91, [1, 2, 3], config)
         .unwrap_or_else(|_| RaftCluster::new_single_shard(91, [1, 2, 3]));
     let _ = cluster.propose(Command::StringSet {
-        key: "byteraft-runtime-snapshot-seed".to_string(),
+        key: "byteraft-runtime-admin-snapshot".to_string(),
         value: b"seed".to_vec(),
     });
     let _ = cluster.maybe_trigger_snapshot();
@@ -2532,14 +2533,124 @@ pub fn raft_byteraft_runtime_readiness() -> RaftByteRaftRuntimeReadiness {
     }
     let _ = cluster.set_alive(3, false);
     let _ = cluster.propose(Command::StringSet {
-        key: "byteraft-runtime-lag-seed".to_string(),
+        key: "byteraft-runtime-admin-lag".to_string(),
         value: b"lag".to_vec(),
+    });
+    if let Ok(append_request) = cluster.build_append_entries_request(3) {
+        let _ = cluster.build_append_entries_request(3);
+        let _ = cluster.receive_append_entries(append_request);
+    }
+    let _ = cluster.set_alive(3, false);
+    let _ = cluster.propose(Command::StringSet {
+        key: "byteraft-runtime-admin-lag-2".to_string(),
+        value: b"lag-2".to_vec(),
     });
     let _ = cluster.set_alive(3, true);
     let stale_follower_write_rejection_present = matches!(
         cluster.check_write_authority(3),
         Err(RaftError::NotLeader { .. })
     );
+    let _ = cluster.read_index(3);
+    let _ = cluster.check_data_raft_read_policy(
+        3,
+        DataRaftReadPolicy {
+            mode: DataRaftReadMode::BoundedStale,
+            bounded_stale_max_index_lag: 0,
+            ..DataRaftReadPolicy::default()
+        },
+    );
+    let _ = cluster.check_data_raft_read_policy(
+        3,
+        DataRaftReadPolicy {
+            mode: DataRaftReadMode::BoundedStale,
+            bounded_stale_max_index_lag: 1,
+            ..DataRaftReadPolicy::default()
+        },
+    );
+    cluster.advance_time_ms(1_001);
+    let _ = cluster.check_read(
+        1,
+        RaftReadOptions {
+            strategy: RaftReadStrategy::LeaseRead,
+            ..RaftReadOptions::default()
+        },
+    );
+    let _ = cluster.tick_election();
+    let _ = cluster.set_alive(2, false);
+    let _ = cluster.set_alive(3, false);
+    let _ = cluster.read_index(1);
+    let _ = cluster.check_write_authority(1);
+    let _ = cluster.set_alive(2, true);
+    let _ = cluster.set_alive(3, true);
+    let _ = cluster.tick_election();
+    if let Ok(catchup) = cluster.build_append_entries_request(3) {
+        let _ = cluster.receive_append_entries(catchup);
+    }
+    let _ = cluster.read_index(3);
+    let _ = cluster.check_read(
+        1,
+        RaftReadOptions {
+            strategy: RaftReadStrategy::LeaseRead,
+            ..RaftReadOptions::default()
+        },
+    );
+    let _ = cluster.add_learner_with_auto_promote(4, true);
+    let _ = cluster.add_node_with_role(5, RaftReplicaRole::Witness);
+    let _ = cluster.propose(Command::StringSet {
+        key: "byteraft-runtime-admin-oversized".to_string(),
+        value: vec![b'x'; 64 * 1024],
+    });
+    let out_of_order = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 91,
+        term: 1,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 999,
+        prev_log_term: 1,
+        entries: Vec::new(),
+        leader_commit: cluster.commit_index(1).unwrap_or_default(),
+    };
+    let _ = cluster.receive_append_entries(out_of_order);
+    let lagging_commit = cluster.commit_index(3).unwrap_or_default();
+    let apply_backpressure = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 91,
+        term: 1,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: lagging_commit,
+        prev_log_term: 1,
+        entries: vec![RaftLogEntry {
+            term: 1,
+            index: lagging_commit.saturating_add(1),
+            shard_id: 91,
+            command: Command::StringSet {
+                key: "byteraft-runtime-admin-apply-backpressure".to_string(),
+                value: vec![b'y'; 96 * 1024],
+            },
+        }],
+        leader_commit: lagging_commit.saturating_add(1),
+    };
+    let _ = cluster.receive_append_entries(apply_backpressure);
+    let _ = cluster.begin_joint_consensus([1, 2, 3, 4]);
+    let _ = cluster.set_alive(3, false);
+    let _ = cluster.propose(Command::StringSet {
+        key: "byteraft-runtime-admin-joint-snapshot-lag".to_string(),
+        value: b"joint-lag".to_vec(),
+    });
+    let _ = cluster.set_alive(3, true);
+    if let Ok(mut snapshot_chunks) = cluster.build_install_snapshot_chunks(3, 1) {
+        if let Some(first_chunk) = snapshot_chunks.first().cloned() {
+            let _ = cluster.receive_install_snapshot_chunk(first_chunk.clone());
+            if snapshot_chunks.len() > 1 {
+                let _ = cluster.receive_install_snapshot_chunk(first_chunk);
+                snapshot_chunks[1].last_included_index =
+                    snapshot_chunks[1].last_included_index.saturating_add(1);
+                let _ = cluster.receive_install_snapshot_chunk(snapshot_chunks[1].clone());
+            }
+        }
+    }
     let mut report = cluster.byteraft_runtime_admin_report();
     report.stale_follower_write_rejected =
         report.stale_follower_write_rejected && stale_follower_write_rejection_present;

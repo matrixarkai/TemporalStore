@@ -4058,8 +4058,7 @@
         {
           "command": {
             "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, per-node log-store inspection evidence, and ByteRaft-derived process semantics for per-peer pipeline state, snapshot lifecycle, WAL lifecycle, failover, membership, and secondary lag where applicable.",
-            "kind": "existing_test",
-            "mode": "runtime",
+            "kind": "raft_openraft_process_path_default_gate",
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_raft_stress_suite_ubuntu22.sh",
@@ -4067,8 +4066,9 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_openraft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence local_raft_model_is_rejected_for_deployment --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus raft_openraft_process_rollout_evidence -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "scenario": "production_openraft_byteraft_process_path_semantics",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
           },
@@ -8498,6 +8498,7 @@
       "client_pipeline_batch_partial_timeout",
       "client_deployment_placement_routing",
       "metaserver_scheduler_control_plane",
+      "raft_openraft_process_path_default_gate",
       "raft_membership_op"
     ],
     "required_raft_case_names": [
