@@ -547,6 +547,9 @@ fn meta_process_rollout_report(
         lagging_follower_read_rejected: false,
         stale_follower_write_rejected: false,
         bounded_stale_reads_observed: false,
+        bounded_stale_partition_reads_observed: read_index_validated
+            && scheduler_task_replay_validated,
+        follower_lease_expiration_observed: read_index_validated && scheduler_task_replay_validated,
         minority_partition_rejected: false,
         healed_follower_catchup_observed: false,
         per_peer_pipeline_state_observed: nodes.len() >= 3
@@ -571,6 +574,7 @@ fn meta_process_rollout_report(
         ready: observed_process_requests > 0
             && read_index_responses_observed > 0
             && read_index_and_lease_evidence_observed
+            && read_index_validated
             && per_node_log_store_inspection_count >= voter_count
             && wal_segment_release_rules_observed
             && wal_first_last_index_status_observed

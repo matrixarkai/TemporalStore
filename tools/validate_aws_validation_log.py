@@ -675,6 +675,8 @@ def validate_byteraft_process_semantics(
         "append_pipeline_state_observed",
         "snapshot_lifecycle_observed",
         "wal_segment_lifecycle_observed",
+        "bounded_stale_partition_reads_observed",
+        "follower_lease_expiration_observed",
         "wal_segment_release_rules_observed",
         "wal_first_last_index_status_observed",
         "wal_slow_fsync_backpressure_observed",

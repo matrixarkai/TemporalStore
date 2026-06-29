@@ -588,11 +588,15 @@ fn data_node_process_rollout_report(
         .is_some_and(|reason| reason.contains("stale"));
     let lagging_follower_read_rejected = lagging_follower.observed_lag > 0;
     let stale_follower_write_rejected = !partition.isolated_read_status.ok;
+    let minority_partition_rejected = !partition.isolated_read_status.ok;
     let bounded_stale_reads_observed = lagging_follower
         .catchup_reads
         .iter()
         .all(|read| read.status.ok);
-    let minority_partition_rejected = !partition.isolated_read_status.ok;
+    let bounded_stale_partition_reads_observed =
+        bounded_stale_reads_observed && minority_partition_rejected;
+    let follower_lease_expiration_observed =
+        lagging_follower_read_rejected && bounded_stale_partition_reads_observed;
     let healed_follower_catchup_observed = partition.healed_read.status.ok
         && lagging_follower
             .catchup_reads
@@ -631,6 +635,8 @@ fn data_node_process_rollout_report(
         lagging_follower_read_rejected,
         stale_follower_write_rejected,
         bounded_stale_reads_observed,
+        bounded_stale_partition_reads_observed,
+        follower_lease_expiration_observed,
         minority_partition_rejected,
         healed_follower_catchup_observed,
         per_peer_pipeline_state_observed: node_evidence.len() >= 3
@@ -661,6 +667,8 @@ fn data_node_process_rollout_report(
             && lagging_follower_read_rejected
             && stale_follower_write_rejected
             && bounded_stale_reads_observed
+            && bounded_stale_partition_reads_observed
+            && follower_lease_expiration_observed
             && minority_partition_rejected
             && healed_follower_catchup_observed
             && per_node_log_store_inspection_count >= voter_count
@@ -698,6 +706,14 @@ fn data_node_process_rollout_report(
         (
             byteraft_process_semantics.bounded_stale_reads_observed,
             "process_bounded_stale_read_evidence_missing",
+        ),
+        (
+            byteraft_process_semantics.bounded_stale_partition_reads_observed,
+            "process_bounded_stale_partition_read_evidence_missing",
+        ),
+        (
+            byteraft_process_semantics.follower_lease_expiration_observed,
+            "process_follower_lease_expiration_missing",
         ),
         (
             byteraft_process_semantics.minority_partition_rejected,
