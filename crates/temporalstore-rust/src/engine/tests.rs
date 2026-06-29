@@ -1154,6 +1154,25 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
                 },
             ],
         },
+        Command::SequenceAdd {
+            key: "compact-sequence".to_string(),
+            rows: vec![
+                SequenceFeatureRow {
+                    timestamp_ms: 22,
+                    gid: 1,
+                    action_type: 2,
+                    duration: 3,
+                    author_id: 4,
+                },
+                SequenceFeatureRow {
+                    timestamp_ms: 23,
+                    gid: 2,
+                    action_type: 3,
+                    duration: 4,
+                    author_id: 5,
+                },
+            ],
+        },
         Command::IpsLoad {
             key: "compact-ips-layout".to_string(),
             points: vec![
@@ -1252,6 +1271,15 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
         .any(|item| item.contains("tombstone object ids are preserved")));
     assert_eq!(report.rewritten_object_pages, report.rewritten_page_refs);
     assert!(report.rewritten_object_pages >= 5);
+    assert!(report.reclaimable_stale_page_segment_count >= 1);
+    assert_eq!(
+        report.reclaimable_stale_page_segment_count,
+        report.stale_page_segment_ids.len()
+    );
+    assert!(report.model_policy_family_count >= 8);
+    assert!(report.tombstone_policy_model_count >= 1);
+    assert!(report.stale_density_policy_model_count >= 1);
+    assert!(report.layout_aware_policy_model_count >= 6);
     assert!(report.slot_layout_transition_count >= 1);
     assert!(report
         .slot_layout_states_after
@@ -1288,6 +1316,9 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert_eq!(layout("feature").index_refs, 2);
     assert_eq!(layout("feature").unique_page_refs, 1);
     assert_eq!(layout("feature").packed_timestamped_pages, 1);
+    assert_eq!(layout("sequence").index_refs, 2);
+    assert_eq!(layout("sequence").unique_page_refs, 1);
+    assert_eq!(layout("sequence").packed_timestamped_pages, 1);
     assert_eq!(layout("ips").index_refs, 2);
     assert_eq!(layout("ips").unique_page_refs, 1);
     assert_eq!(layout("risk").unique_page_refs, 1);
@@ -1312,9 +1343,43 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     assert!(policy("set").tombstone_compaction_triggered);
     assert!(policy("hash").layout_aware_rewrite_required);
     assert!(policy("feature").layout_aware_rewrite_required);
+    assert!(policy("sequence").layout_aware_rewrite_required);
+    assert!(policy("ips").layout_aware_rewrite_required);
     assert!(policy("risk").layout_aware_rewrite_required);
+    assert!(policy("context_event").layout_aware_rewrite_required);
     assert!(policy("context_embedding").layout_aware_rewrite_required);
     assert!(policy("context_summary").layout_aware_rewrite_required);
+    assert!(policy("hash").object_page_packing_enabled);
+    assert!(policy("set").object_page_packing_enabled);
+    assert!(policy("feature").cold_page_rewrite_eligible_refs >= 1);
+
+    let rewrite_policy = |model_id: &str| {
+        report
+            .model_rewrite_policies
+            .iter()
+            .find(|policy| policy.model_id == model_id)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing rewrite policy for {model_id}: {:?}",
+                    report.model_rewrite_policies
+                )
+            })
+    };
+    for model_id in [
+        "string",
+        "hash",
+        "feature",
+        "ips",
+        "risk",
+        "context_event",
+        "context_embedding",
+        "context_summary",
+    ] {
+        assert!(
+            rewrite_policy(model_id).rewritten_page_refs >= 1,
+            "expected rewrite evidence for {model_id}"
+        );
+    }
 
     let after = engine.storage_recovery_report(1);
     assert_eq!(after.object_lifecycle.owner_mismatch_page_refs, 0);
@@ -1332,6 +1397,15 @@ fn page_compaction_reports_model_layouts_tombstones_object_pages_and_density() {
     let object_runtime = engine.object_manager_runtime_report(1);
     assert!(object_runtime.layout_transition_count >= 1);
     assert!(object_runtime.object_page_count >= 1);
+    assert!(
+        engine
+            .slot_storage_summaries(1)
+            .iter()
+            .flat_map(|summary| summary.page_segment_ids.iter().copied())
+            .all(|segment_id| segment_id == report.compacted_page_segment_id),
+        "all index summaries should move to compacted segment: {:?}",
+        engine.slot_storage_summaries(1)
+    );
 }
 
 // shared-corpus: storage_manager_background_loop;
