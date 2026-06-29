@@ -162,6 +162,22 @@ impl TemporalEngine {
             .expect("info lock poisoned")
             .get(&request.shard_id)
             .cloned();
+        let start_routing_slot = info
+            .as_ref()
+            .map(|info| info.start_routing_slot)
+            .unwrap_or_default();
+        let end_routing_slot = info
+            .as_ref()
+            .map(|info| info.end_routing_slot)
+            .unwrap_or(u32::MAX);
+        if promote_model_maps_to_slot_index_authority(
+            request.shard_id,
+            shard,
+            start_routing_slot,
+            end_routing_slot,
+        ) {
+            reconcile_secondary_views_from_slot_index(&self.page_store, shard);
+        }
         let write_command = is_write_command(&command);
         if let Err(status) = self.check_admission(request.shard_id, write_command, &config, &info) {
             return ExecuteResponse {
@@ -201,12 +217,8 @@ impl TemporalEngine {
             config.feature_max_size,
             config.async_storage,
             request.shard_id,
-            info.as_ref()
-                .map(|info| info.start_routing_slot)
-                .unwrap_or_default(),
-            info.as_ref()
-                .map(|info| info.end_routing_slot)
-                .unwrap_or(u32::MAX),
+            start_routing_slot,
+            end_routing_slot,
             shard,
             command.clone(),
         );
@@ -216,13 +228,10 @@ impl TemporalEngine {
             }
             if !command_updates_slot_index_directly(&command) || shard.slot_index.slots.is_empty() {
                 rebuild_slot_first_index(
+                    request.shard_id,
                     shard,
-                    info.as_ref()
-                        .map(|info| info.start_routing_slot)
-                        .unwrap_or_default(),
-                    info.as_ref()
-                        .map(|info| info.end_routing_slot)
-                        .unwrap_or(u32::MAX),
+                    start_routing_slot,
+                    end_routing_slot,
                 );
             }
             refresh_slot_runtime_flags(shard);
@@ -5370,7 +5379,7 @@ impl TemporalEngine {
             }
         }
 
-        rebuild_slot_first_index(shard, 0, u32::MAX);
+        rebuild_slot_first_index(shard_id, shard, 0, u32::MAX);
         refresh_slot_runtime_flags(shard);
         let after_segments = collect_live_page_segment_ids(shard);
         let after = compaction_utility_report(&self.page_store, shard);
@@ -9349,22 +9358,28 @@ fn rebuild_slot_page_ownership(
 ) {
     shard.slot_index.slots.clear();
     for entry in collect_model_live_page_entries(shard) {
-        let routing_slot = entry.address.routing_slot.unwrap_or_default();
+        let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
+            page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
+        });
         if routing_slot < start_routing_slot || routing_slot > end_routing_slot {
             continue;
         }
-        let object_id = stable_page_object_id(
-            shard_id,
-            &entry.kind,
-            &entry.object_key,
-            entry.component.as_deref(),
-        );
+        let object_id = entry.address.object_id.unwrap_or_else(|| {
+            stable_page_object_id(
+                shard_id,
+                &entry.kind,
+                &entry.object_key,
+                entry.component.as_deref(),
+            )
+        });
         let slot = shard
             .slot_index
             .slots
             .entry(routing_slot)
             .or_insert_with(|| SlotNodeIndex {
                 routing_slot,
+                meta_loaded: true,
+                in_memory: true,
                 ..SlotNodeIndex::default()
             });
         slot.object_ids.insert(object_id);
@@ -9390,8 +9405,42 @@ fn rebuild_slot_page_ownership(
         );
     }
     for slot in shard.slot_index.slots.values_mut() {
-        slot.layout = classify_slot_layout(slot.object_ids.len(), slot.page_refs.len());
+        slot.meta_loaded = true;
+        slot.loading = false;
+        slot.in_memory = !slot.page_refs.is_empty();
+        update_slot_layout(slot);
     }
+}
+
+fn promote_model_maps_to_slot_index_authority(
+    shard_id: ShardId,
+    shard: &mut ShardState,
+    start_routing_slot: u32,
+    end_routing_slot: u32,
+) -> bool {
+    let model_entries = collect_model_live_page_entries(shard);
+    if model_entries.is_empty() {
+        return false;
+    }
+    let slot_index_missing_entry = shard.slot_index.slots.is_empty()
+        || model_entries.iter().any(|entry| {
+            !shard.slot_index.slots.values().any(|slot| {
+                slot.page_refs.values().any(|page| {
+                    page.object_key == entry.object_key
+                        && page.model_id == entry.kind
+                        && page.component == entry.component
+                        && page.address.page_segment_id == entry.address.page_segment_id
+                        && page.address.offset == entry.address.offset
+                        && page.address.length == entry.address.length
+                })
+            })
+        });
+    if !slot_index_missing_entry {
+        return false;
+    }
+    rebuild_slot_page_ownership(shard_id, shard, start_routing_slot, end_routing_slot);
+    refresh_slot_runtime_flags(shard);
+    true
 }
 
 fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
@@ -9755,6 +9804,7 @@ fn refresh_slot_runtime_flags(shard: &mut ShardState) {
 }
 
 fn rebuild_slot_first_index(
+    shard_id: ShardId,
     shard: &mut ShardState,
     start_routing_slot: u32,
     end_routing_slot: u32,
@@ -9766,7 +9816,7 @@ fn rebuild_slot_first_index(
         });
         let object_id = entry.address.object_id.unwrap_or_else(|| {
             stable_page_object_id(
-                0,
+                shard_id,
                 &entry.kind,
                 &entry.object_key,
                 entry.component.as_deref(),
@@ -11637,7 +11687,11 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    shard.strings.contains_key(key)
+    shard.slot_index.slots.values().any(|slot| {
+        slot.page_refs
+            .values()
+            .any(|page| page.object_key == key && !page.deleted)
+    }) || shard.strings.contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.features.contains_key(key)

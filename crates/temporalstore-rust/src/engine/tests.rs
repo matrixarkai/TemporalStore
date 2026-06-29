@@ -5981,6 +5981,114 @@ fn slot_page_ownership_is_first_class_and_survives_reload() {
     assert_eq!(reloaded_physical.page_index_count, 2);
 }
 
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn slot_index_is_authoritative_when_secondary_views_are_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "slot-authority".to_string(),
+                    value: b"slot-value".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slots.is_empty());
+        shard.strings.clear();
+        shard.hashes.clear();
+        shard.sets.clear();
+    }
+
+    let exists = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::CommonExists {
+            key: "slot-authority".to_string(),
+        },
+    });
+    assert!(exists.status.ok);
+    assert_eq!(exists.response, CommandResponse::Integer { value: 1 });
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "slot-authority".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"slot-value".to_vec())
+        }
+    );
+}
+
+// shared-corpus: storage_dump_load_recovery
+#[test]
+fn legacy_model_maps_are_promoted_to_slot_index_authority() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "legacy-map".to_string(),
+                    value: b"promoted".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.strings.is_empty());
+        shard.slot_index.slots.clear();
+    }
+
+    let get = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "legacy-map".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"promoted".to_vec())
+        }
+    );
+    let physical = engine.storage_physical_index_report(1);
+    assert!(physical.slot_index_authority);
+    assert_eq!(physical.page_index_count, 1);
+    assert_eq!(physical.missing_object_id_count, 0);
+    assert_eq!(physical.missing_routing_slot_count, 0);
+}
+
 // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
