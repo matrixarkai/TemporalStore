@@ -9,7 +9,7 @@ use serde_json::Value;
 use temporalstore_rust::client::{
     ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
 };
-use temporalstore_rust::http::{json_response, parse_json, serve};
+use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::meta::{TopologyVersionReport, TopologyVersionRequest};
 use temporalstore_rust::partition_id::PartitionId;
 use temporalstore_rust::raft::RaftReplicaRole;
@@ -20,11 +20,12 @@ use temporalstore_rust::types::{
 use temporalstore_rust::{
     execute_redis_command, production_readiness_report, ClientOptions, Command, CommandResponse,
     EndToEndWorkflow, ExecuteRequest, GetTableTopologyRequest, MetaEntityState, ProxyOptions,
-    ProxyService, RaftCluster, RaftConfig, RaftError, RegisterServerRequest, RegisterShardRequest,
-    RespValue, ScanStreamRequest, ServerEndpoint, SharedStoreReplicator, SharedStoreStorageMode,
-    SingleNodeMeta, SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind,
-    StreamReadRequest, StreamReadResponse, TableMetaInfo, TableOptions, TablePartition,
-    TableTopologyResponse, TemporalEngine, TemporalStoreClient, TemporalStoreTable,
+    ProxyService, ProxyServingMode, ProxyTableBatchExecuteRequest, RaftCluster, RaftConfig,
+    RaftError, RegisterServerRequest, RegisterShardRequest, RespValue, ScanStreamRequest,
+    ServerEndpoint, SharedStoreReplicator, SharedStoreStorageMode, SingleNodeMeta,
+    SlotDumpFollowerReplayCursor, Status, StorageLifecycleRequest, StreamKind, StreamReadRequest,
+    StreamReadResponse, TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse,
+    TemporalEngine, TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -994,6 +995,115 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             verify_proxy_topology_churn_convergence();
             true
         }
+        "proxy_admission_policy" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy admission command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("readonly_write_disabled_drop_percent_degraded_overload"),
+                "case={} step={} unsupported proxy admission scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_admission_policy();
+            true
+        }
+        "proxy_operational_surface_aliases" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy alias command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("admin_config_heartbeat_status_http_aliases"),
+                "case={} step={} unsupported proxy alias scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_operational_surface_aliases();
+            true
+        }
+        "proxy_tonic_streaming_contract" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy streaming command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("cancellation_backpressure_reconnect_callbacks"),
+                "case={} step={} unsupported proxy streaming scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_tonic_streaming_contract();
+            true
+        }
+        "proxy_route_quarantine_recovery" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy quarantine command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("backend_failure_quarantine_probe_recovery"),
+                "case={} step={} unsupported proxy quarantine scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_route_quarantine_recovery();
+            true
+        }
+        "proxy_multi_proxy_convergence_quarantine" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid multi-proxy command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("two_proxy_stale_cache_quarantine_recovery"),
+                "case={} step={} unsupported multi-proxy scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_topology_churn_convergence();
+            verify_proxy_route_quarantine_recovery();
+            true
+        }
+        "proxy_grafana_prometheus_metric_parity" => {
+            let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "case={} step={} invalid proxy metrics command: {error}",
+                        case.name, step.name
+                    )
+                });
+            assert_eq!(
+                command.scenario.as_deref(),
+                Some("proxy_metric_families_dashboard_alerts"),
+                "case={} step={} unsupported proxy metrics scenario",
+                case.name,
+                step.name
+            );
+            verify_proxy_grafana_prometheus_metric_parity();
+            true
+        }
         "client_cpp_partition_set_route_cache" => {
             let command: SharedHarnessCommand = serde_json::from_value(step.command.clone())
                 .unwrap_or_else(|error| {
@@ -1412,6 +1522,325 @@ fn verify_redis_slot_hash_cpp_crc64() {
         run(vec!["PCLUSTERHASH", "123456789"]),
         RespValue::Integer(0xe9c6_d914_c4b8_d9cau64 as i64)
     );
+}
+
+fn verify_proxy_admission_policy() {
+    let readonly = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        serving_mode: ProxyServingMode::Readonly,
+        ..ProxyOptions::default()
+    });
+    let write = readonly.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "blocked-write".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert_eq!(write.status.code, "proxy_write_disabled");
+    let preflight = readonly.preflight_report();
+    assert_eq!(preflight.policy.serving_mode, ProxyServingMode::Readonly);
+    assert!(!preflight.policy.serving_writes);
+    assert!(preflight
+        .degraded_reasons
+        .contains(&"admission_rejections".to_string()));
+
+    let write_disabled = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        serving_mode: ProxyServingMode::WriteDisabled,
+        ..ProxyOptions::default()
+    });
+    let blocked = write_disabled.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        },
+    });
+    assert_eq!(blocked.status.code, "proxy_write_disabled");
+
+    let not_serving = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        serving_mode: ProxyServingMode::NotServing,
+        ..ProxyOptions::default()
+    });
+    let read = not_serving.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "k".to_string(),
+        },
+    });
+    assert_eq!(read.status.code, "proxy_not_serving");
+    assert!(not_serving.policy_report().rejecting_all);
+
+    let degraded = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        serving_mode: ProxyServingMode::Degraded,
+        ..ProxyOptions::default()
+    });
+    assert_eq!(
+        degraded.preflight_report().policy.serving_mode,
+        ProxyServingMode::Degraded
+    );
+
+    let dropper = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        drop_percent: 100,
+        ..ProxyOptions::default()
+    });
+    let dropped = dropper.table_batch_execute(ProxyTableBatchExecuteRequest {
+        namespace: "ns".to_string(),
+        table_name: "tbl".to_string(),
+        commands: vec![Command::StringGet {
+            key: "drop-me".to_string(),
+        }],
+    });
+    assert_eq!(dropped.status.code, "proxy_traffic_dropped");
+    let policy = dropper.policy_report();
+    assert_eq!(policy.drop_percent, 100);
+    assert_eq!(policy.admission_rejections, 1);
+}
+
+fn proxy_get_json(proxy: &ProxyService, path: &str) -> Value {
+    let (code, body) = proxy.handle(HttpRequest {
+        method: "GET".to_string(),
+        path: path.to_string(),
+        body: Vec::new(),
+    });
+    assert_eq!(code, 200, "GET {path} failed");
+    parse_json::<Value>(&body).unwrap_or_else(|error| panic!("GET {path} invalid JSON: {error}"))
+}
+
+fn verify_proxy_operational_surface_aliases() {
+    let proxy = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        proxy_addr: "127.0.0.1:17123".to_string(),
+        namespace: "ns".to_string(),
+        location: "iad".to_string(),
+        ..ProxyOptions::default()
+    });
+
+    let ports = proxy_get_json(&proxy, "/ProxyService/GetPorts");
+    assert_eq!(ports["listen_port"], 17_123);
+    assert_eq!(ports["announce_port"], 17_123);
+
+    let config = proxy_get_json(&proxy, "/ProxyService/GetConfig");
+    assert_eq!(config["namespace"], "ns");
+    assert_eq!(config["proxy_addr"], "127.0.0.1:17123");
+
+    let heartbeat = proxy_get_json(&proxy, "/ProxyService/Heartbeat");
+    assert_eq!(heartbeat["meta_addr"], "127.0.0.1:1");
+    assert_eq!(heartbeat["route_cache_size"], 0);
+
+    let surface = proxy.operational_surface_report();
+    assert!(surface.status.ok);
+    assert!(!surface.legacy_brpc_thrift_in_scope);
+    assert!(surface.rust_native_aliases_ready);
+    for alias in [
+        "/ProxyService/GetPorts",
+        "/ProxyService/GetConfig",
+        "/ProxyService/Heartbeat",
+        "/ProxyService/Preflight",
+        "/ProxyService/GetConsulNames",
+        "/ProxyService/NotifyStop",
+        "/ProxyService/GetCppMigrationContract",
+        "/ProxyService/GetPolicy",
+        "/ProxyService/Metrics",
+    ] {
+        assert!(
+            surface
+                .entries
+                .iter()
+                .any(|entry| entry.rust_cpp_alias == alias),
+            "missing proxy alias {alias}"
+        );
+    }
+
+    let migration = proxy.cpp_migration_contract();
+    assert!(!migration.legacy_cplusplus_wire_in_scope);
+    assert!(migration.http_json_aliases_ready);
+    assert!(migration.resp_migration_ready);
+    assert!(migration.tonic_streaming_ready);
+    assert!(migration.topology_version_invalidation_preserved);
+    assert!(migration.admission_policy_preserved);
+    assert!(migration.backend_quarantine_preserved);
+}
+
+fn verify_proxy_tonic_streaming_contract() {
+    let proxy = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        ..ProxyOptions::default()
+    });
+    let contract = proxy.tonic_streaming_contract();
+    assert_eq!(contract.service_name, "temporalstore.v1.ProxyService");
+    assert_eq!(contract.execute_stream_method, "ProxyExecuteStream");
+    assert_eq!(contract.route_callback_stream_method, "RouteCallbacks");
+    assert_eq!(contract.preflight_watch_method, "WatchProxyPreflight");
+    assert!(contract.long_running_request_ready);
+    assert!(contract.cancellation_ready);
+    assert!(contract.backpressure_ready);
+    assert!(contract.reconnect_ready);
+    assert_eq!(contract.backpressure_status_code, "resource_exhausted");
+    for case in [
+        "long_running_request",
+        "client_cancellation",
+        "server_backpressure",
+        "callback_reconnect",
+    ] {
+        assert!(contract.maturity_cases.contains(&case.to_string()));
+    }
+    let routed = proxy_get_json(&proxy, "/ProxyService/GetTonicContract");
+    assert_eq!(routed["service_name"], "temporalstore.v1.ProxyService");
+    assert_eq!(routed["backpressure_ready"], true);
+}
+
+fn verify_proxy_route_quarantine_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let server_addr = free_local_addr();
+    start_temporal_engine_http_service(server_addr.clone(), engine.clone());
+
+    let meta = SingleNodeMeta::default();
+    let bad_server = "127.0.0.1:1".to_string();
+    meta.register_server(RegisterServerRequest {
+        server_addr: bad_server.clone(),
+        node_id: 1,
+        location: "proxy-quarantine-zone".to_string(),
+        binary_version: "unified-proxy".to_string(),
+    });
+    assert!(
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: bad_server.clone(),
+        })
+        .status
+        .ok
+    );
+    let meta_addr = free_local_addr();
+    start_single_node_meta_http_service(meta_addr.clone(), meta.clone());
+    wait_for_http(&server_addr);
+    wait_for_http(&meta_addr);
+
+    let proxy = ProxyService::new(ProxyOptions {
+        meta_addr: meta_addr.clone(),
+        route_cache_ttl_ms: 60_000,
+        backend_continuous_failed_time_ms: 5,
+        connect_timeout_ms: 50,
+        io_timeout_ms: 200,
+        ..ProxyOptions::default()
+    });
+
+    let failed = proxy.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "quarantine-key".to_string(),
+            value: b"recovered".to_vec(),
+        },
+    });
+    assert!(!failed.status.ok, "{failed:?}");
+    std::thread::sleep(Duration::from_millis(10));
+
+    meta.register_server(RegisterServerRequest {
+        server_addr: server_addr.clone(),
+        node_id: 2,
+        location: "proxy-quarantine-zone".to_string(),
+        binary_version: "unified-proxy".to_string(),
+    });
+    assert!(
+        meta.register(RegisterShardRequest {
+            shard_id: 1,
+            server_addr: server_addr.clone(),
+        })
+        .status
+        .ok
+    );
+
+    let response = proxy.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "quarantine-key".to_string(),
+            value: b"recovered".to_vec(),
+        },
+    });
+    assert!(response.status.ok, "{response:?}");
+    assert_eq!(
+        proxy
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: "quarantine-key".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(b"recovered".to_vec())
+        }
+    );
+    let info = proxy.info();
+    assert!(info.stats.route_refreshes >= 1);
+    assert!(info.route_cache_size >= 1);
+    assert_eq!(
+        proxy.preflight_report().client.topology_cache.route_count,
+        1
+    );
+}
+
+fn verify_proxy_grafana_prometheus_metric_parity() {
+    let proxy = ProxyService::new(ProxyOptions {
+        meta_addr: "127.0.0.1:1".to_string(),
+        serving_mode: ProxyServingMode::NotServing,
+        drop_percent: 17,
+        ..ProxyOptions::default()
+    });
+    let _ = proxy.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "blocked".to_string(),
+        },
+    });
+    let metrics = proxy.prometheus_metrics();
+    for family in [
+        "temporalstore_proxy_requests_total",
+        "temporalstore_proxy_route_cache_entries",
+        "temporalstore_proxy_route_cache_events_total",
+        "temporalstore_proxy_backend_events_total",
+        "temporalstore_proxy_serving_mode",
+        "temporalstore_proxy_drop_percent",
+        "temporalstore_proxy_metric_family_parity",
+        "temporalstore_proxy_service_registry_state",
+        "temporalstore_proxy_service_registry_events_total",
+        "temporalstore_production_readiness_ready",
+        "temporalstore_production_readiness_service_ready",
+    ] {
+        assert!(
+            metrics.contains(family),
+            "Prometheus output missing proxy/readiness family {family}"
+        );
+    }
+    assert!(metrics.contains("temporalstore_proxy_serving_mode{mode=\"not_serving\"} 1"));
+    assert!(metrics.contains("temporalstore_proxy_drop_percent 17"));
+    assert!(metrics.contains("grafana_panel=\"Proxy Requests And Admission\""));
+
+    let report = proxy.metrics_parity_report();
+    assert!(report.status.ok);
+    assert!(report.grafana_panels_ready);
+    assert!(report.alerts_ready);
+    assert!(report
+        .rust_prometheus_families
+        .contains(&"temporalstore_proxy_metric_family_parity".to_string()));
+    assert!(report.mappings.iter().any(|mapping| {
+        mapping.cpp_surface.contains("command/admission")
+            && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"
+            && mapping.grafana_panel == "Proxy Requests And Admission"
+            && mapping.covered
+    }));
 }
 
 fn verify_proxy_topology_churn_convergence() {
