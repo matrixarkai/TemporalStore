@@ -642,7 +642,7 @@ fn runtime_options_from_env() -> ProductionRaftRuntimeOptions {
         env_bool("TS_RAFT_ALLOW_PLAINTEXT", true),
     );
     ProductionRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id,
         local_node_id,
         nodes,
@@ -721,7 +721,7 @@ mod tests {
     fn test_runtime_for_node(local_node_id: RaftNodeId) -> ProductionRaftRuntime {
         let dir = tempfile::tempdir().unwrap().into_path();
         ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 55,
             local_node_id,
             nodes: vec![

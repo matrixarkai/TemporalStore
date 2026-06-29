@@ -661,7 +661,7 @@ pub fn metaserver_control_plane_readiness_report() -> MetaServerControlPlaneRead
 pub fn metaserver_scheduler_execution_readiness_report(
 ) -> MetaServerSchedulerExecutionReadinessReport {
     let raft = distributed_raft_readiness();
-    let networked_multi_process_raft_ready = raft.openraft_metaserver_process_startup_present;
+    let networked_multi_process_raft_ready = raft.temporal_raft_metaserver_process_startup_present;
     let real_data_node_process_scheduler_ready = raft.metaserver_driven_membership_present;
     let missing_primary_repair_ready = true;
     let under_replicated_repair_ready = true;
@@ -1335,11 +1335,11 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "majority write checks, follower catch-up, safe reads, promotion, scale up/down"
                     .to_string(),
                 "local WAL recovery and local separate-node replication test".to_string(),
-                "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::OpenRaft by default"
+                "raft_node, raft-enabled server, and metaserver process startup select ProductionRaftEngineKind::TemporalRaft by default"
                     .to_string(),
-                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
+                "Raft TemporalRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
-                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "TemporalRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence is persisted in WAL records and rejects missing, corrupt, stale, or ahead-of-storage recovery state"
                     .to_string(),
@@ -1481,13 +1481,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "local OS-process raft_node harness covers rolling restart of every voter with WAL recovery and post-restart replication"
                     .to_string(),
-                "OpenRaft-backed data-node and metaserver adapter is available behind the openraft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
+                "TemporalRaft-backed data-node and metaserver adapter is available behind the temporal-raft-engine feature with durable log state, state-machine apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart recovery tests"
                     .to_string(),
-                "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::OpenRaft"
+                "raft_node, raft-enabled server, and metaserver process startup wire the production runtime options to ProductionRaftEngineKind::TemporalRaft"
                     .to_string(),
-                "Raft OpenRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
+                "Raft TemporalRaft rollout readiness covers adapter presence, data-node/metaserver startup selection, durable local log state, and real multi-process data-node/metaserver log-store rollout evidence"
                     .to_string(),
-                "OpenRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
+                "TemporalRaft process rollout reports must include ByteRaft-derived operational semantics evidence for read-index, lease-read, lagging follower rejection, stale follower writes, snapshot install/restart, membership add/promote/remove, follower rejoin after compaction, secondary-read eligibility, apply convergence, and WAL persistence"
                     .to_string(),
                 "RaftStorageApplyFence persists shard, term, committed/applied index, snapshot id, storage epoch, and checksum with WAL recovery validation"
                     .to_string(),
@@ -1839,20 +1839,20 @@ fn service_readiness_summaries(areas: &[ReadinessArea]) -> Vec<ServiceReadinessS
 
 fn evidence_field_for(area: &str, capability: &str) -> &'static str {
     match area {
-        "raft_replication" if capability.contains("OpenRaft production engine adapter") => {
-            "raft_rollout.openraft_engine_adapter_present"
+        "raft_replication" if capability.contains("TemporalRaft production engine adapter") => {
+            "raft_rollout.temporal_raft_engine_adapter_present"
         }
         "raft_replication"
             if capability.contains("data-node process rollout")
                 || capability.contains("data-node multi-process rollout evidence") =>
         {
-            "raft_rollout.openraft_data_node_process_rollout_ready"
+            "raft_rollout.temporal_raft_data_node_process_rollout_ready"
         }
         "raft_replication"
             if capability.contains("metaserver process rollout")
                 || capability.contains("metaserver multi-process rollout evidence") =>
         {
-            "raft_rollout.openraft_metaserver_process_rollout_ready"
+            "raft_rollout.temporal_raft_metaserver_process_rollout_ready"
         }
         "raft_replication"
             if capability.contains("multi-process log-store validation evidence") =>
@@ -1862,12 +1862,12 @@ fn evidence_field_for(area: &str, capability: &str) -> &'static str {
         "data_node_distributed_raft"
             if capability.contains("data-node multi-process rollout evidence") =>
         {
-            "raft_rollout.openraft_data_node_process_rollout_ready"
+            "raft_rollout.temporal_raft_data_node_process_rollout_ready"
         }
         "data_node_distributed_raft"
             if capability.contains("metaserver multi-process rollout evidence") =>
         {
-            "raft_rollout.openraft_metaserver_process_rollout_ready"
+            "raft_rollout.temporal_raft_metaserver_process_rollout_ready"
         }
         "data_node_distributed_raft"
             if capability.contains("multi-process log-store validation evidence") =>
@@ -2013,7 +2013,7 @@ fn service_next_action(service: &str, blocker_classes: &[String]) -> &'static st
             "run Docker/AWS multi-node SLO validation before claiming global production storage readiness"
         }
         ("raft_replication", "raft_replication_engine") => {
-            "finish durable real-process OpenRaft rollout, production mTLS transport, and external chaos coverage"
+            "finish durable real-process TemporalRaft rollout, production mTLS transport, and external chaos coverage"
         }
         _ => "inspect failed capabilities for this service",
     }
@@ -3229,7 +3229,7 @@ mod tests {
             .iter()
             .any(|item| item.contains("multi-process rollout evidence")));
         assert!(raft_replication.covered.iter().any(|item| {
-            item.contains("Raft OpenRaft rollout readiness")
+            item.contains("Raft TemporalRaft rollout readiness")
                 && item
                     .contains("real multi-process data-node/metaserver log-store rollout evidence")
         }));
@@ -3254,9 +3254,9 @@ mod tests {
             .any(|item| item.contains("ByteRaft-style leader write authority")));
         assert!(covered
             .iter()
-            .any(|item| item.contains("ProductionRaftEngineKind::OpenRaft")));
+            .any(|item| item.contains("ProductionRaftEngineKind::TemporalRaft")));
         assert!(covered.iter().any(|item| {
-            item.contains("Raft OpenRaft rollout readiness")
+            item.contains("Raft TemporalRaft rollout readiness")
                 && item
                     .contains("real multi-process data-node/metaserver log-store rollout evidence")
         }));

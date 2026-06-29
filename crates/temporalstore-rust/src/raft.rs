@@ -1996,7 +1996,8 @@ pub struct DistributedRaftCommandResponse {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ProductionRaftEngineKind {
-    OpenRaft,
+    #[serde(alias = "open_raft", alias = "openraft")]
+    TemporalRaft,
     RaftRs,
 }
 
@@ -2927,27 +2928,91 @@ impl InstantCompat {
     }
 }
 
-#[cfg(feature = "openraft-engine")]
-pub mod openraft_integration {
+#[cfg(feature = "temporal-raft-engine")]
+pub mod temporal_raft_integration {
     use super::*;
     use std::collections::BTreeSet;
-    use std::io::Cursor;
 
-    openraft::declare_raft_types!(
-        pub TemporalOpenRaftConfig:
-            D = Command,
-            R = CommandResponse,
-            NodeId = RaftNodeId,
-            Node = openraft::BasicNode,
-            Entry = openraft::Entry<Self>,
-            SnapshotData = Cursor<Vec<u8>>,
-            AsyncRuntime = openraft::TokioRuntime,
-    );
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftConfig;
 
-    pub type TemporalOpenRaftEntry = openraft::Entry<TemporalOpenRaftConfig>;
-    pub type TemporalOpenRaftLogId = openraft::LogId<RaftNodeId>;
-    pub type TemporalOpenRaftMembership = openraft::Membership<RaftNodeId, openraft::BasicNode>;
-    pub type TemporalOpenRaftSnapshotMeta = openraft::SnapshotMeta<RaftNodeId, openraft::BasicNode>;
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftLogId {
+        pub term: u64,
+        pub node_id: RaftNodeId,
+        pub index: u64,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub enum TemporalRaftEntryPayload {
+        Blank,
+        Normal(Command),
+        Membership(TemporalRaftMembership),
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+    pub struct TemporalRaftEntry {
+        pub log_id: TemporalRaftLogId,
+        pub payload: TemporalRaftEntryPayload,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftNode {
+        pub addr: String,
+    }
+
+    impl TemporalRaftNode {
+        pub fn new(addr: String) -> Self {
+            Self { addr }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftMembership {
+        pub voter_sets: Vec<BTreeSet<RaftNodeId>>,
+        pub nodes: BTreeMap<RaftNodeId, TemporalRaftNode>,
+    }
+
+    impl TemporalRaftMembership {
+        pub fn new(
+            voter_sets: Vec<BTreeSet<RaftNodeId>>,
+            nodes: BTreeMap<RaftNodeId, TemporalRaftNode>,
+        ) -> Self {
+            Self { voter_sets, nodes }
+        }
+
+        pub fn voter_ids(&self) -> impl Iterator<Item = RaftNodeId> + '_ {
+            self.voter_sets
+                .first()
+                .into_iter()
+                .flat_map(|voters| voters.iter().copied())
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftStoredMembership {
+        pub last_log_id: Option<TemporalRaftLogId>,
+        pub membership: TemporalRaftMembership,
+    }
+
+    impl TemporalRaftStoredMembership {
+        pub fn new(
+            last_log_id: Option<TemporalRaftLogId>,
+            membership: TemporalRaftMembership,
+        ) -> Self {
+            Self {
+                last_log_id,
+                membership,
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+    pub struct TemporalRaftSnapshotMeta {
+        pub last_log_id: Option<TemporalRaftLogId>,
+        pub last_membership: TemporalRaftStoredMembership,
+        pub snapshot_id: String,
+    }
 
     pub trait ExternalRaftEngine {
         fn propose_command(&self, command: Command) -> Result<CommandResponse, RaftError>;
@@ -2963,13 +3028,13 @@ pub mod openraft_integration {
 
     #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
     #[serde(rename_all = "snake_case")]
-    pub enum OpenRaftRuntimeKind {
+    pub enum TemporalRaftRuntimeKind {
         DataNode,
         Metaserver,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    pub struct OpenRaftDurableLogRecord {
+    pub struct TemporalRaftDurableLogRecord {
         pub log_id: u64,
         pub term: u64,
         pub leader_id: RaftNodeId,
@@ -2981,7 +3046,7 @@ pub mod openraft_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    pub struct OpenRaftDurableSnapshot {
+    pub struct TemporalRaftDurableSnapshot {
         pub snapshot_id: String,
         pub last_log_index: u64,
         pub last_log_term: u64,
@@ -2993,9 +3058,9 @@ pub mod openraft_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-    struct OpenRaftDurableState {
+    struct TemporalRaftDurableState {
         version: u32,
-        kind: OpenRaftRuntimeKind,
+        kind: TemporalRaftRuntimeKind,
         shard_id: ShardId,
         local_node_id: RaftNodeId,
         current_term: u64,
@@ -3006,15 +3071,15 @@ pub mod openraft_integration {
         last_index: u64,
         voters: Vec<RaftNodeId>,
         learners: Vec<RaftNodeId>,
-        log: Vec<OpenRaftDurableLogRecord>,
-        snapshot: Option<OpenRaftDurableSnapshot>,
+        log: Vec<TemporalRaftDurableLogRecord>,
+        snapshot: Option<TemporalRaftDurableSnapshot>,
         #[serde(default)]
         storage_apply_fence: RaftStorageApplyFence,
     }
 
-    impl OpenRaftDurableState {
+    impl TemporalRaftDurableState {
         fn new(
-            kind: OpenRaftRuntimeKind,
+            kind: TemporalRaftRuntimeKind,
             options: &DataRaftConsensusOptions,
             voters: Vec<RaftNodeId>,
             learners: Vec<RaftNodeId>,
@@ -3091,8 +3156,8 @@ pub mod openraft_integration {
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-    pub struct OpenRaftBackendReport {
-        pub kind: OpenRaftRuntimeKind,
+    pub struct TemporalRaftBackendReport {
+        pub kind: TemporalRaftRuntimeKind,
         pub shard_id: ShardId,
         pub local_node_id: RaftNodeId,
         pub durable_log_records: usize,
@@ -3104,36 +3169,36 @@ pub mod openraft_integration {
         pub leader_transfer_supported: bool,
         pub campaign_supported: bool,
         pub learner_bootstrap_supported: bool,
-        pub openraft_entry_boundary: String,
+        pub temporal_raft_entry_boundary: String,
     }
 
     #[derive(Debug, Clone)]
-    pub struct OpenRaftConsensusBackend {
+    pub struct TemporalRaftConsensusBackend {
         options: DataRaftConsensusOptions,
-        kind: OpenRaftRuntimeKind,
-        state: OpenRaftDurableState,
+        kind: TemporalRaftRuntimeKind,
+        state: TemporalRaftDurableState,
         engine: Option<TemporalEngine>,
         state_path: Option<PathBuf>,
         running: bool,
     }
 
-    impl OpenRaftConsensusBackend {
+    impl TemporalRaftConsensusBackend {
         pub fn new_data_node(options: DataRaftConsensusOptions, engine: TemporalEngine) -> Self {
-            Self::new(options, OpenRaftRuntimeKind::DataNode, Some(engine))
+            Self::new(options, TemporalRaftRuntimeKind::DataNode, Some(engine))
         }
 
         pub fn new_metaserver(options: DataRaftConsensusOptions) -> Self {
-            Self::new(options, OpenRaftRuntimeKind::Metaserver, None)
+            Self::new(options, TemporalRaftRuntimeKind::Metaserver, None)
         }
 
         fn new(
             options: DataRaftConsensusOptions,
-            kind: OpenRaftRuntimeKind,
+            kind: TemporalRaftRuntimeKind,
             engine: Option<TemporalEngine>,
         ) -> Self {
             let state_path = options.wal_dir.as_ref().map(|dir| {
                 dir.join(format!(
-                    "openraft-{}-{}.json",
+                    "temporalraft-{}-{}.json",
                     options.shard_id, options.replica_id
                 ))
             });
@@ -3152,10 +3217,10 @@ pub mod openraft_integration {
             let state = match state_path.as_ref() {
                 Some(path) => Self::load_state(path)
                     .unwrap_or_else(|err| {
-                        panic!("failed to load durable OpenRaft state from {path:?}: {err}")
+                        panic!("failed to load durable TemporalRaft state from {path:?}: {err}")
                     })
-                    .unwrap_or_else(|| OpenRaftDurableState::new(kind, &options, voters, learners)),
-                None => OpenRaftDurableState::new(kind, &options, voters, learners),
+                    .unwrap_or_else(|| TemporalRaftDurableState::new(kind, &options, voters, learners)),
+                None => TemporalRaftDurableState::new(kind, &options, voters, learners),
             };
             Self {
                 options,
@@ -3167,26 +3232,26 @@ pub mod openraft_integration {
             }
         }
 
-        pub fn report(&self) -> OpenRaftBackendReport {
-            OpenRaftBackendReport {
+        pub fn report(&self) -> TemporalRaftBackendReport {
+            TemporalRaftBackendReport {
                 kind: self.kind,
                 shard_id: self.state.shard_id,
                 local_node_id: self.state.local_node_id,
                 durable_log_records: self.state.log.len(),
                 snapshot_installed: self.state.snapshot.is_some(),
                 storage_apply_fence: self.state.storage_apply_fence.clone(),
-                storage_apply_fence_valid: validate_openraft_storage_apply_fence(&self.state)
+                storage_apply_fence_valid: validate_temporal_raft_storage_apply_fence(&self.state)
                     .is_ok(),
                 read_index_supported: true,
                 membership_change_supported: true,
                 leader_transfer_supported: true,
                 campaign_supported: true,
                 learner_bootstrap_supported: true,
-                openraft_entry_boundary: std::any::type_name::<TemporalOpenRaftEntry>().to_string(),
+                temporal_raft_entry_boundary: std::any::type_name::<TemporalRaftEntry>().to_string(),
             }
         }
 
-        pub fn openraft_membership(&self) -> TemporalOpenRaftMembership {
+        pub fn temporal_raft_membership(&self) -> TemporalRaftMembership {
             let voter_set = self.state.voters.iter().copied().collect::<BTreeSet<_>>();
             let mut nodes = BTreeMap::new();
             for node_id in self
@@ -3203,25 +3268,29 @@ pub mod openraft_integration {
                     .find(|peer| peer.replica_id == node_id)
                     .map(|peer| peer.raft_addr.clone())
                     .unwrap_or_default();
-                nodes.insert(node_id, openraft::BasicNode::new(addr));
+                nodes.insert(node_id, TemporalRaftNode::new(addr));
             }
-            TemporalOpenRaftMembership::new(vec![voter_set], nodes)
+            TemporalRaftMembership::new(vec![voter_set], nodes)
         }
 
-        pub fn build_openraft_snapshot_meta(&self) -> TemporalOpenRaftSnapshotMeta {
+        pub fn temporal_raft_membership_compat(&self) -> TemporalRaftMembership {
+            self.temporal_raft_membership()
+        }
+
+        pub fn build_temporal_raft_snapshot_meta(&self) -> TemporalRaftSnapshotMeta {
             let last_log_id = if self.state.last_index == 0 {
                 None
             } else {
-                Some(openraft_log_id(
+                Some(temporal_raft_log_id(
                     self.state.current_term,
                     self.state.leader_id,
                     self.state.last_index,
                 ))
             };
-            let membership = self.openraft_membership();
-            TemporalOpenRaftSnapshotMeta {
-                last_log_id,
-                last_membership: openraft::StoredMembership::new(last_log_id, membership),
+            let membership = self.temporal_raft_membership();
+            TemporalRaftSnapshotMeta {
+                last_log_id: last_log_id.clone(),
+                last_membership: TemporalRaftStoredMembership::new(last_log_id, membership),
                 snapshot_id: self
                     .state
                     .snapshot
@@ -3233,14 +3302,18 @@ pub mod openraft_integration {
             }
         }
 
-        fn load_state(path: &Path) -> Result<Option<OpenRaftDurableState>, RaftError> {
+        pub fn build_temporal_raft_snapshot_meta_compat(&self) -> TemporalRaftSnapshotMeta {
+            self.build_temporal_raft_snapshot_meta()
+        }
+
+        fn load_state(path: &Path) -> Result<Option<TemporalRaftDurableState>, RaftError> {
             if !path.exists() {
                 return Ok(None);
             }
             let bytes = fs::read(path).map_err(|err| RaftError::Wal(err.to_string()))?;
             let state = serde_json::from_slice(&bytes)
-                .map_err(|err| RaftError::Wal(format!("openraft state decode failed: {err}")))?;
-            validate_openraft_storage_apply_fence(&state)?;
+                .map_err(|err| RaftError::Wal(format!("temporal raft state decode failed: {err}")))?;
+            validate_temporal_raft_storage_apply_fence(&state)?;
             Ok(Some(state))
         }
 
@@ -3283,33 +3356,33 @@ pub mod openraft_integration {
         ) -> Result<u64, RaftError> {
             self.state.last_index = self.state.last_index.saturating_add(1);
             let index = self.state.last_index;
-            let log_id = openraft_log_id(self.state.current_term, self.state.leader_id, index);
-            let openraft_entry = match (&command, &membership) {
-                (Some(command), _) => TemporalOpenRaftEntry {
+            let log_id = temporal_raft_log_id(self.state.current_term, self.state.leader_id, index);
+            let temporal_raft_entry = match (&command, &membership) {
+                (Some(command), _) => TemporalRaftEntry {
                     log_id,
-                    payload: openraft::EntryPayload::Normal(command.clone()),
+                    payload: TemporalRaftEntryPayload::Normal(command.clone()),
                 },
                 (None, Some(voters)) => {
                     let membership = membership_from_voters(voters, &self.options.peers);
-                    TemporalOpenRaftEntry {
+                    TemporalRaftEntry {
                         log_id,
-                        payload: openraft::EntryPayload::Membership(membership),
+                        payload: TemporalRaftEntryPayload::Membership(membership),
                     }
                 }
-                (None, None) => TemporalOpenRaftEntry {
+                (None, None) => TemporalRaftEntry {
                     log_id,
-                    payload: openraft::EntryPayload::Blank,
+                    payload: TemporalRaftEntryPayload::Blank,
                 },
             };
-            let checksum = checksum_openraft_record(
+            let checksum = checksum_temporal_raft_record(
                 index,
                 self.state.current_term,
                 self.state.leader_id,
                 &command,
                 membership.as_deref(),
             )?;
-            let record = OpenRaftDurableLogRecord {
-                log_id: openraft_entry.log_id.index,
+            let record = TemporalRaftDurableLogRecord {
+                log_id: temporal_raft_entry.log_id.index,
                 term: self.state.current_term,
                 leader_id: self.state.leader_id,
                 index,
@@ -3345,7 +3418,7 @@ pub mod openraft_integration {
                 });
                 if !response.status.ok {
                     return Err(RaftError::InvalidDataRaftLog(format!(
-                        "openraft state-machine apply failed: {} {}",
+                        "temporal raft state-machine apply failed: {} {}",
                         response.status.code, response.status.message
                     )));
                 }
@@ -3356,7 +3429,7 @@ pub mod openraft_integration {
         }
     }
 
-    impl DataRaftConsensusBackend for OpenRaftConsensusBackend {
+    impl DataRaftConsensusBackend for TemporalRaftConsensusBackend {
         fn start(&mut self) -> Result<(), RaftError> {
             self.running = true;
             self.persist_state()
@@ -3424,9 +3497,9 @@ pub mod openraft_integration {
             let payload_bytes = serde_json::to_vec(&self.state.log)
                 .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
             let payload_checksum = hex::encode(Sha256::digest(&payload_bytes));
-            let snapshot = OpenRaftDurableSnapshot {
+            let snapshot = TemporalRaftDurableSnapshot {
                 snapshot_id: format!(
-                    "openraft-{}-{}-{}",
+                    "temporalraft-{}-{}-{}",
                     self.state.shard_id, self.state.current_term, self.state.applied_index
                 ),
                 last_log_index: self.state.last_index,
@@ -3559,27 +3632,31 @@ pub mod openraft_integration {
         }
     }
 
-    pub fn new_openraft_data_node_backend(
+    pub fn new_temporal_raft_data_node_backend(
         options: DataRaftConsensusOptions,
         engine: TemporalEngine,
-    ) -> OpenRaftConsensusBackend {
-        OpenRaftConsensusBackend::new_data_node(options, engine)
+    ) -> TemporalRaftConsensusBackend {
+        TemporalRaftConsensusBackend::new_data_node(options, engine)
     }
 
-    pub fn new_openraft_metaserver_backend(
+    pub fn new_temporal_raft_metaserver_backend(
         options: DataRaftConsensusOptions,
-    ) -> OpenRaftConsensusBackend {
-        OpenRaftConsensusBackend::new_metaserver(options)
+    ) -> TemporalRaftConsensusBackend {
+        TemporalRaftConsensusBackend::new_metaserver(options)
     }
 
-    fn openraft_log_id(term: u64, node_id: RaftNodeId, index: u64) -> TemporalOpenRaftLogId {
-        openraft::LogId::new(openraft::CommittedLeaderId::new(term, node_id), index)
+    fn temporal_raft_log_id(term: u64, node_id: RaftNodeId, index: u64) -> TemporalRaftLogId {
+        TemporalRaftLogId {
+            term,
+            node_id,
+            index,
+        }
     }
 
     fn membership_from_voters(
         voters: &[RaftNodeId],
         peers: &[DataRaftPeer],
-    ) -> TemporalOpenRaftMembership {
+    ) -> TemporalRaftMembership {
         let voter_set = voters.iter().copied().collect::<BTreeSet<_>>();
         let mut nodes = BTreeMap::new();
         for voter in voters {
@@ -3588,20 +3665,20 @@ pub mod openraft_integration {
                 .find(|peer| peer.replica_id == *voter)
                 .map(|peer| peer.raft_addr.clone())
                 .unwrap_or_default();
-            nodes.insert(*voter, openraft::BasicNode::new(addr));
+            nodes.insert(*voter, TemporalRaftNode::new(addr));
         }
-        TemporalOpenRaftMembership::new(vec![voter_set], nodes)
+        TemporalRaftMembership::new(vec![voter_set], nodes)
     }
 
-    fn validate_openraft_storage_apply_fence(
-        state: &OpenRaftDurableState,
+    fn validate_temporal_raft_storage_apply_fence(
+        state: &TemporalRaftDurableState,
     ) -> Result<(), RaftError> {
         let fence = &state.storage_apply_fence;
         if fence == &RaftStorageApplyFence::default()
             && (state.committed_index > 0 || state.applied_index > 0 || state.snapshot.is_some())
         {
             return Err(RaftError::ApplySnapshotFence(
-                "missing openraft storage apply fence".to_string(),
+                "missing temporal raft storage apply fence".to_string(),
             ));
         }
         if fence == &RaftStorageApplyFence::default() {
@@ -3609,31 +3686,31 @@ pub mod openraft_integration {
         }
         if fence.shard_id != state.shard_id {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence shard {} does not match state shard {}",
+                "temporal raft storage fence shard {} does not match state shard {}",
                 fence.shard_id, state.shard_id
             )));
         }
         if fence.raft_term != state.current_term {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence term {} does not match current term {}",
+                "temporal raft storage fence term {} does not match current term {}",
                 fence.raft_term, state.current_term
             )));
         }
         if fence.committed_index != state.committed_index {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence committed index {} does not match committed index {}",
+                "temporal raft storage fence committed index {} does not match committed index {}",
                 fence.committed_index, state.committed_index
             )));
         }
         if fence.applied_index != state.applied_index {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence applied index {} does not match applied index {}",
+                "temporal raft storage fence applied index {} does not match applied index {}",
                 fence.applied_index, state.applied_index
             )));
         }
         if fence.applied_index > fence.committed_index {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence applied index {} is ahead of committed index {}",
+                "temporal raft storage fence applied index {} is ahead of committed index {}",
                 fence.applied_index, fence.committed_index
             )));
         }
@@ -3643,7 +3720,7 @@ pub mod openraft_integration {
             .map(|snapshot| snapshot.snapshot_id.clone());
         if fence.snapshot_id != snapshot_id {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence snapshot id {:?} does not match durable snapshot id {:?}",
+                "temporal raft storage fence snapshot id {:?} does not match durable snapshot id {:?}",
                 fence.snapshot_id, snapshot_id
             )));
         }
@@ -3654,7 +3731,7 @@ pub mod openraft_integration {
             .unwrap_or_default();
         if fence.storage_epoch < fence.applied_index || fence.storage_epoch < snapshot_index {
             return Err(RaftError::ApplySnapshotFence(format!(
-                "openraft storage fence epoch {} is behind applied index {} or snapshot index {}",
+                "temporal raft storage fence epoch {} is behind applied index {} or snapshot index {}",
                 fence.storage_epoch, fence.applied_index, snapshot_index
             )));
         }
@@ -3668,13 +3745,13 @@ pub mod openraft_integration {
         );
         if fence.checksum != expected {
             return Err(RaftError::ApplySnapshotFence(
-                "openraft storage fence checksum mismatch".to_string(),
+                "temporal raft storage fence checksum mismatch".to_string(),
             ));
         }
         Ok(())
     }
 
-    fn checksum_openraft_record(
+    fn checksum_temporal_raft_record(
         index: u64,
         term: u64,
         leader_id: RaftNodeId,

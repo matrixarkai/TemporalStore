@@ -2,7 +2,7 @@
 
 ## Current Status
 
-Distributed Raft production readiness is based on multi-process OpenRaft evidence for both the
+Distributed Raft production readiness is based on multi-process TemporalRaft evidence for both the
 data-node and metaserver paths. Local in-process Raft fixtures remain useful for unit tests and
 model checking, but they are not readiness-eligible production evidence.
 
@@ -28,10 +28,10 @@ names, for example `process_path_validated`, `read_index_validated`, or
 
 The Rust code currently has:
 
-- production data-node Raft runtime options with OpenRaft/raft-rs engine selection
+- production data-node Raft runtime options with TemporalRaft/raft-rs engine selection
 - `raft_node`, raft-enabled `server`, and `metaserver` process startup construct production runtime
-  options with `ProductionRaftEngineKind::OpenRaft` by default
-- feature-gated OpenRaft data-node and metaserver adapter with durable log state, state-machine
+  options with `ProductionRaftEngineKind::TemporalRaft` by default
+- feature-gated TemporalRaft data-node and metaserver adapter with durable log state, state-machine
   apply, snapshot metadata, read-index checks, membership changes, leader transfer, and restart
   recovery tests
 - production metaserver Raft runtime options with failover/catch-up timer and stale-server detection

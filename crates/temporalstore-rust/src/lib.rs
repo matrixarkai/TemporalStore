@@ -170,12 +170,14 @@ pub use proxy::{
     ProxyPreflightReport, ProxyReplicaReadPolicy, ProxyService, ProxyServingMode, ProxyStats,
     ProxyTableBatchExecuteRequest, ProxyTableExecuteRequest, ProxyTableOptionsView,
 };
-#[cfg(feature = "openraft-engine")]
-pub use raft::openraft_integration::{
-    new_openraft_data_node_backend, new_openraft_metaserver_backend, OpenRaftBackendReport,
-    OpenRaftConsensusBackend, OpenRaftDurableLogRecord, OpenRaftDurableSnapshot,
-    OpenRaftRuntimeKind, TemporalOpenRaftConfig, TemporalOpenRaftEntry, TemporalOpenRaftLogId,
-    TemporalOpenRaftMembership, TemporalOpenRaftSnapshotMeta,
+#[cfg(feature = "temporal-raft-engine")]
+pub use raft::temporal_raft_integration::{
+    new_temporal_raft_data_node_backend, new_temporal_raft_metaserver_backend,
+    TemporalRaftBackendReport, TemporalRaftConfig, TemporalRaftConsensusBackend,
+    TemporalRaftDurableLogRecord,
+    TemporalRaftDurableSnapshot, TemporalRaftEntry, TemporalRaftEntryPayload, TemporalRaftLogId,
+    TemporalRaftMembership, TemporalRaftNode, TemporalRaftRuntimeKind, TemporalRaftSnapshotMeta,
+    TemporalRaftStoredMembership,
 };
 pub use raft::{
     apply_data_raft_membership_from_topology, distributed_raft_readiness,
@@ -186,8 +188,8 @@ pub use raft::{
     DistributedRaftCommandResponse, DistributedRaftProposeRequest, DistributedRaftReadRequest,
     HttpRaftTransport, InstallSnapshotRequest, InstallSnapshotResponse, LocalRaftWal, MetaCommand,
     MetaOwnedDataRaftMembershipReport, MetaRaftCluster, MetaState,
-    OpenRaftDataNodeProcessRolloutReport, OpenRaftMetaProcessRolloutReport,
-    OpenRaftProcessNodeEvidence, OpenRaftProcessOperationalSemanticsEvidence,
+    TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
+    TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
     ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftChaosPlan,
     ProductionRaftEngineKind, ProductionRaftNode, ProductionRaftProcessSpec, ProductionRaftRuntime,
     ProductionRaftRuntimeOptions, ProductionRaftSecurity, ProductionRaftSecurityEnv,

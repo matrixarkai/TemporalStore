@@ -938,41 +938,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "openraft"
-version = "0.9.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc22bb6823c606299be05f3cc0d2ac30216412e05352eaf192a481c12ea055fc"
-dependencies = [
- "anyerror",
- "byte-unit",
- "chrono",
- "clap",
- "derive_more",
- "futures",
- "maplit",
- "openraft-macros",
- "rand",
- "thiserror",
- "tokio",
- "tracing",
- "tracing-futures",
- "validit",
-]
-
-[[package]]
-name = "openraft-macros"
-version = "0.9.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbbf0342d747a8da209c8e1d3ca8f788100966669412aaacb449409205931251"
-dependencies = [
- "chrono",
- "proc-macro2",
- "quote",
- "semver",
- "syn 2.0.117",
-]
-
-[[package]]
 name = "parking_lot"
 version = "0.12.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1577,7 +1542,6 @@ dependencies = [
  "async-trait",
  "bytes",
  "hex",
- "openraft",
  "prost",
  "protoc-bin-vendored",
  "serde",

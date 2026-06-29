@@ -967,7 +967,7 @@ fn runtime_options(
     local_node_id: RaftNodeId,
 ) -> ProductionRaftRuntimeOptions {
     ProductionRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: options.shard_id,
         local_node_id,
         nodes: nodes.to_vec(),

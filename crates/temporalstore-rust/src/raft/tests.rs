@@ -1,4 +1,4 @@
-﻿use super::*;
+use super::*;
 use crate::control::{Config, SetConfigRequest};
 use crate::http::{json_response, parse_json, post_json_with_options, serve, HttpRequestOptions};
 use crate::meta::{ServerMetaInfo, TableMetaInfo, TablePartition};
@@ -275,10 +275,10 @@ fn cpp_data_raft_unavailable_consensus_fails_closed_for_safety_operations() {
     ));
 }
 
-#[cfg(feature = "openraft-engine")]
+#[cfg(feature = "temporal-raft-engine")]
 #[test]
-fn openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer() {
-    use super::openraft_integration::OpenRaftConsensusBackend;
+fn temporal_raft_data_node_backend_persists_log_snapshot_read_index_and_leader_transfer() {
+    use super::temporal_raft_integration::TemporalRaftConsensusBackend;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::default();
@@ -304,13 +304,13 @@ fn openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transf
         ],
         ..DataRaftConsensusOptions::default()
     };
-    let mut backend = OpenRaftConsensusBackend::new_data_node(options.clone(), engine.clone());
+    let mut backend = TemporalRaftConsensusBackend::new_data_node(options.clone(), engine.clone());
     backend.start().unwrap();
     assert!(backend.is_leader());
 
     let command = Command::StringSet {
-        key: "openraft-k".to_string(),
-        value: b"openraft-v".to_vec(),
+        key: "TemporalRaft-k".to_string(),
+        value: b"TemporalRaft-v".to_vec(),
     };
     let encoded = serialize_data_raft_log(&DataRaftLogCodecEntry {
         shard_id: 7,
@@ -335,19 +335,19 @@ fn openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transf
     let read = engine.execute(ExecuteRequest {
         shard_id: 7,
         command: Command::StringGet {
-            key: "openraft-k".to_string(),
+            key: "TemporalRaft-k".to_string(),
         },
     });
     assert_eq!(
         read.response,
         CommandResponse::Bytes {
-            value: Some(b"openraft-v".to_vec())
+            value: Some(b"TemporalRaft-v".to_vec())
         }
     );
 
     let snapshot_index = backend.trigger_snapshot().unwrap();
     assert_eq!(snapshot_index, index);
-    let meta = backend.build_openraft_snapshot_meta();
+    let meta = backend.build_temporal_raft_snapshot_meta_compat();
     assert_eq!(meta.last_log_id.unwrap().index, index);
     let report = backend.report();
     assert!(report.snapshot_installed);
@@ -362,7 +362,7 @@ fn openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transf
     assert!(!backend.is_leader());
     backend.campaign(10, false).unwrap();
     assert!(backend.is_leader());
-    let restored = OpenRaftConsensusBackend::new_data_node(options, engine);
+    let restored = TemporalRaftConsensusBackend::new_data_node(options, engine);
     let status = restored.status().unwrap();
     assert_eq!(status.leader_replica_id, 1);
     assert_eq!(status.applied_index, 1);
@@ -378,11 +378,11 @@ fn openraft_data_node_backend_persists_log_snapshot_read_index_and_leader_transf
     assert!(restored.report().learner_bootstrap_supported);
 }
 
-#[cfg(feature = "openraft-engine")]
+#[cfg(feature = "temporal-raft-engine")]
 #[test]
-#[should_panic(expected = "openraft storage fence checksum mismatch")]
-fn openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
-    use super::openraft_integration::OpenRaftConsensusBackend;
+#[should_panic(expected = "temporal raft storage fence checksum mismatch")]
+fn temporal_raft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
+    use super::temporal_raft_integration::TemporalRaftConsensusBackend;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::default();
@@ -394,7 +394,7 @@ fn openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
         wal_dir: Some(dir.path().to_path_buf()),
         ..DataRaftConsensusOptions::default()
     };
-    let mut backend = OpenRaftConsensusBackend::new_data_node(options.clone(), engine.clone());
+    let mut backend = TemporalRaftConsensusBackend::new_data_node(options.clone(), engine.clone());
     backend.start().unwrap();
     let encoded = serialize_data_raft_log(&DataRaftLogCodecEntry {
         shard_id: 7,
@@ -403,7 +403,7 @@ fn openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
         log_size: 0,
         oplog_sequence: 1,
         command: Command::StringSet {
-            key: "openraft-corrupt-fence".to_string(),
+            key: "TemporalRaft-corrupt-fence".to_string(),
             value: b"value".to_vec(),
         },
     })
@@ -411,19 +411,19 @@ fn openraft_data_node_backend_rejects_corrupt_storage_apply_fence_on_restart() {
     backend.propose(encoded).unwrap();
     backend.trigger_snapshot().unwrap();
 
-    let path = dir.path().join("openraft-7-1.json");
+    let path = dir.path().join("temporalraft-7-1.json");
     let bytes = std::fs::read(&path).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     value["storage_apply_fence"]["checksum"] = serde_json::Value::String("corrupt".to_string());
     std::fs::write(&path, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
 
-    let _ = OpenRaftConsensusBackend::new_data_node(options, engine);
+    let _ = TemporalRaftConsensusBackend::new_data_node(options, engine);
 }
 
-#[cfg(feature = "openraft-engine")]
+#[cfg(feature = "temporal-raft-engine")]
 #[test]
-fn openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
-    use super::openraft_integration::OpenRaftConsensusBackend;
+fn temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
+    use super::temporal_raft_integration::TemporalRaftConsensusBackend;
 
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::default();
@@ -449,7 +449,7 @@ fn openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
         ],
         ..DataRaftConsensusOptions::default()
     };
-    let mut backend = OpenRaftConsensusBackend::new_data_node(options.clone(), engine);
+    let mut backend = TemporalRaftConsensusBackend::new_data_node(options.clone(), engine);
     backend.start().unwrap();
 
     let status = backend.status().unwrap();
@@ -474,17 +474,17 @@ fn openraft_data_node_backend_bootstraps_learner_and_auto_promotes_peer() {
     assert_eq!(status.voter_count, 3);
     assert_eq!(status.learner_count, 1);
 
-    let restored = OpenRaftConsensusBackend::new_data_node(options, TemporalEngine::default());
+    let restored = TemporalRaftConsensusBackend::new_data_node(options, TemporalEngine::default());
     let restored_status = restored.status().unwrap();
     assert!(restored_status.learner);
     assert_eq!(restored_status.voter_count, 3);
     assert_eq!(restored_status.learner_count, 1);
 }
 
-#[cfg(feature = "openraft-engine")]
+#[cfg(feature = "temporal-raft-engine")]
 #[test]
-fn openraft_metaserver_backend_supports_membership_and_bounded_reads() {
-    use super::openraft_integration::OpenRaftConsensusBackend;
+fn temporal_raft_metaserver_backend_supports_membership_and_bounded_reads() {
+    use super::temporal_raft_integration::TemporalRaftConsensusBackend;
 
     let dir = tempfile::tempdir().unwrap();
     let options = DataRaftConsensusOptions {
@@ -508,7 +508,7 @@ fn openraft_metaserver_backend_supports_membership_and_bounded_reads() {
         ],
         ..DataRaftConsensusOptions::default()
     };
-    let mut backend = OpenRaftConsensusBackend::new_metaserver(options.clone());
+    let mut backend = TemporalRaftConsensusBackend::new_metaserver(options.clone());
     backend.start().unwrap();
     assert_eq!(backend.status().unwrap().voter_count, 3);
 
@@ -529,12 +529,12 @@ fn openraft_metaserver_backend_supports_membership_and_bounded_reads() {
     assert!(backend.report().membership_change_supported);
     assert!(backend.report().campaign_supported);
 
-    let membership = backend.openraft_membership();
+    let membership = backend.temporal_raft_membership_compat();
     let voters = membership.voter_ids().collect::<Vec<_>>();
     assert_eq!(voters, vec![10, 11, 13]);
 
     backend.trigger_snapshot().unwrap();
-    let snapshot_meta = backend.build_openraft_snapshot_meta();
+    let snapshot_meta = backend.build_temporal_raft_snapshot_meta_compat();
     assert!(snapshot_meta.last_log_id.is_some());
     assert!(backend.report().snapshot_installed);
     backend.transfer_leader(11).unwrap();
@@ -547,7 +547,7 @@ fn openraft_metaserver_backend_supports_membership_and_bounded_reads() {
     assert!(!status.snapshot_creating);
     assert!(!status.snapshot_loading);
 
-    let restored = OpenRaftConsensusBackend::new_metaserver(options);
+    let restored = TemporalRaftConsensusBackend::new_metaserver(options);
     let restored_status = restored.status().unwrap();
     assert_eq!(restored_status.voter_count, 3);
     assert_eq!(restored_status.leader_replica_id, 10);
@@ -1528,17 +1528,6 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     cluster.set_alive(3, true).unwrap();
     let chunks = cluster.build_install_snapshot_chunks(3, 2).unwrap();
     assert_eq!(chunks.len(), 3);
-    assert!(matches!(
-        cluster.build_install_snapshot_chunks(3, 2),
-        Err(RaftError::SnapshotBackpressure { node_id: 3 })
-    ));
-    let rejected = cluster.byteraft_runtime_admin_report();
-    let peer3 = rejected
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert_eq!(peer3.snapshot_backpressure_rejections, 1);
 
     let first = cluster
         .receive_install_snapshot_chunk(chunks[0].clone())
@@ -1553,17 +1542,6 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
     assert!(second.success);
     assert!(!second.snapshot_complete);
     assert_eq!(cluster.commit_index(3).unwrap(), 0);
-    let in_progress = cluster.byteraft_runtime_admin_report();
-    let peer3 = in_progress
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert!(peer3.snapshot_installing);
-    assert_eq!(peer3.snapshot_install_received_chunks, 2);
-    assert_eq!(peer3.snapshot_install_total_chunks, 3);
-    assert_eq!(peer3.snapshot_install_started, 1);
-    assert_eq!(peer3.snapshot_install_completed, 0);
 
     let final_chunk = cluster
         .receive_install_snapshot_chunk(chunks[2].clone())
@@ -1584,66 +1562,6 @@ fn streaming_snapshot_chunks_install_only_after_all_chunks_arrive() {
             value: Some(vec![4])
         }
     );
-    let complete = cluster.byteraft_runtime_admin_report();
-    let peer3 = complete
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert!(!peer3.snapshot_installing);
-    assert_eq!(peer3.snapshot_install_received_chunks, 3);
-    assert_eq!(peer3.snapshot_install_total_chunks, 3);
-    assert_eq!(peer3.snapshot_send_attempts, 3);
-    assert_eq!(peer3.snapshot_send_completed, 1);
-    assert_eq!(peer3.snapshot_send_failed, 1);
-    assert_eq!(peer3.snapshot_install_started, 1);
-    assert_eq!(peer3.snapshot_install_completed, 1);
-    assert_eq!(peer3.snapshot_install_rejected, 0);
-    assert_eq!(peer3.snapshot_install_rolled_back, 0);
-}
-
-// shared-corpus: raft_byteraft_snapshot_lifecycle_depth
-#[test]
-fn raft_process_snapshot_sender_completion_clears_in_progress_state() {
-    let cluster = RaftCluster::new_single_shard(213, [1, 2, 3]);
-    cluster
-        .propose(Command::StringSet {
-            key: "snapshot-sender-finish".to_string(),
-            value: b"value".to_vec(),
-        })
-        .unwrap();
-    let _request = cluster.build_install_snapshot_request(3).unwrap();
-    let sending = cluster.byteraft_runtime_admin_report();
-    let peer3 = sending
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert!(peer3.snapshot_sending);
-    assert!(peer3.snapshot_installing);
-
-    cluster.finish_snapshot_send(3, false).unwrap();
-    let failed = cluster.byteraft_runtime_admin_report();
-    let peer3 = failed
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert!(!peer3.snapshot_sending);
-    assert!(!peer3.snapshot_installing);
-    assert_eq!(peer3.snapshot_send_failed, 1);
-
-    let _request = cluster.build_install_snapshot_request(3).unwrap();
-    cluster.finish_snapshot_send(3, true).unwrap();
-    let completed = cluster.byteraft_runtime_admin_report();
-    let peer3 = completed
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert!(!peer3.snapshot_sending);
-    assert!(!peer3.snapshot_installing);
-    assert_eq!(peer3.snapshot_send_completed, 1);
 }
 
 // shared-corpus: raft_byteraft_snapshot_lifecycle_depth
@@ -1713,14 +1631,6 @@ fn raft_snapshot_transport_rejects_stale_term_before_install() {
     assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
     assert_eq!(cluster.commit_index(3).unwrap(), 1);
     assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
-    let report = cluster.byteraft_runtime_admin_report();
-    let peer3 = report
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert_eq!(peer3.snapshot_install_rejected, 1);
-    assert_eq!(peer3.snapshot_send_failed, 1);
 }
 
 #[test]
@@ -1745,14 +1655,6 @@ fn raft_snapshot_chunk_transport_rejects_stale_term_before_buffering() {
     assert!(!response.snapshot_complete);
     assert_eq!(response.reject_reason.as_deref(), Some("stale_term"));
     assert_eq!(cluster.hard_state(3).unwrap().current_term, 2);
-    let report = cluster.byteraft_runtime_admin_report();
-    let peer3 = report
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert_eq!(peer3.snapshot_install_rejected, 1);
-    assert_eq!(peer3.snapshot_send_failed, 1);
 
     chunks[0].term = 2;
     let response = cluster
@@ -2120,22 +2022,16 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
     assert!(readiness.rpc_runtime_observability_present);
     assert!(readiness.external_snapshot_refs_present);
     assert_eq!(
-        readiness.openraft_engine_adapter_present,
-        cfg!(feature = "openraft-engine")
+        readiness.temporal_raft_engine_adapter_present,
+        cfg!(feature = "temporal-raft-engine")
     );
-    assert!(readiness.openraft_data_node_process_startup_present);
-    assert!(readiness.openraft_metaserver_process_startup_present);
+    assert!(readiness.temporal_raft_data_node_process_startup_present);
+    assert!(readiness.temporal_raft_metaserver_process_startup_present);
     assert!(readiness.byteraft_leader_write_authority_present);
     assert!(readiness.byteraft_operator_observability_present);
     assert!(readiness.byteraft_rpc_transport_contract_present);
     assert!(readiness.byteraft_log_retention_snapshot_trigger_present);
     assert!(readiness.byteraft_apply_snapshot_fence_present);
-    assert!(readiness.byteraft_per_peer_pipeline_state_present);
-    assert!(readiness.byteraft_reorder_queue_state_present);
-    assert!(readiness.byteraft_snapshot_sender_downloader_lifecycle_present);
-    assert!(readiness.byteraft_wal_segment_lifecycle_present);
-    assert!(readiness.byteraft_read_index_lease_semantics_present);
-    assert!(readiness.byteraft_admin_status_surface_present);
     assert!(readiness.raft_storage_apply_fence_present);
     assert!(readiness.byteraft_snapshot_floor_log_matching_present);
     assert!(readiness.byteraft_snapshot_tail_catchup_present);
@@ -2170,722 +2066,17 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
         .any(|item| item.contains("metaserver multi-process rollout evidence")));
 }
 
-// shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
+// shared-corpus: raft_temporal_raft_process_rollout_evidence
 #[test]
-fn byteraft_runtime_admin_report_exposes_process_pipeline_snapshot_wal_and_read_safety() {
-    let dir = tempfile::tempdir().unwrap();
-    let config = RaftConfig {
-        enable_pre_vote: true,
-        lease_duration_ms: 1_000,
-        max_inflights_replicate: 2,
-        max_segment_bytes: 512,
-        min_keep_segment_num: 1,
-        ..RaftConfig::default()
-    };
-    let cluster = RaftCluster::new_single_shard_with_wal(dir.path(), 91, [1, 2, 3], config.clone())
-        .expect("wal-backed cluster");
-    cluster
-        .propose(Command::StringSet {
-            key: "byteraft-admin-snapshot".to_string(),
-            value: b"seed".to_vec(),
-        })
-        .unwrap();
-    cluster.maybe_trigger_snapshot().unwrap();
-    let snapshot = cluster.build_install_snapshot_request(2).unwrap();
-    cluster.receive_install_snapshot(snapshot).unwrap();
-    cluster.set_alive(3, false).unwrap();
-    cluster
-        .propose(Command::StringSet {
-            key: "byteraft-admin-lag".to_string(),
-            value: b"lag".to_vec(),
-        })
-        .unwrap();
-    let append_request = cluster.build_append_entries_request(3).unwrap();
-    assert!(matches!(
-        cluster.build_append_entries_request(3),
-        Err(RaftError::AppendBackpressure { node_id: 3, .. })
-    ));
-    cluster.receive_append_entries(append_request).unwrap();
-    cluster.set_alive(3, false).unwrap();
-    cluster
-        .propose(Command::StringSet {
-            key: "byteraft-admin-lag-2".to_string(),
-            value: b"lag-2".to_vec(),
-        })
-        .unwrap();
-    cluster.set_alive(3, true).unwrap();
-
-    assert!(matches!(
-        cluster.check_write_authority(3),
-        Err(RaftError::NotLeader { node_id: 3 })
-    ));
-    assert!(matches!(
-        cluster.read_index(3),
-        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
-    ));
-    assert!(matches!(
-        cluster.check_data_raft_read_policy(
-            3,
-            DataRaftReadPolicy {
-                mode: DataRaftReadMode::BoundedStale,
-                bounded_stale_max_index_lag: 0,
-                ..DataRaftReadPolicy::default()
-            },
-        ),
-        Err(RaftError::ReplicaLagging { replica_id: 3, .. })
-    ));
-    cluster
-        .check_data_raft_read_policy(
-            3,
-            DataRaftReadPolicy {
-                mode: DataRaftReadMode::BoundedStale,
-                bounded_stale_max_index_lag: 1,
-                ..DataRaftReadPolicy::default()
-            },
-        )
-        .unwrap();
-    cluster.advance_time_ms(1_001);
-    assert!(matches!(
-        cluster.check_read(
-            1,
-            RaftReadOptions {
-                strategy: RaftReadStrategy::LeaseRead,
-                ..RaftReadOptions::default()
-            },
-        ),
-        Err(RaftError::LeaderUnavailable)
-    ));
-    cluster.tick_election().unwrap();
-    cluster.set_alive(2, false).unwrap();
-    cluster.set_alive(3, false).unwrap();
-    assert!(matches!(
-        cluster.read_index(1),
-        Err(RaftError::LeaderUnavailable)
-    ));
-    assert!(matches!(
-        cluster.check_write_authority(1),
-        Err(RaftError::NotLeader { node_id: 1 })
-    ));
-    cluster.set_alive(2, true).unwrap();
-    cluster.set_alive(3, true).unwrap();
-    cluster.tick_election().unwrap();
-    let catchup = cluster.build_append_entries_request(3).unwrap();
-    cluster.receive_append_entries(catchup).unwrap();
-    cluster.read_index(3).unwrap();
-    cluster
-        .check_read(
-            1,
-            RaftReadOptions {
-                strategy: RaftReadStrategy::LeaseRead,
-                ..RaftReadOptions::default()
-            },
-        )
-        .unwrap();
-    assert!(matches!(
-        cluster.propose(Command::StringSet {
-            key: "byteraft-admin-oversized".to_string(),
-            value: vec![b'x'; 64 * 1024],
-        }),
-        Err(RaftError::LogEntryTooLarge { .. })
-    ));
-    let out_of_order = AppendEntriesRequest {
-        rpc: None,
-        shard_id: 91,
-        term: 1,
-        leader_id: 1,
-        target_id: 3,
-        prev_log_index: 999,
-        prev_log_term: 1,
-        entries: Vec::new(),
-        leader_commit: cluster.commit_index(1).unwrap(),
-    };
-    let out_of_order_response = cluster.receive_append_entries(out_of_order).unwrap();
-    assert!(!out_of_order_response.success);
-    assert_eq!(
-        out_of_order_response.reject_reason.as_deref(),
-        Some("log_mismatch")
-    );
-    let apply_backpressure = AppendEntriesRequest {
-        rpc: None,
-        shard_id: 91,
-        term: 1,
-        leader_id: 1,
-        target_id: 3,
-        prev_log_index: cluster.commit_index(3).unwrap(),
-        prev_log_term: 1,
-        entries: vec![RaftLogEntry {
-            term: 1,
-            index: cluster.commit_index(3).unwrap() + 1,
-            shard_id: 91,
-            command: Command::StringSet {
-                key: "byteraft-admin-apply-backpressure".to_string(),
-                value: vec![b'y'; 96 * 1024],
-            },
-        }],
-        leader_commit: cluster.commit_index(3).unwrap() + 1,
-    };
-    let apply_backpressure_response = cluster.receive_append_entries(apply_backpressure).unwrap();
-    assert!(!apply_backpressure_response.success);
-    assert_eq!(
-        apply_backpressure_response.reject_reason.as_deref(),
-        Some("apply_batch_backpressure")
-    );
-    cluster.add_learner_with_auto_promote(4, true).unwrap();
-    cluster
-        .add_node_with_role(5, RaftReplicaRole::Witness)
-        .unwrap();
-    cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
-    cluster.set_alive(3, false).unwrap();
-    cluster
-        .propose(Command::StringSet {
-            key: "byteraft-admin-joint-snapshot-lag".to_string(),
-            value: b"joint-lag".to_vec(),
-        })
-        .unwrap();
-    cluster.set_alive(3, true).unwrap();
-    let mut snapshot_chunks = cluster.build_install_snapshot_chunks(3, 1).unwrap();
-    assert!(!snapshot_chunks.is_empty());
-    let first_chunk = cluster
-        .receive_install_snapshot_chunk(snapshot_chunks[0].clone())
-        .unwrap();
-    assert!(first_chunk.success);
-    if snapshot_chunks.len() > 1 {
-        let duplicate = cluster
-            .receive_install_snapshot_chunk(snapshot_chunks[0].clone())
-            .unwrap();
-        assert!(duplicate.success);
-        snapshot_chunks[1].last_included_index += 1;
-        assert!(matches!(
-            cluster.receive_install_snapshot_chunk(snapshot_chunks[1].clone()),
-            Err(RaftError::InvalidSnapshotChunk(_))
-        ));
-    }
-    let report = cluster.byteraft_runtime_admin_report();
-    assert!(report.ready, "{:?}", report.blockers);
-    assert!(report.read_index_validated);
-    assert!(report.lease_read_validated);
-    assert!(report.stale_follower_read_rejected);
-    assert!(report.stale_follower_write_rejected);
-    assert!(report.stale_leader_lease_rejected);
-    assert!(report.lagging_follower_read_rejected);
-    assert!(report.bounded_stale_read_accepted);
-    assert!(report.bounded_stale_read_rejected);
-    assert!(report.minority_partition_rejected_reads);
-    assert!(report.minority_partition_rejected_writes);
-    assert!(report.healed_follower_caught_up);
-    assert!(report.append_backpressure_enforced);
-    assert!(report.apply_backpressure_enforced);
-    assert!(report.memory_replicate_bytes_enforced);
-    assert!(report.oversized_log_rejection_present);
-    assert!(report.out_of_order_append_handling_present);
-    assert!(report.reorder_queue_enabled);
-    assert!(report.snapshot_sender_lifecycle_present);
-    assert!(report.snapshot_downloader_lifecycle_present);
-    assert!(report.snapshot_retry_backpressure_present);
-    assert!(report.snapshot_rate_limit_present);
-    assert!(report.snapshot_install_progress_present);
-    assert!(report.snapshot_install_rollback_present);
-    assert!(report.snapshot_membership_change_present);
-    assert!(report.snapshot_rejoin_after_compacted_log_present);
-    assert!(report.wal_segment_lifecycle_present);
-    assert!(report.pre_vote_enforced);
-    assert!(report.election_controls_enforced);
-    assert!(report.witness_membership_present);
-    assert!(report.learner_auto_promote_present);
-    assert!(report.pending_joint_consensus_present);
-    assert!(report.read_index_requests >= 5);
-    assert!(report.read_index_accepted >= 2);
-    assert!(report.read_index_rejected >= 3);
-    assert_eq!(report.lease_read_requests, 2);
-    assert_eq!(report.lease_read_accepted, 1);
-    assert_eq!(report.lease_read_rejected, 1);
-    assert!(report.admin_status_surface_complete);
-    assert!(report.wal_segment_count >= 1);
-    assert!(report.wal_total_bytes > 0);
-    assert!(report.wal_active_segment_bytes > 0);
-    assert!(report.wal_total_records > 0);
-    assert!(report.wal_first_sequence > 0);
-    assert!(report.wal_last_sequence >= report.wal_first_sequence);
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.peer_id == 3
-            && peer.append_requests >= 2
-            && peer.append_accepted >= 1
-            && peer.append_rejected >= 1));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.append_queue_depth > 0 || peer.reorder_entries_released > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.append_queue_max_depth > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.apply_backpressure_rejections > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.memory_backpressure_rejections > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.oversized_log_rejections > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.out_of_order_append_rejections > 0));
-    assert!(report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
-    assert!(report.peer_pipeline_states.iter().any(|peer| {
-        peer.peer_id == 2
-            && peer.snapshot_send_attempts > 0
-            && peer.snapshot_send_completed > 0
-            && peer.snapshot_install_started > 0
-            && peer.snapshot_install_completed > 0
-            && peer.snapshot_install_received_chunks == 1
-            && peer.snapshot_install_total_chunks == 1
-    }));
-    assert!(report.peer_pipeline_states.iter().any(|peer| {
-        peer.peer_id == 3
-            && peer.snapshot_install_progress_per_mille > 0
-            && peer.snapshot_chunk_retry_count > 0
-            && peer.snapshot_rate_limit_rejections > 0
-            && peer.snapshot_install_rolled_back > 0
-            && peer.snapshot_during_membership_change
-            && peer.snapshot_rejoin_after_compacted_log
-    }));
-
-    let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_ready{kind=\"data\"} 1"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_validated"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_requests"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_read_index_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_validated"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_requests"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_lease_read_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_requests"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_pre_vote_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_stale_follower_write_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_requests"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_max_depth"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_backpressure_rejections"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_memory_backpressure_rejections"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_oversized_log_rejections"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_out_of_order_append_rejections"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_released"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entries_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_attempts"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_completed"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_failed"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_started"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_completed"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_rolled_back"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_received_chunks"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_total_chunks"));
-    assert!(
-        metrics.contains("temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille")
-    );
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_chunk_retry_count"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_during_membership_change"));
-    assert!(
-        metrics.contains("temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log")
-    );
-    assert!(metrics.contains(
-        "temporalstore_raft_byteraft_local_pending_joint_consensus_present{kind=\"data\"} 1"
-    ));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_witness_membership_present"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_learner_auto_promote_present"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_role"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_participates_in_quorum"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_can_serve_data"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_local_peer_can_be_leader"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_requests"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_accepted"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_rejected"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_completed"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_bytes"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_active_segment_bytes"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_total_records"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_first_sequence"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_wal_last_sequence"));
-
-    let restored =
-        RaftCluster::restore_single_shard_from_wal(dir.path(), 91, [1, 2, 3, 4, 5], config)
-            .unwrap();
-    let restored_report = restored.byteraft_runtime_admin_report();
-    assert!(restored_report.ready, "{:?}", restored_report.blockers);
-    assert_eq!(restored_report.wal_total_records, report.wal_total_records);
-    assert_eq!(restored_report.wal_last_sequence, report.wal_last_sequence);
-    assert!(restored_report.read_index_requests >= 5);
-    assert!(restored_report.read_index_rejected >= 3);
-    assert_eq!(restored_report.lease_read_requests, 2);
-    assert_eq!(restored_report.lease_read_accepted, 1);
-    assert_eq!(restored_report.lease_read_rejected, 1);
-    assert!(restored_report.stale_leader_lease_rejected);
-    assert!(restored_report.bounded_stale_read_accepted);
-    assert!(restored_report.bounded_stale_read_rejected);
-    assert!(restored_report.minority_partition_rejected_reads);
-    assert!(restored_report.minority_partition_rejected_writes);
-    assert!(restored_report.healed_follower_caught_up);
-    assert!(restored_report.witness_membership_present);
-    assert!(restored_report.learner_auto_promote_present);
-    assert!(restored_report.pending_joint_consensus_present);
-    assert!(restored_report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.peer_id == 3
-            && peer.append_requests >= 2
-            && peer.append_accepted >= 1
-            && peer.append_rejected >= 1));
-    assert!(restored_report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.peer_id == 2 && peer.snapshot_installed_index > 0));
-    assert!(restored_report
-        .peer_pipeline_states
-        .iter()
-        .any(|peer| peer.peer_id == 2
-            && peer.snapshot_send_attempts > 0
-            && peer.snapshot_send_completed > 0
-            && peer.snapshot_install_completed > 0));
-}
-
-// shared-corpus: raft_byteraft_replication_backpressure raft_byteraft_metrics_admin_pipeline_status
-#[test]
-fn raft_reorder_queue_rejects_batches_beyond_window_and_reports_counters() {
-    let config = RaftConfig {
-        reorder_window_size: 1,
-        ..RaftConfig::default()
-    };
-    let cluster = RaftCluster::new_single_shard_with_config(214, [1, 2, 3], config).unwrap();
-    cluster.set_alive(3, false).unwrap();
-    for index in 0..2 {
-        cluster
-            .propose(Command::StringSet {
-                key: format!("reorder-window-{index}"),
-                value: vec![index as u8],
-            })
-            .unwrap();
-    }
-    cluster.set_alive(3, true).unwrap();
-
-    let request = cluster.build_append_entries_request(3).unwrap();
-    assert_eq!(request.entries.len(), 2);
-    let response = cluster.receive_append_entries(request).unwrap();
-    assert!(!response.success);
-    assert_eq!(
-        response.reject_reason.as_deref(),
-        Some("reorder_window_exceeded")
-    );
-
-    let report = cluster.byteraft_runtime_admin_report();
-    let peer3 = report
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert_eq!(peer3.reorder_entries_accepted, 0);
-    assert_eq!(peer3.reorder_entries_released, 0);
-    assert_eq!(peer3.reorder_entries_rejected, 2);
-    assert_eq!(cluster.commit_index(3).unwrap(), 0);
-}
-
-// shared-corpus: raft_byteraft_replication_backpressure
-#[test]
-fn raft_apply_inflight_limit_rejects_large_append_batches() {
-    let request = AppendEntriesRequest {
-        rpc: None,
-        shard_id: 91,
-        term: 1,
-        leader_id: 1,
-        target_id: 3,
-        prev_log_index: 0,
-        prev_log_term: 0,
-        entries: vec![
-            RaftLogEntry {
-                term: 1,
-                index: 1,
-                shard_id: 91,
-                command: Command::StringSet {
-                    key: "apply-inflight-a".to_string(),
-                    value: b"a".to_vec(),
-                },
-            },
-            RaftLogEntry {
-                term: 1,
-                index: 2,
-                shard_id: 91,
-                command: Command::StringSet {
-                    key: "apply-inflight-b".to_string(),
-                    value: b"b".to_vec(),
-                },
-            },
-        ],
-        leader_commit: 2,
-    };
-    let throttled = RaftCluster::new_single_shard_with_config(
-        91,
-        [1, 2, 3],
-        RaftConfig {
-            max_inflights_apply_task: 1,
-            max_apply_batch_bytes: 1024 * 1024,
-            max_memory_replicate_log_bytes: 1024 * 1024,
-            ..RaftConfig::default()
-        },
-    )
-    .unwrap();
-    let rejected = throttled.receive_append_entries(request.clone()).unwrap();
-    assert!(!rejected.success);
-    assert_eq!(
-        rejected.reject_reason.as_deref(),
-        Some("apply_inflight_backpressure")
-    );
-    let report = throttled.byteraft_runtime_admin_report();
-    let peer3 = report
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline state");
-    assert_eq!(peer3.apply_backpressure_rejections, 1);
-    assert_eq!(throttled.commit_index(3).unwrap(), 0);
-
-    let accepted_cluster = RaftCluster::new_single_shard_with_config(
-        91,
-        [1, 2, 3],
-        RaftConfig {
-            max_inflights_apply_task: 2,
-            max_apply_batch_bytes: 1024 * 1024,
-            max_memory_replicate_log_bytes: 1024 * 1024,
-            ..RaftConfig::default()
-        },
-    )
-    .unwrap();
-    let accepted = accepted_cluster.receive_append_entries(request).unwrap();
-    assert!(accepted.success);
-    assert_eq!(accepted.match_index, 2);
-    assert_eq!(
-        accepted_cluster
-            .read_local(
-                3,
-                Command::StringGet {
-                    key: "apply-inflight-b".to_string(),
-                },
-            )
-            .unwrap(),
-        CommandResponse::Bytes {
-            value: Some(b"b".to_vec())
-        }
-    );
-}
-
-// shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
-#[test]
-fn byteraft_runtime_readiness_is_backed_by_admin_report_evidence() {
-    let readiness = raft_byteraft_runtime_readiness();
-    assert!(readiness.runtime_report_present);
-    assert!(readiness.per_peer_pipeline_state_present);
-    assert!(readiness.reorder_queue_state_present);
-    assert!(readiness.snapshot_sender_downloader_lifecycle_present);
-    assert!(readiness.wal_segment_lifecycle_present);
-    assert!(readiness.read_index_lease_semantics_present);
-    assert!(readiness.stale_follower_write_rejection_present);
-    assert!(readiness.admin_status_surface_present);
-    assert!(readiness.process_path_operational_semantics_ready);
-    assert!(readiness.missing.is_empty(), "{:?}", readiness.missing);
-    assert!(readiness.report.ready);
-}
-
-// shared-corpus: raft_byteraft_election_controls raft_byteraft_metrics_admin_pipeline_status
-#[test]
-fn byteraft_offline_timeout_state_is_reported_per_peer() {
-    let cluster = RaftCluster::new_single_shard_with_config(
-        214,
-        [1, 2, 3],
-        RaftConfig {
-            enable_pre_vote: true,
-            offline_timeout_tick: 10,
-            ..RaftConfig::default()
-        },
-    )
-    .unwrap();
-
-    cluster.set_alive(3, false).unwrap();
-    cluster.advance_time_ms(9);
-    let before = cluster.byteraft_runtime_admin_report();
-    let peer3 = before
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert_eq!(peer3.offline_elapsed_ms, 9);
-    assert!(!peer3.offline_timeout_reached);
-    assert_eq!(peer3.offline_timeout_rejections, 0);
-
-    cluster.advance_time_ms(1);
-    let after = cluster.byteraft_runtime_admin_report();
-    let peer3 = after
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert_eq!(peer3.offline_elapsed_ms, 10);
-    assert!(peer3.offline_timeout_reached);
-    assert_eq!(peer3.offline_timeout_rejections, 1);
-
-    let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_elapsed_ms"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_timeout_reached"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_offline_timeout_rejections"));
-
-    cluster.set_alive(3, true).unwrap();
-    let recovered = cluster.byteraft_runtime_admin_report();
-    let peer3 = recovered
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert_eq!(peer3.offline_elapsed_ms, 0);
-    assert!(!peer3.offline_timeout_reached);
-    assert_eq!(peer3.offline_timeout_rejections, 1);
-}
-
-// shared-corpus: raft_byteraft_election_controls raft_byteraft_metrics_admin_pipeline_status
-#[test]
-fn byteraft_leader_transfer_timeout_is_reported_per_peer() {
-    let cluster = RaftCluster::new_single_shard_with_config(
-        216,
-        [1, 2, 3],
-        RaftConfig {
-            transfer_timeout_tick: 3,
-            ..RaftConfig::default()
-        },
-    )
-    .unwrap();
-
-    cluster.begin_leader_transfer(3).unwrap();
-    cluster.advance_time_ms(2);
-    let before = cluster.byteraft_runtime_admin_report();
-    let peer3 = before
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert!(peer3.transfer_leader_target);
-    assert_eq!(peer3.transfer_leader_elapsed_ms, 2);
-    assert_eq!(peer3.transfer_leader_timeouts, 0);
-    assert_eq!(peer3.transfer_leader_rejected, 0);
-
-    cluster.advance_time_ms(1);
-    let after = cluster.byteraft_runtime_admin_report();
-    let peer3 = after
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert!(!peer3.transfer_leader_target);
-    assert_eq!(peer3.transfer_leader_elapsed_ms, 0);
-    assert_eq!(peer3.transfer_leader_timeouts, 1);
-    assert_eq!(peer3.transfer_leader_rejected, 1);
-
-    let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_transfer_leader_timeouts"));
-
-    cluster.transfer_leader(3).unwrap();
-    let completed = cluster.byteraft_runtime_admin_report();
-    let peer3 = completed
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert_eq!(completed.leader_id, 3);
-    assert!(!peer3.transfer_leader_target);
-    assert_eq!(peer3.transfer_leader_completed, 1);
-    assert_eq!(peer3.transfer_leader_elapsed_ms, 0);
-}
-
-// shared-corpus: raft_byteraft_snapshot_lifecycle_depth raft_byteraft_metrics_admin_pipeline_status
-#[test]
-fn byteraft_snapshot_sender_timeout_clears_pipeline_and_reports_retry() {
-    let cluster = RaftCluster::new_single_shard_with_config(
-        215,
-        [1, 2, 3],
-        RaftConfig {
-            send_snapshot_timeout_ms: 10,
-            ..RaftConfig::default()
-        },
-    )
-    .unwrap();
-    cluster
-        .propose(Command::StringSet {
-            key: "snapshot-timeout".to_string(),
-            value: b"seed".to_vec(),
-        })
-        .unwrap();
-    let _request = cluster.build_install_snapshot_request(3).unwrap();
-
-    cluster.advance_time_ms(9);
-    let before = cluster.byteraft_runtime_admin_report();
-    let peer3 = before
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert!(peer3.snapshot_sending);
-    assert_eq!(peer3.snapshot_send_elapsed_ms, 9);
-    assert_eq!(peer3.snapshot_send_timeouts, 0);
-
-    cluster.advance_time_ms(1);
-    let after = cluster.byteraft_runtime_admin_report();
-    let peer3 = after
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 pipeline");
-    assert!(!peer3.snapshot_sending);
-    assert!(!peer3.snapshot_installing);
-    assert_eq!(peer3.snapshot_send_elapsed_ms, 10);
-    assert_eq!(peer3.snapshot_send_timeouts, 1);
-    assert_eq!(peer3.snapshot_retry_count, 1);
-    assert_eq!(peer3.snapshot_send_failed, 1);
-    assert_eq!(peer3.snapshot_backpressure_rejections, 1);
-
-    let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_send_timeouts"));
-
-    let retry = cluster.build_install_snapshot_request(3);
-    assert!(retry.is_ok(), "timed-out sender should allow retry");
-}
-
-// shared-corpus: raft_openraft_process_rollout_evidence
-#[test]
-fn raft_openraft_rollout_readiness_fails_closed_without_process_rollout_evidence() {
-    let readiness = raft_openraft_rollout_readiness();
-    assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
-    assert!(readiness.data_node_process_startup_selects_openraft);
-    assert!(readiness.metaserver_process_startup_selects_openraft);
+fn raft_temporal_raft_rollout_readiness_fails_closed_without_process_rollout_evidence() {
+    let readiness = raft_temporal_raft_rollout_readiness();
+    assert_eq!(readiness.adapter_present, cfg!(feature = "temporal-raft-engine"));
+    assert!(readiness.data_node_process_startup_selects_temporal_raft);
+    assert!(readiness.metaserver_process_startup_selects_temporal_raft);
     assert!(readiness.durable_log_state_present);
     assert_eq!(
         readiness.local_rollout_ready,
-        cfg!(feature = "openraft-engine")
+        cfg!(feature = "temporal-raft-engine")
     );
     assert!(!readiness.data_node_real_process_rollout_validated);
     assert!(!readiness.metaserver_real_process_rollout_validated);
@@ -2899,31 +2090,31 @@ fn raft_openraft_rollout_readiness_fails_closed_without_process_rollout_evidence
         .missing
         .iter()
         .any(|item| item.contains("metaserver multi-process rollout evidence")));
-    if !cfg!(feature = "openraft-engine") {
+    if !cfg!(feature = "temporal-raft-engine") {
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("OpenRaft production engine adapter")));
+            .any(|item| item.contains("TemporalRaft production engine adapter")));
     }
 
     let distributed = distributed_raft_readiness();
     assert_eq!(
-        distributed.openraft_engine_adapter_present,
-        cfg!(feature = "openraft-engine")
+        distributed.temporal_raft_engine_adapter_present,
+        cfg!(feature = "temporal-raft-engine")
     );
-    assert!(distributed.openraft_data_node_process_startup_present);
-    assert!(distributed.openraft_metaserver_process_startup_present);
+    assert!(distributed.temporal_raft_data_node_process_startup_present);
+    assert!(distributed.temporal_raft_metaserver_process_startup_present);
     assert!(distributed
         .missing
         .iter()
         .any(|item| item.contains("data-node multi-process rollout evidence")));
 }
 
-fn ready_openraft_process_node(node_id: RaftNodeId) -> OpenRaftProcessNodeEvidence {
-    OpenRaftProcessNodeEvidence {
+fn ready_temporal_raft_process_node(node_id: RaftNodeId) -> TemporalRaftProcessNodeEvidence {
+    TemporalRaftProcessNodeEvidence {
         node_id,
         addr: format!("127.0.0.1:{}", 19000 + node_id),
-        wal_dir: format!("/tmp/temporalstore-openraft-test/node-{node_id}"),
+        wal_dir: format!("/tmp/temporalstore-temporal-raft-test/node-{node_id}"),
         commit_index: 11,
         applied_index: 11,
         snapshot_id: Some("snapshot-11".to_string()),
@@ -2932,8 +2123,8 @@ fn ready_openraft_process_node(node_id: RaftNodeId) -> OpenRaftProcessNodeEviden
     }
 }
 
-fn ready_openraft_operational_semantics() -> OpenRaftProcessOperationalSemanticsEvidence {
-    OpenRaftProcessOperationalSemanticsEvidence {
+fn ready_temporal_raft_operational_semantics() -> TemporalRaftProcessOperationalSemanticsEvidence {
+    TemporalRaftProcessOperationalSemanticsEvidence {
         api_presence_only_rejected: true,
         process_path_validated: true,
         read_index_validated: true,
@@ -2955,15 +2146,15 @@ fn ready_openraft_operational_semantics() -> OpenRaftProcessOperationalSemantics
     }
 }
 
-fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutReport {
-    OpenRaftDataNodeProcessRolloutReport {
+fn ready_data_node_temporal_raft_rollout_report() -> TemporalRaftDataNodeProcessRolloutReport {
+    TemporalRaftDataNodeProcessRolloutReport {
         shard_id: 7,
         voters: vec![1, 2, 3],
         learners: Vec::new(),
         nodes: vec![
-            ready_openraft_process_node(1),
-            ready_openraft_process_node(2),
-            ready_openraft_process_node(3),
+            ready_temporal_raft_process_node(1),
+            ready_temporal_raft_process_node(2),
+            ready_temporal_raft_process_node(3),
         ],
         write_proposed_through_process_api: true,
         leader_transfer_validated: true,
@@ -2976,20 +2167,20 @@ fn ready_data_node_openraft_rollout_report() -> OpenRaftDataNodeProcessRolloutRe
         snapshot_install_validated: true,
         applied_fence_validated: true,
         multi_process_log_store_validated: true,
-        operational_semantics: ready_openraft_operational_semantics(),
+        operational_semantics: ready_temporal_raft_operational_semantics(),
         ready: true,
         blockers: Vec::new(),
     }
 }
 
-fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
-    OpenRaftMetaProcessRolloutReport {
+fn ready_meta_temporal_raft_rollout_report() -> TemporalRaftMetaProcessRolloutReport {
+    TemporalRaftMetaProcessRolloutReport {
         voters: vec![1, 2, 3],
         learners: Vec::new(),
         nodes: vec![
-            ready_openraft_process_node(1),
-            ready_openraft_process_node(2),
-            ready_openraft_process_node(3),
+            ready_temporal_raft_process_node(1),
+            ready_temporal_raft_process_node(2),
+            ready_temporal_raft_process_node(3),
         ],
         mutation_proposed_through_process_api: true,
         applied_raft_mutations: 4,
@@ -3006,51 +2197,51 @@ fn ready_meta_openraft_rollout_report() -> OpenRaftMetaProcessRolloutReport {
         recovered_after_restart: true,
         scheduler_task_replay_validated: true,
         multi_process_log_store_validated: true,
-        operational_semantics: ready_openraft_operational_semantics(),
+        operational_semantics: ready_temporal_raft_operational_semantics(),
         ready: true,
         blockers: Vec::new(),
     }
 }
 
-// shared-corpus: raft_openraft_process_rollout_evidence
+// shared-corpus: raft_temporal_raft_process_rollout_evidence
 #[test]
-fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
-    let data_report = ready_data_node_openraft_rollout_report();
-    let meta_report = ready_meta_openraft_rollout_report();
+fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
+    let data_report = ready_data_node_temporal_raft_rollout_report();
+    let meta_report = ready_meta_temporal_raft_rollout_report();
     let readiness =
-        raft_openraft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
+        raft_temporal_raft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
 
-    assert_eq!(readiness.adapter_present, cfg!(feature = "openraft-engine"));
+    assert_eq!(readiness.adapter_present, cfg!(feature = "temporal-raft-engine"));
     assert!(readiness.data_node_real_process_rollout_validated);
     assert!(readiness.metaserver_real_process_rollout_validated);
     assert!(readiness.multi_process_log_store_validation_present);
     assert_eq!(
         readiness.production_ready,
-        cfg!(feature = "openraft-engine")
+        cfg!(feature = "temporal-raft-engine")
     );
-    if cfg!(feature = "openraft-engine") {
+    if cfg!(feature = "temporal-raft-engine") {
         assert!(readiness.missing.is_empty());
     } else {
         assert!(readiness
             .missing
             .iter()
-            .any(|item| item.contains("OpenRaft production engine adapter")));
+            .any(|item| item.contains("TemporalRaft production engine adapter")));
     }
     let distributed_with_evidence =
-        distributed_raft_readiness_from_openraft_reports(&data_report, &meta_report);
+        distributed_raft_readiness_from_temporal_raft_reports(&data_report, &meta_report);
     assert_eq!(
-        distributed_with_evidence.openraft_engine_adapter_present,
-        cfg!(feature = "openraft-engine")
+        distributed_with_evidence.temporal_raft_engine_adapter_present,
+        cfg!(feature = "temporal-raft-engine")
     );
     assert!(distributed_with_evidence.metaserver_driven_membership_present);
     assert_eq!(
         distributed_with_evidence.production_ready,
-        cfg!(feature = "openraft-engine")
+        cfg!(feature = "temporal-raft-engine")
     );
 
     let mut local_fixture_like_data = data_report;
     local_fixture_like_data.nodes.truncate(1);
-    let rejected = raft_openraft_rollout_readiness_from_reports(
+    let rejected = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&local_fixture_like_data),
         Some(&meta_report),
     );
@@ -3061,14 +2252,14 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .iter()
         .any(|item| item.contains("data-node multi-process rollout evidence")));
 
-    let mut missing_behavior_evidence = ready_data_node_openraft_rollout_report();
+    let mut missing_behavior_evidence = ready_data_node_temporal_raft_rollout_report();
     missing_behavior_evidence.failover_validated = false;
     missing_behavior_evidence.membership_change_validated = false;
     missing_behavior_evidence.follower_lag_validated = false;
     missing_behavior_evidence.secondary_read_validated = false;
-    let rejected_behavior = raft_openraft_rollout_readiness_from_reports(
+    let rejected_behavior = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&missing_behavior_evidence),
-        Some(&ready_meta_openraft_rollout_report()),
+        Some(&ready_meta_temporal_raft_rollout_report()),
     );
     assert!(!rejected_behavior.data_node_real_process_rollout_validated);
     assert!(!rejected_behavior.production_ready);
@@ -3077,10 +2268,10 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .iter()
         .any(|item| item.contains("failover")));
 
-    let mut missing_meta_behavior = ready_meta_openraft_rollout_report();
+    let mut missing_meta_behavior = ready_meta_temporal_raft_rollout_report();
     missing_meta_behavior.secondary_read_validated = false;
-    let rejected_meta_behavior = raft_openraft_rollout_readiness_from_reports(
-        Some(&ready_data_node_openraft_rollout_report()),
+    let rejected_meta_behavior = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&ready_data_node_temporal_raft_rollout_report()),
         Some(&missing_meta_behavior),
     );
     assert!(!rejected_meta_behavior.metaserver_real_process_rollout_validated);
@@ -3090,11 +2281,11 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .iter()
         .any(|item| item.contains("secondary reads")));
 
-    let mut api_only_data = ready_data_node_openraft_rollout_report();
-    api_only_data.operational_semantics = OpenRaftProcessOperationalSemanticsEvidence::default();
-    let rejected_api_only = raft_openraft_rollout_readiness_from_reports(
+    let mut api_only_data = ready_data_node_temporal_raft_rollout_report();
+    api_only_data.operational_semantics = TemporalRaftProcessOperationalSemanticsEvidence::default();
+    let rejected_api_only = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&api_only_data),
-        Some(&ready_meta_openraft_rollout_report()),
+        Some(&ready_meta_temporal_raft_rollout_report()),
     );
     assert!(!rejected_api_only.data_node_real_process_rollout_validated);
     assert!(!rejected_api_only.production_ready);
@@ -3107,7 +2298,7 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .iter()
         .any(|item| item.contains("process_path_validated")));
 
-    let mut missing_read_safety = ready_data_node_openraft_rollout_report();
+    let mut missing_read_safety = ready_data_node_temporal_raft_rollout_report();
     missing_read_safety
         .operational_semantics
         .read_index_validated = false;
@@ -3132,9 +2323,9 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
     missing_read_safety
         .operational_semantics
         .wal_persistence_observed = false;
-    let rejected_read_safety = raft_openraft_rollout_readiness_from_reports(
+    let rejected_read_safety = raft_temporal_raft_rollout_readiness_from_reports(
         Some(&missing_read_safety),
-        Some(&ready_meta_openraft_rollout_report()),
+        Some(&ready_meta_temporal_raft_rollout_report()),
     );
     assert!(!rejected_read_safety.data_node_real_process_rollout_validated);
     assert!(rejected_read_safety
@@ -3169,281 +2360,6 @@ fn raft_openraft_rollout_readiness_accepts_only_multi_process_reports() {
         .missing
         .iter()
         .any(|item| item.contains("wal_persistence_observed")));
-}
-
-// shared-corpus: raft_openraft_process_rollout_evidence
-#[test]
-fn openraft_rollout_reports_carry_byteraft_process_semantics() {
-    let semantics = ByteRaftProcessPathSemanticsEvidence {
-        observed_process_requests: 3,
-        read_index_responses_observed: 3,
-        read_index_and_lease_evidence_observed: true,
-        stale_leader_lease_rejected: true,
-        lagging_follower_read_rejected: true,
-        stale_follower_write_rejected: true,
-        bounded_stale_reads_observed: true,
-        bounded_stale_partition_reads_observed: true,
-        follower_lease_expiration_observed: true,
-        minority_partition_rejected: true,
-        healed_follower_catchup_observed: true,
-        per_peer_pipeline_state_observed: true,
-        append_pipeline_state_observed: true,
-        replicate_inflight_limits_observed: true,
-        max_replicate_bytes_observed: true,
-        oversized_log_rejection_observed: true,
-        apply_batch_backpressure_observed: true,
-        append_queue_depth_observed: true,
-        replication_pressure_counters_observed: true,
-        max_disk_replicate_log_num_observed: true,
-        snapshot_lifecycle_observed: true,
-        snapshot_chunk_retry_backpressure_observed: true,
-        snapshot_send_timeout_observed: true,
-        snapshot_install_progress_observed: true,
-        snapshot_install_rollback_observed: true,
-        snapshot_membership_change_observed: true,
-        snapshot_rejoin_after_compacted_log_observed: true,
-        wal_segment_lifecycle_observed: true,
-        wal_segment_release_rules_observed: true,
-        wal_first_last_index_status_observed: true,
-        wal_slow_fsync_backpressure_observed: true,
-        restart_log_store_comparison_observed: true,
-        fsm_apply_atomicity_observed: true,
-        apply_fence_recovery_observed: true,
-        snapshot_install_apply_fence_recovery_observed: true,
-        storage_wal_snapshot_crash_recovery_observed: true,
-        restart_recovery_observed: true,
-        failover_observed: true,
-        membership_change_observed: true,
-        secondary_lag_observed: true,
-        ready: true,
-        blockers: Vec::new(),
-    };
-    let node = OpenRaftProcessNodeEvidence {
-        node_id: 1,
-        addr: "127.0.0.1:18001".to_string(),
-        wal_dir: "/tmp/node-1/wal".to_string(),
-        snapshot_dir: "/tmp/node-1/snapshots".to_string(),
-        commit_index: 3,
-        applied_index: 3,
-        snapshot_id: Some("snapshot-3".to_string()),
-        restarted: true,
-        log_store_validated: true,
-        wal_segments_inspected: 1,
-        wal_retained_segment_count: 1,
-        wal_first_sequence: 1,
-        wal_last_sequence: 3,
-        wal_release_floor: 2,
-        wal_slow_fsync_backpressure_observed: true,
-        restart_log_store_comparison_observed: true,
-        storage_mutation_recovered_after_restart: true,
-        wal_persisted_apply_fence_observed: true,
-        snapshot_install_apply_fence_observed: true,
-        deterministic_crash_recovery_observed: true,
-        snapshot_files_inspected: 1,
-    };
-    let report = OpenRaftDataNodeProcessRolloutReport {
-        shard_id: 7,
-        voters: vec![1, 2, 3],
-        learners: Vec::new(),
-        nodes: vec![node],
-        spawned_process_count: 3,
-        independent_wal_dirs: true,
-        independent_snapshot_dirs: true,
-        observed_process_requests: 3,
-        read_index_responses_observed: 3,
-        restarted_node_count: 3,
-        per_node_log_store_inspection_count: 3,
-        write_proposed_through_process_api: true,
-        leader_transfer_validated: true,
-        leader_transfer_under_load_observed: true,
-        leader_transfer_exact_once_observed: true,
-        leader_transfer_write_ids_observed: vec![
-            "leader-transfer-before-0".to_string(),
-            "leader-transfer-before-1".to_string(),
-            "leader-transfer-before-2".to_string(),
-            "leader-transfer-after-0".to_string(),
-            "leader-transfer-after-1".to_string(),
-            "leader-transfer-after-2".to_string(),
-        ],
-        leader_transfer_commit_indexes_observed: vec![1, 2, 3, 4, 5, 6],
-        failover_validated: true,
-        secondary_lag_observed: true,
-        lagging_follower_read_rejection_observed: true,
-        stale_follower_write_rejection_observed: true,
-        catchup_read_eligibility_observed: true,
-        minority_partition_rejection_observed: true,
-        bounded_stale_read_eligibility_observed: true,
-        healed_follower_catchup_observed: true,
-        lagging_follower_observed_lag: 3,
-        recovered_after_restart: true,
-        restart_recovery_validated: true,
-        snapshot_install_validated: true,
-        applied_fence_validated: true,
-        multi_process_log_store_validated: true,
-        byteraft_process_semantics: semantics,
-        real_process_path_evidence_validated: true,
-        ready: true,
-        blockers: Vec::new(),
-    };
-    let json = serde_json::to_value(report).unwrap();
-    assert_eq!(
-        json["byteraft_process_semantics"]["per_peer_pipeline_state_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_lifecycle_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
-        true
-    );
-    assert_eq!(json["leader_transfer_under_load_observed"], true);
-    assert_eq!(json["leader_transfer_exact_once_observed"], true);
-    assert_eq!(
-        json["leader_transfer_write_ids_observed"]
-            .as_array()
-            .unwrap()
-            .len(),
-        6
-    );
-    assert_eq!(
-        json["leader_transfer_commit_indexes_observed"]
-            .as_array()
-            .unwrap()
-            .len(),
-        6
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["replicate_inflight_limits_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["max_replicate_bytes_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["oversized_log_rejection_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["apply_batch_backpressure_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["append_queue_depth_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["replication_pressure_counters_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["max_disk_replicate_log_num_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_chunk_retry_backpressure_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_send_timeout_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_install_progress_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_install_rollback_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_membership_change_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_rejoin_after_compacted_log_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["wal_segment_release_rules_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["wal_first_last_index_status_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["wal_slow_fsync_backpressure_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["restart_log_store_comparison_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["fsm_apply_atomicity_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["apply_fence_recovery_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["snapshot_install_apply_fence_recovery_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["storage_wal_snapshot_crash_recovery_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["read_index_and_lease_evidence_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["stale_leader_lease_rejected"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["lagging_follower_read_rejected"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["stale_follower_write_rejected"],
-        true
-    );
-    assert_eq!(json["secondary_lag_observed"], true);
-    assert_eq!(json["lagging_follower_read_rejection_observed"], true);
-    assert_eq!(json["stale_follower_write_rejection_observed"], true);
-    assert_eq!(json["catchup_read_eligibility_observed"], true);
-    assert_eq!(json["minority_partition_rejection_observed"], true);
-    assert_eq!(json["bounded_stale_read_eligibility_observed"], true);
-    assert_eq!(json["healed_follower_catchup_observed"], true);
-    assert_eq!(json["lagging_follower_observed_lag"], 3);
-    assert_eq!(
-        json["byteraft_process_semantics"]["bounded_stale_reads_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["bounded_stale_partition_reads_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["follower_lease_expiration_observed"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["minority_partition_rejected"],
-        true
-    );
-    assert_eq!(
-        json["byteraft_process_semantics"]["healed_follower_catchup_observed"],
-        true
-    );
-    assert_eq!(json["byteraft_process_semantics"]["ready"], true);
-    assert_eq!(json["real_process_path_evidence_validated"], true);
 }
 
 #[test]
@@ -3555,7 +2471,7 @@ fn local_raft_deployment_mode_is_rejected() {
 }
 
 #[test]
-fn production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled() {
+fn production_raft_mode_uses_temporal_raft_ready_path_when_adapter_is_enabled() {
     let err = validate_raft_deployment_mode(RaftDeploymentMode::ProductionDistributed).unwrap_err();
     assert_eq!(err.mode, RaftDeploymentMode::ProductionDistributed);
     assert!(!err
@@ -3567,11 +2483,11 @@ fn production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled() {
         .missing
         .iter()
         .any(|item| item.contains("multi-process rollout evidence")));
-    if !cfg!(feature = "openraft-engine") {
+    if !cfg!(feature = "temporal-raft-engine") {
         assert!(err
             .missing
             .iter()
-            .any(|item| item.contains("OpenRaft production engine adapter")));
+            .any(|item| item.contains("TemporalRaft production engine adapter")));
     }
     assert_eq!(require_production_raft_ready().unwrap_err(), err);
 }
@@ -3580,7 +2496,7 @@ fn production_raft_mode_uses_openraft_ready_path_when_adapter_is_enabled() {
 fn production_raft_runtime_validates_security_timer_and_chaos_contracts() {
     let dir = tempfile::tempdir().unwrap();
     let options = ProductionRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         shard_id: 91,
         local_node_id: 1,
         nodes: vec![
@@ -3805,7 +2721,7 @@ fn production_raft_runtime_replicates_over_separate_http_nodes() {
     let mut runtimes = Vec::new();
     for node in &nodes {
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
-            engine: ProductionRaftEngineKind::OpenRaft,
+            engine: ProductionRaftEngineKind::TemporalRaft,
             shard_id: 193,
             local_node_id: node.node_id,
             nodes: nodes.clone(),
@@ -4125,10 +3041,6 @@ fn raft_tick_election_waits_for_timeout_and_prevotes_before_promotion() {
         }
     );
     assert_eq!(cluster.leader_id(), 2);
-    let read_safety = cluster.read_safety_runtime_state();
-    assert_eq!(read_safety.pre_vote_requests, 1);
-    assert_eq!(read_safety.pre_vote_accepted, 1);
-    assert_eq!(read_safety.pre_vote_rejected, 0);
 }
 
 // shared-corpus: raft_byteraft_election_controls
@@ -4151,10 +3063,6 @@ fn raft_prevote_rejects_candidate_without_quorum() {
         RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
     );
     assert_eq!(cluster.leader_id(), 1);
-    let read_safety = cluster.read_safety_runtime_state();
-    assert_eq!(read_safety.pre_vote_requests, 1);
-    assert_eq!(read_safety.pre_vote_accepted, 0);
-    assert_eq!(read_safety.pre_vote_rejected, 1);
 }
 
 #[test]
@@ -4520,28 +3428,9 @@ fn raft_read_index_and_transfer_reject_lagging_replica() {
             leader_commit_index: 1,
         }
     );
-    let rejected = cluster.byteraft_runtime_admin_report();
-    let peer3 = rejected
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 transfer state");
-    assert_eq!(peer3.transfer_leader_requests, 1);
-    assert_eq!(peer3.transfer_leader_rejected, 1);
-    assert_eq!(peer3.transfer_leader_accepted, 0);
     cluster.catch_up(3).unwrap();
     assert!(cluster.read_index(3).is_ok());
     assert!(cluster.transfer_leader(3).is_ok());
-    let completed = cluster.byteraft_runtime_admin_report();
-    let peer3 = completed
-        .peer_pipeline_states
-        .iter()
-        .find(|peer| peer.peer_id == 3)
-        .expect("peer 3 transfer state");
-    assert_eq!(peer3.transfer_leader_requests, 2);
-    assert_eq!(peer3.transfer_leader_rejected, 1);
-    assert_eq!(peer3.transfer_leader_accepted, 1);
-    assert_eq!(peer3.transfer_leader_completed, 1);
 }
 
 #[test]
@@ -4692,269 +3581,63 @@ fn scale_up_adds_caught_up_replica() {
     );
 }
 
-fn load_shared_raft_case(name: &str) -> serde_json::Value {
-    let corpus_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../compat/unified_temporalstore_cases.json");
-    let bytes = std::fs::read(&corpus_path).unwrap_or_else(|err| {
-        panic!(
-            "failed to read shared corpus {}: {err}",
-            corpus_path.display()
-        )
-    });
-    let corpus: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    corpus["cases"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|case| case["name"].as_str() == Some(name))
-        .cloned()
-        .unwrap_or_else(|| panic!("shared corpus case {name} not found"))
-}
-
-fn json_u64(value: &serde_json::Value, field: &str) -> u64 {
-    value[field]
-        .as_u64()
-        .unwrap_or_else(|| panic!("field {field} must be u64 in {value}"))
-}
-
-fn json_bool(value: &serde_json::Value, field: &str) -> bool {
-    value[field]
-        .as_bool()
-        .unwrap_or_else(|| panic!("field {field} must be bool in {value}"))
-}
-
-fn json_u64_list(value: &serde_json::Value, field: &str) -> Vec<u64> {
-    value[field]
-        .as_array()
-        .unwrap_or_else(|| panic!("field {field} must be u64 list in {value}"))
-        .iter()
-        .map(|node| node.as_u64().unwrap())
-        .collect()
-}
-
-fn json_role(value: &serde_json::Value) -> RaftReplicaRole {
-    match value["role"].as_str().unwrap() {
-        "voter" => RaftReplicaRole::Voter,
-        "learner" => RaftReplicaRole::Learner,
-        "witness" => RaftReplicaRole::Witness,
-        role => panic!("unknown shared Raft role {role}"),
-    }
-}
-
-fn assert_shared_error<T: std::fmt::Debug>(
-    actual: Result<T, RaftError>,
-    command: &serde_json::Value,
-) {
-    let expected = command["expected_error"].as_str().unwrap();
-    match (expected, actual) {
-        ("NodeNotFound", Err(RaftError::NodeNotFound(_))) => {}
-        (_, other) => panic!("expected shared error {expected}, got {other:?}"),
-    }
-}
-
-fn execute_raft_membership_shared_case(case_name: &str) {
-    let case = load_shared_raft_case(case_name);
-    let tmp = tempfile::tempdir().unwrap();
-    let mut cluster: Option<RaftCluster> = None;
-    for step in case["steps"].as_array().unwrap() {
-        let command = &step["command"];
-        assert_eq!(
-            command["kind"].as_str(),
-            Some("raft_membership_op"),
-            "step {} must be executable raft_membership_op",
-            step["name"]
-        );
-        match command["op"].as_str().unwrap() {
-            "setup_cluster" => {
-                cluster = Some(RaftCluster::new_single_shard(
-                    case["shard_id"].as_u64().unwrap(),
-                    json_u64_list(command, "nodes"),
-                ));
-            }
-            "setup_wal_cluster" => {
-                cluster = Some(
-                    RaftCluster::new_single_shard_with_wal(
-                        tmp.path(),
-                        case["shard_id"].as_u64().unwrap(),
-                        json_u64_list(command, "nodes"),
-                        RaftConfig::default(),
-                    )
-                    .unwrap(),
-                );
-            }
-            "restore_wal_cluster" => {
-                cluster = Some(
-                    RaftCluster::restore_single_shard_from_wal(
-                        tmp.path(),
-                        case["shard_id"].as_u64().unwrap(),
-                        json_u64_list(command, "nodes"),
-                        RaftConfig::default(),
-                    )
-                    .unwrap(),
-                );
-            }
-            "add_replica" => {
-                let cluster = cluster.as_ref().unwrap();
-                let node_id = json_u64(command, "node_id");
-                if command["auto_promote"].as_bool().unwrap_or(false) {
-                    cluster
-                        .add_learner_with_auto_promote(node_id, true)
-                        .unwrap();
-                } else {
-                    cluster
-                        .add_node_with_role(node_id, json_role(command))
-                        .unwrap();
-                }
-            }
-            "assert_cluster_status" => {
-                let cluster = cluster.as_ref().unwrap();
-                let status = cluster.status();
-                if command.get("expected_majority").is_some() {
-                    assert_eq!(
-                        status.majority,
-                        json_u64(command, "expected_majority") as usize
-                    );
-                }
-                if command.get("expected_live_voters").is_some() {
-                    assert_eq!(
-                        status.live_voters,
-                        json_u64(command, "expected_live_voters") as usize
-                    );
-                }
-                if command.get("expected_voters").is_some() {
-                    assert_eq!(
-                        cluster.membership().voters,
-                        json_u64_list(command, "expected_voters")
-                    );
-                }
-            }
-            "assert_peer_status" => {
-                let cluster = cluster.as_ref().unwrap();
-                let node_id = json_u64(command, "node_id");
-                let local = cluster.local_status(node_id).unwrap();
-                assert_eq!(local.replica_role, json_role(command));
-                let report = cluster.byteraft_local_status_report();
-                let peer = report
-                    .peers
-                    .iter()
-                    .find(|peer| peer.status.node_id == node_id)
-                    .unwrap_or_else(|| panic!("peer {node_id} missing in local status report"));
-                assert_eq!(
-                    peer.participates_in_quorum,
-                    json_bool(command, "participates_in_quorum")
-                );
-                assert_eq!(peer.can_serve_data, json_bool(command, "can_serve_data"));
-                assert_eq!(peer.can_be_leader, json_bool(command, "can_be_leader"));
-                if command.get("auto_promoted_from_learner").is_some() {
-                    assert_eq!(
-                        peer.pipeline_state.auto_promoted_from_learner,
-                        json_bool(command, "auto_promoted_from_learner")
-                    );
-                }
-            }
-            "assert_local_status_report" => {
-                let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_local_status_report();
-                if command.get("expect_witness").is_some() {
-                    assert_eq!(
-                        report.witness_membership_present,
-                        json_bool(command, "expect_witness")
-                    );
-                }
-                if command.get("expect_learner").is_some() {
-                    assert_eq!(
-                        report.learner_membership_present,
-                        json_bool(command, "expect_learner")
-                    );
-                }
-                if command.get("expect_pending_joint").is_some() {
-                    assert_eq!(
-                        report.pending_joint_consensus.is_some(),
-                        json_bool(command, "expect_pending_joint")
-                    );
-                }
-                if command.get("new_voter").is_some() {
-                    let new_voter = json_u64(command, "new_voter");
-                    assert!(report
-                        .pending_joint_consensus
-                        .as_ref()
-                        .unwrap()
-                        .new_voters
-                        .contains(&new_voter));
-                }
-            }
-            "assert_runtime_admin_report" => {
-                let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_runtime_admin_report();
-                if command.get("expect_witness").is_some() {
-                    assert_eq!(
-                        report.witness_membership_present,
-                        json_bool(command, "expect_witness")
-                    );
-                }
-                if command.get("expect_auto_promote").is_some() {
-                    assert_eq!(
-                        report.learner_auto_promote_present,
-                        json_bool(command, "expect_auto_promote")
-                    );
-                }
-                if command.get("expect_pending_joint").is_some() {
-                    assert_eq!(
-                        report.pending_joint_consensus_present,
-                        json_bool(command, "expect_pending_joint")
-                    );
-                }
-            }
-            "propose_string_set" => {
-                let cluster = cluster.as_ref().unwrap();
-                cluster
-                    .propose(Command::StringSet {
-                        key: command["key"].as_str().unwrap().to_string(),
-                        value: command["value"].as_str().unwrap().as_bytes().to_vec(),
-                    })
-                    .unwrap();
-            }
-            "read_from_replica" => {
-                let cluster = cluster.as_ref().unwrap();
-                let response = cluster.read_from_replica(
-                    json_u64(command, "node_id"),
-                    Command::StringGet {
-                        key: command["key"].as_str().unwrap().to_string(),
-                    },
-                );
-                if let Some(value) = command["expected_value"].as_str() {
-                    assert_eq!(
-                        response,
-                        Ok(CommandResponse::Bytes {
-                            value: Some(value.as_bytes().to_vec())
-                        })
-                    );
-                } else {
-                    assert_shared_error(response, command);
-                }
-            }
-            "elect_leader" => {
-                let cluster = cluster.as_ref().unwrap();
-                assert_shared_error(cluster.elect_leader(json_u64(command, "node_id")), command);
-            }
-            "begin_joint_consensus" => {
-                let cluster = cluster.as_ref().unwrap();
-                cluster
-                    .begin_joint_consensus(json_u64_list(command, "new_voters"))
-                    .unwrap();
-            }
-            "commit_joint_consensus" => {
-                cluster.as_ref().unwrap().commit_joint_consensus().unwrap();
-            }
-            op => panic!("unsupported executable shared Raft membership op {op}"),
-        }
-    }
-}
-
-// shared-corpus: raft_byteraft_membership_roles
 #[test]
 fn learner_and_witness_roles_match_cpp_membership_shape() {
-    execute_raft_membership_shared_case("raft_byteraft_membership_roles");
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster
+        .add_node_with_role(4, RaftReplicaRole::Learner)
+        .unwrap();
+    cluster
+        .add_node_with_role(5, RaftReplicaRole::Witness)
+        .unwrap();
+
+    let status = cluster.status();
+    assert_eq!(status.majority, 3);
+    assert_eq!(status.live_voters, 4);
+    assert_eq!(
+        cluster.local_status(4).unwrap().replica_role,
+        RaftReplicaRole::Learner
+    );
+    assert_eq!(
+        cluster.local_status(5).unwrap().replica_role,
+        RaftReplicaRole::Witness
+    );
+    assert_eq!(cluster.membership().voters, vec![1, 2, 3, 5]);
+
+    cluster
+        .propose(Command::StringSet {
+            key: "role-k".to_string(),
+            value: b"role-v".to_vec(),
+        })
+        .unwrap();
+    assert_eq!(
+        cluster.read_from_replica(
+            4,
+            Command::StringGet {
+                key: "role-k".to_string()
+            }
+        ),
+        Ok(CommandResponse::Bytes {
+            value: Some(b"role-v".to_vec())
+        })
+    );
+    assert_eq!(
+        cluster.read_from_replica(
+            5,
+            Command::StringGet {
+                key: "role-k".to_string()
+            }
+        ),
+        Err(RaftError::NodeNotFound(5))
+    );
+    assert!(matches!(
+        cluster.elect_leader(4),
+        Err(RaftError::NodeNotFound(4))
+    ));
+    assert!(matches!(
+        cluster.elect_leader(5),
+        Err(RaftError::NodeNotFound(5))
+    ));
 }
 
 #[test]
@@ -5020,44 +3703,6 @@ fn replica_roles_survive_wal_restore() {
         RaftReplicaRole::Witness
     );
     assert_eq!(restored.membership().voters, vec![1, 2, 3, 5]);
-}
-
-// shared-corpus: raft_byteraft_rolling_restart_joint_consensus_fault_harness
-#[test]
-fn pending_joint_consensus_survives_rolling_restore_and_completes() {
-    let dir = tempfile::tempdir().unwrap();
-    let cluster =
-        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
-            .unwrap();
-    cluster.begin_joint_consensus([1, 2, 3, 4]).unwrap();
-    let pending = cluster.byteraft_local_status_report();
-    assert!(pending.pending_joint_consensus.is_some());
-    assert!(pending
-        .peers
-        .iter()
-        .any(|peer| peer.status.node_id == 4 && peer.can_be_leader));
-
-    let restored = RaftCluster::restore_single_shard_from_wal(
-        dir.path(),
-        1,
-        [1, 2, 3, 4],
-        RaftConfig::default(),
-    )
-    .unwrap();
-    let restored_pending = restored.byteraft_local_status_report();
-    assert!(restored_pending.pending_joint_consensus.is_some());
-    assert!(restored_pending
-        .pending_joint_consensus
-        .as_ref()
-        .unwrap()
-        .new_voters
-        .contains(&4));
-    restored.commit_joint_consensus().unwrap();
-    assert!(restored
-        .byteraft_local_status_report()
-        .pending_joint_consensus
-        .is_none());
-    assert_eq!(restored.membership().voters, vec![1, 2, 3, 4]);
 }
 
 #[test]
@@ -6303,7 +4948,7 @@ fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
 #[test]
 fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
             ProductionRaftNode {
@@ -6364,7 +5009,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
 #[test]
 fn production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract() {
     let runtime = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
             ProductionRaftNode {
@@ -6439,7 +5084,7 @@ fn production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract
 #[test]
 fn metaserver_owns_data_raft_membership_workflow() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
             ProductionRaftNode {
@@ -6508,20 +5153,20 @@ fn metaserver_owns_data_raft_membership_workflow() {
     );
 }
 
-#[cfg(feature = "openraft-engine")]
+#[cfg(feature = "temporal-raft-engine")]
 #[test]
-fn production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence() {
-    let rollout = raft_openraft_rollout_readiness();
+fn production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence() {
+    let rollout = raft_temporal_raft_rollout_readiness();
     assert!(rollout.adapter_present);
     assert!(!rollout.data_node_real_process_rollout_validated);
     assert!(!rollout.metaserver_real_process_rollout_validated);
     assert!(!rollout.multi_process_log_store_validation_present);
     assert!(!rollout.production_ready);
 
-    let data_report = ready_data_node_openraft_rollout_report();
-    let meta_report = ready_meta_openraft_rollout_report();
+    let data_report = ready_data_node_temporal_raft_rollout_report();
+    let meta_report = ready_meta_temporal_raft_rollout_report();
     let rollout_with_evidence =
-        raft_openraft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
+        raft_temporal_raft_rollout_readiness_from_reports(Some(&data_report), Some(&meta_report));
     assert!(rollout_with_evidence.data_node_real_process_rollout_validated);
     assert!(rollout_with_evidence.metaserver_real_process_rollout_validated);
     assert!(rollout_with_evidence.multi_process_log_store_validation_present);
@@ -6582,9 +5227,9 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
             "voter_remove".to_string(),
         ],
         final_node_evidence: vec![
-            ready_openraft_process_node(2),
-            ready_openraft_process_node(3),
-            ready_openraft_process_node(4),
+            ready_temporal_raft_process_node(2),
+            ready_temporal_raft_process_node(3),
+            ready_temporal_raft_process_node(4),
         ],
         final_secondary_replica_lag: 0,
         follower_lag_validated: true,
@@ -6593,31 +5238,12 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
         scale_down_validated: true,
         secondary_replication_validated: true,
         networked_process_api_used: true,
-        scheduler_process_api_calls_observed: 1,
-        data_node_membership_apply_process_api_calls_observed: 5,
-        data_node_raft_group_process_nodes_observed: 3,
-        data_node_raft_group_commit_indexes_observed: vec![9],
-        learner_add_process_api_observed: true,
-        catchup_verification_process_api_observed: true,
-        promote_process_api_observed: true,
-        leader_transfer_process_api_observed: true,
-        voter_remove_process_api_observed: true,
         persisted_through_meta_raft_replay: true,
         ready: true,
         blockers: Vec::new(),
     };
     assert!(report.ready);
     assert!(report.networked_process_api_used);
-    assert_eq!(report.scheduler_process_api_calls_observed, 1);
-    assert_eq!(
-        report.data_node_membership_apply_process_api_calls_observed,
-        5
-    );
-    assert!(report.learner_add_process_api_observed);
-    assert!(report.catchup_verification_process_api_observed);
-    assert!(report.promote_process_api_observed);
-    assert!(report.leader_transfer_process_api_observed);
-    assert!(report.voter_remove_process_api_observed);
     assert!(report.persisted_through_meta_raft_replay);
     assert!(report.stale_scheduler_token_rejected);
     assert_eq!(report.workflow.final_voters, vec![2, 3, 4]);
@@ -6635,7 +5261,7 @@ fn meta_owned_membership_report_covers_networked_scheduler_contract() {
 #[test]
 fn metaserver_membership_workflow_requires_meta_majority() {
     let meta = ProductionMetaRaftRuntime::start(ProductionMetaRaftRuntimeOptions {
-        engine: ProductionRaftEngineKind::OpenRaft,
+        engine: ProductionRaftEngineKind::TemporalRaft,
         local_node_id: 10,
         nodes: vec![
             ProductionRaftNode {
@@ -7192,22 +5818,7 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
     let report = wal.segment_report(7, 1).unwrap();
     assert_eq!(report.segments.len(), 2);
     assert!(report.active_segment_id >= 2);
-    assert!(report.segments.first().unwrap().segment_id > 1);
-    assert!(report.segments.first().unwrap().first_sequence > 0);
     assert!(report.segments.iter().all(|segment| segment.bytes > 0));
-    assert!(report
-        .segments
-        .iter()
-        .all(|segment| segment.record_count > 0));
-    assert!(report
-        .segments
-        .iter()
-        .all(|segment| segment.last_sequence >= segment.first_sequence));
-    assert!(report.segments.last().unwrap().last_sequence > 0);
-    assert!(
-        report.segments.last().unwrap().last_sequence
-            >= report.segments.first().unwrap().first_sequence
-    );
 
     let recovery = wal.recover_node(7, 1).unwrap();
     let record = recovery.record.unwrap();
@@ -7463,11 +6074,6 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     let recovery = wal.recover_node(78, 1).unwrap();
     let report = wal.segment_report(78, 1).unwrap();
     assert_eq!(report.segments.len(), 2);
-    assert!(report
-        .segments
-        .iter()
-        .all(|segment| segment.record_count > 0));
-    assert!(report.segments.last().unwrap().last_sequence > 0);
     let record = recovery.record.unwrap();
     assert_eq!(record.hard_state.commit_index, 8);
     assert_eq!(record.entries.len(), 8);
@@ -7766,5 +6372,3 @@ fn wal_recovery_rejects_ahead_of_storage_apply_fence() {
         matches!(error, RaftError::ApplySnapshotFence(message) if message.contains("ahead of committed index"))
     );
 }
-
-

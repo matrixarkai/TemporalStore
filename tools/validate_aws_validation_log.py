@@ -611,8 +611,8 @@ def validate_raft_distributed_parity(job, summary):
         "stale_scheduler_token_rejection_ready",
     ]:
         require(scheduler[field], f"{job}: metaserver scheduler field {field} is false")
-    rollout = metaserver["openraft_process_rollout"]
-    require(rollout["ready"], f"{job}: metaserver OpenRaft process rollout is not ready")
+    rollout = metaserver.get("temporal_raft_process_rollout") or metaserver["openraft_process_rollout"]
+    require(rollout["ready"], f"{job}: metaserver TemporalRaft process rollout is not ready")
     require(rollout["multi_process_log_store_validated"], f"{job}: metaserver log-store rollout missing")
     require(rollout["data_node_membership_results_ready"], f"{job}: data-node membership results missing")
     for field in [

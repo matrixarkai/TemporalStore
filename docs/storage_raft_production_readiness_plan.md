@@ -37,9 +37,9 @@ external distributed fault validation.
 
 4. **Real Raft FSM/storage selection and integration**
    - Runs `validate_storage_raft_production_plan.py`.
-   - Runs `cargo test -p temporalstore-rust --features openraft-engine openraft_ --lib`.
+   - Runs `cargo test -p temporalstore-rust --features temporal-raft-engine temporal_raft_ --lib`.
    - Runs `readiness_gate --service raft_replication`.
-   - Requires OpenRaft-backed data-node/metaserver adapter evidence and production process startup
+   - Requires TemporalRaft-backed data-node/metaserver adapter evidence and production process startup
      defaults, then reports the remaining blockers around durable real-process rollout, snapshot
      atomicity, mTLS, and external chaos.
 

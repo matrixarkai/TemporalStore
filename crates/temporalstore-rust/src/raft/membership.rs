@@ -81,133 +81,19 @@ pub struct MetaDataRaftMembershipWorkflowReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OpenRaftProcessNodeEvidence {
+pub struct TemporalRaftProcessNodeEvidence {
     pub node_id: RaftNodeId,
     pub addr: String,
     pub wal_dir: String,
-    #[serde(default)]
-    pub snapshot_dir: String,
     pub commit_index: u64,
     pub applied_index: u64,
     pub snapshot_id: Option<String>,
     pub restarted: bool,
     pub log_store_validated: bool,
-    #[serde(default)]
-    pub wal_segments_inspected: u64,
-    #[serde(default)]
-    pub wal_retained_segment_count: u64,
-    #[serde(default)]
-    pub wal_first_sequence: u64,
-    #[serde(default)]
-    pub wal_last_sequence: u64,
-    #[serde(default)]
-    pub wal_release_floor: u64,
-    #[serde(default)]
-    pub wal_slow_fsync_backpressure_observed: bool,
-    #[serde(default)]
-    pub restart_log_store_comparison_observed: bool,
-    #[serde(default)]
-    pub storage_mutation_recovered_after_restart: bool,
-    #[serde(default)]
-    pub wal_persisted_apply_fence_observed: bool,
-    #[serde(default)]
-    pub snapshot_install_apply_fence_observed: bool,
-    #[serde(default)]
-    pub deterministic_crash_recovery_observed: bool,
-    #[serde(default)]
-    pub snapshot_files_inspected: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftProcessPathSemanticsEvidence {
-    #[serde(default)]
-    pub observed_process_requests: u64,
-    #[serde(default)]
-    pub read_index_responses_observed: u64,
-    #[serde(default)]
-    pub read_index_and_lease_evidence_observed: bool,
-    #[serde(default)]
-    pub stale_leader_lease_rejected: bool,
-    #[serde(default)]
-    pub lagging_follower_read_rejected: bool,
-    #[serde(default)]
-    pub stale_follower_write_rejected: bool,
-    #[serde(default)]
-    pub bounded_stale_reads_observed: bool,
-    #[serde(default)]
-    pub bounded_stale_partition_reads_observed: bool,
-    #[serde(default)]
-    pub follower_lease_expiration_observed: bool,
-    #[serde(default)]
-    pub minority_partition_rejected: bool,
-    #[serde(default)]
-    pub healed_follower_catchup_observed: bool,
-    #[serde(default)]
-    pub per_peer_pipeline_state_observed: bool,
-    #[serde(default)]
-    pub append_pipeline_state_observed: bool,
-    #[serde(default)]
-    pub replicate_inflight_limits_observed: bool,
-    #[serde(default)]
-    pub max_replicate_bytes_observed: bool,
-    #[serde(default)]
-    pub oversized_log_rejection_observed: bool,
-    #[serde(default)]
-    pub apply_batch_backpressure_observed: bool,
-    #[serde(default)]
-    pub append_queue_depth_observed: bool,
-    #[serde(default)]
-    pub replication_pressure_counters_observed: bool,
-    #[serde(default)]
-    pub max_disk_replicate_log_num_observed: bool,
-    #[serde(default)]
-    pub snapshot_lifecycle_observed: bool,
-    #[serde(default)]
-    pub snapshot_chunk_retry_backpressure_observed: bool,
-    #[serde(default)]
-    pub snapshot_send_timeout_observed: bool,
-    #[serde(default)]
-    pub snapshot_install_progress_observed: bool,
-    #[serde(default)]
-    pub snapshot_install_rollback_observed: bool,
-    #[serde(default)]
-    pub snapshot_membership_change_observed: bool,
-    #[serde(default)]
-    pub snapshot_rejoin_after_compacted_log_observed: bool,
-    #[serde(default)]
-    pub wal_segment_lifecycle_observed: bool,
-    #[serde(default)]
-    pub wal_segment_release_rules_observed: bool,
-    #[serde(default)]
-    pub wal_first_last_index_status_observed: bool,
-    #[serde(default)]
-    pub wal_slow_fsync_backpressure_observed: bool,
-    #[serde(default)]
-    pub restart_log_store_comparison_observed: bool,
-    #[serde(default)]
-    pub fsm_apply_atomicity_observed: bool,
-    #[serde(default)]
-    pub apply_fence_recovery_observed: bool,
-    #[serde(default)]
-    pub snapshot_install_apply_fence_recovery_observed: bool,
-    #[serde(default)]
-    pub storage_wal_snapshot_crash_recovery_observed: bool,
-    #[serde(default)]
-    pub restart_recovery_observed: bool,
-    #[serde(default)]
-    pub failover_observed: bool,
-    #[serde(default)]
-    pub membership_change_observed: bool,
-    #[serde(default)]
-    pub secondary_lag_observed: bool,
-    #[serde(default)]
-    pub ready: bool,
-    #[serde(default)]
-    pub blockers: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OpenRaftProcessOperationalSemanticsEvidence {
+pub struct TemporalRaftProcessOperationalSemanticsEvidence {
     #[serde(default)]
     pub api_presence_only_rejected: bool,
     #[serde(default)]
@@ -246,7 +132,7 @@ pub struct OpenRaftProcessOperationalSemanticsEvidence {
     pub blockers: Vec<String>,
 }
 
-impl OpenRaftProcessOperationalSemanticsEvidence {
+impl TemporalRaftProcessOperationalSemanticsEvidence {
     pub fn proves_runtime_semantics(&self) -> bool {
         self.ready
             && self.blockers.is_empty()
@@ -336,38 +222,16 @@ impl OpenRaftProcessOperationalSemanticsEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OpenRaftDataNodeProcessRolloutReport {
+pub struct TemporalRaftDataNodeProcessRolloutReport {
     pub shard_id: ShardId,
     #[serde(default)]
     pub voters: Vec<RaftNodeId>,
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
-    pub nodes: Vec<OpenRaftProcessNodeEvidence>,
-    #[serde(default)]
-    pub spawned_process_count: usize,
-    #[serde(default)]
-    pub independent_wal_dirs: bool,
-    #[serde(default)]
-    pub independent_snapshot_dirs: bool,
-    #[serde(default)]
-    pub observed_process_requests: u64,
-    #[serde(default)]
-    pub read_index_responses_observed: u64,
-    #[serde(default)]
-    pub restarted_node_count: usize,
-    #[serde(default)]
-    pub per_node_log_store_inspection_count: usize,
+    pub nodes: Vec<TemporalRaftProcessNodeEvidence>,
     pub write_proposed_through_process_api: bool,
     #[serde(default)]
     pub leader_transfer_validated: bool,
-    #[serde(default)]
-    pub leader_transfer_under_load_observed: bool,
-    #[serde(default)]
-    pub leader_transfer_exact_once_observed: bool,
-    #[serde(default)]
-    pub leader_transfer_write_ids_observed: Vec<String>,
-    #[serde(default)]
-    pub leader_transfer_commit_indexes_observed: Vec<u64>,
     #[serde(default)]
     pub failover_validated: bool,
     #[serde(default)]
@@ -399,36 +263,18 @@ pub struct OpenRaftDataNodeProcessRolloutReport {
     pub applied_fence_validated: bool,
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
-    pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
-    #[serde(default)]
-    pub real_process_path_evidence_validated: bool,
-    #[serde(default)]
-    pub operational_semantics: OpenRaftProcessOperationalSemanticsEvidence,
+    pub operational_semantics: TemporalRaftProcessOperationalSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct OpenRaftMetaProcessRolloutReport {
+pub struct TemporalRaftMetaProcessRolloutReport {
     #[serde(default)]
     pub voters: Vec<RaftNodeId>,
     #[serde(default)]
     pub learners: Vec<RaftNodeId>,
-    pub nodes: Vec<OpenRaftProcessNodeEvidence>,
-    #[serde(default)]
-    pub spawned_process_count: usize,
-    #[serde(default)]
-    pub independent_wal_dirs: bool,
-    #[serde(default)]
-    pub independent_snapshot_dirs: bool,
-    #[serde(default)]
-    pub observed_process_requests: u64,
-    #[serde(default)]
-    pub read_index_responses_observed: u64,
-    #[serde(default)]
-    pub restarted_node_count: usize,
-    #[serde(default)]
-    pub per_node_log_store_inspection_count: usize,
+    pub nodes: Vec<TemporalRaftProcessNodeEvidence>,
     pub mutation_proposed_through_process_api: bool,
     #[serde(default)]
     pub applied_raft_mutations: u64,
@@ -464,11 +310,7 @@ pub struct OpenRaftMetaProcessRolloutReport {
     pub scheduler_task_replay_validated: bool,
     pub multi_process_log_store_validated: bool,
     #[serde(default)]
-    pub byteraft_process_semantics: ByteRaftProcessPathSemanticsEvidence,
-    #[serde(default)]
-    pub real_process_path_evidence_validated: bool,
-    #[serde(default)]
-    pub operational_semantics: OpenRaftProcessOperationalSemanticsEvidence,
+    pub operational_semantics: TemporalRaftProcessOperationalSemanticsEvidence,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
@@ -482,7 +324,7 @@ pub struct MetaOwnedDataRaftMembershipReport {
     #[serde(default)]
     pub executed_steps: Vec<String>,
     #[serde(default)]
-    pub final_node_evidence: Vec<OpenRaftProcessNodeEvidence>,
+    pub final_node_evidence: Vec<TemporalRaftProcessNodeEvidence>,
     #[serde(default)]
     pub final_secondary_replica_lag: u64,
     pub follower_lag_validated: bool,
@@ -652,5 +494,3 @@ pub fn apply_data_raft_membership_from_topology(
         membership_report: Some(membership_report),
     })
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
