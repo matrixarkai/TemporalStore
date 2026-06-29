@@ -7,11 +7,11 @@ data-node and metaserver paths. Local in-process Raft fixtures remain useful for
 model checking, but they are not readiness-eligible production evidence.
 
 The default readiness API therefore fails closed until callers provide passing
-`OpenRaftDataNodeProcessRolloutReport` and `OpenRaftMetaProcessRolloutReport` evidence with
+`TemporalRaftDataNodeProcessRolloutReport` and `TemporalRaftMetaProcessRolloutReport` evidence with
 process API writes/mutations, restart recovery, snapshot install, applied/read-index checks,
 scheduler replay, real log-store validation, failover, membership change, follower-lag, and
 secondary-read validation. Those reports must also include
-`OpenRaftProcessOperationalSemanticsEvidence`; reports that only prove API presence or generic
+`TemporalRaftProcessOperationalSemanticsEvidence`; reports that only prove API presence or generic
 process startup are rejected. The operational evidence covers read-index and lease-read guards,
 lagging-follower read rejection, stale follower write rejection, leader transfer exact-once
 validation, leader transfer under load, snapshot install plus restart recovery, membership
@@ -132,49 +132,7 @@ The Rust code currently has:
   RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, applied-log-byte snapshot
   triggers, durable apply/snapshot fencing, snapshot-floor log matching, snapshot-tail catch-up, and
   compacted-entry rejection, metaserver snapshot-floor election, and operator control routes
-- ByteRaft-style process-path admin evidence through `ByteRaftRuntimeAdminReport`: per-peer
-  match/next index, append request/accept/reject counters, inflight bytes/entries,
-  append queue depth/max depth, active in-flight replicate limits, bounded disk replicate-log
-  retention through `max_disk_replicate_log_num`, active apply batch backpressure, memory
-  replicate-byte backpressure, oversized-log rejection, observed pressure counters,
-  out-of-order append handling, append/reorder queue depth, reorder
-  accept/release/reject counters, snapshot send/install state, snapshot send
-  attempt/complete/failure counters, snapshot send elapsed/timeout counters, snapshot install
-  start/complete/reject/rollback counters, install received/total chunks, install progress,
-  chunk retry, rate-limit, membership-change snapshot evidence, compacted-log rejoin evidence,
-  retry/backpressure counters,
-  leader-transfer target state, request/accept/reject/complete counters, and
-  elapsed/timeout counters,
-  offline elapsed time, offline-timeout reached state, offline-timeout rejection counters,
-  pre-vote/election rejection counters, read-index plus lease-read
-  request/accept/reject counters, stale follower read/write rejection, WAL segment retention,
-  retained WAL bytes, active segment bytes, retained record count, WAL first/last sequence, and process-path
-  admin-status completeness. The report now also emits a `capability_matrix` with explicit
-  rows for `per_peer_replication_pipeline_state`, `reorder_queue_runtime`,
-  `snapshot_sender_downloader_lifecycle`, `lease_read_index_pre_vote_semantics`,
-  `wal_segment_lifecycle`, and `admin_status_surface`. The same fields are now exposed through the standalone Raft node and
-  raft-enabled data-node Prometheus surfaces so operator status/metrics evidence is tied to the
-  process path. Append request construction now enforces configured in-flight entry/byte limits and
-  rejects saturated peer pipelines with explicit backpressure. Top-level proposal paths record
-  oversized-log and memory-byte rejections even when the command is rejected before append fanout.
-  Append receive now rejects batches that exceed configured apply-batch bytes or reorder windows,
-  records out-of-order append rejection, and records accepted/released/rejected entries.
-  Snapshot sender construction now
-  rejects concurrent single-shot or chunked transfers for the same peer, records chunk rate-limit
-  pressure, records install progress and duplicate chunk retries, and keeps rollback diagnostics
-  for membership-change snapshots and follower rejoin after compacted logs. Per-peer pipeline,
-  snapshot lifecycle, and read-safety state is
-  maintained as runtime state and persisted through the local WAL restore path, instead of being only
-  reconstructed at report time. This is Rust-native OpenRaft/raft-rs readiness evidence, not direct
-  C++ ByteRaft FFI.
-- ByteRaft-style membership-role evidence is explicit: witnesses participate in quorum but cannot
-  serve data or become leader, learners can serve caught-up reads but do not count for quorum, and
-  `add_learner_with_auto_promote` catches up and promotes a learner to voter while preserving
-  `auto_promoted_from_learner` evidence in admin/local-status reports. The
-  `/raft/control/byteraft_local_status` route exposes per-node local status joined with peer
-  pipeline state, including pending joint-consensus state that survives WAL-backed rolling restart
-  before safe commit.
-- strict shared-store WAL gap rejection
+- strict shared-store oplog gap rejection
 - partition/heal chaos coverage in the local model
 - tests for the above behavior
 
@@ -186,8 +144,8 @@ temporalstore_rust::distributed_raft_readiness()
 
 The no-argument API intentionally fails closed when no external process evidence is supplied. Tests
 and harness validators should use the report-backed path,
-`distributed_raft_readiness_from_openraft_reports(data_node_report, metaserver_report)`, as the
-default readiness-eligible path. With the `openraft-engine` feature enabled, that report-backed path
+`distributed_raft_readiness_from_temporal_raft_reports(data_node_report, metaserver_report)`, as the
+default readiness-eligible path. With the `temporal-raft-engine` feature enabled, that report-backed path
 returns `complete = true` and `production_ready = true` for the Raft replication slice only when the
 real-process harnesses have emitted durable data-node and metaserver rollout evidence. That evidence
 now covers data-node applied Raft index atomicity with storage mutations and snapshot install,
@@ -215,11 +173,11 @@ closed because the local model is test-only. Local Raft fixtures remain availabl
 compatibility tests, and harness validation, but they are not an accepted runtime or deployment
 mode.
 
-The Rust production target is Rust-native behavior parity: keep OpenRaft/raft-rs as the production
+The Rust production target is Rust-native behavior parity: keep TemporalRaft/raft-rs as the production
 path and borrow ByteRaft semantics, safety contracts, metrics, admin surfaces, and tests. The
-ByteRaft-derived evidence is now paired with the Rust OpenRaft process rollout evidence, and the
+ByteRaft-derived evidence is now paired with the Rust TemporalRaft process rollout evidence, and the
 process-path gate fails closed if that evidence is absent. This makes the runtime parity claim
-harder to fake, but it is still Rust-native OpenRaft readiness evidence, not a claim that Rust is
+harder to fake, but it is still Rust-native TemporalRaft readiness evidence, not a claim that Rust is
 byte-for-byte or implementation-identical to C++ ByteRaft. Direct C++ ByteRaft FFI is not part of
 the readiness target.
 
@@ -261,7 +219,7 @@ The production runtime surface is:
   harness evidence and C++ required paths. Its Rust combined mode runs the data-node plus metaserver
   parity gate once instead of treating individual corpus rows as production proof by name alone.
 - The combined Raft parity summary now promotes metaserver scheduler execution coverage,
-  OpenRaft metaserver process rollout, and metaserver-owned data-Raft membership into first-class
+  TemporalRaft metaserver process rollout, and metaserver-owned data-Raft membership into first-class
   evidence fields. Validation requires learner add, catch-up verification, promotion, leader
   transfer, voter removal, follower-lag/failover/scale-up/scale-down/secondary-replication flags,
   stale scheduler token rejection, and persisted metaserver Raft replay evidence.
@@ -290,11 +248,11 @@ The current C++ unified corpus includes these Raft/replication cases:
 | `raft_data_node_leader_election_failover` | `tools/run_data_raft_failover_ubuntu22.sh` | `raft_secondary_replication_harness` names leader election and failover as a separate shared scenario and keeps the evidence on the process harness path |
 | `raft_data_node_snapshot_restart_follower_lag` | `tools/run_data_raft_snapshot_restore_ubuntu22.sh`, `tools/build_secondary_visibility_lag_benchmark.sh` | `distributed_raft_harness` plus `raft_secondary_replication_harness` cover snapshot install, restart recovery, lagging follower observation, and catch-up |
 | `raft_data_node_membership_secondary_reads` | `tools/run_data_raft_scale_up_down_ubuntu22.sh`, `tools/run_data_raft_mixed_rw_ubuntu22.sh` | `raft_secondary_replication_harness` covers membership add/promote/remove and secondary-read visibility as an explicit shared case |
-| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, lagging voter tail catch-up after stale snapshot install, leader transfer, failover, unsupported-role rejection, no-majority rejection, scheduler mutation process-API evidence, data-node membership apply call counts, per-step learner/catch-up/promote/transfer/remove evidence, and metaserver Raft replay evidence for scheduler state |
+| `raft_metaserver_membership_failover_snapshot` | `tools/run_metaserver_raft_membership_ubuntu22.sh`, `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` plus `production_meta_raft_runtime_matches_cpp_multinode_control_and_fault_contract` cover membership list/add/remove, read-index wait, snapshot trigger/restore, lagging voter tail catch-up after stale snapshot install, leader transfer, failover, unsupported-role rejection, and no-majority rejection; strict production readiness still blocks on networked metaserver scheduler orchestration across real data-node Raft groups |
 | `raft_metaserver_leader_snapshot_restart` | `tools/run_metaserver_raft_failover_ubuntu22.sh`, `tools/run_metaserver_raft_snapshot_restore_ubuntu22.sh` | `metaserver_raft_harness` names leader/failover, snapshot install, and restart recovery as a separate shared scenario |
 | `raft_metaserver_membership_add_promote_remove` | `tools/run_metaserver_raft_membership_ubuntu22.sh` | `metaserver_raft_harness` names learner add, catch-up, promote, leader transfer, and voter remove as a separate shared scenario |
-| `raft_openraft_process_rollout_evidence` | `tools/run_raft_production_gate_ubuntu22.sh`, `tools/run_raft_stress_suite_ubuntu22.sh` | Rust unit/readiness evidence verifies local mode is rejected for deployment and production readiness depends on harness-derived OpenRaft data-node and metaserver process reports: `real_process_path_evidence_validated=true`, spawned process counts, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery for every process, per-node log-store inspection for every process, paired observed write IDs and commit indexes during leader transfer under load, explicit data-node secondary-read/lag proof fields (`secondary_lag_observed`, `lagging_follower_read_rejection_observed`, `stale_follower_write_rejection_observed`, `catchup_read_eligibility_observed`, `minority_partition_rejection_observed`, `bounded_stale_read_eligibility_observed`, `lagging_follower_observed_lag`), WAL first/last sequence status, WAL segment release-rule evidence, WAL fsync/backpressure evidence, restart log-store comparison evidence, FSM apply atomicity, apply-fence recovery, snapshot-install apply-fence recovery, deterministic storage/WAL/snapshot crash recovery, bounded-stale reads under partition, follower lease expiration, and ByteRaft-derived process-semantics evidence for per-peer pipeline state, active in-flight replicate limits, max replicate-byte pressure, `max_disk_replicate_log_num` retention, oversized-log rejection, apply-batch backpressure, append queue depth, pressure counters, snapshot chunk retry/backpressure, send timeout, install progress, rollback, membership-change snapshot safety, compacted-log rejoin, WAL lifecycle, failover, membership, and secondary lag where applicable |
-| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_parity.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked OpenRaft rollout and real multi-process log-store validation are complete |
+| `raft_temporal_raft_process_rollout_evidence` | `tools/run_raft_production_gate_ubuntu22.sh`, `tools/run_raft_stress_suite_ubuntu22.sh` | Rust unit/readiness evidence verifies local mode is rejected for deployment and production readiness depends on TemporalRaft data-node and metaserver process rollout plus log-store validation fields |
+| `raft_production_gate` | `tools/run_raft_production_gate_ubuntu22.sh` | `tools/run_storage_raft_production_readiness.sh` is the Rust storage/Raft local gate, and `tools/run_raft_distributed_parity.sh` is the Rust Raft-only parity gate for data-node plus metaserver multi-node behavior; strict production mode still fails until networked TemporalRaft rollout and real multi-process log-store validation are complete |
 
 Focused C++ Raft-case-driven Rust validation:
 
@@ -379,7 +337,7 @@ Evidence from the validated outputs:
 ## Repeated Data-Node Raft Check
 
 The repeated audit now treats data-node distributed Raft as production-ready only when the
-multi-process OpenRaft data-node and metaserver evidence is present. Local in-process fixtures are
+multi-process TemporalRaft data-node and metaserver evidence is present. Local in-process fixtures are
 supporting tests, not production-readiness proof.
 
 Covered today:
@@ -409,7 +367,7 @@ Covered today:
 
 Still missing:
 
-- production OpenRaft durable log-store rollout across real processes beyond the feature-gated
+- production TemporalRaft durable log-store rollout across real processes beyond the feature-gated
   local adapter tests
 - validation that the metaserver-owned membership scheduler drives real data-node Raft groups
   through follower lag, failover, scale up/down, and secondary replication after applying

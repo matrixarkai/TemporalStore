@@ -13,10 +13,10 @@ tools/run_storage_raft_production_readiness.sh
 ```
 
 The gate runs the current Rust local harnesses one by one, validates their JSON output, runs the
-feature-gated OpenRaft adapter tests, and then prints the remaining readiness blockers. Production
+feature-gated TemporalRaft adapter tests, and then prints the remaining readiness blockers. Production
 distributed Raft mode is mandatory: local Raft is test-only and cannot be selected as a runtime
 deployment mode. This gate does not claim full production readiness while the readiness gate still
-reports missing durable real-process OpenRaft rollout, atomic snapshot/storage persistence, and
+reports missing durable real-process TemporalRaft rollout, atomic snapshot/storage persistence, and
 external distributed fault validation.
 
 ## Current Execution Order
@@ -84,9 +84,9 @@ Storage/cache local coverage:
 
 Raft local coverage:
 
-- Feature-gated OpenRaft data-node and metaserver adapter.
-- OpenRaft boundary types for entries, log ids, membership, and snapshot metadata.
-- Durable OpenRaft adapter state with log records, state-machine apply, snapshot build/install
+- Feature-gated TemporalRaft data-node and metaserver adapter.
+- TemporalRaft boundary types for entries, log ids, membership, and snapshot metadata.
+- Durable TemporalRaft adapter state with log records, state-machine apply, snapshot build/install
   metadata, read-index checks, membership changes, leader transfer, and restart recovery tests.
 - Data-node Raft consensus contract fields aligned with C++ first: learner bootstrap,
   learner auto-promotion, fatal/snapshot status fields, campaign/forced campaign control, and
@@ -106,12 +106,12 @@ Raft local coverage:
   routes, plus RPC retry/backpressure/auth/deadline behavior, bounded WAL retention, and
   applied-log-byte snapshot triggers.
 - WAL-backed node records now carry a durable apply/snapshot fence for commit index, applied index,
-  installed snapshot floor, and first retained log index, giving the OpenRaft path a concrete
+  installed snapshot floor, and first retained log index, giving the TemporalRaft path a concrete
   ByteRaft-style applied-index/storage/snapshot atomicity contract to preserve.
 - WAL-backed node records now also carry `RaftStorageApplyFence` for shard id, Raft term,
   committed/applied index, snapshot id, storage epoch, and checksum, so recovery rejects missing,
   corrupt, stale, or ahead-of-storage fence state before replay.
-- OpenRaft durable state now carries the same `RaftStorageApplyFence`, refreshes it after
+- TemporalRaft durable state now carries the same `RaftStorageApplyFence`, refreshes it after
   synchronous engine apply and snapshot creation, persists the state through temp-file fsync plus
   rename, and rejects corrupt fences on restart. This closes the local applied-index/storage/snapshot
   atomicity contract; real multi-process data-node rollout validation remains the production
@@ -151,11 +151,11 @@ Raft local coverage:
 ## Remaining Production Blockers
 
 The readiness gate now fails closed for the Raft replication and data-node distributed Raft slices
-unless it is given explicit multi-process OpenRaft rollout evidence for both data-node and
+unless it is given explicit multi-process TemporalRaft rollout evidence for both data-node and
 metaserver paths. Local in-process Raft fixtures and local harnesses remain useful supporting
 evidence, but they cannot satisfy production readiness by themselves:
 
-- Raft OpenRaft rollout readiness is now explicit in the readiness gate: adapter presence,
+- Raft TemporalRaft rollout readiness is now explicit in the readiness gate: adapter presence,
   data-node/metaserver startup selection, durable local log state, data-node process API writes,
   data-node restart/snapshot/applied-fence validation, failover, membership-change, follower-lag,
   and secondary-read validation, metaserver process API mutations, metaserver
@@ -222,7 +222,7 @@ The proof format is `temporalstore_storage_raft_production_proof_v1` and combine
 - `storage-production.json` for C++ migration corpus replay through restart, Redis/admin,
   shared-store sync/async, cache warmup, and Raft read paths
 - `storage-modes.json` for local file/shared-store and local WAL restore evidence
-- `raft-distributed-parity.json` for data-node plus metaserver OpenRaft rollout evidence,
+- `raft-distributed-parity.json` for data-node plus metaserver TemporalRaft rollout evidence,
   membership, snapshots, failover, follower lag, and secondary reads
 - `cpp-raft-cases-on-rust.json` for C++ Raft scenario comparison against the Rust data-node and
   metaserver harness evidence
@@ -239,7 +239,7 @@ The proof contains two parity-focused subreports:
 
 - `evidence.cpp_raft_scenario_comparison` requires shared C++ Raft cases for election, failover,
   snapshot, membership, follower lag, and secondary reads, then maps each scenario to concrete Rust
-  OpenRaft harness fields. Local Raft fixtures are marked test-only through
+  TemporalRaft harness fields. Local Raft fixtures are marked test-only through
   `evidence.local_raft_fixture_policy`; they cannot satisfy production readiness.
 - `evidence.unified_storage_recovery_dump_load_cache_gc` ties storage recovery, dump/load,
   cache-pressure/refill, follower-safe GC/shared-store replay, and C++ migration-corpus evidence
@@ -277,7 +277,7 @@ Strict readiness mode:
 TS_REQUIRE_STORAGE_RAFT_READY=1 tools/run_storage_raft_production_readiness.sh
 ```
 
-Strict mode is expected to fail until durable real-process OpenRaft rollout, atomic
+Strict mode is expected to fail until durable real-process TemporalRaft rollout, atomic
 snapshot/storage persistence, and external distributed fault blockers are closed. Local-model harness
 success is validation evidence only; it does not satisfy the production Raft readiness gate.
 

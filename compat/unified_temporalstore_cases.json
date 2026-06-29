@@ -1565,11 +1565,7 @@
             "events": [
               {
                 "confidence": 0.75,
-                "context_event_key": "context_event:context_node:700:00000000000000009000:9001",
-                "context_event_parent_hash": 700,
-                "context_event_parent_type": "context_node",
                 "event_id_hash": 9001,
-                "event_time_key": "00000000000000009000:9001",
                 "event_time_ms": 9000,
                 "ingestion_time_ms": 9000,
                 "importance": 0.5,
@@ -1578,11 +1574,7 @@
               },
               {
                 "confidence": 0.8,
-                "context_event_key": "context_event:context_node:700:00000000000000009000:9002",
-                "context_event_parent_hash": 700,
-                "context_event_parent_type": "context_node",
                 "event_id_hash": 9002,
-                "event_time_key": "00000000000000009000:9002",
                 "event_time_ms": 9000,
                 "ingestion_time_ms": 9000,
                 "importance": 0.6,
@@ -1638,110 +1630,6 @@
             ]
           },
           "name": "context_query_index_ref_model"
-        },
-        {
-          "command": {
-            "event_time_ms": 9001,
-            "index_name": "topic",
-            "index_ref": {
-              "event_id_hash": 9001,
-              "primary_event_time_ms": 9000,
-              "primary_node_hash": 700
-            },
-            "index_value_hash": 333,
-            "kind": "context_write_index_ref",
-            "scope_hash": 0,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctxidx:101:topic:333:0"
-          },
-          "name": "context_write_duplicate_topic_index_ref_model"
-        },
-        {
-          "command": {
-            "event_time_ms": 9000,
-            "index_name": "status",
-            "index_ref": {
-              "event_id_hash": 9001,
-              "primary_event_time_ms": 9000,
-              "primary_node_hash": 700
-            },
-            "index_value_hash": 444,
-            "kind": "context_write_index_ref",
-            "scope_hash": 0,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctxidx:101:status:444:0"
-          },
-          "name": "context_write_status_index_ref_model"
-        },
-        {
-          "command": {
-            "event_time_ms": 9000,
-            "index_name": "source",
-            "index_ref": {
-              "event_id_hash": 9001,
-              "primary_event_time_ms": 9000,
-              "primary_node_hash": 700
-            },
-            "index_value_hash": 555,
-            "kind": "context_write_index_ref",
-            "scope_hash": 0,
-            "tenant_hash": 101
-          },
-          "expect": {
-            "kind": "context_object_key",
-            "object_key": "ctxidx:101:source:555:0"
-          },
-          "name": "context_write_source_index_ref_model"
-        },
-        {
-          "command": {
-            "kind": "context_query_index_intersection",
-            "limit": 10,
-            "predicates": [
-              {
-                "end_time_ms": 9010,
-                "index_name": "topic",
-                "index_value_hash": 333,
-                "scope_hash": 0,
-                "start_time_ms": 8990
-              },
-              {
-                "end_time_ms": 9010,
-                "index_name": "status",
-                "index_value_hash": 444,
-                "scope_hash": 0,
-                "start_time_ms": 8990
-              },
-              {
-                "end_time_ms": 9010,
-                "index_name": "source",
-                "index_value_hash": 555,
-                "scope_hash": 0,
-                "start_time_ms": 8990
-              }
-            ],
-            "tenant_hash": 101
-          },
-          "expect": {
-            "deduped_ref_count": 1,
-            "kind": "context_index_intersection",
-            "matched_index_count": 3,
-            "refs": [
-              {
-                "event_id_hash": 9001,
-                "primary_event_time_ms": 9000,
-                "primary_node_hash": 700
-              }
-            ],
-            "scanned_ref_count": 4
-          },
-          "name": "context_secondary_index_intersection"
         },
         {
           "command": {
@@ -2981,9 +2869,9 @@
             "expected_blocker": "replay_cursor",
             "kind": "storage_follower_safe_gc",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
-            "retention_object": "wal"
+            "retention_object": "oplog"
           },
-          "name": "storage_gc_refuses_wal_needed_by_replay_cursor",
+          "name": "storage_gc_refuses_oplog_needed_by_replay_cursor",
           "skip_client": true
         }
       ]
@@ -3014,23 +2902,6 @@
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
           "name": "storage_cache_refills_from_page_store_after_invalidation",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_cache_replacement_policy_soak",
-      "shard_id": 7,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust-native cache replacement-policy soak proves hot and pinned blocks survive capacity churn while cold blocks churn through disk refill with latency samples.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "replacement_policy_soak_retains_hot_and_pinned_blocks"
-          },
-          "name": "rust_storage_cache_replacement_policy_soak",
           "skip_client": true
         }
       ]
@@ -3095,363 +2966,6 @@
       ]
     },
     {
-      "name": "storage_slot_first_physical_index",
-      "shard_id": 9,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage exposes C++-style Index -> SlotNode -> PageIndex ownership from a persisted native slot-index authority with routing slot, object id, page id, checksum, dirty/log flags, C++ 17-byte PageIndex / 24-byte SlotNode packed-size evidence, and per-slot bytes for mixed page-backed product models including Risk.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_physical_index_report_is_slot_first_and_page_index_complete"
-          },
-          "name": "rust_storage_physical_index_report_matches_slot_first_contract",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_object_manager_slotstore_runtime_authority",
-      "shard_id": 94,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage exposes named ObjectManager and SlotStore runtime modules over the native slot/object/page authority, and validates live/dirty/deleted/loading/in-memory object and slot rows, object ids, page refs, dirty generations, TTL metadata, and counts against the physical index report.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_object_manager_and_slotstore_runtime_modules_are_authoritative"
-          },
-          "name": "rust_storage_object_manager_slotstore_runtime_authority",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_slot_index_authoritative_secondary_rebuild",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage treats SlotStore/ObjectManager page ownership as the durable authority by rebuilding logical secondary views from the slot/object/page index after restart. The case wipes persisted string/hash/set/timestamped/Risk/Context logical maps while preserving SlotNode/PageIndex refs, then verifies reads and queries recover from page-address ownership.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_slot_index_rebuilds_secondary_views_after_restart"
-          },
-          "name": "rust_storage_slot_index_authoritative_secondary_rebuild",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_slot_layout_transitions",
-      "shard_id": 51,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage models C++ SlotStore-style slot layout transitions across single-page object, multi-object, single-object delete metadata, multi-page object growth, compaction, slot dump/load, and restart while preserving object ids, page refs, dirty generation, TTL, loading, and in-memory flags.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_slot_layout_transitions_cover_growth_compaction_delete_dump_load_restart"
-          },
-          "name": "rust_storage_slot_layout_transitions_match_slotstore_contract",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_model_layout_compaction_policies",
-      "shard_id": 61,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage compaction emits C++-style model-layout policy evidence for string, hash, set, timestamped, context, and Risk models, including object-page packing, cold-page rewrite, stale-page density, tombstone density, and index rewrite evidence.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_compaction_reports_model_layout_policies_and_density"
-          },
-          "name": "rust_storage_compaction_reports_model_layout_policies",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_merged_dump_load_lifecycle",
-      "shard_id": 91,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage exposes a C++-style merged dump/load lifecycle with validated multi-slot source manifests, source-slot coverage rejection, rollback marker evidence, load-version handoff including restart roll-forward, and stale object/page conflict preflight reports.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_merged_dump_load_tracks_rollback_handoff_and_conflicts"
-          },
-          "name": "rust_storage_merged_dump_load_lifecycle_reports_conflicts",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_object_manager_cold_hot_reload",
-      "shard_id": 52,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust storage reloads cold and hot object ownership through the native slot/object/page index, proving logical model maps are secondary views and the object manager path survives memory eviction and process restart.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_object_manager_cold_hot_reload_and_page_address_fallback"
-          },
-          "name": "rust_storage_object_manager_cold_hot_reload",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_page_address_disk_cache_shared_store_fallback",
-      "shard_id": 53,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust clears the logical string map, then uses SlotStore PageAddress metadata to refill from persistent page storage and disk cache after memory eviction, and validates restart lookup through the slot-first index.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_object_manager_cold_hot_reload_and_page_address_fallback"
-          },
-          "name": "rust_storage_page_address_disk_cache_fallback",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_tombstone_compaction",
-      "shard_id": 62,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust reports tombstoned objects and applies model-layout compaction policy evidence for deleted logical records, including tombstone density and stale-density rewrite actions.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_compaction_reports_tombstones_and_stale_density"
-          },
-          "name": "rust_storage_tombstone_compaction_policy",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_stale_page_density_compaction",
-      "shard_id": 63,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust compaction reports stale page estimates and stale density for C++-style page reclamation decisions.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_compaction_reports_tombstones_and_stale_density"
-          },
-          "name": "rust_storage_stale_page_density_compaction_policy",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_merged_dump_load_restart_interruption",
-      "shard_id": 92,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust merged dump/load install records prepare and rollback markers so restart interruption scans can roll forward through the merged installer, apply load-version handoff, or report incomplete commits safely.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_merged_dump_load_restart_interruption_reports_rollback_marker"
-          },
-          "name": "rust_storage_merged_dump_load_restart_interruption",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_gc_eviction_cold_reads",
-      "shard_id": 64,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManager-style GC plus cache eviction preserves cold reads by falling back through page storage while expired records stay removed.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact"
-          },
-          "name": "rust_storage_gc_eviction_preserves_cold_reads",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_continuous_background_runtime",
-      "shard_id": 66,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManagerRuntime continuously runs the C++ phase order through the bounded data-node background queue with jitter, backoff, pause/resume, stop, per-phase enable flags, and bounded work per round.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags"
-          },
-          "name": "rust_storage_manager_continuous_background_runtime",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_real_pressure_signals",
-      "shard_id": 67,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManager cycle captures a StorageManagerPressureSnapshot and reports/scored work from actual dirty slot count, WAL/index-log bytes, stale page density, cache pressure, expiry scan debt, delayed-destroy backlog, follower retention blockers, and model-layout compaction debt.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_cycle_applies_dump_expire_evict_reclaim_index_gc_and_compact"
-          },
-          "name": "rust_storage_manager_real_pressure_signals",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_wal_reclaim_slot_generation_retention",
-      "shard_id": 68,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManager reclaims WAL/index-log only after slot-generation-matching dumps are durable and follower cursor or Raft snapshot retention frontiers allow the entries to be dropped.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_wal_reclaim"
-          },
-          "name": "rust_storage_manager_wal_reclaim_slot_generation_retention",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_expire_cursor_scan_limits",
-      "shard_id": 69,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust expire phase uses C++-style hot/cold scan cursors, per-round limits, load-on-expire only when needed, and reports scanned, expired, skipped, and loaded-for-expire metrics.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "expiry_sweep_uses_hot_cursors_limits_and_cold_load_policy"
-          },
-          "name": "rust_storage_manager_expire_cursor_scan_limits",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_active_eviction_runtime",
-      "shard_id": 70,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManager performs active weighted slot/object eviction with memory pressure gates, batch limits, dump-before-evict, optional delete/drop mode, and cooldown reporting when pressure does not fall.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_active_eviction_supports_weighted_dump_drop_batch_and_cooldown"
-          },
-          "name": "rust_storage_manager_active_eviction_runtime",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_page_gc_dependency_refusal",
-      "shard_id": 71,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust page GC refuses reclaim when live page refs, slot dump manifests, shared-store replay cursors, checkpoint/snapshot floors, Raft snapshot install floors, or delayed-destroy grace periods still retain a page segment.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_page_gc_refuses_reclaim_with_retained_dependencies"
-          },
-          "name": "rust_storage_manager_page_gc_dependency_refusal",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_index_gc_thresholds_recovery",
-      "shard_id": 72,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust Index GC uses index-log byte thresholds, reclaimable usage-ratio triggers, max entries per round, commits dirty slots before truncation, and preserves restart recovery after bounded index-log GC.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_index_gc_thresholds_budget_dirty_commit_and_restart_recovery"
-          },
-          "name": "rust_storage_manager_index_gc_thresholds_recovery",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_manager_metrics_admin_phase_reports",
-      "shard_id": 73,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust StorageManager uses a reusable phase executor and exposes admin plus Prometheus metrics parity fields for last run time, duration, selected slots, skipped reason, errors, reclaimed bytes, compacted pages, WAL/index-log floors, retention blockers, pressure before/after, and last pressure snapshot.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_manager_cycle_reports_cpp_order_without_mutating_on_dry_run"
-          },
-          "name": "rust_storage_manager_metrics_admin_phase_reports",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "name": "storage_risk_context_page_backed_parity",
-      "shard_id": 65,
-      "steps": [
-        {
-          "command": {
-            "description": "Rust Risk and Context writes are page-backed in the slot-first index and replay correctly after restart instead of relying only on model-map projections.",
-            "kind": "existing_test",
-            "mode": "rust",
-            "suite": "cpp_storage_parity",
-            "test_filter": "storage_risk_and_context_page_backed_restart_parity"
-          },
-          "name": "rust_storage_risk_context_page_backed_restart",
-          "skip_client": true
-        }
-      ]
-    },
-    {
       "name": "cpp_storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [
@@ -3501,7 +3015,7 @@
       "steps": [
         {
           "command": {
-            "description": "C++ storage WAL replay surface must remain present for durability and recovery parity comparison.",
+            "description": "C++ storage oplog replay surface must remain present for durability and recovery parity comparison.",
             "kind": "existing_test",
             "mode": "static",
             "required_paths": [
@@ -3797,7 +3311,7 @@
       "steps": [
         {
           "command": {
-            "description": "Unified C++/Rust control-plane Raft membership case; Rust evidence must include metaserver scheduler mutation process-API evidence, scheduler replay through metaserver Raft, data-node membership apply process call counts, learner add, catch-up verification, promote, leader transfer, voter remove, stale scheduler token rejection, and data-node Raft group commit-index evidence.",
+            "description": "Unified C++/Rust control-plane Raft membership case; Rust readiness keeps this blocked for real networked metaserver orchestration until production rollout.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -3960,18 +3474,8 @@
         {
           "command": {
             "description": "Runs the Rust-native data-node Raft/proxy workflow with repeated hash writes, linearizable reads, failover, and secondary read validation.",
-            "kind": "existing_test",
-            "mode": "runtime",
-            "required_paths": [
-              "tools/run_data_raft_mixed_rw_ubuntu22.sh",
-              "src/partition/storage/data_raft_replication.cc"
-            ],
-            "runner": "BUILD_TYPE=Release MIXED_PROBE_OPS=300 MIXED_PROBE_THREADS=2 bash tools/run_data_raft_mixed_rw_ubuntu22.sh",
-            "rust_runner": "cargo run -p temporalstore-rust --bin distributed_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-unified-raft-linearizable-hash",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-validation --log <distributed_raft_harness.json>",
-            "scenario": "data_node_mixed_rw_failover",
-            "suite": "cpp_data_raft_parity",
-            "timeout_s": 900
+            "kind": "raft_linearizable_hash_failover",
+            "scenario": "data_node_mixed_rw_failover"
           },
           "name": "raft_linearizable_hash_failover",
           "skip_client": true
@@ -4136,13 +3640,14 @@
       ]
     },
     {
-      "name": "raft_openraft_process_rollout_evidence",
+      "name": "raft_temporal_raft_process_rollout_evidence",
       "shard_id": 39,
       "steps": [
         {
           "command": {
-            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on OpenRaft data-node and metaserver multi-process rollout reports with real_process_path_evidence_validated=true, spawned process counts, independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery for every process, per-node log-store inspection evidence for every process, explicit data-node secondary-read/lag proof fields for lagging-follower read rejection, stale-follower write rejection, catch-up read eligibility, minority partition rejection, bounded-stale eligibility, healed catch-up, and observed lag, WAL first/last sequence status, WAL segment release-rule evidence, WAL fsync/backpressure evidence, restart log-store comparison evidence, FSM apply atomicity evidence, apply-fence recovery evidence, snapshot-install apply-fence recovery evidence, deterministic storage/WAL/snapshot crash recovery evidence, and ByteRaft-derived process semantics for per-peer pipeline state, active in-flight replicate limits, max replicate-byte pressure, max_disk_replicate_log_num retention, oversized-log rejection, apply-batch backpressure, append queue depth, pressure counters, snapshot chunk retry/backpressure, send timeout, install progress, rollback, membership-change snapshot safety, compacted-log rejoin, WAL lifecycle, stale leader lease rejection, lagging follower read rejection, stale follower write rejection, bounded-stale reads under partition, follower lease expiration, minority rejection, healed follower catch-up, failover, membership, and secondary lag where applicable.",
-            "kind": "raft_openraft_process_path_default_gate",
+            "description": "Shared production-readiness evidence case: LocalModel remains test-only, and production readiness depends on TemporalRaft data-node and metaserver multi-process rollout plus log-store validation evidence.",
+            "kind": "existing_test",
+            "mode": "runtime",
             "required_paths": [
               "tools/run_raft_production_gate_ubuntu22.sh",
               "tools/run_raft_stress_suite_ubuntu22.sh",
@@ -4150,13 +3655,12 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust --test unified_temporalstore_corpus raft_openraft_process_rollout_evidence -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence local_raft_model_is_rejected_for_deployment --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
-            "scenario": "production_openraft_byteraft_process_path_semantics",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
           },
-          "name": "openraft_process_rollout_and_local_mode_rejection_evidence"
+          "name": "temporal_raft_process_rollout_and_local_mode_rejection_evidence"
         }
       ]
     },
@@ -4166,7 +3670,7 @@
       "steps": [
         {
           "command": {
-            "description": "Unified C++/Rust Raft production gate case. Rust local gates validate the current storage/Raft production slice and the combined data-node plus metaserver multi-node Raft parity slice while strict readiness remains blocked on networked OpenRaft rollout and external fault tests.",
+            "description": "Unified C++/Rust Raft production gate case. Rust local gates validate the current storage/Raft production slice and the combined data-node plus metaserver multi-node Raft parity slice while strict readiness remains blocked on networked TemporalRaft rollout and external fault tests.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -4373,82 +3877,24 @@
       ]
     },
     {
-      "name": "control_client_cpp_partition_set_route_cache",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust client routing case for C++ partition-set hierarchy in the Rust route cache: table id, member partition ids, partition version, slot ranges, primary/replica members, topology version, and preflight evidence.",
-            "kind": "client_cpp_partition_set_route_cache",
-            "required_paths": [
-              "crates/temporalstore-rust/src/client.rs",
-              "src/common/partition_id_type.h",
-              "src/common/test/partition_id_test.cc"
-            ],
-            "rust_validator": "python3 tools/validate_sdk_contract.py",
-            "scenario": "partition_set_member_version_route_cache",
-            "suite": "cpp_client_control_plane_parity"
-          },
-          "name": "client_cpp_partition_set_route_cache_shared"
-        }
-      ]
-    },
-    {
       "name": "control_proxy_admission_policy",
       "shard_id": 1,
       "steps": [
         {
           "command": {
             "description": "Shared C++/Rust proxy admission case for drop-percent, degraded/overload reporting, and request preflight policy counters.",
-            "kind": "proxy_admission_policy",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/proxy/main.cc",
               "src/proxy/test/proxy_test.cc",
               "src/metaserver_v2/test/proxy_calibration_test.cc"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_policy_blocks_writes_not_serving_and_drop_percent -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "readonly_write_disabled_drop_percent_degraded_overload",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "proxy_admission_drop_and_degraded_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_proxy_operational_surface_aliases",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust proxy operational surface case comparing C++ Proxy admin/config/heartbeat/status methods with Rust-native HTTP aliases for ports, config, heartbeat, preflight, service registry names, notify-stop, migration contract, policy, and metrics.",
-            "kind": "proxy_operational_surface_aliases",
-            "required_paths": [
-              "docs/rust_control_plane_cpp_parity_25_cycle_plan.md"
-            ],
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "admin_config_heartbeat_status_http_aliases",
-            "suite": "cpp_proxy_control_plane_parity"
-          },
-          "name": "proxy_operational_surface_aliases_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_proxy_tonic_streaming_maturity",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust proxy streaming contract case for tonic long-running requests, client cancellation, backpressure, route callback reconnect, and preflight watch evidence through the Rust-native migration contract.",
-            "kind": "proxy_tonic_streaming_contract",
-            "required_paths": [
-              "docs/client_sdk_contract.md"
-            ],
-            "rust_validator": "python3 tools/validate_sdk_contract.py",
-            "scenario": "cancellation_backpressure_reconnect_callbacks",
-            "suite": "cpp_proxy_control_plane_parity"
-          },
-          "name": "proxy_tonic_streaming_maturity_shared"
         }
       ]
     },
@@ -4481,14 +3927,15 @@
         {
           "command": {
             "description": "Shared C++/Rust route quarantine/recovery case for repeated backend failures, quarantined route avoidance, recovery probing, and degraded preflight evidence.",
-            "kind": "proxy_route_quarantine_recovery",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/metaserver_v2/ha/failure_detector.cc",
               "src/metaserver_v2/ha/failure_detector.h",
               "src/metaserver_v2/test/proxy_ha_test.cc"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_skips_cached_backend_after_continuous_failure_threshold -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "backend_failure_quarantine_probe_recovery",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "backend_quarantine_and_recovery_shared"
@@ -4544,14 +3991,15 @@
         {
           "command": {
             "description": "Shared C++/Rust metaserver scheduler case for scheduler-issued load/reload/unload tokens, stale generation rejection, task retry persistence, and data-node lifecycle callback verification.",
-            "kind": "metaserver_scheduler_control_plane",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/metaserver_v2/fsm.cc",
               "src/metaserver_v2/meta/partition.cc",
               "src/metaserver_v2/test/snapshot_test.cc"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust metaserver_scheduler_drives_load_reload_unload_lifecycle_workflow -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "partition_set_scheduler_tokens_raft_membership_safe_mode",
             "suite": "cpp_metaserver_control_plane_parity"
           },
           "name": "metaserver_scheduler_load_reload_unload_shared"
@@ -4853,29 +4301,6 @@
             "suite": "cpp_context_pipeline_parity"
           },
           "name": "context_extracted_event_default_index_fanout_shared"
-        }
-      ]
-    },
-    {
-      "name": "context_secondary_index_intersection",
-      "shard_id": 1,
-      "steps": [
-        {
-          "command": {
-            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/implement.cc",
-            "description": "Shared C++/Rust Context case for secondary-index filter-group intersection: multiple index predicates must return only common refs, suppress duplicate refs, and preserve scope/range isolation.",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "src/extension/context/interface.proto",
-              "src/extension/context/implement.cc",
-              "docs/rust_context_pipeline_debug_trace.md"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_secondary_index_intersection_matches_cpp_filter_groups --lib -- --test-threads=1",
-            "rust_validator": "tools/run_context_workflow_local.sh",
-            "suite": "cpp_context_pipeline_parity"
-          },
-          "name": "context_secondary_index_intersection_shared"
         }
       ]
     },
@@ -5195,7 +4620,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce accept/reject lag bounds, stale follower writes are rejected, minority partitions reject reads/writes, and healed followers catch up before read eligibility.",
+            "description": "ByteRaft-derived read safety case: read-index rejects lagging followers, stale leader lease blocks reads/writes, bounded-stale reads enforce lag bounds, and secondary reads require catch-up eligibility.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5206,7 +4631,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5216,256 +4641,12 @@
       ]
     },
     {
-      "name": "raft_byteraft_membership_roles",
-      "shard_id": 40,
-      "steps": [
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "nodes": [
-              1,
-              2,
-              3
-            ],
-            "op": "setup_cluster"
-          },
-          "name": "setup_three_voter_cluster"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "node_id": 4,
-            "op": "add_replica",
-            "role": "learner"
-          },
-          "name": "add_caught_up_learner"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "node_id": 5,
-            "op": "add_replica",
-            "role": "witness"
-          },
-          "name": "add_quorum_witness"
-        },
-        {
-          "command": {
-            "auto_promote": true,
-            "kind": "raft_membership_op",
-            "node_id": 6,
-            "op": "add_replica",
-            "role": "learner"
-          },
-          "name": "add_auto_promoted_learner"
-        },
-        {
-          "command": {
-            "expected_live_voters": 5,
-            "expected_majority": 3,
-            "expected_voters": [
-              1,
-              2,
-              3,
-              5,
-              6
-            ],
-            "kind": "raft_membership_op",
-            "op": "assert_cluster_status"
-          },
-          "name": "assert_witness_and_auto_promote_membership"
-        },
-        {
-          "command": {
-            "can_be_leader": false,
-            "can_serve_data": true,
-            "kind": "raft_membership_op",
-            "node_id": 4,
-            "op": "assert_peer_status",
-            "participates_in_quorum": false,
-            "role": "learner"
-          },
-          "name": "assert_learner_role_semantics"
-        },
-        {
-          "command": {
-            "can_be_leader": false,
-            "can_serve_data": false,
-            "kind": "raft_membership_op",
-            "node_id": 5,
-            "op": "assert_peer_status",
-            "participates_in_quorum": true,
-            "role": "witness"
-          },
-          "name": "assert_witness_role_semantics"
-        },
-        {
-          "command": {
-            "auto_promoted_from_learner": true,
-            "can_be_leader": true,
-            "can_serve_data": true,
-            "kind": "raft_membership_op",
-            "node_id": 6,
-            "op": "assert_peer_status",
-            "participates_in_quorum": true,
-            "role": "voter"
-          },
-          "name": "assert_auto_promoted_voter_semantics"
-        },
-        {
-          "command": {
-            "expect_learner": true,
-            "expect_pending_joint": false,
-            "expect_witness": true,
-            "kind": "raft_membership_op",
-            "op": "assert_local_status_report"
-          },
-          "name": "assert_local_status_role_fields"
-        },
-        {
-          "command": {
-            "expect_auto_promote": true,
-            "expect_pending_joint": false,
-            "expect_witness": true,
-            "kind": "raft_membership_op",
-            "op": "assert_runtime_admin_report"
-          },
-          "name": "assert_admin_role_fields"
-        },
-        {
-          "command": {
-            "key": "role-k",
-            "kind": "raft_membership_op",
-            "op": "propose_string_set",
-            "value": "role-v"
-          },
-          "name": "commit_role_payload"
-        },
-        {
-          "command": {
-            "expected_value": "role-v",
-            "key": "role-k",
-            "kind": "raft_membership_op",
-            "node_id": 4,
-            "op": "read_from_replica"
-          },
-          "name": "learner_serves_caught_up_read"
-        },
-        {
-          "command": {
-            "expected_error": "NodeNotFound",
-            "key": "role-k",
-            "kind": "raft_membership_op",
-            "node_id": 5,
-            "op": "read_from_replica"
-          },
-          "name": "witness_rejects_data_read"
-        },
-        {
-          "command": {
-            "expected_error": "NodeNotFound",
-            "kind": "raft_membership_op",
-            "node_id": 4,
-            "op": "elect_leader"
-          },
-          "name": "learner_cannot_be_leader"
-        },
-        {
-          "command": {
-            "expected_error": "NodeNotFound",
-            "kind": "raft_membership_op",
-            "node_id": 5,
-            "op": "elect_leader"
-          },
-          "name": "witness_cannot_be_leader"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "nodes": [
-              1,
-              2,
-              3
-            ],
-            "op": "setup_wal_cluster"
-          },
-          "name": "setup_wal_cluster_for_joint_consensus"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "new_voters": [
-              1,
-              2,
-              3,
-              4
-            ],
-            "op": "begin_joint_consensus"
-          },
-          "name": "begin_pending_joint_consensus"
-        },
-        {
-          "command": {
-            "expect_pending_joint": true,
-            "kind": "raft_membership_op",
-            "new_voter": 4,
-            "op": "assert_local_status_report",
-            "phase": "before_restart"
-          },
-          "name": "assert_pending_joint_before_restart"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "nodes": [
-              1,
-              2,
-              3,
-              4
-            ],
-            "op": "restore_wal_cluster"
-          },
-          "name": "restore_cluster_from_wal"
-        },
-        {
-          "command": {
-            "expect_pending_joint": true,
-            "kind": "raft_membership_op",
-            "new_voter": 4,
-            "op": "assert_local_status_report",
-            "phase": "after_restart"
-          },
-          "name": "assert_pending_joint_after_restart"
-        },
-        {
-          "command": {
-            "kind": "raft_membership_op",
-            "op": "commit_joint_consensus"
-          },
-          "name": "commit_joint_consensus"
-        },
-        {
-          "command": {
-            "expected_voters": [
-              1,
-              2,
-              3,
-              4
-            ],
-            "kind": "raft_membership_op",
-            "op": "assert_cluster_status"
-          },
-          "name": "assert_joint_consensus_completed"
-        }
-      ]
-    },
-    {
       "name": "raft_byteraft_metrics_admin_pipeline_status",
       "shard_id": 41,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived admin/status case: status, local-status, Prometheus, and /raft/control/byteraft_runtime_admin expose a capability matrix plus peer lag, apply health, read-index, leader transfer elapsed/timeout counters, active per-peer replication/apply backpressure, memory byte limits, oversized-log rejection, append queue depth/max depth, out-of-order append handling, reorder queues, snapshot lifecycle including send timeout, retry/backpressure, rate limiting, install progress, rollback, membership-change snapshot evidence, compacted-log rejoin evidence, WAL segments, offline timeout state/rejections, and stale follower rejection evidence.",
+            "description": "ByteRaft-derived admin/status case: status, local-status, and Prometheus expose peer lag, apply health, read-index, leader transfer, and pipeline evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5480,7 +4661,7 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_runtime --lib -- --test-threads=1 && cargo test -p temporalstore-rust byteraft_runtime_admin --bins -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5490,219 +4671,12 @@
       ]
     },
     {
-      "name": "server_raft_byteraft_runtime_admin_route",
-      "shard_id": 52,
-      "steps": [
-        {
-          "name": "raft_node_and_server_byteraft_runtime_admin_route",
-          "command": {
-            "kind": "existing_test",
-            "mode": "runtime",
-            "suite": "cpp_data_raft_parity",
-          "description": "Shared route and metrics contract for ByteRaft-style runtime admin evidence: Rust raft_node and server expose /raft/control/byteraft_runtime_admin and /raft/control/byteraft_local_status plus Prometheus metrics with a capability matrix and durable per-peer pipeline, active replication/apply backpressure, memory byte limits, oversized-log rejection, out-of-order append handling, reorder, snapshot progress/retry/rate-limit/rollback/membership/rejoin, WAL, witness/learner/auto-promote role evidence, lease/read-index, and stale follower rejection fields; C++ runner should map equivalent ByteRaft status/local-status/admin output into the same report shape.",
-            "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_consensus.h",
-              "tools/run_data_raft_failover_ubuntu22.sh",
-              "tools/run_data_raft_snapshot_restore_ubuntu22.sh"
-            ],
-            "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 bash tools/run_data_raft_failover_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust byteraft_runtime_admin --bins -- --test-threads=1",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft --log <raft-route-validation.json>",
-            "report_contract": {
-            "schema": "byteraft_runtime_admin_report_v1",
-            "required_metrics": [
-              "temporalstore_raft_byteraft_ready",
-              "temporalstore_raft_byteraft_capability_ready",
-              "temporalstore_raft_byteraft_read_index_validated",
-              "temporalstore_raft_byteraft_read_index_requests",
-              "temporalstore_raft_byteraft_read_index_accepted",
-              "temporalstore_raft_byteraft_read_index_rejected",
-              "temporalstore_raft_byteraft_lease_read_validated",
-              "temporalstore_raft_byteraft_lease_read_requests",
-              "temporalstore_raft_byteraft_lease_read_accepted",
-              "temporalstore_raft_byteraft_lease_read_rejected",
-              "temporalstore_raft_byteraft_pre_vote_requests",
-              "temporalstore_raft_byteraft_pre_vote_accepted",
-              "temporalstore_raft_byteraft_pre_vote_rejected",
-              "temporalstore_raft_byteraft_stale_follower_read_rejected",
-              "temporalstore_raft_byteraft_stale_follower_write_rejected",
-              "temporalstore_raft_byteraft_witness_membership_present",
-              "temporalstore_raft_byteraft_learner_auto_promote_present",
-              "temporalstore_raft_byteraft_pending_joint_consensus_present",
-              "temporalstore_raft_byteraft_local_pending_joint_consensus_present",
-              "temporalstore_raft_byteraft_local_witness_membership_present",
-              "temporalstore_raft_byteraft_local_learner_membership_present",
-              "temporalstore_raft_byteraft_local_learner_auto_promote_present",
-              "temporalstore_raft_byteraft_local_peer_role",
-              "temporalstore_raft_byteraft_local_peer_participates_in_quorum",
-              "temporalstore_raft_byteraft_local_peer_can_serve_data",
-              "temporalstore_raft_byteraft_local_peer_can_be_leader",
-              "temporalstore_raft_byteraft_apply_backpressure_enforced",
-              "temporalstore_raft_byteraft_memory_replicate_bytes_enforced",
-              "temporalstore_raft_byteraft_oversized_log_rejection_present",
-              "temporalstore_raft_byteraft_out_of_order_append_handling_present",
-              "temporalstore_raft_byteraft_snapshot_rate_limit_present",
-              "temporalstore_raft_byteraft_snapshot_install_progress_present",
-              "temporalstore_raft_byteraft_snapshot_install_rollback_present",
-              "temporalstore_raft_byteraft_snapshot_membership_change_present",
-              "temporalstore_raft_byteraft_snapshot_rejoin_after_compacted_log_present",
-              "temporalstore_raft_byteraft_peer_append_requests",
-              "temporalstore_raft_byteraft_peer_append_accepted",
-              "temporalstore_raft_byteraft_peer_append_rejected",
-              "temporalstore_raft_byteraft_peer_append_queue_depth",
-              "temporalstore_raft_byteraft_peer_append_queue_max_depth",
-              "temporalstore_raft_byteraft_peer_apply_backpressure_rejections",
-              "temporalstore_raft_byteraft_peer_memory_backpressure_rejections",
-              "temporalstore_raft_byteraft_peer_oversized_log_rejections",
-              "temporalstore_raft_byteraft_peer_out_of_order_append_rejections",
-              "temporalstore_raft_byteraft_peer_reorder_queue_depth",
-              "temporalstore_raft_byteraft_peer_reorder_entries_accepted",
-              "temporalstore_raft_byteraft_peer_reorder_entries_released",
-              "temporalstore_raft_byteraft_peer_reorder_entries_rejected",
-              "temporalstore_raft_byteraft_peer_snapshot_installed_index",
-              "temporalstore_raft_byteraft_peer_snapshot_send_attempts",
-              "temporalstore_raft_byteraft_peer_snapshot_send_completed",
-              "temporalstore_raft_byteraft_peer_snapshot_send_failed",
-              "temporalstore_raft_byteraft_peer_snapshot_install_started",
-              "temporalstore_raft_byteraft_peer_snapshot_install_completed",
-              "temporalstore_raft_byteraft_peer_snapshot_install_rejected",
-              "temporalstore_raft_byteraft_peer_snapshot_install_rolled_back",
-              "temporalstore_raft_byteraft_peer_snapshot_install_received_chunks",
-              "temporalstore_raft_byteraft_peer_snapshot_install_total_chunks",
-              "temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille",
-              "temporalstore_raft_byteraft_peer_snapshot_retry_count",
-              "temporalstore_raft_byteraft_peer_snapshot_chunk_retry_count",
-              "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
-              "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
-              "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
-              "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
-              "temporalstore_raft_byteraft_peer_auto_promoted_from_learner",
-              "temporalstore_raft_byteraft_peer_transfer_leader_requests",
-              "temporalstore_raft_byteraft_peer_transfer_leader_accepted",
-              "temporalstore_raft_byteraft_peer_transfer_leader_rejected",
-              "temporalstore_raft_byteraft_peer_transfer_leader_completed",
-              "temporalstore_raft_byteraft_wal_segment_count",
-              "temporalstore_raft_byteraft_wal_total_bytes",
-              "temporalstore_raft_byteraft_wal_active_segment_bytes",
-              "temporalstore_raft_byteraft_wal_total_records",
-              "temporalstore_raft_byteraft_wal_first_sequence",
-              "temporalstore_raft_byteraft_wal_last_sequence"
-            ],
-            "required_fields": [
-                "leader_id",
-                "commit_index",
-                "leader_lease_valid",
-                "read_index_validated",
-                "lease_read_validated",
-                "stale_follower_read_rejected",
-                "stale_follower_write_rejected",
-                "witness_membership_present",
-                "learner_auto_promote_present",
-                "pending_joint_consensus_present",
-                "peer_pipeline_states",
-                "append_backpressure_enforced",
-                "apply_backpressure_enforced",
-                "memory_replicate_bytes_enforced",
-                "oversized_log_rejection_present",
-                "out_of_order_append_handling_present",
-                "reorder_queue_enabled",
-                "snapshot_sender_lifecycle_present",
-                "snapshot_downloader_lifecycle_present",
-                "snapshot_retry_backpressure_present",
-                "snapshot_rate_limit_present",
-                "snapshot_install_progress_present",
-                "snapshot_install_rollback_present",
-                "snapshot_membership_change_present",
-                "snapshot_rejoin_after_compacted_log_present",
-              "wal_segment_lifecycle_present",
-              "wal_segment_count",
-              "wal_active_segment_id",
-              "wal_first_retained_segment_id",
-              "wal_last_retained_segment_id",
-              "wal_total_bytes",
-              "wal_active_segment_bytes",
-              "wal_total_records",
-              "wal_first_sequence",
-              "wal_last_sequence",
-              "pre_vote_enforced",
-              "election_controls_enforced",
-              "read_index_requests",
-              "read_index_accepted",
-              "read_index_rejected",
-              "lease_read_requests",
-              "lease_read_accepted",
-              "lease_read_rejected",
-              "pre_vote_requests",
-              "pre_vote_accepted",
-              "pre_vote_rejected",
-              "admin_status_surface_complete",
-                "ready",
-                "blockers"
-              ],
-              "required_peer_fields": [
-                "peer_id",
-                "role",
-                "replica_role",
-                "match_index",
-                "next_index",
-                "append_requests",
-                "append_accepted",
-                "append_rejected",
-                "inflight_entries",
-                "inflight_bytes",
-                "append_queue_depth",
-                "append_queue_max_depth",
-                "apply_inflight_tasks",
-                "apply_backpressure_rejections",
-                "memory_backpressure_rejections",
-                "oversized_log_rejections",
-                "out_of_order_append_rejections",
-                "reorder_queue_depth",
-                "reorder_entries_accepted",
-                "reorder_entries_released",
-                "reorder_entries_rejected",
-                "snapshot_sending",
-                "snapshot_installing",
-                "snapshot_installed_index",
-                "snapshot_send_attempts",
-                "snapshot_send_completed",
-                "snapshot_send_failed",
-                "snapshot_install_started",
-                "snapshot_install_completed",
-                "snapshot_install_rejected",
-                "snapshot_install_rolled_back",
-                "snapshot_install_received_chunks",
-                "snapshot_install_total_chunks",
-                "snapshot_install_progress_per_mille",
-                "snapshot_retry_count",
-                "snapshot_chunk_retry_count",
-                "snapshot_backpressure_rejections",
-                "snapshot_rate_limit_rejections",
-                "snapshot_during_membership_change",
-                "snapshot_rejoin_after_compacted_log",
-                "transfer_leader_target",
-                "transfer_leader_requests",
-                "transfer_leader_accepted",
-                "transfer_leader_rejected",
-                "transfer_leader_completed",
-                "pre_vote_rejections",
-                "election_rejections",
-                "auto_promoted_from_learner"
-              ]
-            },
-            "timeout_s": 1200
-          }
-        }
-      ]
-    },
-    {
       "name": "raft_byteraft_snapshot_lifecycle_depth",
       "shard_id": 42,
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived snapshot lifecycle case: trigger policy, send timeout, chunk retry/backpressure, rate limiting, chunked install progress, stale/corrupt rejection, membership-change snapshot safety, follower rejoin after compacted logs, restart recovery, and rollback reporting.",
+            "description": "ByteRaft-derived snapshot lifecycle case: trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5732,7 +4706,7 @@
       "steps": [
         {
           "command": {
-            "description": "ByteRaft-derived replication pipeline case: oversized-log rejection, active in-flight replicate/apply limits including max_inflights_apply_task, max memory replicate bytes, max_disk_replicate_log_num bounded retention, append queue depth/max-depth accounting, observed backpressure counters, out-of-order append handling, reorder window behavior, and apply batch sizing.",
+            "description": "ByteRaft-derived replication pipeline case: oversized-log rejection, in-flight append limits, backpressure counters, reorder window behavior, and apply batch sizing.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -5743,7 +4717,7 @@
               "src/partition/storage/data_raft_consensus.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && cargo test -p temporalstore-rust raft_apply_inflight_limit_rejects_large_append_batches --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200
@@ -5793,7 +4767,7 @@
               "minority rejects stale reads and writes while isolated",
               "healed peer catches up before becoming read-eligible"
             ],
-            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, minority side rejects stale reads/writes, and healed follower catches up before read eligibility.",
+            "description": "ByteRaft fault case: packet-loss/partition isolates a follower, majority continues, stale side is unsafe for reads/writes, and healed follower catches up.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -5888,10 +4862,9 @@
             "acceptance_criteria": [
               "writes commit exactly once or fail safely during leader transfer",
               "no accepted committed write is lost or duplicated",
-              "final leader has all committed entries after transfer",
-              "report includes paired observed write IDs and commit indexes across the transfer"
+              "final leader has all committed entries after transfer"
             ],
-            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, final leader owns all committed entries, and the process rollout report includes paired unique observed write IDs plus committed indexes before and after transfer.",
+            "description": "ByteRaft fault case: leader transfer under write load commits each accepted write once or fails safely, and final leader owns all committed entries.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -6013,7 +4986,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: slot-scoped dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence.",
+            "description": "Storage shared case: slot-scoped dump/load atomicity, manifest install, restart, and logical read verification.",
             "kind": "storage_dump_load_recovery",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
@@ -6028,7 +5001,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: corrupt page/index/WAL/manifest, checksum mismatch, partial manifest, missing segment, and stale sequence rejection.",
+            "description": "Storage shared case: corrupt page/index/oplog/manifest, checksum mismatch, partial manifest, missing segment, and stale sequence rejection.",
             "kind": "storage_fault_matrix",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
@@ -6058,7 +5031,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, refill failure reporting, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, latency buckets, per-stage StorageManager pressure reports, live-read safety after eviction plus page GC, and periodic StorageManager scheduler queue safety.",
+            "description": "Storage shared case: tiny cache invalidation, page-store read, memory refill, admission/eviction stats, and refill failure reporting.",
             "kind": "storage_cache_refill",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages"
           },
@@ -6073,7 +5046,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: local shared-store replay preserves converted pages and WAL/index-log ordering in sync mode.",
+            "description": "Storage shared case: local shared-store replay preserves converted pages and oplog/index-log ordering in sync mode.",
             "kind": "storage_shared_store_replay",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "mode": "Sync"
@@ -6089,7 +5062,7 @@
       "steps": [
         {
           "command": {
-            "description": "Storage shared case: async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up.",
+            "description": "Storage shared case: async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up.",
             "kind": "storage_shared_store_replay",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
             "mode": "Async"
@@ -6242,7 +5215,7 @@
       "steps": [
         {
           "command": {
-            "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, node-context query behavior, timestamp-keyed context_event storage under node/segment parents, compact embedding model_hash metadata, and compact scope hot-record parity.",
+            "description": "Shared Context pipeline case for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
@@ -6323,34 +5296,16 @@
         {
           "command": {
             "description": "Shared control-plane case for multi-proxy topology convergence, backend quarantine, recovery probing, and stale-cache comparison.",
-            "kind": "proxy_multi_proxy_convergence_quarantine",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/proxy/proxy_server.cc"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust proxy_backend_failure_quarantines_route_then_recovers proxy_cache_ttl_and_topology_version_guard_invalidate_routes -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "two_proxy_stale_cache_quarantine_recovery",
             "suite": "cpp_proxy_control_plane_parity"
           },
           "name": "multi_proxy_convergence_quarantine_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_multi_proxy_topology_churn_scale",
-      "shard_id": 62,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust scale case for two Rust proxy instances converging through metaserver topology move churn while both proxies invalidate stale cached routes and recover onto the moved backend; backend quarantine/recovery remains covered by control_multi_proxy_convergence_and_quarantine.",
-            "kind": "proxy_topology_churn_convergence",
-            "required_paths": [
-              "docs/proxy_vs_cpp.md"
-            ],
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "two_proxy_topology_move_stale_cache_recovery",
-            "suite": "cpp_proxy_control_plane_parity"
-          },
-          "name": "multi_proxy_topology_churn_stale_cache_recovery_scale_shared"
         }
       ]
     },
@@ -6401,72 +5356,16 @@
         {
           "command": {
             "description": "Shared control-plane case for client read/write retry budgets, topology refresh on version changes, stale route invalidation, and no duplicate unsafe writes.",
-            "kind": "client_retry_budget_topology_refresh",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/client/table_client.cc"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust client_retries_cpp_retryable_read_status_before_returning client_does_not_retry_write_status_without_write_retry_budget client_retry_classifier_separates_safe_topology_retry_from_unsafe_write_retry -- --test-threads=1",
             "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "read_retry_write_single_shot_topology_safe_retry",
             "suite": "cpp_client_control_plane_parity"
           },
           "name": "client_retry_budget_topology_refresh_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_client_metasync_outage_churn_stress",
-      "shard_id": 64,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust MetaSyncer production behavior case for per-table deadline propagation, exponential backoff with jitter, metaserver outage survival, and topology-version route refresh after churn.",
-            "kind": "client_metasync_outage_churn",
-            "required_paths": [
-              "crates/temporalstore-rust/src/client/tests.rs"
-            ],
-            "rust_validator": "python3 tools/validate_control_plane_parity_evidence.py",
-            "scenario": "deadline_backoff_topology_refresh",
-            "suite": "cpp_client_control_plane_parity"
-          },
-          "name": "client_metasync_outage_churn_stress_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_client_pipeline_batch_partial_timeout_contract",
-      "shard_id": 64,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust pipeline case for ordered batching, per-command partial failures, retry-safe versus unsafe write classification, and timeout budget propagation into request HTTP options.",
-            "kind": "client_pipeline_batch_partial_timeout",
-            "required_paths": [
-              "crates/temporalstore-rust/src/client/retry.rs"
-            ],
-            "rust_validator": "python3 tools/validate_sdk_contract.py",
-            "scenario": "ordered_batch_partial_failure_timeout_budget",
-            "suite": "cpp_client_control_plane_parity"
-          },
-          "name": "client_pipeline_batch_partial_timeout_shared"
-        }
-      ]
-    },
-    {
-      "name": "control_client_deployment_placement_routing_hooks",
-      "shard_id": 64,
-      "steps": [
-        {
-          "command": {
-            "description": "Shared C++/Rust client placement/routing case for deployment placement hooks, location-affine secondary reads, and primary-only write routing.",
-            "kind": "client_deployment_placement_routing",
-            "required_paths": [
-              "crates/temporalstore-rust/src/client/routing.rs"
-            ],
-            "rust_validator": "python3 tools/validate_sdk_contract.py",
-            "scenario": "location_affine_secondary_reads_primary_only_writes",
-            "suite": "cpp_client_control_plane_parity"
-          },
-          "name": "client_deployment_placement_routing_hooks_shared"
         }
       ]
     },
@@ -6861,15 +5760,16 @@
           "command": {
             "description": "Shared C++/Rust ops case for Grafana dashboard, alert, and Prometheus metric-family parity across readiness, Raft, metaserver scheduler, proxy/client, storage/cache, data-node, ingestion, secondary replication, and scale SLO evidence.",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-ops-metrics-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "kind": "proxy_grafana_prometheus_metric_parity",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
             "required_paths": [
               "docs/ops/temporalstore-dashboard.json",
               "docs/ops/temporalstore-alerts.yml",
               "docs/ops/temporalstore-grafana-metrics-parity.md",
               "crates/temporalstore-rust/src/bin/ops_scale_readiness_harness.rs"
             ],
+            "rust_runner": "cargo test -p temporalstore-rust --bin ops_scale_readiness_harness grafana_metrics_parity_contract_covers_dashboard_alerts_and_emitters -- --test-threads=1",
             "rust_validator": "python3 tools/validate_grafana_metrics_parity.py",
-            "scenario": "proxy_metric_families_dashboard_alerts",
             "suite": "cpp_ops_scale_parity"
           },
           "name": "grafana_prometheus_metric_family_parity"
@@ -7073,18 +5973,18 @@
       ]
     },
     {
-      "name": "raft_openraft_process_read_safety_and_membership_matrix",
+      "name": "raft_temporal_raft_process_read_safety_and_membership_matrix",
       "shard_id": 39,
       "steps": [
         {
-          "name": "openraft_process_read_safety_membership_and_snapshot_evidence",
+          "name": "temporal_raft_process_read_safety_membership_and_snapshot_evidence",
           "skip_client": true,
           "command": {
             "kind": "existing_test",
             "mode": "stress",
             "suite": "cpp_data_raft_parity",
-            "description": "Shared Raft case requiring production OpenRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
-            "rust_runner": "cargo test -p temporalstore-rust raft_openraft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_openraft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-openraft-process-read-safety",
+            "description": "Shared Raft case requiring production TemporalRaft multi-process evidence for read-index, lagging follower rejection, bounded stale reads, learner catch-up, promotion, leader transfer, voter removal, snapshot install, restart recovery, and secondary reads.",
+            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_reports_real_process_rollout_evidence production_raft_readiness_requires_temporal_raft_process_and_meta_owned_membership_evidence --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin metaserver_raft_harness -- --root ${TMPDIR:-/tmp}/temporalstore-temporal-raft-process-read-safety",
             "cpp_runner_contract": "C++ ByteRaft parity runner must emit election, failover, snapshot, read-index, learner catch-up, promote, leader transfer, voter remove, follower lag, and secondary-read evidence with comparable fields.",
             "required_paths": [
               "crates/temporalstore-rust/src/raft.rs",
@@ -7115,7 +6015,7 @@
               ]
             },
             "timeout_s": 1800,
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <openraft-process-read-safety.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <temporal-raft-process-read-safety.json>"
           }
         }
       ]
@@ -8629,8 +7529,8 @@
             "acceptance": {
               "local_fixture_allowed_for_readiness": false,
               "required_process_paths": [
-                "data_node_openraft",
-                "metaserver_openraft"
+                "data_node_temporal_raft",
+                "metaserver_temporal_raft"
               ],
               "scenarios": [
                 "election",
@@ -9129,13 +8029,10 @@
       "raft_data_node_membership_secondary_reads",
       "raft_metaserver_leader_snapshot_restart",
       "raft_metaserver_membership_add_promote_remove",
-      "raft_openraft_process_rollout_evidence",
+      "raft_temporal_raft_process_rollout_evidence",
       "control_topology_version_change",
       "control_stale_route_invalidation",
-      "control_client_cpp_partition_set_route_cache",
       "control_proxy_admission_policy",
-      "control_proxy_operational_surface_aliases",
-      "control_proxy_tonic_streaming_maturity",
       "control_readonly_write_disabled_tables",
       "control_route_quarantine_recovery",
       "control_data_node_load_reload_unload_lifecycle",
@@ -9152,15 +8049,12 @@
       "context_openviking_blocks_provider_switches",
       "context_injection_prompt_pack_ordering",
       "context_benchmark_injection_entity_segment_index",
-      "context_secondary_index_intersection",
       "context_tree_embedding_summary_compression",
       "context_temporal_compression_replayable_summary",
       "context_benchmark_fixture_gates",
       "context_benchmark_full_dataset_gates",
       "raft_byteraft_read_safety_policy",
-      "raft_byteraft_membership_roles",
       "raft_byteraft_metrics_admin_pipeline_status",
-      "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",
       "raft_byteraft_replication_backpressure",
       "raft_byteraft_election_controls",
@@ -9187,13 +8081,9 @@
       "context_embeddings_summaries_l0_l1_pipeline",
       "context_compression_secondary_index_query_debug_flow",
       "control_multi_proxy_convergence_and_quarantine",
-      "control_multi_proxy_topology_churn_scale",
       "control_scheduler_token_stale_rejection",
       "control_datanode_lifecycle_restart_recovery",
       "control_client_retry_budget_topology_refresh",
-      "control_client_metasync_outage_churn_stress",
-      "control_client_pipeline_batch_partial_timeout_contract",
-      "control_client_deployment_placement_routing_hooks",
       "cross_storage_control_agent_parity",
       "ingestion_kafka_consumer_group_runtime_rebalance",
       "ingestion_flink_checkpoint_restart_failover",
@@ -9234,7 +8124,7 @@
       "all_family_benchmark_locomo_longmemeval_contract",
       "context_hot_event_sidecar_index_boundary",
       "storage_recovery_sidecar_dependency_matrix",
-      "raft_openraft_process_read_safety_and_membership_matrix"
+      "raft_temporal_raft_process_read_safety_and_membership_matrix"
     ],
     "required_command_kinds": [
       "string_set",
@@ -9297,24 +8187,10 @@
       "storage_cache_refill",
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
+      "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
-      "object_store_backend_detect",
-      "proxy_topology_churn_convergence",
-      "proxy_admission_policy",
-      "proxy_operational_surface_aliases",
-      "proxy_tonic_streaming_contract",
-      "proxy_route_quarantine_recovery",
-      "proxy_multi_proxy_convergence_quarantine",
-      "proxy_grafana_prometheus_metric_parity",
-      "client_cpp_partition_set_route_cache",
-      "client_retry_budget_topology_refresh",
-      "client_metasync_outage_churn",
-      "client_pipeline_batch_partial_timeout",
-      "client_deployment_placement_routing",
-      "metaserver_scheduler_control_plane",
-      "raft_openraft_process_path_default_gate",
-      "raft_membership_op"
+      "object_store_backend_detect"
     ],
     "required_raft_case_names": [
       "storage_data_raft_replication_gtest",
@@ -9327,11 +8203,9 @@
       "raft_data_node_membership_secondary_reads",
       "raft_metaserver_leader_snapshot_restart",
       "raft_metaserver_membership_add_promote_remove",
-      "raft_openraft_process_rollout_evidence",
+      "raft_temporal_raft_process_rollout_evidence",
       "raft_byteraft_read_safety_policy",
-      "raft_byteraft_membership_roles",
       "raft_byteraft_metrics_admin_pipeline_status",
-      "server_raft_byteraft_runtime_admin_route",
       "raft_byteraft_snapshot_lifecycle_depth",
       "raft_byteraft_replication_backpressure",
       "raft_byteraft_election_controls",
@@ -9342,7 +8216,7 @@
       "raft_byteraft_follower_rejoin_compacted_logs_fault_harness",
       "raft_byteraft_rolling_restart_joint_consensus_fault_harness",
       "raft_byteraft_shared_fault_gate",
-      "raft_openraft_process_read_safety_and_membership_matrix"
+      "raft_temporal_raft_process_read_safety_and_membership_matrix"
     ],
     "required_response_kinds": [
       "empty",

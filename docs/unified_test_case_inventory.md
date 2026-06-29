@@ -76,15 +76,15 @@ aliases and leaves three concrete missing surfaces: `docker-compose.context-benc
 Current inventory:
 
 ```text
-total cases: 180
-total steps: 363
-executable shared behavior cases: 180
-executable shared behavior steps: 240
-C++ existing-test/static parity surfaces: 123 steps
-C++ adapter coverage families: 9
-C++ required source/test/harness paths: 198 unique paths
-required command kinds: 78
-required response kinds: 20
+total cases: 150
+total steps: 312
+executable shared behavior cases: 150
+executable shared behavior steps: 312
+C++ existing-test parity surface cases: 96
+C++ existing-test parity surface steps: 103
+C++ required source/test/harness paths: 184 unique paths
+required command kinds: 66
+required response kinds: 19
 ```
 
 The target is no duplicated Rust-only and C++-only tests for product behavior. Product behavior
@@ -101,121 +101,32 @@ Current grandfathered Rust test dispositions:
 
 | Disposition | Count |
 | --- | ---: |
-| `move_to_shared` | 512 |
-| `rust_internal` | 7 |
+| `move_to_shared` | 484 |
+| `rust_internal` | 6 |
 | `cpp_out_of_scope` | 0 |
 | `duplicate/remove` | 0 |
 
 The next migration target is the Raft ByteRaft-derived process/fault/readiness family, followed by
-storage/cache recovery cases and Context pipeline model cases. The storage family now includes
-`storage_slot_first_physical_index`, which validates Rust's C++-style
-`Index -> SlotNode -> PageIndex` authority for mixed page-backed product-model writes,
-including Risk, and checks the C++ 17-byte `PageIndex` / 24-byte `SlotNode` packed-size
-evidence while keeping C++ execution as a shared-corpus adapter target. The
-`storage_object_manager_slotstore_runtime_authority` case now verifies the named
-ObjectManager/SlotStore runtime authority modules against the same physical index, including
-per-object and per-slot dirty/deleted/loading/in-memory flags, object IDs, page refs,
-dirty generations, TTL metadata, and runtime rows. It also includes
-`storage_slot_index_authoritative_secondary_rebuild`, which wipes persisted
-logical model maps and proves restart/load rebuilds string, hash, set,
-timestamped, Risk, and Context secondary views from the SlotStore/ObjectManager
-page-address authority. It also includes
-`storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
-across single-page object, multi-object, single-object delete metadata, multi-page object,
-compaction, slot dump/load, and restart. `storage_model_layout_compaction_policies` covers
-model-layout-aware compaction policy evidence for string, hash, set, timestamped,
-context, and Risk model families, including object-page packing, cold-page rewrite,
-stale-page density, tombstone-density, and index rewrite fields.
-`storage_merged_dump_load_lifecycle` covers the merged dump/load policy evidence:
-validated multi-slot source manifests, source-slot coverage rejection, rollback marker evidence,
-load-version handoff, and stale object/page conflict preflight reports. The storage family also now includes focused
-C++/Rust shared cases for object-manager cold/hot reload, PageAddress disk/cache
-fallback, tombstone compaction, stale-page density compaction, merged dump/load restart
-interruption, GC plus eviction under cold reads, continuous StorageManager background
-runtime with jitter/backoff/pause/resume/per-phase flags/bounded work, and Risk/Context
-page-backed restart parity.
+storage/cache recovery cases and Context pipeline model cases.
 
-Recent shared-case additions moved seven Rust data-node Raft API tests into the common contract:
+The standalone `TemporalStoreTestCorpus` repo also carries the full generated draft inventory:
+
+| Draft source | Cases |
+| --- | ---: |
+| Rust | 554 |
+| C++ | 2146 |
+| Total | 2700 |
+
+The Rust local removal manifest currently finds 41 local tests with `shared-corpus:` markers and
+marks 0 removable now, because those 41 still depend on local runner evidence. Nine duplicate
+Rust-local tests have been removed after their behavior moved to self-executing shared cases.
+
+Recent shared-case additions moved six Rust data-node Raft API tests into the common contract:
 `server_raft_status_admin_routes`, `server_raft_apply_health_route`,
 `server_raft_membership_apply_route`, `server_raft_control_scale_up_down`,
-`server_raft_control_accept_leadership`, `server_raft_admin_wait_applied`, and
-`server_raft_byteraft_runtime_admin_route`. C++ currently contributes static server/Raft source and
-test surfaces for those cases until a native C++ shared runner executes the same case IDs. The new
-ByteRaft runtime-admin case requires a shared JSON shape with a capability matrix plus per-peer
-match/next index, inflight bytes, append request/accept/reject counters, append queue depth/max
-depth, observed active apply in-flight and memory backpressure counters, oversized-log rejection,
-out-of-order append handling, append/reorder queues, reorder accept/release/reject counters, snapshot sender/downloader
-lifecycle, WAL segments with bytes/record counts/sequence bounds, read-index/lease evidence, stale
-follower rejection, and matching Prometheus metrics for scrape-based operator parity. Snapshot
-lifecycle fields include send attempt/complete/failure counters, send timeout, install
-start/complete/reject/rollback counters, received/total chunks, progress, retry count, chunk retry,
-rate limiting, membership-change snapshot evidence, compacted-log rejoin evidence, and backpressure
-rejection counters, including rejection of concurrent snapshot send attempts for the same peer.
-Membership-role fields include witness quorum participation without data service, learner read service
-without quorum participation, auto-promoted learner evidence, and pending joint-consensus state in
-local-status reports. Read-safety fields include read-index, lease-read, stale leader lease
-rejection, lagging follower read rejection, stale follower write rejection, bounded stale
-accept/reject decisions, minority partition rejection, healed follower catch-up, and pre-vote
-request/accept/reject counters. Rust now also validates that configured in-flight append entry/byte
-limits and `max_inflights_apply_task` reject saturated peer pipelines, and that the per-peer pipeline
-and read-safety state is persisted through
-WAL restore.
-
-`raft_openraft_process_rollout_evidence` now uses the executable
-`raft_openraft_process_path_default_gate` command instead of a static existing-test surface. The
-shared gate enforces production-distributed mode, rejects `LocalModel`, requires OpenRaft
-data-node/metaserver process startup selectors, and validates ByteRaft-derived process-path
-evidence for per-peer pipeline state, reorder queues, read-index/lease safety, stale follower write
-rejection, stale leader lease rejection, lagging follower read rejection, bounded stale read
-evidence, minority partition rejection, healed follower catch-up, chunked snapshot retry/backpressure/progress/rollback,
-compacted-log rejoin, WAL segment lifecycle, learner auto-promotion, witness membership, pending
-joint consensus, and admin/status surface coverage. It still fails closed on the broader durable
-multi-process rollout blockers until spawned-process evidence with independent WAL/snapshot dirs is
-available.
-
-The latest migration passes moved twelve proxy/client/SDK churn and compatibility cases out of
-Rust-local-only coverage into shared executable command kinds:
-
-- `control_multi_proxy_topology_churn_scale` now uses
-  `proxy_topology_churn_convergence` to exercise two proxies through metaserver topology movement,
-  stale-cache invalidation, route refresh, and recovery onto the moved backend.
-- `control_proxy_admission_policy` now uses `proxy_admission_policy` to validate readonly,
-  write-disabled, not-serving, degraded, drop-percent, and policy counter behavior.
-- `control_proxy_operational_surface_aliases` now uses `proxy_operational_surface_aliases` to
-  compare C++ proxy admin/config/heartbeat/status concepts against Rust-native HTTP aliases.
-- `control_proxy_tonic_streaming_maturity` now uses `proxy_tonic_streaming_contract` to validate
-  cancellation, backpressure, reconnect, callback acknowledgement, and preflight watch evidence.
-- `control_route_quarantine_recovery` now uses `proxy_route_quarantine_recovery` to exercise stale
-  backend failure, route refresh, and recovery onto a healthy backend through public proxy APIs.
-- `control_multi_proxy_convergence_and_quarantine` now uses
-  `proxy_multi_proxy_convergence_quarantine` to combine multi-proxy topology convergence with the
-  quarantine/recovery contract.
-- `ops_grafana_metrics_cpp_parity` now uses `proxy_grafana_prometheus_metric_parity` to check
-  proxy/readiness Prometheus families and the Grafana metric-family mapping contract.
-- `control_metaserver_scheduler_lifecycle_workflow` now uses
-  `metaserver_scheduler_control_plane` to validate C++ partition-set/member/version topology,
-  stale load-generation rejection, safe-mode cooldown reporting, topology-derived data-node Raft
-  membership application, and metaserver scheduler readiness evidence.
-- `control_client_cpp_partition_set_route_cache` now uses
-  `client_cpp_partition_set_route_cache` to validate table id, C++ partition ids, partition
-  version, slot ranges, primary/replica members, topology version, and preflight evidence.
-- `control_client_retry_budget_topology_refresh` now uses
-  `client_retry_budget_topology_refresh` to prove read retry budget behavior and no duplicate unsafe
-  write retry without explicit write budget.
-- `control_client_metasync_outage_churn_stress` now uses
-  `client_metasync_outage_churn` to exercise MetaSyncer deadlines, exponential backoff with jitter,
-  metaserver outage survival, and topology-version refresh.
-- `control_client_pipeline_batch_partial_timeout_contract` now uses
-  `client_pipeline_batch_partial_timeout` to validate ordered batching, per-command partial failure
-  reporting, timeout-budget propagation, and single-shot unsafe write batch behavior.
-- `control_client_deployment_placement_routing_hooks` now uses
-  `client_deployment_placement_routing` to validate deployment-aware placement, location-affine
-  secondary reads, and primary-only writes.
-
-The shared runner also executes `raft_byteraft_membership_roles` through `raft_membership_op`
-steps instead of letting those operations remain declarative-only in Rust. Remaining `existing_test`
-steps are mostly C++ static surfaces or expensive harness entry points that still need native C++
-adapter execution before they can be fully removed.
+`server_raft_control_accept_leadership`, and `server_raft_admin_wait_applied`. C++ currently
+contributes static server/Raft source and test surfaces for those cases until a native C++ shared
+runner executes the same case IDs.
 
 Focused C++ Raft-to-Rust validation uses the same corpus entries:
 
@@ -261,42 +172,19 @@ C++ execution should progressively cover every executable case.
 | `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |
 | `storage_fault_matrix` | Rust validates checksum mismatch, partial manifest, missing segment, stale manifest, and corrupt page-segment rejection. |
 | `storage_follower_safe_gc` | Rust runs storage lifecycle with a lagging follower cursor and verifies recovery stays clean. |
-| `storage_shared_store_oplog_cursor_retention` | Shared-store WAL GC refuses to reclaim WAL objects still needed by a saved follower replay cursor. |
+| `storage_shared_store_oplog_cursor_retention` | Shared-store oplog GC refuses to reclaim oplog objects still needed by a saved follower replay cursor. |
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
 | `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
-| `storage_cache_replacement_policy_soak` | Rust-native cache soak verifies access-refreshed hot blocks and pinned blocks survive capacity churn, cold blocks refill from disk, async writeback/backpressure is exercised, and operation-specific latency buckets are recorded for read-through, refill, writeback, eviction, and compaction. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
-| `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after logical map removal, memory eviction, and restart. |
-| `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index, including live/dirty/deleted/loading/in-memory rows, object IDs, page refs, dirty generations, and TTL metadata. |
-| `storage_slot_index_authoritative_secondary_rebuild` | Rust verifies SlotStore/ObjectManager page refs are the durable authority by deleting persisted logical maps and rebuilding string/hash/set/timestamped/Risk/Context secondary views on restart. |
-| `storage_slot_layout_transitions` | Rust verifies C++-style SlotStore layout transitions for single-object, single-page-object, multi-object, multi-page-object, compaction, dump/load, and restart. |
-| `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies SlotStore PageAddress-driven disk cache and persistent page-store fallback after logical map removal and memory eviction. |
-| `storage_tombstone_compaction` | Rust verifies tombstoned object reporting plus model-layout tombstone-density and rewrite-action evidence. |
-| `storage_stale_page_density_compaction` | Rust verifies stale page estimate, density evidence, cold-page rewrite, object-page packing, and rewritten index refs for compaction decisions. |
-| `storage_merged_dump_load_restart_interruption` | Rust verifies merged dump/load restart interruption markers, merged-installer roll-forward, load-version handoff after retry, and incomplete-commit reporting. |
-| `storage_gc_eviction_cold_reads` | Rust verifies StorageManager GC plus eviction preserves cold reads through page-store fallback. |
-| `storage_manager_continuous_background_runtime` | Rust verifies stoppable continuous StorageManager runtime with jitter, backoff, pause/resume, per-phase enable flags, and bounded work per round. |
-| `storage_manager_real_pressure_signals` | Rust verifies StorageManagerPressureSnapshot is captured and cycle pressure is driven by actual dirty slots, WAL/index-log bytes, stale page density, cache pressure, expiry scan debt, delayed-destroy backlog, follower retention blockers, and model-layout compaction debt. |
-| `storage_manager_wal_reclaim_slot_generation_retention` | Rust verifies WAL/index-log reclaim is slot-generation based and waits for durable dumps plus follower cursor and Raft snapshot retention frontiers. |
-| `storage_manager_expire_cursor_scan_limits` | Rust verifies expire scanning uses hot/cold cursors, per-round limits, load-on-expire only when needed, and scanned/expired/skipped/loaded metrics. |
-| `storage_manager_active_eviction_runtime` | Rust verifies active weighted slot/object eviction with pressure gates, batch limits, dump-before-evict, delete/drop mode, and cooldown reporting. |
-| `storage_manager_page_gc_dependency_refusal` | Rust verifies page GC refuses reclaim when live refs, slot dump manifests, shared-store replay cursors, checkpoint/snapshot floors, Raft install floors, or delayed-destroy grace still retain a page segment. |
-| `storage_manager_index_gc_thresholds_recovery` | Rust verifies Index GC uses index-log byte thresholds, usage-ratio triggers, max entries per round, dirty-slot commit before truncation, and restart recovery after bounded truncation. |
-| `storage_manager_metrics_admin_phase_reports` | Rust verifies the reusable StorageManager phase executor populates per-phase admin reports and Prometheus metrics for last run time, duration, selected slots, skipped reason, errors, reclaimed bytes, compacted pages, WAL/index-log floors, retention blockers, pressure before/after, and the last pressure snapshot. |
-| `storage_risk_context_page_backed_parity` | Rust verifies Risk and Context writes are page-backed in the slot-first index and survive restart. |
-| `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, logical read verification, and bounded data-node StorageManager cycle execution with prepare/reclaim/expire/evict/page-reclaim/index-GC/compact pressure evidence. |
-| `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/WAL/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
+| `storage_byteraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
+| `storage_byteraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_byteraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
-| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, refill failures, pinned handles, DRAM/PMEM/SSD placement, async writeback/backpressure gauges, operation-specific latency buckets, per-stage StorageManager pressure reports, live-read safety after eviction plus page GC, and periodic StorageManager scheduler queue safety. |
-| `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and WAL/index-log ordering. |
-| `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up. |
-
-The continuous StorageManager runtime now copies the last completed cycle into its own runtime admin
-report, including the pressure snapshot, per-phase reports, selected slots, skipped reasons, bytes
-reclaimed, and pressure before/after. The WAL/index-log reclaim shared case also verifies restart
-recovery after reclaim, alongside the existing index-GC restart recovery case.
+| `storage_byteraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
+| `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and oplog/index-log ordering. |
+| `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up. |
+| `storage_recovery_sidecar_dependency_matrix` | Storage recovery validates index refs, page refs, manifest refs, context sidecar refs, follower cursor retention, and cache refill as one dependency matrix. |
 
 ## C++ Existing-Test Parity Surface Cases
 
@@ -311,7 +199,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | --- | --- |
 | `cpp_storage_object_page_slot_parity_surfaces` | C++ object/page/slot ownership sources. |
 | `cpp_storage_manager_compaction_gc_parity_surfaces` | Storage manager, compaction, GC, and delayed-destroy surfaces. |
-| `cpp_storage_oplog_index_replay_parity_surfaces` | WAL, index-log, checkpoint/replay surfaces. |
+| `cpp_storage_oplog_index_replay_parity_surfaces` | Oplog, index-log, checkpoint/replay surfaces. |
 | `cpp_storage_slot_context_test_parity_surfaces` | Slot/page/object and context storage test surfaces. |
 | `cpp_data_raft_consensus_parity_surfaces` | Data-Raft consensus implementation surfaces. |
 | `cpp_data_raft_replication_parity_surfaces` | Data-Raft replication payload/log surfaces. |
@@ -334,22 +222,21 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove and secondary-read visibility as an explicit shared harness case. |
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
-| `raft_openraft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection plus `real_process_path_evidence_validated=true`, OpenRaft spawned-process counts, independent WAL/snapshot dirs, observed requests, read-index responses, restart recovery for every process, per-node log-store inspection for every process, explicit data-node secondary-read/lag proof fields for lagging-follower read rejection, stale-follower write rejection, catch-up read eligibility, minority partition rejection, bounded-stale eligibility, healed catch-up, and observed lag, WAL first/last sequence status, WAL segment release-rule evidence, WAL fsync/backpressure evidence, restart log-store comparison evidence, FSM apply atomicity, apply-fence recovery, snapshot-install apply-fence recovery, deterministic storage/WAL/snapshot crash recovery, bounded-stale reads under partition, follower lease expiration, and ByteRaft-derived process-semantics evidence for peer pipeline state, active in-flight replicate limits, max replicate-byte pressure, `max_disk_replicate_log_num` retention, oversized-log rejection, apply-batch backpressure, append queue depth, pressure counters, snapshot chunk retry/backpressure, send timeout, install progress, rollback, membership-change snapshot safety, compacted-log rejoin, WAL lifecycle, failover, membership, and secondary lag where applicable. |
+| `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence. |
 | `raft_production_gate` | Exact C++ Raft production gate case, paired with the Rust storage/Raft production-readiness local gate and the combined data-node plus metaserver Raft distributed parity gate. `tools/run_raft_shared_cases.py` validates these shared Raft cases and can run the combined Rust parity gate once. |
-| `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, stale lease, lagging follower rejection, bounded-stale accept/reject, stale follower write rejection, minority rejection, and healed-follower eligibility behavior. |
-| `raft_byteraft_membership_roles` | ByteRaft-derived witness, learner, learner auto-promote, local-status role evidence, and pending joint-consensus restart behavior; readiness requires all three role signals instead of accepting any one of them. |
-| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus capability matrix, peer pipeline, local peer role/quorum/serve/leader gauges, active replicate/apply backpressure, memory-byte limits, oversized-log rejection, append queue depth/max-depth, out-of-order append handling, apply health, read-index, leader-transfer request/accept/reject/complete/elapsed/timeout counters, snapshot send elapsed/timeout/retry/rate-limit/progress/rollback/membership/rejoin counters, offline timeout state/rejection counters, and `/raft/control/byteraft_runtime_admin` evidence. |
-| `server_raft_byteraft_runtime_admin_route` | Shared route and metrics contract for the ByteRaft-style runtime admin and local-status reports, including capability matrix rows and peer pipeline state, on both standalone `raft_node` and raft-enabled `server`. |
-| `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, sender timeout, chunk retry/backpressure, rate limiting, chunked install progress, stale/corrupt rejection, snapshot during membership change, rejoin after compacted logs, restart recovery, and rollback reporting. |
-| `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log rejection, active in-flight replicate/apply limits, max memory replicate bytes, bounded disk replicate-log retention, append queue depth/max-depth accounting, backpressure counters, out-of-order append handling, reorder, and apply-batch behavior. |
+| `raft_byteraft_read_safety_policy` | ByteRaft-derived read-index, lease-read, bounded-stale, and secondary-read eligibility behavior. |
+| `raft_byteraft_metrics_admin_pipeline_status` | ByteRaft-derived status/local-status/Prometheus peer pipeline, apply health, read-index, and leader-transfer evidence. |
+| `raft_byteraft_snapshot_lifecycle_depth` | ByteRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
+| `raft_byteraft_replication_backpressure` | ByteRaft-derived oversized-log, in-flight append, backpressure, reorder, and apply-batch behavior. |
 | `raft_byteraft_election_controls` | ByteRaft-derived pre-vote, election prohibition, transfer timeout, and offline peer controls. |
-| `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues, minority rejects stale reads/writes, and healed followers catch up before read eligibility. |
+| `raft_byteraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
 | `raft_byteraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
 | `raft_byteraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
-| `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes, backed by paired observed write IDs, unique write-ID accounting, and committed indexes before and after transfer. |
+| `raft_byteraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |
 | `raft_byteraft_follower_rejoin_compacted_logs_fault_harness` | Follower rejoin after compaction installs snapshot, replays retained tail, and becomes read-eligible after catch-up. |
 | `raft_byteraft_rolling_restart_joint_consensus_fault_harness` | Rolling restart with pending joint consensus completes or rolls back safely. |
 | `raft_byteraft_shared_fault_gate` | Combined ByteRaft-derived data-node and metaserver Raft fault gate. |
+| `raft_temporal_raft_process_read_safety_and_membership_matrix` | Production TemporalRaft multi-process read safety, membership, snapshot, restart, follower lag, and secondary-read evidence matrix. |
 | `cpp_redis_live_storage_smoke_parity_surfaces` | Redis live storage smoke surfaces. |
 | `cpp_local_docker_replication_matrix_parity_surfaces` | Local Docker replication matrix surfaces. |
 | `cpp_client_meta_sync_route_parity_surfaces` | Client meta-sync, route, pipeline, and request surfaces. |
@@ -359,13 +246,11 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `control_topology_version_change` | Rust-executable/C++-static gate for the shared client/proxy/meta topology-version change workflow. |
 | `control_stale_route_invalidation` | Rust-executable/C++-static gate for stale route invalidation and one-refresh retry behavior. |
 | `control_proxy_admission_policy` | Rust-executable/C++-static gate for proxy admission, drop-percent, and degraded preflight behavior. |
-| `control_proxy_operational_surface_aliases` | Rust-executable/C++-static gate for C++ proxy admin/config/heartbeat/status operational aliases over Rust-native routes. |
 | `control_readonly_write_disabled_tables` | Rust-executable/C++-static gate for readonly/write-disabled/not-serving table policy behavior. |
 | `control_route_quarantine_recovery` | Rust-executable/C++-static gate for backend quarantine, recovery probing, and degraded preflight behavior. |
 | `control_data_node_load_reload_unload_lifecycle` | Rust-executable/C++-static gate for data-node load/reload/readonly/unload lifecycle behavior. |
 | `control_cpp_server_service_alias_surface` | Rust-executable/C++-static gate for data-node C++ `ServerService` alias routes over the Rust-native migration surface. |
 | `control_metaserver_scheduler_lifecycle_workflow` | Rust-executable/C++-static gate for metaserver scheduler-issued load/reload/unload token behavior. |
-| `control_multi_proxy_topology_churn_scale` | Rust-executable/C++-static scale gate for two proxies converging after metaserver topology churn and stale cached route recovery. |
 | `ingestion_kafka_offset_ledger` | Rust-executable/C++-static gate for Kafka offset ledger, duplicate rejection, and valid-record continuation behavior. |
 | `ingestion_kafka_rebalance_backpressure` | Rust-executable/C++-static gate for Kafka consumer-group rebalance and backpressure behavior. |
 | `ingestion_flink_checkpoint_lifecycle` | Rust-executable/C++-static gate for Flink checkpoint precommit/commit/abort behavior. |
@@ -379,10 +264,9 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_injection_prompt_pack_ordering` | Rust-executable/C++-static gate for prompt-pack ordering and selected-ref audit ordering. |
 | `context_benchmark_injection_entity_segment_index` | Rust-executable/C++-static gate for ContextEntity/ContextSegment benchmark injection, source secondary-index lookup, L0/L1/L2 prompt blocks, and selected-ref audit coverage. |
 | `context_extracted_event_default_index_fanout` | Rust-executable/C++-static gate translated from C++ `WRITE_EXTRACTED_EVENT` debug tests; default internal indexes fan out and disabled indexes do not return refs. |
-| `context_secondary_index_intersection` | Rust-executable/C++-static gate for C++-style secondary-index filter-group intersection, scope/range isolation, and duplicate ref suppression. |
 | `context_tree_embedding_summary_compression` | Rust-executable/C++-static gate translated from C++ tree/embedding/summary/compression round-trip behavior. |
 | `context_temporal_compression_replayable_summary` | Rust-executable/C++-static gate translated from C++ temporal compression behavior; compression must not delete source events. |
-| `context_events_segments_entities_child_refs` | Rust-executable/C++-static gate for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, node-context query behavior, timestamp-keyed context events under node/segment parents, compact embedding model hashes, and compact scope hot-record parity. |
+| `context_events_segments_entities_child_refs` | Rust-executable/C++-static gate for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, and node-context query behavior. |
 | `context_cpp_wire_model_descriptor_roundtrip` | Rust-executable/C++-static gate for Context model IDs, key families, aliases, and C++ JSON wire payload round trips across Context models. |
 | `context_embeddings_summaries_l0_l1_pipeline` | Rust-executable/C++-static gate for embeddings, L0/L1 summaries, summary dirty tracking, provider/model selection, and prompt block construction. |
 | `context_compression_secondary_index_query_debug_flow` | Rust-executable/C++-static gate for temporal compression, secondary-index filter groups, C++-style query debug flow, retrieved evidence ordering, and audit refs. |
@@ -390,16 +274,13 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_resource_lifecycle_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style resource add/watch/refresh/delete lifecycle behavior across URL, Git, PDF/document, and Feishu-style imports, including parser provenance, owner scope, version invalidation, watch scheduling, and delete markers. |
 | `context_resource_skill_registry_openviking_parity` | Rust-executable/C++-static gate for OpenViking-style skill registry behavior: enable/disable, precedence, owner scope, triggers, allowed tools, version updates, and retrieval-time skill selection. |
 | `context_resource_skill_live_embedding_summary_retrieval` | Rust-executable/C++-static gate for live OpenAI-compatible embedding generation without mock fallback and summary-embedding-driven retrieval expansion into resource evidence. |
+| `context_hot_event_sidecar_index_boundary` | Rust-executable/C++-static gate requiring lean `ContextEvent` hot fields while source/resource/skill/entity/summary refs, child links, compression, dirty markers, and selected evidence live in sidecars/indexes. |
 | `context_benchmark_fixture_gates` | Shared C++/Rust benchmark contract for LOCOMO-style and LongMemEval_s fixture gates using MatrixArk/VikingMem report fields. |
 | `context_benchmark_full_dataset_gates` | Shared C++/Rust benchmark contract for LOCOMO, LongMemEval_s, and Docker/open-model full-dataset gates with explicit threshold profiles and archive reports. |
 | `control_multi_proxy_convergence_and_quarantine` | Rust-executable/C++-static gate for multi-proxy convergence, backend quarantine, recovery probing, and stale-cache comparison. |
 | `control_scheduler_token_stale_rejection` | Rust-executable/C++-static gate for metaserver scheduler-issued lifecycle tokens and stale generation rejection. |
 | `control_datanode_lifecycle_restart_recovery` | Rust-executable/C++-static gate for data-node lifecycle, snapshot restore, and restart diagnostics. |
-| `control_client_cpp_partition_set_route_cache` | Rust-executable/C++-static gate for direct SDK C++ partition-set/member/version route-cache hierarchy. |
 | `control_client_retry_budget_topology_refresh` | Rust-executable/C++-static gate for client retry budgets, topology refresh, stale route invalidation, and no duplicate unsafe writes. |
-| `control_client_metasync_outage_churn_stress` | Rust-executable/C++-static gate for MetaSyncer jitter/backoff/deadline behavior under metaserver outage and topology churn. |
-| `control_client_pipeline_batch_partial_timeout_contract` | Rust-executable/C++-static gate for ordered batching, partial failures, retry-safe versus unsafe writes, and timeout budget propagation. |
-| `control_client_deployment_placement_routing_hooks` | Rust-executable/C++-static gate for deployment placement hooks, location-affine secondary reads, and primary-only write routing. |
 | `cross_storage_control_agent_parity` | Rust-executable/C++-static gate tying storage dump/load/cache recovery, client/proxy topology/admission, data-node lifecycle, metaserver scheduler tokens, and Context agent resource/skill parser workflow evidence into one cross-subsystem contract. |
 | `ingestion_kafka_consumer_group_runtime_rebalance` | Rust-executable/C++-static gate for Kafka consumer-group runtime assignment, rebalance-required detection, and backpressure. |
 | `ingestion_flink_checkpoint_restart_failover` | Rust-executable/C++-static gate for Flink checkpoint lifecycle across restart/failover idempotence. |
@@ -502,6 +383,7 @@ family has a C++ execution story:
 | Ingestion | Temporary static surface gate with a native runner blocker. |
 | Benchmarks | Native adapter contract through `cpp_context_benchmark_report_adapter.h`. |
 | Codex/MCP | Temporary static surface gate with a native runner blocker. |
+| Redis/admin | Mixed native adapter scaffold plus static surface gate until the C++ runner executes Redis/admin shared cases. |
 
 When a native C++ runner is not available, the corpus keeps the case as a
 temporary static surface gate and records the blocker plus the expected runner
@@ -519,20 +401,21 @@ MatrixArk/VikingMem comparators.
 Yes. Current Rust-local attributed test count is:
 
 ```text
-Rust attributed tests: 565
-shared-corpus marked Rust tests: 78
-shared corpus cases: 169
-shared corpus steps: 331
-C++ existing-test surfaces: 185
+Rust attributed tests: 543
+shared-corpus marked Rust tests: 52
+rust-internal marked Rust tests: 1
+shared corpus cases: 164
+shared corpus steps: 326
+C++ existing-test surfaces: 209
 ```
 
 The detailed reduction split and new-test guard live in
 `docs/rust_product_test_reduction_guard.md`. The current split is:
 
 ```text
-product behavior to move into shared corpus: 533
-Rust-only internals that can remain local: 7
-existing Rust tests already marked with shared-corpus references: 41
+product behavior to move into shared corpus: 484
+Rust-only internals that can remain local: 6
+existing Rust tests already marked with shared-corpus references: 52
 ```
 
 The Rust-attributed tests are a migration backlog, not the desired final state. They should be

@@ -21,7 +21,7 @@ The implementation decision remains explicit:
 | Area | Current status | Evidence |
 | --- | --- | --- |
 | Storage/cache | Local/shared-store parity evidence exists for dump/load, recovery, corrupt pages, follower-safe GC, cache refill, shared-store sync/async replay, and Rust-native migration corpus. | `docs/storage_raft_production_readiness_plan.md`, `compat/unified_temporalstore_cases.json` |
-| Raft | OpenRaft production mode is the readiness-eligible path. Local Raft fixtures are test-only. Local harness evidence covers snapshots, membership, failover, follower lag, restart, and secondary reads. | `docs/storage_raft_production_readiness_plan.md`, `docs/distributed_raft_readiness.md` |
+| Raft | TemporalRaft production mode is the readiness-eligible path. Local Raft fixtures are test-only. Local harness evidence covers snapshots, membership, failover, follower lag, restart, and secondary reads. | `docs/storage_raft_production_readiness_plan.md`, `docs/distributed_raft_readiness.md` |
 | Client/proxy | Rust-native migration contract is HTTP/JSON, RESP, and tonic. Topology sync, retry budgets, route invalidation, quarantine, admission, and aliases are tracked. | `docs/client_vs_cpp.md`, `docs/client_sdk_contract.md` |
 | Data-node/metaserver | Rust has lifecycle, scheduler, heartbeat, topology, membership, and readiness evidence, but global production claims still depend on real deployment-scale evidence. | `docs/data_node_vs_cpp.md`, `docs/metaserver_vs_cpp.md` |
 | Ingestion | Shared cases cover Kafka offsets, rebalance/backpressure, Flink checkpoints, dead letters, lag metrics, and restart idempotence. C++ execution still needs broader native shared-runner coverage. | `docs/unified_test_case_inventory.md` |
@@ -93,7 +93,7 @@ Each major blocker must map to a concrete evidence field before it can be treate
 
 | Service/area | Required evidence |
 | --- | --- |
-| `raft_replication` | OpenRaft process rollout, multi-process log-store validation, snapshots, membership changes, leader transfer, failover, restart recovery, follower lag, and secondary reads. |
+| `raft_replication` | TemporalRaft process rollout, multi-process log-store validation, snapshots, membership changes, leader transfer, failover, restart recovery, follower lag, and secondary reads. |
 | `storage_cache` | Slot dump/load, manifest rejection, recovery faults, follower-safe GC, cache refill, local/shared-store replay, and C++ migration-corpus replay into Rust-native storage. |
 | `client` / `proxy` | Rust-native migration contract, typed table client, topology sync, retry budgets, route invalidation, route quarantine/recovery, admission policy, RESP aliases, HTTP/JSON aliases, and tonic contract evidence. |
 | `data_node` | Lifecycle persistence, load/reload/unload barriers, readonly catch-up, metaserver-owned membership execution, and restart evidence. |

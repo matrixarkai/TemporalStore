@@ -32,7 +32,7 @@ RAFT_CASES = {
     "raft_data_node_membership_secondary_reads",
     "raft_metaserver_leader_snapshot_restart",
     "raft_metaserver_membership_add_promote_remove",
-    "raft_openraft_process_rollout_evidence",
+    "raft_temporal_raft_process_rollout_evidence",
     "raft_production_gate",
     "raft_byteraft_read_safety_policy",
     "raft_byteraft_membership_roles",
@@ -142,7 +142,7 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
         ]):
             raise SystemExit(f"{location}: rust_runner is not a known Raft evidence command")
         rust_validator = command.get("rust_validator", "")
-        if "validate_aws_validation_log.py" not in rust_validator and case.get("name") != "raft_openraft_process_rollout_evidence":
+        if "validate_aws_validation_log.py" not in rust_validator and case.get("name") != "raft_temporal_raft_process_rollout_evidence":
             raise SystemExit(f"{location}: rust_validator must use validate_aws_validation_log.py")
         if case.get("name") in {
             "raft_data_node_scale_failover_snapshot",
