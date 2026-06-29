@@ -6677,6 +6677,7 @@ impl RaftCluster {
         let enable_reorder_queue = inner.config.enable_reorder_queue;
         let reorder_window_size = inner.config.reorder_window_size;
         let max_apply_batch_bytes = inner.config.max_apply_batch_bytes;
+        let max_inflights_apply_task = inner.config.max_inflights_apply_task.max(1);
         let (term, last_index) = {
             let node = inner
                 .nodes
@@ -6719,6 +6720,20 @@ impl RaftCluster {
                     success: false,
                     match_index: node_last_log_or_snapshot_index(node),
                     reject_reason: Some("apply_batch_backpressure".to_string()),
+                };
+                inner.persist_configured_wal()?;
+                return Ok(response);
+            }
+            if received_entries > max_inflights_apply_task {
+                node.pipeline_state.apply_backpressure_rejections = node
+                    .pipeline_state
+                    .apply_backpressure_rejections
+                    .saturating_add(1);
+                let response = AppendEntriesResponse {
+                    term: node.current_term,
+                    success: false,
+                    match_index: node_last_log_or_snapshot_index(node),
+                    reject_reason: Some("apply_inflight_backpressure".to_string()),
                 };
                 inner.persist_configured_wal()?;
                 return Ok(response);
@@ -9088,19 +9103,24 @@ impl RaftClusterInner {
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
         let append_backpressure_enforced = self.config.max_inflights_replicate > 0
             && self.config.max_memory_replicate_log_bytes > 0
-            && self.config.max_apply_batch_bytes > 0;
-        let apply_backpressure_enforced = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.apply_backpressure_rejections > 0)
-            || self.config.max_apply_batch_bytes > 0;
-        let memory_replicate_bytes_enforced = peer_pipeline_states
-            .iter()
-            .any(|peer| peer.memory_backpressure_rejections > 0)
-            || self.config.max_memory_replicate_log_bytes > 0;
+            && peer_pipeline_states.iter().any(|peer| {
+                peer.append_rejected > 0
+                    && (peer.inflight_entries > 0
+                        || peer.inflight_bytes > 0
+                        || peer.append_queue_max_depth > 0)
+            });
+        let apply_backpressure_enforced = self.config.max_apply_batch_bytes > 0
+            && self.config.max_inflights_apply_task > 0
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.apply_backpressure_rejections > 0);
+        let memory_replicate_bytes_enforced = self.config.max_memory_replicate_log_bytes > 0
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.memory_backpressure_rejections > 0);
         let oversized_log_rejection_present = peer_pipeline_states
             .iter()
-            .any(|peer| peer.oversized_log_rejections > 0)
-            || self.config.max_memory_replicate_log_bytes > 0;
+            .any(|peer| peer.oversized_log_rejections > 0);
         let out_of_order_append_handling_present = peer_pipeline_states.iter().any(|peer| {
             peer.out_of_order_append_rejections > 0 || peer.reorder_entries_rejected > 0
         });

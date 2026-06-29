@@ -2526,6 +2526,94 @@ fn raft_reorder_queue_rejects_batches_beyond_window_and_reports_counters() {
     assert_eq!(cluster.commit_index(3).unwrap(), 0);
 }
 
+// shared-corpus: raft_byteraft_replication_backpressure
+#[test]
+fn raft_apply_inflight_limit_rejects_large_append_batches() {
+    let request = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 91,
+        term: 1,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![
+            RaftLogEntry {
+                term: 1,
+                index: 1,
+                shard_id: 91,
+                command: Command::StringSet {
+                    key: "apply-inflight-a".to_string(),
+                    value: b"a".to_vec(),
+                },
+            },
+            RaftLogEntry {
+                term: 1,
+                index: 2,
+                shard_id: 91,
+                command: Command::StringSet {
+                    key: "apply-inflight-b".to_string(),
+                    value: b"b".to_vec(),
+                },
+            },
+        ],
+        leader_commit: 2,
+    };
+    let throttled = RaftCluster::new_single_shard_with_config(
+        91,
+        [1, 2, 3],
+        RaftConfig {
+            max_inflights_apply_task: 1,
+            max_apply_batch_bytes: 1024 * 1024,
+            max_memory_replicate_log_bytes: 1024 * 1024,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    let rejected = throttled.receive_append_entries(request.clone()).unwrap();
+    assert!(!rejected.success);
+    assert_eq!(
+        rejected.reject_reason.as_deref(),
+        Some("apply_inflight_backpressure")
+    );
+    let report = throttled.byteraft_runtime_admin_report();
+    let peer3 = report
+        .peer_pipeline_states
+        .iter()
+        .find(|peer| peer.peer_id == 3)
+        .expect("peer 3 pipeline state");
+    assert_eq!(peer3.apply_backpressure_rejections, 1);
+    assert_eq!(throttled.commit_index(3).unwrap(), 0);
+
+    let accepted_cluster = RaftCluster::new_single_shard_with_config(
+        91,
+        [1, 2, 3],
+        RaftConfig {
+            max_inflights_apply_task: 2,
+            max_apply_batch_bytes: 1024 * 1024,
+            max_memory_replicate_log_bytes: 1024 * 1024,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    let accepted = accepted_cluster.receive_append_entries(request).unwrap();
+    assert!(accepted.success);
+    assert_eq!(accepted.match_index, 2);
+    assert_eq!(
+        accepted_cluster
+            .read_local(
+                3,
+                Command::StringGet {
+                    key: "apply-inflight-b".to_string(),
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"b".to_vec())
+        }
+    );
+}
+
 // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
 #[test]
 fn byteraft_runtime_readiness_is_backed_by_admin_report_evidence() {
