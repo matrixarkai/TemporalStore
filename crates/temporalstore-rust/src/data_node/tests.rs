@@ -2073,7 +2073,9 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     });
 
     wait_until(Duration::from_secs(5), || {
-        manager.report().rounds_submitted >= 1 && runtime.stats().storage_manager_runs >= 1
+        manager.report().rounds_submitted >= 1
+            && runtime.stats().storage_manager_runs >= 1
+            && manager.report().last_completed_cycle.is_some()
     });
     let running = manager.report();
     assert!(running.running);
@@ -2093,6 +2095,23 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.phase_index_gc_enabled);
     assert!(running.last_job_id.is_some());
     assert!(running.last_status.as_ref().is_some_and(|status| status.ok));
+    assert!(running.last_completed_cycle.is_some());
+    assert!(running.last_pressure_snapshot.is_some());
+    assert!(running.last_pressure_before >= running.last_pressure_after);
+    assert!(running
+        .last_phase_reports
+        .iter()
+        .any(|stage| stage.stage == "prepare"
+            && stage.pressure_signal.contains("dirty_slots")
+            && stage.pressure_before >= stage.pressure_after));
+    assert!(
+        running
+            .last_phase_reports
+            .iter()
+            .any(|stage| stage.stage == "reclaim_oplog"
+                && stage.pressure_signal.contains("wal_bytes"))
+    );
+    assert!(!running.last_phase_reports.is_empty());
 
     manager.pause();
     let paused_before = manager.report().rounds_submitted;

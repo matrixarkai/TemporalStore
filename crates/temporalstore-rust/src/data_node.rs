@@ -17,7 +17,8 @@ use crate::control::{
 use crate::engine::reports::{
     ShardCompactionUtilityReport, SlotDumpManifest, StorageLifecyclePlan, StorageLifecycleReport,
     StorageLifecycleRequest, StorageManagerCycleReport, StorageManagerCycleRequest,
-    StorageProductionReadinessPolicy, StorageProductionReadinessReport,
+    StorageManagerPressureSnapshot, StorageManagerStageReport, StorageProductionReadinessPolicy,
+    StorageProductionReadinessReport,
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
@@ -464,6 +465,22 @@ pub struct StorageManagerRuntimeReport {
     pub phase_compaction_enabled: bool,
     pub phase_index_gc_enabled: bool,
     pub bounded_max_dump_slots_per_round: usize,
+    #[serde(default)]
+    pub last_completed_cycle: Option<StorageManagerCycleReport>,
+    #[serde(default)]
+    pub last_pressure_snapshot: Option<StorageManagerPressureSnapshot>,
+    #[serde(default)]
+    pub last_phase_reports: Vec<StorageManagerStageReport>,
+    #[serde(default)]
+    pub last_selected_slots: Vec<u32>,
+    #[serde(default)]
+    pub last_skipped_reasons: Vec<String>,
+    #[serde(default)]
+    pub last_bytes_reclaimed: u64,
+    #[serde(default)]
+    pub last_pressure_before: u64,
+    #[serde(default)]
+    pub last_pressure_after: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -1593,6 +1610,24 @@ impl DataNodeRuntime {
                         options.initial_backoff_ms,
                         options.max_backoff_ms,
                     );
+                }
+                drop(report);
+                if submitted.status.ok {
+                    let wait_budget_ms = options
+                        .controller
+                        .timeout_ms
+                        .max(50)
+                        .min(delay_ms.saturating_mul(10).max(50));
+                    if let Some(cycle) = wait_for_storage_manager_cycle_completion(
+                        &runtime,
+                        submitted.job_id,
+                        wait_budget_ms,
+                    ) {
+                        let mut report = thread_report
+                            .lock()
+                            .expect("storage manager runtime report lock poisoned");
+                        apply_storage_manager_cycle_to_runtime_report(&mut report, cycle);
+                    }
                 }
             }
             let mut report = thread_report
@@ -3112,6 +3147,63 @@ fn storage_manager_runtime_initial_report(
         bounded_max_dump_slots_per_round: options.request.max_dump_slots_per_round,
         ..StorageManagerRuntimeReport::default()
     }
+}
+
+fn wait_for_storage_manager_cycle_completion(
+    runtime: &DataNodeRuntime,
+    job_id: u64,
+    timeout_ms: u64,
+) -> Option<StorageManagerCycleReport> {
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms.max(1));
+    loop {
+        if let Some(status) = runtime.job_status(job_id) {
+            if status.finished_at_ms.is_some() {
+                if let Some(DataNodeTaskOutput::StorageManager(response)) = status.output {
+                    return Some(response.report);
+                }
+                return None;
+            }
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn apply_storage_manager_cycle_to_runtime_report(
+    report: &mut StorageManagerRuntimeReport,
+    cycle: StorageManagerCycleReport,
+) {
+    let mut selected_slots = BTreeSet::new();
+    let mut skipped_reasons = BTreeSet::new();
+    let mut bytes_reclaimed = 0u64;
+    let mut pressure_before = 0u64;
+    let mut pressure_after = 0u64;
+    for stage in &cycle.stages {
+        selected_slots.extend(stage.selected_slots.iter().copied());
+        if stage.skipped && !stage.reason.is_empty() {
+            skipped_reasons.insert(stage.reason.clone());
+        }
+        if !stage.skipped_reason.is_empty() {
+            skipped_reasons.insert(stage.skipped_reason.clone());
+        }
+        bytes_reclaimed = bytes_reclaimed
+            .saturating_add(stage.bytes_reclaimed)
+            .saturating_add(stage.page_bytes_reclaimed)
+            .saturating_add(stage.cache_disk_bytes_removed)
+            .saturating_add(stage.before_bytes.saturating_sub(stage.after_bytes));
+        pressure_before = pressure_before.max(stage.pressure_before);
+        pressure_after = pressure_after.max(stage.pressure_after);
+    }
+    report.last_pressure_snapshot = Some(cycle.pressure_snapshot.clone());
+    report.last_phase_reports = cycle.stages.clone();
+    report.last_selected_slots = selected_slots.into_iter().collect();
+    report.last_skipped_reasons = skipped_reasons.into_iter().collect();
+    report.last_bytes_reclaimed = bytes_reclaimed;
+    report.last_pressure_before = pressure_before.max(cycle.pressure_snapshot.total_pressure_score);
+    report.last_pressure_after = pressure_after;
+    report.last_completed_cycle = Some(cycle);
 }
 
 fn storage_manager_runtime_delay_ms(

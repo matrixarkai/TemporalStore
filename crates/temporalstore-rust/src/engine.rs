@@ -21034,12 +21034,10 @@ mod tests {
     #[test]
     fn storage_manager_wal_reclaim_requires_durable_slot_generation_frontier() {
         let dir = tempfile::tempdir().unwrap();
-        let engine = TemporalEngine::with_local_dirs(
-            1024,
-            dir.path().join("cache"),
-            dir.path().join("pages"),
-            dir.path().join("indexes"),
-        );
+        let cache_dir = dir.path().join("cache-a");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &page_dir, &index_dir);
         engine.load_shard(1);
         engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -21093,6 +21091,26 @@ mod tests {
             });
             assert!(response.status.ok, "{response:?}");
         }
+
+        let restarted = TemporalEngine::with_local_dirs(
+            1024,
+            dir.path().join("cache-b"),
+            &page_dir,
+            &index_dir,
+        );
+        restarted.load_shard(1);
+        let recovered = restarted.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: "wal-reclaim-b".to_string(),
+            },
+        });
+        assert_eq!(
+            recovered.response,
+            CommandResponse::Bytes {
+                value: Some(b"b2".to_vec())
+            }
+        );
     }
 
     // shared-corpus: storage_manager_wal_reclaim_slot_generation_retention

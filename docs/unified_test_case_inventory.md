@@ -284,6 +284,11 @@ C++ execution should progressively cover every executable case.
 | `storage_byteraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and WAL/index-log ordering. |
 | `storage_byteraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and WAL/index-log ordering under delayed follower catch-up. |
 
+The continuous StorageManager runtime now copies the last completed cycle into its own runtime admin
+report, including the pressure snapshot, per-phase reports, selected slots, skipped reasons, bytes
+reclaimed, and pressure before/after. The WAL/index-log reclaim shared case also verifies restart
+recovery after reclaim, alongside the existing index-GC restart recovery case.
+
 ## C++ Existing-Test Parity Surface Cases
 
 These are shared corpus gates, but not full native C++ command replay yet. They make the shared
