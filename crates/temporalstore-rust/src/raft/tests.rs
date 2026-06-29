@@ -4046,6 +4046,7 @@ fn scale_up_adds_caught_up_replica() {
     );
 }
 
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn learner_and_witness_roles_match_cpp_membership_shape() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
@@ -4105,6 +4106,7 @@ fn learner_and_witness_roles_match_cpp_membership_shape() {
     ));
 }
 
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn learner_does_not_count_for_majority_but_witness_does() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2]);
@@ -4139,6 +4141,7 @@ fn learner_does_not_count_for_majority_but_witness_does() {
     assert_eq!(cluster.status().live_voters, 2);
 }
 
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn replica_roles_survive_wal_restore() {
     let dir = tempfile::tempdir().unwrap();
@@ -4168,6 +4171,43 @@ fn replica_roles_survive_wal_restore() {
         RaftReplicaRole::Witness
     );
     assert_eq!(restored.membership().voters, vec![1, 2, 3, 5]);
+}
+
+// shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
+#[test]
+fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            enable_pre_vote: true,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+    cluster
+        .add_node_with_role(5, RaftReplicaRole::Witness)
+        .unwrap();
+    cluster.add_learner_with_auto_promote(4, true).unwrap();
+    cluster.begin_joint_consensus([1, 2, 3, 4, 5]).unwrap();
+
+    let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.witness_membership_present);
+    assert!(admin.learner_auto_promote_present);
+    assert!(admin.pending_joint_consensus_present);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "membership_role_semantics" && item.ready));
+    let local = cluster.byteraft_local_status_report();
+    assert!(local.witness_membership_present);
+    assert!(local.learner_auto_promote_present);
+    assert!(local.pending_joint_consensus.is_some());
+    assert!(local.peers.iter().any(|peer| peer.status.node_id == 5
+        && peer.status.replica_role == RaftReplicaRole::Witness
+        && peer.participates_in_quorum
+        && !peer.can_serve_data
+        && !peer.can_be_leader));
 }
 
 #[test]
