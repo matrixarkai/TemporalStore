@@ -1525,7 +1525,8 @@ impl TemporalEngine {
                         stale_page_conflicts.push(key.clone());
                     }
                 }
-                (Some(_), None) | (None, Some(_)) => stale_object_conflicts.push(key.clone()),
+                (Some(_), None) => {}
+                (None, Some(_)) => stale_object_conflicts.push(key.clone()),
                 (None, None) => {}
             }
         }
@@ -5515,7 +5516,10 @@ impl TemporalEngine {
 
     fn load_index(&self, shard_id: ShardId) -> Option<ShardState> {
         let bytes = fs::read(self.index_path(shard_id)).ok()?;
-        serde_json::from_slice(&bytes).ok()
+        let mut shard = serde_json::from_slice::<ShardState>(&bytes).ok()?;
+        reconcile_secondary_views_from_slot_index(&self.page_store, &mut shard);
+        refresh_slot_runtime_flags(&mut shard);
+        Some(shard)
     }
 
     fn persist_index_bytes(&self, shard_id: ShardId, bytes: &[u8]) -> Result<(), std::io::Error> {
@@ -5567,13 +5571,6 @@ impl TemporalEngine {
             let sequence_records = state.sequences.len();
             let ips_records = state.ips.len();
             let risk_records = state.risk.len() + state.risk_changes.len();
-            let total_records = string_records
-                + hash_records
-                + set_records
-                + feature_records
-                + sequence_records
-                + ips_records
-                + risk_records;
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info
@@ -5597,6 +5594,18 @@ impl TemporalEngine {
                 .map(|info| info.end_routing_slot)
                 .unwrap_or(u32::MAX);
             let object_manager = object_manager_stats(state, start_routing_slot, end_routing_slot);
+            let secondary_view_total_records = string_records
+                + hash_records
+                + set_records
+                + feature_records
+                + sequence_records
+                + ips_records
+                + risk_records;
+            let total_records = if state.slot_index.slots.is_empty() {
+                secondary_view_total_records
+            } else {
+                object_manager.object_count
+            };
             let partition_info = PartitionInfoStats {
                 shard_id,
                 loaded,
@@ -9662,6 +9671,269 @@ fn rebuild_slot_first_index(
     shard.slot_index = slot_index;
 }
 
+fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard: &mut ShardState) {
+    if shard.slot_index.slots.is_empty() {
+        return;
+    }
+
+    let entries = collect_slot_index_live_page_entries(shard)
+        .into_iter()
+        .filter(|entry| !entry.deleted)
+        .collect::<Vec<_>>();
+    if entries.is_empty() {
+        return;
+    }
+
+    let mut saw_strings = false;
+    let mut saw_hashes = false;
+    let mut saw_sets = false;
+    let mut saw_features = false;
+    let mut saw_sequences = false;
+    let mut saw_ips = false;
+    let mut saw_risk = false;
+    let mut saw_context_events = false;
+    let mut saw_context_indexes = false;
+    let mut saw_context_audits = false;
+    let mut saw_context_dirty = false;
+    let mut saw_context_entities = false;
+    let mut saw_context_children = false;
+    let mut saw_context_embeddings = false;
+    let mut saw_context_summaries = false;
+    let mut saw_context_compressions = false;
+
+    let mut strings = HashMap::new();
+    let mut hashes = HashMap::<String, HashMap<String, PageAddress>>::new();
+    let mut sets = HashMap::<String, BTreeMap<Vec<u8>, PageAddress>>::new();
+    let mut features = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut sequences = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut ips = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut risk = HashMap::<String, BTreeMap<u64, i64>>::new();
+    let mut risk_pages = HashMap::new();
+    let mut context_events = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_indexes = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_audits = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_dirty = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_entities = HashMap::new();
+    let mut context_children = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_embeddings = HashMap::new();
+    let mut context_summaries = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+    let mut context_compressions = HashMap::<String, BTreeMap<u64, PageAddress>>::new();
+
+    for entry in entries {
+        match entry.kind.as_str() {
+            "string" => {
+                saw_strings = true;
+                strings.insert(entry.object_key, entry.address);
+            }
+            "hash" => {
+                saw_hashes = true;
+                hashes
+                    .entry(entry.object_key)
+                    .or_default()
+                    .insert(entry.component.unwrap_or_default(), entry.address);
+            }
+            "set" => {
+                saw_sets = true;
+                let member = entry
+                    .component
+                    .as_deref()
+                    .and_then(|component| hex::decode(component).ok())
+                    .unwrap_or_default();
+                sets.entry(entry.object_key)
+                    .or_default()
+                    .insert(member, entry.address);
+            }
+            "feature" => {
+                saw_features = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut features,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "sequence" => {
+                saw_sequences = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut sequences,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "ips" => {
+                saw_ips = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut ips,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "risk" => {
+                saw_risk = true;
+                if let Ok(bytes) = page_store.read(&entry.address) {
+                    if let Ok(series) = serde_json::from_slice::<BTreeMap<u64, i64>>(&bytes) {
+                        risk.insert(entry.object_key.clone(), series);
+                    }
+                }
+                risk_pages.insert(entry.object_key, entry.address);
+            }
+            "context_event" => {
+                saw_context_events = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_events,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_index" => {
+                saw_context_indexes = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_indexes,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_audit" => {
+                saw_context_audits = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_audits,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_dirty" => {
+                saw_context_dirty = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_dirty,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_entity" => {
+                saw_context_entities = true;
+                context_entities.insert(entry.object_key, entry.address);
+            }
+            "context_child" => {
+                saw_context_children = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_children,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_embedding" => {
+                saw_context_embeddings = true;
+                context_embeddings.insert(entry.object_key, entry.address);
+            }
+            "context_summary" => {
+                saw_context_summaries = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_summaries,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            "context_compression" => {
+                saw_context_compressions = true;
+                insert_timestamped_secondary_view(
+                    page_store,
+                    &mut context_compressions,
+                    entry.object_key,
+                    entry.address,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    if saw_strings {
+        shard.strings = strings;
+    }
+    if saw_hashes {
+        shard.hashes = hashes;
+    }
+    if saw_sets {
+        shard.sets = sets;
+    }
+    if saw_features {
+        shard.features = features;
+    }
+    if saw_sequences {
+        shard.sequences = sequences;
+    }
+    if saw_ips {
+        shard.ips = ips;
+    }
+    if saw_risk {
+        shard.risk = risk;
+        shard.risk_pages = risk_pages;
+    }
+    if saw_context_events {
+        shard.context_events = context_events;
+    }
+    if saw_context_indexes {
+        shard.context_indexes = context_indexes;
+    }
+    if saw_context_audits {
+        shard.context_audits = context_audits;
+    }
+    if saw_context_dirty {
+        shard.context_dirty = context_dirty;
+    }
+    if saw_context_entities {
+        shard.context_entities = context_entities;
+    }
+    if saw_context_children {
+        shard.context_children = context_children;
+    }
+    if saw_context_embeddings {
+        shard.context_embeddings = context_embeddings;
+    }
+    if saw_context_summaries {
+        shard.context_summaries = context_summaries;
+    }
+    if saw_context_compressions {
+        shard.context_compressions = context_compressions;
+    }
+
+    for slot in shard.slot_index.slots.values_mut() {
+        update_slot_layout(slot);
+    }
+}
+
+fn insert_timestamped_secondary_view(
+    page_store: &LocalPageStore,
+    target: &mut HashMap<String, BTreeMap<u64, PageAddress>>,
+    object_key: String,
+    address: PageAddress,
+) {
+    let timestamps = page_store
+        .read(&address)
+        .ok()
+        .and_then(|bytes| match decode_feature_page_strict(&bytes) {
+            PackedFeaturePageDecode::Packed(points) => Some(
+                points
+                    .into_iter()
+                    .map(|point| point.timestamp_ms)
+                    .collect::<Vec<_>>(),
+            ),
+            PackedFeaturePageDecode::Legacy | PackedFeaturePageDecode::Corrupt(_) => None,
+        })
+        .unwrap_or_default();
+    let series = target.entry(object_key).or_default();
+    for timestamp_ms in timestamps {
+        series.insert(timestamp_ms, address.clone());
+    }
+}
+
 fn expected_live_page_object_id(shard_id: ShardId, entry: &LivePageEntry) -> u64 {
     stable_page_object_id(
         shard_id,
@@ -10106,6 +10378,7 @@ fn storage_physical_index_report(
         shard_id,
         slot_first: true,
         slot_index_authority: !shard.slot_index.slots.is_empty(),
+        secondary_views_reconciled_from_slot_index: !shard.slot_index.slots.is_empty(),
         slot_count: slots.len(),
         page_index_count,
         dirty_slot_count: slots.values().filter(|slot| slot.dirty).count(),
@@ -11526,17 +11799,97 @@ fn object_manager_stats(
             .flat_map(|slot| slot.page_refs.values())
             .filter(|page| !page.deleted)
             .collect::<Vec<_>>();
-        let object_count = live_pages
+        let slot_object_count = live_pages
             .iter()
-            .map(|page| page.object_id)
+            .map(|page| {
+                (
+                    page.model_id.as_str(),
+                    page.object_key.as_str(),
+                    (page.model_id == "hash")
+                        .then(|| page.component.as_deref())
+                        .flatten(),
+                )
+            })
             .collect::<BTreeSet<_>>()
             .len();
-        let dirty_object_count = live_pages
+        let slot_dirty_object_count = live_pages
             .iter()
             .filter(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
-            .map(|page| page.object_id)
+            .map(|page| {
+                (
+                    page.model_id.as_str(),
+                    page.object_key.as_str(),
+                    (page.model_id == "hash")
+                        .then(|| page.component.as_deref())
+                        .flatten(),
+                )
+            })
             .collect::<BTreeSet<_>>()
             .len();
+        let secondary_object_count = shard.strings.len()
+            + shard.hashes.len()
+            + shard.sets.len()
+            + shard.features.len()
+            + shard.sequences.len()
+            + shard.ips.len()
+            + shard.risk.len()
+            + shard.risk_changes.len()
+            + shard.context_nodes.len()
+            + shard.context_events.len()
+            + shard.context_indexes.len()
+            + shard.context_audits.len()
+            + shard.context_dirty.len()
+            + shard.context_entities.len()
+            + shard.context_children.len()
+            + shard.context_embeddings.len()
+            + shard.context_summaries.len()
+            + shard.context_compressions.len();
+        let object_count = slot_object_count.max(secondary_object_count);
+        let dirty_object_count = slot_dirty_object_count.max(shard.dirty_objects.len());
+        let secondary_page_ref_count = shard.strings.len()
+            + shard.hashes.values().map(HashMap::len).sum::<usize>()
+            + shard.sets.values().map(BTreeMap::len).sum::<usize>()
+            + shard.features.values().map(BTreeMap::len).sum::<usize>()
+            + shard.sequences.values().map(BTreeMap::len).sum::<usize>()
+            + shard.ips.values().map(BTreeMap::len).sum::<usize>()
+            + shard.context_nodes.len()
+            + shard
+                .context_events
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_indexes
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_audits
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_dirty
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard.context_entities.len()
+            + shard
+                .context_children
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard.context_embeddings.len()
+            + shard
+                .context_summaries
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>()
+            + shard
+                .context_compressions
+                .values()
+                .map(BTreeMap::len)
+                .sum::<usize>();
         let dirty_slot_count = shard
             .slot_index
             .slots
@@ -11551,10 +11904,10 @@ fn object_manager_stats(
             .count();
         return ObjectManagerStats {
             object_count,
-            page_ref_count: live_pages.len(),
+            page_ref_count: live_pages.len().max(secondary_page_ref_count),
             dirty_object_count,
             dirty_slot_count,
-            routing_slot_count: shard.slot_index.slots.len() as u32,
+            routing_slot_count: routing_slot_count(start_routing_slot, end_routing_slot),
         };
     }
 
@@ -14461,6 +14814,14 @@ mod tests {
                 .expect("first object id");
             let second = shard.strings.get_mut("second").expect("second address");
             second.object_id = Some(first_object_id);
+            for slot in shard.slot_index.slots.values_mut() {
+                for page in slot.page_refs.values_mut() {
+                    if page.model_id == "string" && page.object_key == "second" {
+                        page.object_id = first_object_id;
+                        page.address.object_id = Some(first_object_id);
+                    }
+                }
+            }
             first_object_id
         };
 
@@ -19428,6 +19789,294 @@ mod tests {
                 && !slot.object_ids.is_empty()
                 && slot.dirty_generation > 0
         }));
+    }
+
+    // shared-corpus: storage_slot_index_authoritative_secondary_rebuild
+    #[test]
+    fn storage_slot_index_rebuilds_secondary_views_after_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache-a");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine = TemporalEngine::with_local_dirs(4096, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(1);
+
+        let sequence_row = SequenceFeatureRow {
+            timestamp_ms: 30,
+            gid: 7,
+            action_type: 2,
+            duration: 90,
+            author_id: 11,
+        };
+        let entity = ContextEntity {
+            entity_hash: 7007,
+            node_hash: 42,
+            entity_type: 1,
+            name: "slot_authority_entity".to_string(),
+            value: "restored".to_string(),
+            updated_at_ms: 100,
+            valid_from_ms: 100,
+            confidence: 0.95,
+            source_event_hashes: vec![707],
+        };
+        for command in [
+            Command::StringSet {
+                key: "slot-authority-string".to_string(),
+                value: b"string-value".to_vec(),
+            },
+            Command::HashSet {
+                key: "slot-authority-hash".to_string(),
+                field: "field".to_string(),
+                value: b"hash-value".to_vec(),
+            },
+            Command::SetAdd {
+                key: "slot-authority-set".to_string(),
+                member: b"member".to_vec(),
+            },
+            Command::FeatureAppend {
+                key: "slot-authority-feature".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"feature-value".to_vec(),
+                }],
+            },
+            Command::SequenceAdd {
+                key: "slot-authority-sequence".to_string(),
+                rows: vec![sequence_row.clone()],
+            },
+            Command::IpsAdd {
+                key: "slot-authority-ips".to_string(),
+                timestamp_ms: 40,
+                instance: b"ips-value".to_vec(),
+            },
+            Command::RiskSet {
+                family: RiskFamily::Cpc,
+                key: "slot-authority-risk".to_string(),
+                timestamp_ms: 50,
+                amount: 5,
+            },
+            Command::ContextUpsertEntity {
+                tenant_hash: 9,
+                entity: entity.clone(),
+            },
+            Command::ContextWriteEvent {
+                tenant_hash: 9,
+                node_hash: 42,
+                event: ContextEvent {
+                    event_id_hash: 707,
+                    event_time_ms: 100,
+                    parent_segment_hash: 0,
+                    parent_segment_hashes: Vec::new(),
+                    context_event_parent_type: String::new(),
+                    context_event_parent_hash: 0,
+                    event_time_key: String::new(),
+                    context_event_key: String::new(),
+                    kind: 2,
+                    event_type: 3,
+                    actor_hash: 4,
+                    status: 1,
+                    valid_until_ms: 0,
+                    confidence: 0.91,
+                    importance: 0.8,
+                    text: "slot authority context event".to_string(),
+                    source_ref: "local://slot-authority".to_string(),
+                    related_node_hashes: vec![42],
+                    compact_attrs: vec![1],
+                },
+                first_write_only: false,
+            },
+        ] {
+            assert!(
+                engine
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command,
+                    })
+                    .status
+                    .ok
+            );
+        }
+        let before = engine.storage_physical_index_report(1);
+        assert!(before.slot_index_authority);
+        assert!(before.secondary_views_reconciled_from_slot_index);
+
+        let mut persisted = serde_json::from_slice::<ShardState>(
+            &engine.export_index_bytes(1).expect("exported index"),
+        )
+        .expect("persisted shard state");
+        assert!(!persisted.slot_index.slots.is_empty());
+        persisted.strings.clear();
+        persisted.hashes.clear();
+        persisted.sets.clear();
+        persisted.features.clear();
+        persisted.sequences.clear();
+        persisted.ips.clear();
+        persisted.risk.clear();
+        persisted.risk_pages.clear();
+        persisted.context_events.clear();
+        persisted.context_entities.clear();
+        engine
+            .install_index_bytes(1, &serde_json::to_vec(&persisted).unwrap())
+            .unwrap();
+
+        let restored = TemporalEngine::with_local_dirs(
+            4096,
+            dir.path().join("cache-b"),
+            &page_dir,
+            &index_dir,
+        );
+        restored.load_shard(1);
+        let after = restored.storage_physical_index_report(1);
+        assert!(after.slot_index_authority);
+        assert!(after.secondary_views_reconciled_from_slot_index);
+        assert_eq!(after.page_index_count, before.page_index_count);
+        assert_eq!(after.missing_object_id_count, 0);
+        assert_eq!(after.missing_routing_slot_count, 0);
+
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "slot-authority-string".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"string-value".to_vec())
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashGet {
+                        key: "slot-authority-hash".to_string(),
+                        field: "field".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"hash-value".to_vec())
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SetMembers {
+                        key: "slot-authority-set".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Members {
+                members: vec![b"member".to_vec()]
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureQuery {
+                        key: "slot-authority-feature".to_string(),
+                        start_ms: 0,
+                        end_ms: 20,
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 10,
+                    value: b"feature-value".to_vec(),
+                }]
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SequenceQuery {
+                        key: "slot-authority-sequence".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                        count: 10,
+                        filters: Vec::new(),
+                    },
+                })
+                .response,
+            CommandResponse::SequenceRows {
+                rows: vec![sequence_row]
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::IpsQueryRange {
+                        key: "slot-authority-ips".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                        count: Some(10),
+                    },
+                })
+                .response,
+            CommandResponse::FeaturePoints {
+                points: vec![FeaturePoint {
+                    timestamp_ms: 40,
+                    value: b"ips-value".to_vec(),
+                }]
+            }
+        );
+        assert_eq!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::RiskFamilyQuery {
+                        family: RiskFamily::Cpc,
+                        key: "slot-authority-risk".to_string(),
+                        start_ms: 0,
+                        end_ms: 100,
+                        aggregator: "sum".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Integer { value: 5 }
+        );
+        assert!(matches!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextGetEntity {
+                        tenant_hash: 9,
+                        node_hash: 42,
+                        entity_hash: 7007,
+                    },
+                })
+                .response,
+            CommandResponse::ContextEntity { entity: Some(ref stored), .. } if stored == &entity
+        ));
+        assert!(matches!(
+            restored
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextQueryEvents {
+                        tenant_hash: 9,
+                        node_hash: 42,
+                        start_time_ms: 0,
+                        end_time_ms: 200,
+                        limit: Some(10),
+                        current_valid_only: true,
+                        as_of_ms: 0,
+                        kinds: vec![2],
+                        statuses: vec![1],
+                        min_confidence: 0.0,
+                        min_importance: 0.0,
+                    },
+                })
+                .response,
+            CommandResponse::ContextEvents { ref events, .. } if events.len() == 1
+        ));
     }
 
     // shared-corpus: storage_slot_layout_transitions

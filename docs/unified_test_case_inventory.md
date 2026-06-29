@@ -116,6 +116,10 @@ evidence while keeping C++ execution as a shared-corpus adapter target. The
 ObjectManager/SlotStore runtime authority modules against the same physical index, including
 per-object and per-slot dirty/deleted/loading/in-memory flags, object IDs, page refs,
 dirty generations, TTL metadata, and runtime rows. It also includes
+`storage_slot_index_authoritative_secondary_rebuild`, which wipes persisted
+logical model maps and proves restart/load rebuilds string, hash, set,
+timestamped, Risk, and Context secondary views from the SlotStore/ObjectManager
+page-address authority. It also includes
 `storage_slot_layout_transitions`, which covers native SlotStore-style layout transitions
 across single-page object, multi-object, single-object delete metadata, multi-page object,
 compaction, slot dump/load, and restart. `storage_model_layout_compaction_policies` covers
@@ -262,6 +266,7 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_object_manager_cold_hot_reload` | Rust verifies cold/hot object reload through the native slot/object/page index after logical map removal, memory eviction, and restart. |
 | `storage_object_manager_slotstore_runtime_authority` | Rust verifies named ObjectManager/SlotStore runtime authority modules over the native slot/object/page index, including live/dirty/deleted/loading/in-memory rows, object IDs, page refs, dirty generations, and TTL metadata. |
+| `storage_slot_index_authoritative_secondary_rebuild` | Rust verifies SlotStore/ObjectManager page refs are the durable authority by deleting persisted logical maps and rebuilding string/hash/set/timestamped/Risk/Context secondary views on restart. |
 | `storage_slot_layout_transitions` | Rust verifies C++-style SlotStore layout transitions for single-object, single-page-object, multi-object, multi-page-object, compaction, dump/load, and restart. |
 | `storage_page_address_disk_cache_shared_store_fallback` | Rust verifies SlotStore PageAddress-driven disk cache and persistent page-store fallback after logical map removal and memory eviction. |
 | `storage_tombstone_compaction` | Rust verifies tombstoned object reporting plus model-layout tombstone-density and rewrite-action evidence. |

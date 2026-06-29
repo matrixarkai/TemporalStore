@@ -3062,6 +3062,23 @@
       ]
     },
     {
+      "name": "storage_slot_index_authoritative_secondary_rebuild",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "description": "Rust storage treats SlotStore/ObjectManager page ownership as the durable authority by rebuilding logical secondary views from the slot/object/page index after restart. The case wipes persisted string/hash/set/timestamped/Risk/Context logical maps while preserving SlotNode/PageIndex refs, then verifies reads and queries recover from page-address ownership.",
+            "kind": "existing_test",
+            "mode": "rust",
+            "suite": "cpp_storage_parity",
+            "test_filter": "storage_slot_index_rebuilds_secondary_views_after_restart"
+          },
+          "name": "rust_storage_slot_index_authoritative_secondary_rebuild",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_slot_layout_transitions",
       "shard_id": 51,
       "steps": [
