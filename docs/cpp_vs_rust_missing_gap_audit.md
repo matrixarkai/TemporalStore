@@ -2181,7 +2181,10 @@ delete/tombstone, page compaction, dump/load install, and unload/load recovery.
 Rust stream-backed zone runtime evidence covers
 self-describing page stream records, logical range reads across envelopes and
 compressed records, segment roll/seal/open transitions, persisted zone
-manifests, and active/sealed/delayed-destroy/purged lifecycle states. The C++
+manifests, active/sealed/delayed-destroy/purged lifecycle states, stream record
+count, first/last page ids, page-id continuity, logical stream read bytes,
+manifest boundary validation, extent state transition count, and purge lifecycle
+readiness. The C++
 model-layout/tombstone compaction gap is now covered by `ShardCompactionReport`:
 it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and
