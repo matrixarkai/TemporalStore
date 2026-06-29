@@ -15,6 +15,112 @@ Secondary-index rows also carry a timestamp, but that timestamp is not a second 
 
 So repeated timestamps in the debug table usually mean one object or one batch produced multiple index terms. MatrixArk now materializes those as compact posting rows for serving/debug output, and the Rust TemporalStore engine stores them as timestamp-keyed index series rather than verbose per-ref records in ContextPack.
 
+## Old Solution Versus Current Shape
+
+### Old Solution: One Verbose ContextIndex Record Per Term
+
+The first MatrixArk context-index implementation wrote many standalone
+`context_index` records. Each event, chunk, entity, skill section, or batch could
+emit several records like this:
+
+```json
+{
+  "data_model": "context_event",
+  "index_name": "event_type:confirmation",
+  "timestamp_key_ms": 1782681920550,
+  "ref_type": "event",
+  "ref_hash": 1121810234980183195,
+  "node_hash": 2100209595829882121,
+  "node_path": ["tenant:tenant_codex", "user:deeproute", "session:s1"],
+  "scope_key": "t=2466|u=7836|s=7498|",
+  "created_at_ms": 1782681920550
+}
+```
+
+That worked for debugging, but it scaled poorly:
+
+- every indexed term became its own serving record;
+- scope, node path, hashes, timestamps, and model strings were repeated;
+- PDFs/resources generated too many low-value keyword rows;
+- retrieval had to materialize noisy rows before it could score real candidates;
+- ContextPack/debug output leaked implementation details and wasted tokens.
+
+In short, the old shape treated secondary indexes like normal context objects.
+That is the wrong serving model at scale.
+
+### Current Shape: TemporalStore-Style Posting Lists
+
+The current target is the older TemporalStore/feature-store style: one primary
+time-ordered series for the data model, plus compact secondary posting lists that
+point into that primary series.
+
+Primary event series:
+
+```text
+context_event/{scope_key}/{node_hash}/{timestamp_key_ms}:{event_id_hash}
+```
+
+Secondary posting series:
+
+```text
+secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:{posting_id}
+```
+
+Compact posting value:
+
+```json
+{
+  "r": 1121810234980183195
+}
+```
+
+For node or batch hints:
+
+```json
+{
+  "n": 2100209595829882121
+}
+```
+
+What this means in practice:
+
+- `ContextEvent`, `ResourceChunk`, `SkillSection`, and `ContextEntity` keep the
+  actual serving payload.
+- `ContextIndex` is a lookup structure, not user-facing content.
+- A posting stores only enough to route retrieval to a candidate ref or node.
+- Large postings split only after `MATRIXARK_MAX_SECONDARY_INDEX_REFS_PER_POSTING`
+  so one hot term does not create an unbounded value.
+- ContextPack returns selected evidence text, not raw index rows.
+
+### What It Looks Like Now In Debug Output
+
+The debug page may still show a table, but that table should be interpreted as a
+rendered view of posting lists, not as one heavyweight object per event.
+
+Example rendered rows:
+
+```text
+data_model            index_name                  timestamp_key_ms  refs  node_hash
+context_event         event_type:confirmation     1782681920550     12    -
+resource_chunk        resource_type:pdf           1782681920550     8     -
+context_batch_commit  event_type:confirmation     1782681920550     0     2100209595829882121
+```
+
+The first row means:
+
+```text
+At posting time 1782681920550, event_type:confirmation points to 12 event refs.
+```
+
+The third row means:
+
+```text
+At posting time 1782681920550, confirmation-related batch memory exists under node 2100209595829882121.
+```
+
+It does not mean the event timestamp is duplicated as a second primary key. It
+means each inverted list is independently time ordered.
+
 ## ContextEvent Primary Key
 
 A `ContextEvent` has a time-ordered key so events under a node or segment can be scanned chronologically.
@@ -265,35 +371,43 @@ These fields create many postings but rarely reduce candidates.
 
 ## Production Storage Shape
 
-The current debug table shows one row per visible posting, which is useful for inspection but noisy. Production storage should use TemporalStore-native inverted lists.
+The debug table can show one row per visible posting or one grouped row per
+posting bucket. Production storage should use TemporalStore-native inverted
+lists, not verbose context-object records.
 
 Recommended logical layout:
 
 ```text
-secondary_index/{scope_key}/{data_model}/{index_name}/{timestamp_key_ms}:{ref_hash}
+secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:{posting_id}
 ```
 
 For node or batch hints:
 
 ```text
-secondary_index/{scope_key}/context_batch_commit/{index_name}/{timestamp_key_ms}:{node_hash}
+secondary_index/{scope_key}/context_batch_commit/{index_name}/{posting_time}:{node_hash}
 ```
 
-The posting value should be compact:
+The posting value should be compact. Direct refs can be grouped:
 
 ```json
 {
-  "ref_type": "event",
-  "ref_hash": 1121810234980183195
+  "r": [1121810234980183195, 1384573524671901516]
 }
 ```
 
-or:
+Node hints can stay separate:
 
 ```json
 {
-  "node_hash": 2100209595829882121
+  "n": 2100209595829882121
 }
+```
+
+If a posting bucket grows too large, split it:
+
+```text
+secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:part0001
+secondary_index/{scope_key}/{data_model}/{index_name}/{posting_time}:part0002
 ```
 
 The serving ContextPack should not include these index implementation fields. They belong in debug/audit when enabled.
