@@ -183,6 +183,9 @@ competing primary index. Changed objects are synchronized into that slot index i
 slot dirty generations and PageIndex-like model id, page id, dirty/deleted/log flags, size, and
 address metadata. Slot layout transition evidence is also present for writes, rebuilds, compaction,
 tombstones, and dump/load validation.
+`SlotNode` runtime state now explicitly tracks dirty generation, TTL, deleted, loading, and
+in-memory flags, and the shared SlotStore parity test covers empty, single-object,
+single-page-object, multi-page-object, and multi-object layout states.
 Recovery reconciles secondary model views from the slot index, and cold-read tests now prove the
 read path can serve from `PageIndex -> PageAddress -> cache/page-store` after model maps and memory
 cache state are cleared.

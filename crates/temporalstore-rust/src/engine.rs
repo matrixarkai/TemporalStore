@@ -8931,9 +8931,10 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         if !deleted_object_ids.is_empty() {
             slot.object_index.extend(deleted_object_ids);
             slot.dirty = true;
+            slot.deleted = slot.page_index.is_empty();
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
             slot.meta_loaded = true;
-            slot.in_memory = true;
+            slot.in_memory = !slot.page_index.is_empty();
             update_slot_layout(slot);
         }
     }
@@ -8963,7 +8964,10 @@ fn mark_slot_index_page_deleted(
         });
         if slot_removed {
             slot.dirty = true;
+            slot.deleted = slot.page_index.is_empty();
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
+            slot.meta_loaded = true;
+            slot.in_memory = !slot.page_index.is_empty();
             update_slot_layout(slot);
         }
     }
@@ -9324,6 +9328,8 @@ fn rebuild_slot_page_ownership(
         slot.meta_loaded = true;
         slot.loading = false;
         slot.in_memory = !slot.page_index.is_empty();
+        slot.deleted =
+            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
         update_slot_layout(slot);
     }
 }
@@ -9551,6 +9557,7 @@ fn upsert_slot_index_page(
             ..SlotNode::default()
         });
     slot.dirty |= dirty;
+    slot.deleted = false;
     if dirty {
         slot.dirty_generation = slot.dirty_generation.saturating_add(1);
     }
@@ -9590,9 +9597,11 @@ fn sync_slot_index_object_pages(
             removed_any = true;
             touched_slots.insert(*routing_slot);
             slot.dirty |= dirty;
+            slot.deleted = slot.page_index.is_empty();
             if dirty {
                 slot.dirty_generation = slot.dirty_generation.saturating_add(1);
             }
+            slot.in_memory = !slot.page_index.is_empty();
             update_slot_layout(slot);
         }
     }
@@ -9632,6 +9641,7 @@ fn sync_slot_index_object_pages(
                 ..SlotNode::default()
             });
         slot.dirty |= dirty;
+        slot.deleted = false;
         if dirty || touched_slots.insert(routing_slot) {
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
         }
@@ -9705,6 +9715,8 @@ fn refresh_slot_runtime_flags(shard: &mut ShardState) {
         slot.meta_loaded = true;
         slot.loading = false;
         slot.in_memory = !slot.page_index.is_empty();
+        slot.deleted =
+            !slot.page_index.is_empty() && slot.page_index.values().all(|page| page.deleted);
         slot.dirty |= slot
             .page_index
             .values()

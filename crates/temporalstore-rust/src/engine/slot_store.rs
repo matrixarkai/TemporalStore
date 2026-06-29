@@ -14,6 +14,7 @@ pub(super) struct SlotRuntimeState {
     pub object_ids: Vec<u64>,
     pub page_ref_count: usize,
     pub dirty: bool,
+    pub deleted: bool,
     pub meta_loaded: bool,
     pub loading: bool,
     pub in_memory: bool,
@@ -30,6 +31,7 @@ pub(super) struct SlotStoreRuntimeReport {
     pub slot_count: usize,
     pub page_ref_count: usize,
     pub dirty_slot_count: usize,
+    pub deleted_slot_count: usize,
     pub empty_slots: usize,
     pub single_object_slots: usize,
     pub single_page_object_slots: usize,
@@ -51,6 +53,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
         slot_count: shard.slot_index.slot_map.len(),
         page_ref_count: 0,
         dirty_slot_count: 0,
+        deleted_slot_count: 0,
         empty_slots: 0,
         single_object_slots: 0,
         single_page_object_slots: 0,
@@ -68,6 +71,9 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
         report.page_ref_count = report.page_ref_count.saturating_add(slot.page_index.len());
         if slot.dirty {
             report.dirty_slot_count = report.dirty_slot_count.saturating_add(1);
+        }
+        if slot.deleted {
+            report.deleted_slot_count = report.deleted_slot_count.saturating_add(1);
         }
         if slot.loading {
             report.loading_slot_count = report.loading_slot_count.saturating_add(1);
@@ -104,6 +110,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> SlotStoreRuntimeReport {
             object_ids: slot.object_index.iter().copied().collect(),
             page_ref_count: slot.page_index.len(),
             dirty: slot.dirty,
+            deleted: slot.deleted,
             meta_loaded: slot.meta_loaded,
             loading: slot.loading,
             in_memory: slot.in_memory,
