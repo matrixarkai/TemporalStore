@@ -742,6 +742,7 @@ def main() -> int:
             "scope": scope,
             "max_context_tokens": args.max_context_tokens,
             "audit_mode": "full",
+            "debug_context_pack": True,
             "ranking": {
                 "weights": {"time": 0.15, "business": 0.1},
                 "business_type_weights": {"approval": 1.0, "deadline": 0.95, "policy": 0.9, "procedure": 0.9},

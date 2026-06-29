@@ -141,7 +141,9 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         server = self._server()
         server.call_tool("matrixark_ingest", {"messages": [{"role": "user", "content": "Alice approved the GPU budget."}]})
         pack = server.call_tool("matrixark_retrieve", {"query": "what did Alice approve?"})
-        self.assertEqual("off", pack["operational_visibility_policy"]["audit_mode"])
+        self.assertNotIn("operational_visibility_policy", pack)
+        self.assertNotIn("question_type", pack)
+        self.assertNotIn("recall_policy", pack)
         records = server.adapter.read_all()
         self.assertFalse(any(record.get("record_type") == "context_pack_audit" for record in records))
         self.assertFalse(any(record.get("record_type") == "context_pack_telemetry" for record in records))
@@ -246,8 +248,9 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
                 "audit_mode": "full",
             },
         )
-        self.assertEqual("shared_store", pack["recall_policy"]["storage_options"]["storage_mode"])
+        self.assertNotIn("recall_policy", pack)
         audit = next(record for record in reversed(server.adapter.read_all()) if record.get("record_type") == "context_pack_audit")
+        self.assertEqual("shared_store", audit["recall_policy"]["storage_options"]["storage_mode"])
         self.assertEqual("sync", audit["storage_options"]["oplog_mode"])
 
     def test_invalid_storage_options_are_rejected(self) -> None:
