@@ -40,8 +40,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let mut objects = std::collections::BTreeMap::<u64, ObjectRuntimeState>::new();
     let mut live_page_ref_count = 0usize;
 
-    for slot in shard.slot_index.slots.values() {
-        for object_id in &slot.object_ids {
+    for slot in shard.slot_index.slot_map.values() {
+        for object_id in &slot.object_index {
             object_ids.insert(*object_id);
             let object = objects
                 .entry(*object_id)
@@ -66,7 +66,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (existing, None) => existing,
             };
         }
-        for page in slot.page_refs.values() {
+        for page in slot.page_index.values() {
             live_page_ref_count = live_page_ref_count.saturating_add(1);
             object_ids.insert(page.object_id);
             *object_ref_counts.entry(page.object_id).or_default() += 1;
@@ -109,7 +109,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
 
     ObjectManagerRuntimeReport {
         object_manager_runtime_module: true,
-        slot_index_authority: !shard.slot_index.slots.is_empty(),
+        slot_index_authority: !shard.slot_index.slot_map.is_empty(),
         live_object_count: object_ids.len(),
         live_page_ref_count,
         missing_object_owner_refs,

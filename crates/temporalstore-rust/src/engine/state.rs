@@ -47,18 +47,25 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) context_compressions: HashMap<String, BTreeMap<u64, PageAddress>>,
     #[serde(default)]
-    pub(super) slot_index: SlotFirstIndex,
+    pub(super) slot_index: CoreIndex,
     #[serde(skip)]
     pub(super) dirty_objects: BTreeSet<String>,
 }
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub(super) struct SlotFirstIndex {
-    pub(super) slots: BTreeMap<u32, SlotNodeIndex>,
+pub(super) struct CoreIndex {
+    #[serde(default, alias = "slots")]
+    pub(super) slot_map: SlotMap,
 }
 
+pub(super) type SlotMap = BTreeMap<u32, SlotNode>;
+pub(super) type ObjectIndex = BTreeSet<u64>;
+pub(super) type PageIndexMap = BTreeMap<String, PageIndex>;
+
+/// Rust-native core index mirroring the C++ shape:
+/// Index -> SlotMap -> SlotNode -> PageIndex/ObjectIndex.
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub(super) struct SlotNodeIndex {
+pub(super) struct SlotNode {
     pub(super) routing_slot: u32,
     #[serde(default)]
     pub(super) layout: SlotLayoutState,
@@ -69,8 +76,10 @@ pub(super) struct SlotNodeIndex {
     pub(super) ttl_ms: Option<u64>,
     pub(super) dirty_generation: u64,
     pub(super) last_dump_sequence: u64,
-    pub(super) object_ids: BTreeSet<u64>,
-    pub(super) page_refs: BTreeMap<String, PageIndexEntry>,
+    #[serde(default, alias = "object_ids")]
+    pub(super) object_index: ObjectIndex,
+    #[serde(default, alias = "page_refs")]
+    pub(super) page_index: PageIndexMap,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,7 +93,7 @@ pub(super) enum SlotLayoutState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PageIndexEntry {
+pub(super) struct PageIndex {
     pub(super) object_key: String,
     pub(super) model_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

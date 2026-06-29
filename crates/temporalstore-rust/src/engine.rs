@@ -226,7 +226,9 @@ impl TemporalEngine {
             for object_key in command_object_keys(&command) {
                 shard.dirty_objects.insert(object_key);
             }
-            if !command_updates_slot_index_directly(&command) || shard.slot_index.slots.is_empty() {
+            if !command_updates_slot_index_directly(&command)
+                || shard.slot_index.slot_map.is_empty()
+            {
                 rebuild_slot_first_index(
                     request.shard_id,
                     shard,
@@ -5644,7 +5646,7 @@ impl TemporalEngine {
                 + sequence_records
                 + ips_records
                 + risk_records;
-            let total_records = if state.slot_index.slots.is_empty() {
+            let total_records = if state.slot_index.slot_map.is_empty() {
                 secondary_view_total_records
             } else {
                 object_manager.object_count
@@ -6364,7 +6366,7 @@ fn execute_on_shard(
                         cache, page_store, shard_id, shard, "string", &key, None,
                     )
                     .or_else(|| {
-                        if shard.slot_index.slots.is_empty() {
+                        if shard.slot_index.slot_map.is_empty() {
                             shard.strings.get(&key).and_then(|address| {
                                 read_page_bytes(cache, page_store, shard_id, address)
                             })
@@ -6434,7 +6436,7 @@ fn execute_on_shard(
                         Some(field.as_str()),
                     )
                     .or_else(|| {
-                        if shard.slot_index.slots.is_empty() {
+                        if shard.slot_index.slot_map.is_empty() {
                             shard
                                 .hashes
                                 .get(&key)
@@ -6473,7 +6475,7 @@ fn execute_on_shard(
                         Some(field.as_str()),
                     )
                     .or_else(|| {
-                        if shard.slot_index.slots.is_empty() {
+                        if shard.slot_index.slot_map.is_empty() {
                             shard
                                 .hashes
                                 .get(&key)
@@ -6539,7 +6541,7 @@ fn execute_on_shard(
                 Some(field.as_str()),
             )
             .or_else(|| {
-                if shard.slot_index.slots.is_empty() {
+                if shard.slot_index.slot_map.is_empty() {
                     shard
                         .hashes
                         .get(&key)
@@ -6595,7 +6597,7 @@ fn execute_on_shard(
                     mutated,
                 };
             }
-            let entries = if shard.slot_index.slots.is_empty() {
+            let entries = if shard.slot_index.slot_map.is_empty() {
                 shard
                     .hashes
                     .get(&key)
@@ -6632,7 +6634,7 @@ fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                value: if shard.slot_index.slots.is_empty() {
+                value: if shard.slot_index.slot_map.is_empty() {
                     shard
                         .hashes
                         .get(&key)
@@ -6696,7 +6698,7 @@ fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
-                let members = if shard.slot_index.slots.is_empty() {
+                let members = if shard.slot_index.slot_map.is_empty() {
                     shard
                         .sets
                         .get(&key)
@@ -9001,9 +9003,9 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
 
 fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
-    for slot in shard.slot_index.slots.values_mut() {
+    for slot in shard.slot_index.slot_map.values_mut() {
         let mut deleted_object_ids = BTreeSet::new();
-        slot.page_refs.retain(|_, page| {
+        slot.page_index.retain(|_, page| {
             if page.object_key == key {
                 deleted_object_ids.insert(page.object_id);
                 removed = true;
@@ -9013,7 +9015,7 @@ fn mark_slot_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         });
         if !deleted_object_ids.is_empty() {
-            slot.object_ids.extend(deleted_object_ids);
+            slot.object_index.extend(deleted_object_ids);
             slot.dirty = true;
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
             slot.meta_loaded = true;
@@ -9031,9 +9033,9 @@ fn mark_slot_index_page_deleted(
     component: Option<&str>,
 ) -> bool {
     let mut removed = false;
-    for slot in shard.slot_index.slots.values_mut() {
+    for slot in shard.slot_index.slot_map.values_mut() {
         let mut slot_removed = false;
-        slot.page_refs.retain(|_, page| {
+        slot.page_index.retain(|_, page| {
             let matches = page.model_id == model_id
                 && page.object_key == key
                 && page.component.as_deref() == component;
@@ -9340,7 +9342,7 @@ fn live_page_entry(
 }
 
 fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
-    if !shard.slot_index.slots.is_empty() {
+    if !shard.slot_index.slot_map.is_empty() {
         return collect_slot_index_live_page_entries(shard);
     }
     collect_model_live_page_entries(shard)
@@ -9356,7 +9358,7 @@ fn rebuild_slot_page_ownership(
     start_routing_slot: u32,
     end_routing_slot: u32,
 ) {
-    shard.slot_index.slots.clear();
+    shard.slot_index.slot_map.clear();
     for entry in collect_model_live_page_entries(shard) {
         let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
             page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
@@ -9374,16 +9376,16 @@ fn rebuild_slot_page_ownership(
         });
         let slot = shard
             .slot_index
-            .slots
+            .slot_map
             .entry(routing_slot)
-            .or_insert_with(|| SlotNodeIndex {
+            .or_insert_with(|| SlotNode {
                 routing_slot,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNodeIndex::default()
+                ..SlotNode::default()
             });
-        slot.object_ids.insert(object_id);
-        slot.page_refs.insert(
+        slot.object_index.insert(object_id);
+        slot.page_index.insert(
             format!(
                 "{}:{}:{}:{}:{}",
                 entry.kind,
@@ -9392,7 +9394,7 @@ fn rebuild_slot_page_ownership(
                 entry.address.page_segment_id,
                 entry.address.offset
             ),
-            PageIndexEntry {
+            PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component,
@@ -9404,10 +9406,10 @@ fn rebuild_slot_page_ownership(
             },
         );
     }
-    for slot in shard.slot_index.slots.values_mut() {
+    for slot in shard.slot_index.slot_map.values_mut() {
         slot.meta_loaded = true;
         slot.loading = false;
-        slot.in_memory = !slot.page_refs.is_empty();
+        slot.in_memory = !slot.page_index.is_empty();
         update_slot_layout(slot);
     }
 }
@@ -9422,10 +9424,10 @@ fn promote_model_maps_to_slot_index_authority(
     if model_entries.is_empty() {
         return false;
     }
-    let slot_index_missing_entry = shard.slot_index.slots.is_empty()
+    let slot_index_missing_entry = shard.slot_index.slot_map.is_empty()
         || model_entries.iter().any(|entry| {
-            !shard.slot_index.slots.values().any(|slot| {
-                slot.page_refs.values().any(|page| {
+            !shard.slot_index.slot_map.values().any(|slot| {
+                slot.page_index.values().any(|page| {
                     page.object_key == entry.object_key
                         && page.model_id == entry.kind
                         && page.component == entry.component
@@ -9445,8 +9447,8 @@ fn promote_model_maps_to_slot_index_authority(
 
 fn collect_slot_index_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     let mut entries = Vec::new();
-    for slot in shard.slot_index.slots.values() {
-        for page in slot.page_refs.values() {
+    for slot in shard.slot_index.slot_map.values() {
+        for page in slot.page_index.values() {
             entries.push(LivePageEntry {
                 object_key: page.object_key.clone(),
                 kind: page.model_id.clone(),
@@ -9609,40 +9611,40 @@ fn upsert_slot_index_page(
         deleted: false,
         log_backed: true,
     };
-    for slot in shard.slot_index.slots.values_mut() {
-        slot.page_refs.retain(|_, page| {
+    for slot in shard.slot_index.slot_map.values_mut() {
+        slot.page_index.retain(|_, page| {
             !(page.object_key == entry.object_key
                 && page.model_id == entry.kind
                 && page.component == entry.component)
         });
         if !slot
-            .page_refs
+            .page_index
             .values()
             .any(|page| page.object_id == object_id)
         {
-            slot.object_ids.remove(&object_id);
+            slot.object_index.remove(&object_id);
         }
         update_slot_layout(slot);
     }
     let slot = shard
         .slot_index
-        .slots
+        .slot_map
         .entry(routing_slot)
-        .or_insert_with(|| SlotNodeIndex {
+        .or_insert_with(|| SlotNode {
             routing_slot,
             meta_loaded: true,
             in_memory: true,
-            ..SlotNodeIndex::default()
+            ..SlotNode::default()
         });
     slot.dirty |= dirty;
     if dirty {
         slot.dirty_generation = slot.dirty_generation.saturating_add(1);
     }
     slot.in_memory = true;
-    slot.object_ids.insert(object_id);
-    slot.page_refs.insert(
+    slot.object_index.insert(object_id);
+    slot.page_index.insert(
         page_index_ref_key(&entry),
-        PageIndexEntry {
+        PageIndex {
             object_key: entry.object_key,
             model_id: entry.kind,
             component: entry.component,
@@ -9666,11 +9668,11 @@ fn sync_slot_index_object_pages(
 ) {
     let mut touched_slots = BTreeSet::new();
     let mut removed_any = false;
-    for (routing_slot, slot) in shard.slot_index.slots.iter_mut() {
-        let before = slot.page_refs.len();
-        slot.page_refs
+    for (routing_slot, slot) in shard.slot_index.slot_map.iter_mut() {
+        let before = slot.page_index.len();
+        slot.page_index
             .retain(|_, page| !(page.model_id == kind && page.object_key == object_key));
-        if slot.page_refs.len() != before {
+        if slot.page_index.len() != before {
             removed_any = true;
             touched_slots.insert(*routing_slot);
             slot.dirty |= dirty;
@@ -9707,13 +9709,13 @@ fn sync_slot_index_object_pages(
         };
         let slot = shard
             .slot_index
-            .slots
+            .slot_map
             .entry(routing_slot)
-            .or_insert_with(|| SlotNodeIndex {
+            .or_insert_with(|| SlotNode {
                 routing_slot,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNodeIndex::default()
+                ..SlotNode::default()
             });
         slot.dirty |= dirty;
         if dirty || touched_slots.insert(routing_slot) {
@@ -9722,10 +9724,10 @@ fn sync_slot_index_object_pages(
         slot.meta_loaded = true;
         slot.loading = false;
         slot.in_memory = true;
-        slot.object_ids.insert(object_id);
-        slot.page_refs.insert(
+        slot.object_index.insert(object_id);
+        slot.page_index.insert(
             page_index_ref_key(&entry),
-            PageIndexEntry {
+            PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component,
@@ -9742,8 +9744,8 @@ fn sync_slot_index_object_pages(
     if removed_any || dirty {
         shard
             .slot_index
-            .slots
-            .retain(|_, slot| !slot.page_refs.is_empty() || !slot.object_ids.is_empty());
+            .slot_map
+            .retain(|_, slot| !slot.page_index.is_empty() || !slot.object_index.is_empty());
     }
 }
 
@@ -9768,33 +9770,33 @@ fn slot_layout_name(layout: SlotLayoutState) -> &'static str {
     }
 }
 
-fn update_slot_layout(slot: &mut SlotNodeIndex) {
+fn update_slot_layout(slot: &mut SlotNode) {
     let live_object_ids: BTreeSet<u64> = slot
-        .page_refs
+        .page_index
         .values()
         .filter(|page| !page.deleted)
         .map(|page| page.object_id)
         .collect();
     if !live_object_ids.is_empty() {
-        slot.object_ids = live_object_ids;
-    } else if !slot.page_refs.is_empty() {
-        slot.object_ids.clear();
+        slot.object_index = live_object_ids;
+    } else if !slot.page_index.is_empty() {
+        slot.object_index.clear();
     }
-    slot.layout = classify_slot_layout(slot.object_ids.len(), slot.page_refs.len());
+    slot.layout = classify_slot_layout(slot.object_index.len(), slot.page_index.len());
 }
 
 fn refresh_slot_runtime_flags(shard: &mut ShardState) {
     let now = now_ms();
-    for slot in shard.slot_index.slots.values_mut() {
+    for slot in shard.slot_index.slot_map.values_mut() {
         slot.meta_loaded = true;
         slot.loading = false;
-        slot.in_memory = !slot.page_refs.is_empty();
+        slot.in_memory = !slot.page_index.is_empty();
         slot.dirty |= slot
-            .page_refs
+            .page_index
             .values()
             .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key));
         slot.ttl_ms = slot
-            .page_refs
+            .page_index
             .values()
             .filter_map(|page| shard.expires_at_ms.get(&page.object_key).copied())
             .map(|expires_at| expires_at.saturating_sub(now))
@@ -9809,7 +9811,7 @@ fn rebuild_slot_first_index(
     start_routing_slot: u32,
     end_routing_slot: u32,
 ) {
-    let mut slot_index = SlotFirstIndex::default();
+    let mut slot_index = CoreIndex::default();
     for entry in collect_model_live_page_entries(shard) {
         let routing_slot = entry.address.routing_slot.unwrap_or_else(|| {
             page_routing_slot(&entry.object_key, start_routing_slot, end_routing_slot)
@@ -9823,13 +9825,13 @@ fn rebuild_slot_first_index(
             )
         });
         let slot = slot_index
-            .slots
+            .slot_map
             .entry(routing_slot)
-            .or_insert_with(|| SlotNodeIndex {
+            .or_insert_with(|| SlotNode {
                 routing_slot,
                 meta_loaded: true,
                 in_memory: true,
-                ..SlotNodeIndex::default()
+                ..SlotNode::default()
             });
         let page_dirty = shard.dirty_objects.contains(&entry.object_key) || entry.dirty;
         slot.dirty |= page_dirty;
@@ -9837,10 +9839,10 @@ fn rebuild_slot_first_index(
             slot.dirty_generation = slot.dirty_generation.saturating_add(1);
         }
         slot.in_memory |= true;
-        slot.object_ids.insert(object_id);
-        slot.page_refs.insert(
+        slot.object_index.insert(object_id);
+        slot.page_index.insert(
             page_index_ref_key(&entry),
-            PageIndexEntry {
+            PageIndex {
                 object_key: entry.object_key,
                 model_id: entry.kind,
                 component: entry.component,
@@ -9857,7 +9859,7 @@ fn rebuild_slot_first_index(
 }
 
 fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard: &mut ShardState) {
-    if shard.slot_index.slots.is_empty() {
+    if shard.slot_index.slot_map.is_empty() {
         return;
     }
 
@@ -10089,7 +10091,7 @@ fn reconcile_secondary_views_from_slot_index(page_store: &LocalPageStore, shard:
         shard.context_compressions = context_compressions;
     }
 
-    for slot in shard.slot_index.slots.values_mut() {
+    for slot in shard.slot_index.slot_map.values_mut() {
         update_slot_layout(slot);
     }
 }
@@ -10464,7 +10466,7 @@ fn storage_physical_index_report(
             hex::encode(cpp_packed_page_index_bytes(&page_index));
         slot.page_indexes.push(page_index);
     }
-    for (routing_slot, runtime_slot) in &shard.slot_index.slots {
+    for (routing_slot, runtime_slot) in &shard.slot_index.slot_map {
         let slot = slots
             .entry(*routing_slot)
             .or_insert(StoragePhysicalSlotNode {
@@ -10478,11 +10480,11 @@ fn storage_physical_index_report(
         slot.loading = runtime_slot.loading;
         slot.in_memory = runtime_slot.in_memory;
         slot.ttl_ms = runtime_slot.ttl_ms;
-        slot.object_count = runtime_slot.object_ids.len() as u64;
-        slot.page_ref_count = runtime_slot.page_refs.len() as u64;
+        slot.object_count = runtime_slot.object_index.len() as u64;
+        slot.page_ref_count = runtime_slot.page_index.len() as u64;
         slot.dirty_generation = runtime_slot.dirty_generation;
         slot.last_dump_sequence = runtime_slot.last_dump_sequence;
-        for page in runtime_slot.page_refs.values() {
+        for page in runtime_slot.page_index.values() {
             let already_present = slot.page_indexes.iter().any(|existing| {
                 existing.object_key == page.object_key
                     && existing.model_id == page.model_id
@@ -10525,7 +10527,7 @@ fn storage_physical_index_report(
                 .then(left.page_segment_id.cmp(&right.page_segment_id))
                 .then(left.offset.cmp(&right.offset))
         });
-        if !shard.slot_index.slots.contains_key(&slot.routing_slot) {
+        if !shard.slot_index.slot_map.contains_key(&slot.routing_slot) {
             let object_count = slot
                 .page_indexes
                 .iter()
@@ -10562,8 +10564,8 @@ fn storage_physical_index_report(
     StoragePhysicalIndexReport {
         shard_id,
         slot_first: true,
-        slot_index_authority: !shard.slot_index.slots.is_empty(),
-        secondary_views_reconciled_from_slot_index: !shard.slot_index.slots.is_empty(),
+        slot_index_authority: !shard.slot_index.slot_map.is_empty(),
+        secondary_views_reconciled_from_slot_index: !shard.slot_index.slot_map.is_empty(),
         slot_count: slots.len(),
         page_index_count,
         dirty_slot_count: slots.values().filter(|slot| slot.dirty).count(),
@@ -10588,16 +10590,16 @@ fn object_manager_runtime_report(
         slot_object_page_ownership_report(shard_id, shard, start_routing_slot, end_routing_slot);
     let mut report = ObjectManagerRuntimeReport {
         shard_id,
-        routing_slot_count: shard.slot_index.slots.len() as u64,
+        routing_slot_count: shard.slot_index.slot_map.len() as u64,
         dirty_slot_count: shard
             .slot_index
-            .slots
+            .slot_map
             .values()
             .filter(|slot| slot.dirty)
             .count() as u64,
         max_dirty_generation: shard
             .slot_index
-            .slots
+            .slot_map
             .values()
             .map(|slot| slot.dirty_generation)
             .max()
@@ -10606,13 +10608,13 @@ fn object_manager_runtime_report(
         owner_mismatch_page_ref_count: ownership.owner_mismatch_page_ref_count,
         evidence: vec![
             "runtime owns page refs in the first-class slot index".to_string(),
-            "runtime tracks dirty generations and dirty routing slots in SlotNodeIndex".to_string(),
+            "runtime tracks dirty generations and dirty routing slots in SlotNode".to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
         ],
         ..ObjectManagerRuntimeReport::default()
     };
 
-    for slot in shard.slot_index.slots.values() {
+    for slot in shard.slot_index.slot_map.values() {
         if let Some(state) = report
             .layout_states
             .iter_mut()
@@ -10620,19 +10622,19 @@ fn object_manager_runtime_report(
         {
             state.object_count = state
                 .object_count
-                .saturating_add(slot.object_ids.len() as u64);
+                .saturating_add(slot.object_index.len() as u64);
         } else {
             report.layout_states.push(SlotLayoutStateCount {
                 state: slot_layout_name(slot.layout).to_string(),
-                object_count: slot.object_ids.len() as u64,
+                object_count: slot.object_index.len() as u64,
             });
         }
         report.object_count = report
             .object_count
-            .saturating_add(slot.object_ids.len() as u64);
+            .saturating_add(slot.object_index.len() as u64);
         report.page_ref_count = report
             .page_ref_count
-            .saturating_add(slot.page_refs.len() as u64);
+            .saturating_add(slot.page_index.len() as u64);
         if slot.loading {
             report.loading_object_count = report.loading_object_count.saturating_add(1);
         }
@@ -10685,8 +10687,8 @@ fn slot_object_page_ownership_report(
 ) -> SlotObjectPageOwnershipReport {
     let mut report = SlotObjectPageOwnershipReport {
         shard_id,
-        first_class_index_present: !shard.slot_index.slots.is_empty(),
-        derived_from_model_maps: shard.slot_index.slots.is_empty(),
+        first_class_index_present: !shard.slot_index.slot_map.is_empty(),
+        derived_from_model_maps: shard.slot_index.slot_map.is_empty(),
         ..SlotObjectPageOwnershipReport::default()
     };
     let entries = collect_live_page_entries(shard);
@@ -10702,12 +10704,12 @@ fn slot_object_page_ownership_report(
             &entry.object_key,
             entry.component.as_deref(),
         );
-        let Some(slot) = shard.slot_index.slots.get(&routing_slot) else {
+        let Some(slot) = shard.slot_index.slot_map.get(&routing_slot) else {
             report.missing_owner_page_ref_count =
                 report.missing_owner_page_ref_count.saturating_add(1);
             continue;
         };
-        if !slot.object_ids.contains(&expected_object_id) {
+        if !slot.object_index.contains(&expected_object_id) {
             report.owner_mismatch_page_ref_count =
                 report.owner_mismatch_page_ref_count.saturating_add(1);
         }
@@ -11687,8 +11689,8 @@ fn record_exists(shard: &ShardState, key: &str) -> bool {
 }
 
 fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
-    shard.slot_index.slots.values().any(|slot| {
-        slot.page_refs
+    shard.slot_index.slot_map.values().any(|slot| {
+        slot.page_index
             .values()
             .any(|page| page.object_key == key && !page.deleted)
     }) || shard.strings.contains_key(key)
@@ -11760,12 +11762,12 @@ fn object_manager_stats(
     start_routing_slot: u32,
     end_routing_slot: u32,
 ) -> ObjectManagerStats {
-    if !shard.slot_index.slots.is_empty() {
+    if !shard.slot_index.slot_map.is_empty() {
         let live_pages = shard
             .slot_index
-            .slots
+            .slot_map
             .values()
-            .flat_map(|slot| slot.page_refs.values())
+            .flat_map(|slot| slot.page_index.values())
             .filter(|page| !page.deleted)
             .collect::<Vec<_>>();
         let slot_object_count = live_pages
@@ -11861,12 +11863,12 @@ fn object_manager_stats(
                 .sum::<usize>();
         let dirty_slot_count = shard
             .slot_index
-            .slots
+            .slot_map
             .values()
             .filter(|slot| {
                 slot.dirty
                     || slot
-                        .page_refs
+                        .page_index
                         .values()
                         .any(|page| page.dirty || shard.dirty_objects.contains(&page.object_key))
             })
