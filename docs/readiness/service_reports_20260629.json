@@ -1,0 +1,256 @@
+[
+  {
+    "service": "client",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 1,
+    "owner": "client_sdk",
+    "areas": [
+      "client"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "proxy",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 2,
+    "owner": "proxy_runtime",
+    "areas": [
+      "proxy"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "ingestion",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 3,
+    "owner": "ingestion_connectors",
+    "areas": [
+      "ingestion"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "data_node",
+    "ready": false,
+    "gate_status": "blocked",
+    "severity": "critical",
+    "remediation_order": 4,
+    "owner": "data_node_runtime",
+    "areas": [
+      "dataserver",
+      "data_node_distributed_raft"
+    ],
+    "blocker_count": 3,
+    "blocker_classes": [
+      "data_node_distributed_raft"
+    ],
+    "next_action": "finish metaserver-driven membership against real data-node Raft groups",
+    "primary_blocker": {
+      "area": "data_node_distributed_raft",
+      "capability": "provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence",
+      "evidence_field": "raft_rollout.temporal_raft_data_node_process_rollout_ready"
+    },
+    "failed_capabilities": [
+      {
+        "area": "data_node_distributed_raft",
+        "capability": "provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence",
+        "evidence_field": "raft_rollout.temporal_raft_data_node_process_rollout_ready"
+      },
+      {
+        "area": "data_node_distributed_raft",
+        "capability": "provide passing TemporalRaft metaserver multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API mutations, real log-store validation, snapshot install, restart recovery, crash-window recovery after meta mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence",
+        "evidence_field": "raft_rollout.temporal_raft_metaserver_process_rollout_ready"
+      },
+      {
+        "area": "data_node_distributed_raft",
+        "capability": "provide both data-node and metaserver multi-process log-store validation evidence",
+        "evidence_field": "raft_rollout.multi_process_log_store_validated"
+      }
+    ]
+  },
+  {
+    "service": "metaserver",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 5,
+    "owner": "metaserver_control_plane",
+    "areas": [
+      "metaserver"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "storage_cache",
+    "ready": false,
+    "gate_status": "blocked",
+    "severity": "warning",
+    "remediation_order": 6,
+    "owner": "storage_runtime",
+    "areas": [
+      "storage_cache"
+    ],
+    "blocker_count": 2,
+    "blocker_classes": [
+      "storage_cache_durability"
+    ],
+    "next_action": "finish mtcache-class async writeback/backpressure and mature latency metrics",
+    "primary_blocker": {
+      "area": "storage_cache",
+      "capability": "mtcache-class async writeback and backpressure",
+      "evidence_field": "storage_cache_mtcache.async_writeback_backpressure_ready"
+    },
+    "failed_capabilities": [
+      {
+        "area": "storage_cache",
+        "capability": "mtcache-class async writeback and backpressure",
+        "evidence_field": "storage_cache_mtcache.async_writeback_backpressure_ready"
+      },
+      {
+        "area": "storage_cache",
+        "capability": "mtcache-class mature latency metrics",
+        "evidence_field": "storage_cache_mtcache.latency_metrics_ready"
+      }
+    ]
+  },
+  {
+    "service": "feature_modules",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 7,
+    "owner": "feature_api",
+    "areas": [
+      "feature_modules"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "context_workflow",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 8,
+    "owner": "context_ai_workflow",
+    "areas": [
+      "context_workflow"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "fault_tolerance",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 9,
+    "owner": "reliability",
+    "areas": [
+      "fault_tolerance"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "deployment_ops",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 10,
+    "owner": "platform_ops",
+    "areas": [
+      "deployment_ops"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "scale_testing",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
+    "remediation_order": 11,
+    "owner": "performance",
+    "areas": [
+      "scale_testing"
+    ],
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
+  },
+  {
+    "service": "raft_replication",
+    "ready": false,
+    "gate_status": "blocked",
+    "severity": "critical",
+    "remediation_order": 12,
+    "owner": "consensus_runtime",
+    "areas": [
+      "raft_replication"
+    ],
+    "blocker_count": 3,
+    "blocker_classes": [
+      "raft_replication_engine"
+    ],
+    "next_action": "finish durable real-process TemporalRaft rollout, production mTLS transport, and external chaos coverage",
+    "primary_blocker": {
+      "area": "raft_replication",
+      "capability": "provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence",
+      "evidence_field": "raft_rollout.temporal_raft_data_node_process_rollout_ready"
+    },
+    "failed_capabilities": [
+      {
+        "area": "raft_replication",
+        "capability": "provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence",
+        "evidence_field": "raft_rollout.temporal_raft_data_node_process_rollout_ready"
+      },
+      {
+        "area": "raft_replication",
+        "capability": "provide passing TemporalRaft metaserver multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API mutations, real log-store validation, snapshot install, restart recovery, crash-window recovery after meta mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, scheduler replay, and RustRaft-derived operational semantics evidence",
+        "evidence_field": "raft_rollout.temporal_raft_metaserver_process_rollout_ready"
+      },
+      {
+        "area": "raft_replication",
+        "capability": "provide both data-node and metaserver multi-process log-store validation evidence",
+        "evidence_field": "raft_rollout.multi_process_log_store_validated"
+      }
+    ]
+  }
+]

@@ -28,6 +28,7 @@ Production-readiness claims should be made from passing readiness reports, not
 from this README alone. See:
 
 - [Rust vs C++ parity report](docs/rust_vs_cpp_temporalstore_parity_report.md)
+- [Benchmark and readiness evidence](docs/benchmark_readiness_evidence_20260629.md)
 - [Storage/Raft readiness plan](docs/storage_raft_production_readiness_plan.md)
 - [Unified test inventory](docs/unified_test_case_inventory.md)
 - [Rust MatrixArk query/index debug flow](docs/rust_matrixark_query_index_debug_flow.md)
