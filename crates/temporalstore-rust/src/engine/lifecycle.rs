@@ -129,7 +129,7 @@ impl TemporalEngine {
             };
         }
         let mut state = self.load_index(request.shard_id).unwrap_or_default();
-        rebuild_slot_page_ownership(
+        promote_model_maps_to_slot_index_authority(
             request.shard_id,
             &mut state,
             request.start_routing_slot,

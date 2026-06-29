@@ -173,11 +173,13 @@ hotness/LRU memory plus SSD eviction evidence, pin/unpin state, pinned-skip coun
 `CacheTieringPolicy` placement decisions, write-through/backpressure counters, and get/put latency
 metrics. PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract.
 
-Rust now persists a first-class slot/object/page ownership index and exposes whether reports are
-using that core index or falling back to model-map derivation. Changed objects are synchronized
-into that slot index incrementally, with slot dirty generations and PageIndex-like model id, page
-id, dirty/deleted/log flags, size, and address metadata. Slot layout transition evidence is also
-present for writes, rebuilds, compaction, tombstones, and dump/load validation.
+Rust now persists a first-class slot/object/page ownership index and uses it as the permanent
+authority for object existence and page reads. Legacy model-map-only state is promoted into the
+slot index on shard load or before command execution; after promotion, logical model maps are
+secondary views/accelerators rather than a competing primary index. Changed objects are
+synchronized into that slot index incrementally, with slot dirty generations and PageIndex-like
+model id, page id, dirty/deleted/log flags, size, and address metadata. Slot layout transition
+evidence is also present for writes, rebuilds, compaction, tombstones, and dump/load validation.
 
 The Rust lifecycle behavior evidence is specifically scoped to: slot-first ownership updates on
 object writes and deletes, recovery validation of owner/page refs, slot-scoped dump/load manifest
