@@ -2872,6 +2872,10 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         append_pipeline_state_observed: true,
         snapshot_lifecycle_observed: true,
         wal_segment_lifecycle_observed: true,
+        wal_segment_release_rules_observed: true,
+        wal_first_last_index_status_observed: true,
+        wal_slow_fsync_backpressure_observed: true,
+        restart_log_store_comparison_observed: true,
         restart_recovery_observed: true,
         failover_observed: true,
         membership_change_observed: true,
@@ -2890,6 +2894,12 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
         restarted: true,
         log_store_validated: true,
         wal_segments_inspected: 1,
+        wal_retained_segment_count: 1,
+        wal_first_sequence: 1,
+        wal_last_sequence: 3,
+        wal_release_floor: 2,
+        wal_slow_fsync_backpressure_observed: true,
+        restart_log_store_comparison_observed: true,
         snapshot_files_inspected: 1,
     };
     let report = OpenRaftDataNodeProcessRolloutReport {
@@ -2928,6 +2938,22 @@ fn openraft_rollout_reports_carry_byteraft_process_semantics() {
     );
     assert_eq!(
         json["byteraft_process_semantics"]["wal_segment_lifecycle_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["wal_segment_release_rules_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["wal_first_last_index_status_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["wal_slow_fsync_backpressure_observed"],
+        true
+    );
+    assert_eq!(
+        json["byteraft_process_semantics"]["restart_log_store_comparison_observed"],
         true
     );
     assert_eq!(
@@ -6510,6 +6536,8 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
     let report = wal.segment_report(7, 1).unwrap();
     assert_eq!(report.segments.len(), 2);
     assert!(report.active_segment_id >= 2);
+    assert!(report.segments.first().unwrap().segment_id > 1);
+    assert!(report.segments.first().unwrap().first_sequence > 0);
     assert!(report.segments.iter().all(|segment| segment.bytes > 0));
     assert!(report
         .segments
@@ -6520,6 +6548,10 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
         .iter()
         .all(|segment| segment.last_sequence >= segment.first_sequence));
     assert!(report.segments.last().unwrap().last_sequence > 0);
+    assert!(
+        report.segments.last().unwrap().last_sequence
+            >= report.segments.first().unwrap().first_sequence
+    );
 
     let recovery = wal.recover_node(7, 1).unwrap();
     let record = recovery.record.unwrap();

@@ -777,6 +777,18 @@ pub struct OpenRaftProcessNodeEvidence {
     #[serde(default)]
     pub wal_segments_inspected: u64,
     #[serde(default)]
+    pub wal_retained_segment_count: u64,
+    #[serde(default)]
+    pub wal_first_sequence: u64,
+    #[serde(default)]
+    pub wal_last_sequence: u64,
+    #[serde(default)]
+    pub wal_release_floor: u64,
+    #[serde(default)]
+    pub wal_slow_fsync_backpressure_observed: bool,
+    #[serde(default)]
+    pub restart_log_store_comparison_observed: bool,
+    #[serde(default)]
     pub snapshot_files_inspected: u64,
 }
 
@@ -808,6 +820,14 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     pub snapshot_lifecycle_observed: bool,
     #[serde(default)]
     pub wal_segment_lifecycle_observed: bool,
+    #[serde(default)]
+    pub wal_segment_release_rules_observed: bool,
+    #[serde(default)]
+    pub wal_first_last_index_status_observed: bool,
+    #[serde(default)]
+    pub wal_slow_fsync_backpressure_observed: bool,
+    #[serde(default)]
+    pub restart_log_store_comparison_observed: bool,
     #[serde(default)]
     pub restart_recovery_observed: bool,
     #[serde(default)]
