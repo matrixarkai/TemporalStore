@@ -65,6 +65,7 @@ struct NodeSummary {
 struct WriteSummary {
     key: String,
     status: Status,
+    commit_index: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -1546,9 +1547,14 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
             node.node_id, response.status, status
         );
     }
+    let commit_index =
+        get_json_with_options::<RaftClusterStatus>(&node.addr, "/raft/status", request_options())
+            .expect("status request after accepted proposal failed")
+            .commit_index;
     WriteSummary {
         key: key.to_string(),
         status: response.status,
+        commit_index,
     }
 }
 
@@ -1591,17 +1597,9 @@ fn run_leader_transfer_under_load_phase(
         .iter()
         .map(|write| write.key.clone())
         .collect::<Vec<_>>();
-    let observed_commit_indexes = survivors
+    let observed_commit_indexes = writes
         .iter()
-        .map(|node| {
-            get_json_with_options::<RaftClusterStatus>(
-                &node.addr,
-                "/raft/status",
-                request_options(),
-            )
-            .expect("status request for transfer evidence failed")
-            .commit_index
-        })
+        .map(|write| write.commit_index)
         .collect::<Vec<_>>();
     let mut unique_write_ids = observed_write_ids.iter().cloned().collect::<BTreeSet<_>>();
     let exact_once_observed = transfer_response.status.ok
@@ -1622,6 +1620,7 @@ fn run_leader_transfer_under_load_phase(
     unique_write_ids.clear();
     let under_load_observed = exact_once_observed
         && observed_commit_indexes.len() >= 2
+        && observed_commit_indexes.len() == observed_write_ids.len()
         && observed_commit_indexes
             .iter()
             .all(|commit| *commit >= writes.len() as u64);
