@@ -4732,7 +4732,7 @@
       "steps": [
         {
           "command": {
-            "description": "RustRaft-derived election control case: pre-vote quorum gates, election prohibition, transfer timeout behavior, and offline peer state.",
+            "description": "RustRaft-derived election control case: partitioned pre-vote quorum gates, election prohibition after learner auto-promotion, transfer timeout under active writes, and offline timeout peer state.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -4747,7 +4747,7 @@
               "src/metaserver_v2/raft_server.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 OPS=500 MEMBERSHIP_OPS=200 bash tools/run_raft_production_gate_ubuntu22.sh",
-            "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
+            "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_election_controls_record_prohibition_offline_and_transfer_timeouts raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
             "timeout_s": 1200

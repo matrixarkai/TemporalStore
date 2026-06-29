@@ -630,6 +630,14 @@ pub struct ByteRaftRuntimeAdminReport {
     pub wal_last_sequence: u64,
     pub pre_vote_enforced: bool,
     pub election_controls_enforced: bool,
+    #[serde(default)]
+    pub pre_vote_process_evidence_observed: bool,
+    #[serde(default)]
+    pub election_prohibition_observed: bool,
+    #[serde(default)]
+    pub offline_timeout_observed: bool,
+    #[serde(default)]
+    pub transfer_timeout_observed: bool,
     pub read_index_requests: u64,
     pub read_index_accepted: u64,
     pub read_index_rejected: u64,
@@ -5141,6 +5149,12 @@ impl RaftCluster {
             if !inner.pre_vote_would_win(candidate_id)? {
                 inner.read_safety_state.pre_vote_rejected =
                     inner.read_safety_state.pre_vote_rejected.saturating_add(1);
+                if let Some(candidate) = inner.nodes.get_mut(&candidate_id) {
+                    candidate.pipeline_state.pre_vote_rejections = candidate
+                        .pipeline_state
+                        .pre_vote_rejections
+                        .saturating_add(1);
+                }
                 inner.election_elapsed_tick = 0;
                 inner.persist_configured_wal()?;
                 return Ok(RaftTickOutcome::PreVoteRejected { candidate_id });
@@ -7906,6 +7920,10 @@ impl RaftClusterInner {
 
     fn elect_leader(&mut self, node_id: RaftNodeId) -> Result<(), RaftError> {
         if self.config.prohibits_election {
+            for node in self.nodes.values_mut() {
+                node.pipeline_state.election_rejections =
+                    node.pipeline_state.election_rejections.saturating_add(1);
+            }
             return Err(RaftError::ElectionProhibited);
         }
         let required = self.required_majority();
@@ -8374,9 +8392,29 @@ impl RaftClusterInner {
             && wal_total_records > 0
             && wal_last_sequence >= wal_first_sequence;
         let pre_vote_enforced = self.config.enable_pre_vote;
-        let election_controls_enforced = self.config.prohibits_election
-            || self.config.offline_timeout_tick > 0
-            || self.config.transfer_timeout_tick > 0;
+        let pre_vote_process_evidence_observed = self.config.enable_pre_vote
+            && self.read_safety_state.pre_vote_requests > 0
+            && (self.read_safety_state.pre_vote_accepted > 0
+                || self.read_safety_state.pre_vote_rejected > 0)
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.pre_vote_rejections > 0);
+        let election_prohibition_observed = self.config.prohibits_election
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.election_rejections > 0);
+        let offline_timeout_observed = self.config.offline_timeout_tick > 0
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.offline_timeout_reached || peer.offline_timeout_rejections > 0);
+        let transfer_timeout_observed = self.config.transfer_timeout_tick > 0
+            && peer_pipeline_states
+                .iter()
+                .any(|peer| peer.transfer_leader_timeouts > 0);
+        let election_controls_enforced = pre_vote_process_evidence_observed
+            && election_prohibition_observed
+            && offline_timeout_observed
+            && transfer_timeout_observed;
         let admin_status_surface_complete = !peer_pipeline_states.is_empty()
             && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
             && status.majority > 0
@@ -8445,11 +8483,20 @@ impl RaftClusterInner {
                     && lagging_follower_read_rejected
                     && bounded_stale_read_accepted
                     && bounded_stale_read_rejected
-                    && pre_vote_enforced,
-                evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejected; lagging_follower_read_rejected; bounded_stale_read_*; stale_follower_read_rejected; pre_vote_*"
+                    && pre_vote_enforced
+                    && pre_vote_process_evidence_observed,
+                evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejected; lagging_follower_read_rejected; bounded_stale_read_*; stale_follower_read_rejected; pre_vote_*; peer_pipeline_states[*].pre_vote_rejections"
                     .to_string(),
                 detail: format!(
-                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}"
+                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}; pre_vote_observed={pre_vote_process_evidence_observed}"
+                ),
+            },
+            ByteRaftCapabilityEvidence {
+                capability: "pre_vote_election_transfer_controls".to_string(),
+                ready: election_controls_enforced,
+                evidence_field: "pre_vote_process_evidence_observed; election_prohibition_observed; offline_timeout_observed; transfer_timeout_observed; peer_pipeline_states[*].{pre_vote_rejections,election_rejections,offline_timeout_*,transfer_leader_timeouts}".to_string(),
+                detail: format!(
+                    "pre_vote_observed={pre_vote_process_evidence_observed}; election_prohibited={election_prohibition_observed}; offline_timeout={offline_timeout_observed}; transfer_timeout={transfer_timeout_observed}"
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -8574,6 +8621,18 @@ impl RaftClusterInner {
         if !pre_vote_enforced {
             blockers.push("pre_vote_not_enforced".to_string());
         }
+        if !pre_vote_process_evidence_observed {
+            blockers.push("pre_vote_process_evidence_missing".to_string());
+        }
+        if !election_prohibition_observed {
+            blockers.push("election_prohibition_evidence_missing".to_string());
+        }
+        if !offline_timeout_observed {
+            blockers.push("offline_timeout_evidence_missing".to_string());
+        }
+        if !transfer_timeout_observed {
+            blockers.push("transfer_timeout_evidence_missing".to_string());
+        }
         if !election_controls_enforced {
             blockers.push("election_controls_not_enforced".to_string());
         }
@@ -8627,6 +8686,10 @@ impl RaftClusterInner {
             wal_last_sequence,
             pre_vote_enforced,
             election_controls_enforced,
+            pre_vote_process_evidence_observed,
+            election_prohibition_observed,
+            offline_timeout_observed,
+            transfer_timeout_observed,
             read_index_requests: self.read_safety_state.read_index_requests,
             read_index_accepted: self.read_safety_state.read_index_accepted,
             read_index_rejected: self.read_safety_state.read_index_rejected,
