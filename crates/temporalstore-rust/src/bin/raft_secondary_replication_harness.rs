@@ -10,7 +10,8 @@ use serde::Serialize;
 use temporalstore_rust::http::{get_json_with_options, post_json_with_options, HttpRequestOptions};
 use temporalstore_rust::meta::ShardSnapshotRef;
 use temporalstore_rust::raft::{
-    ByteRaftProcessPathSemanticsEvidence, RaftReplicaBootstrapPlan, RaftRpcMetadata,
+    AppendEntriesRequest, AppendEntriesResponse, ByteRaftProcessPathSemanticsEvidence,
+    ByteRaftRuntimeAdminReport, RaftLogEntry, RaftReplicaBootstrapPlan, RaftRpcMetadata,
     RaftSnapshotPublishReport,
 };
 use temporalstore_rust::{
@@ -55,6 +56,7 @@ struct NodeSummary {
     wal_dir: String,
     status: RaftClusterStatus,
     apply_health: RaftApplyHealth,
+    runtime_admin: ByteRaftRuntimeAdminReport,
     wal_files: Vec<String>,
 }
 
@@ -388,6 +390,12 @@ fn main() {
         wait_for_cluster_commit(node, writes.len() as u64);
     }
     wait_for_surviving_apply_health(new_leader, &survivors);
+    trigger_replication_pressure(
+        new_leader,
+        &survivors,
+        &options.auth_token,
+        options.shard_id,
+    );
 
     let mut reads_after_leader_crash = Vec::new();
     for node in nodes.iter().filter(|node| node.node_id != crashed_leader) {
@@ -419,6 +427,12 @@ fn main() {
                     request_options(),
                 )
                 .expect("apply health request failed"),
+                runtime_admin: get_json_with_options(
+                    &node.addr,
+                    "/raft/control/byteraft_runtime_admin",
+                    request_options(),
+                )
+                .expect("runtime admin report request failed"),
                 wal_files: list_files(&wal_dir),
             }
         })
@@ -627,6 +641,48 @@ fn data_node_process_rollout_report(
     let storage_wal_snapshot_crash_recovery_observed = node_evidence
         .iter()
         .all(|node| node.deterministic_crash_recovery_observed);
+    let runtime_reports = nodes
+        .iter()
+        .map(|node| &node.runtime_admin)
+        .collect::<Vec<_>>();
+    let peer_pipeline_states = runtime_reports
+        .iter()
+        .flat_map(|report| report.peer_pipeline_states.iter())
+        .collect::<Vec<_>>();
+    let replicate_inflight_limits_observed = runtime_reports
+        .iter()
+        .any(|report| report.append_backpressure_enforced)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.append_queue_max_depth > 0 || peer.inflight_entries > 0);
+    let max_replicate_bytes_observed = runtime_reports
+        .iter()
+        .any(|report| report.memory_replicate_bytes_enforced)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.memory_backpressure_rejections > 0 || peer.inflight_bytes > 0);
+    let oversized_log_rejection_observed = runtime_reports
+        .iter()
+        .any(|report| report.oversized_log_rejection_present)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.oversized_log_rejections > 0);
+    let apply_batch_backpressure_observed = runtime_reports
+        .iter()
+        .any(|report| report.apply_backpressure_enforced)
+        || peer_pipeline_states
+            .iter()
+            .any(|peer| peer.apply_backpressure_rejections > 0);
+    let append_queue_depth_observed = peer_pipeline_states
+        .iter()
+        .any(|peer| peer.append_queue_depth > 0 || peer.append_queue_max_depth > 0);
+    let replication_pressure_counters_observed = peer_pipeline_states.iter().any(|peer| {
+        peer.append_rejected > 0
+            || peer.apply_backpressure_rejections > 0
+            || peer.memory_backpressure_rejections > 0
+            || peer.oversized_log_rejections > 0
+            || peer.append_queue_max_depth > 0
+    });
     let byteraft_process_semantics = ByteRaftProcessPathSemanticsEvidence {
         observed_process_requests,
         read_index_responses_observed,
@@ -646,6 +702,12 @@ fn data_node_process_rollout_report(
         append_pipeline_state_observed: node_evidence
             .iter()
             .any(|node| node.commit_index > 0 && node.applied_index > 0),
+        replicate_inflight_limits_observed,
+        max_replicate_bytes_observed,
+        oversized_log_rejection_observed,
+        apply_batch_backpressure_observed,
+        append_queue_depth_observed,
+        replication_pressure_counters_observed,
         snapshot_lifecycle_observed: snapshot_install_validated,
         wal_segment_lifecycle_observed: per_node_log_store_inspection_count >= voter_count,
         wal_segment_release_rules_observed,
@@ -671,6 +733,12 @@ fn data_node_process_rollout_report(
             && follower_lease_expiration_observed
             && minority_partition_rejected
             && healed_follower_catchup_observed
+            && replicate_inflight_limits_observed
+            && max_replicate_bytes_observed
+            && oversized_log_rejection_observed
+            && apply_batch_backpressure_observed
+            && append_queue_depth_observed
+            && replication_pressure_counters_observed
             && per_node_log_store_inspection_count >= voter_count
             && wal_segment_release_rules_observed
             && wal_first_last_index_status_observed
@@ -722,6 +790,30 @@ fn data_node_process_rollout_report(
         (
             byteraft_process_semantics.healed_follower_catchup_observed,
             "process_healed_follower_catchup_missing",
+        ),
+        (
+            byteraft_process_semantics.replicate_inflight_limits_observed,
+            "process_replicate_inflight_limits_missing",
+        ),
+        (
+            byteraft_process_semantics.max_replicate_bytes_observed,
+            "process_max_replicate_bytes_missing",
+        ),
+        (
+            byteraft_process_semantics.oversized_log_rejection_observed,
+            "process_oversized_log_rejection_missing",
+        ),
+        (
+            byteraft_process_semantics.apply_batch_backpressure_observed,
+            "process_apply_batch_backpressure_missing",
+        ),
+        (
+            byteraft_process_semantics.append_queue_depth_observed,
+            "process_append_queue_depth_missing",
+        ),
+        (
+            byteraft_process_semantics.replication_pressure_counters_observed,
+            "process_replication_pressure_counters_missing",
         ),
         (
             byteraft_process_semantics.wal_segment_release_rules_observed,
@@ -1342,6 +1434,72 @@ fn propose(node: &ProductionRaftNode, key: &str, value: &str) -> WriteSummary {
         key: key.to_string(),
         status: response.status,
     }
+}
+
+fn trigger_replication_pressure(
+    leader: &ProductionRaftNode,
+    survivors: &[ProductionRaftNode],
+    auth_token: &str,
+    shard_id: u64,
+) {
+    let oversized_value = vec![b'x'; 40 * 1024];
+    let _: DistributedRaftCommandResponse = post_json_with_options(
+        &leader.addr,
+        "/raft/propose",
+        &DistributedRaftProposeRequest {
+            command: Command::StringSet {
+                key: "byteraft-process-oversized-pressure".to_string(),
+                value: oversized_value,
+            },
+        },
+        request_options(),
+    )
+    .expect("oversized pressure proposal request failed");
+
+    let Some(target) = survivors
+        .iter()
+        .find(|node| node.node_id != leader.node_id)
+        .or_else(|| survivors.first())
+    else {
+        return;
+    };
+    let status: RaftClusterStatus =
+        get_json_with_options(&target.addr, "/raft/status", request_options())
+            .expect("status request before pressure append failed");
+    let response: AppendEntriesResponse = post_json_with_options(
+        &target.addr,
+        "/raft/append_entries",
+        &AppendEntriesRequest {
+            rpc: Some(raft_rpc(auth_token, "process-apply-backpressure")),
+            shard_id,
+            term: status.current_term.max(1),
+            leader_id: leader.node_id,
+            target_id: target.node_id,
+            prev_log_index: 0,
+            prev_log_term: 0,
+            entries: vec![RaftLogEntry {
+                term: status.current_term.max(1),
+                index: status.commit_index.saturating_add(10_000),
+                shard_id,
+                command: Command::StringSet {
+                    key: "byteraft-process-apply-backpressure".to_string(),
+                    value: vec![b'y'; 96 * 1024],
+                },
+            }],
+            leader_commit: status.commit_index,
+        },
+        request_options(),
+    )
+    .expect("apply backpressure append request failed");
+    assert!(
+        !response.success
+            && response
+                .reject_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("backpressure")),
+        "pressure append did not exercise apply backpressure: {:?}",
+        response
+    );
 }
 
 fn is_transient_proposal_error(status: &Status) -> bool {

@@ -829,6 +829,18 @@ pub struct ByteRaftProcessPathSemanticsEvidence {
     #[serde(default)]
     pub append_pipeline_state_observed: bool,
     #[serde(default)]
+    pub replicate_inflight_limits_observed: bool,
+    #[serde(default)]
+    pub max_replicate_bytes_observed: bool,
+    #[serde(default)]
+    pub oversized_log_rejection_observed: bool,
+    #[serde(default)]
+    pub apply_batch_backpressure_observed: bool,
+    #[serde(default)]
+    pub append_queue_depth_observed: bool,
+    #[serde(default)]
+    pub replication_pressure_counters_observed: bool,
+    #[serde(default)]
     pub snapshot_lifecycle_observed: bool,
     #[serde(default)]
     pub wal_segment_lifecycle_observed: bool,

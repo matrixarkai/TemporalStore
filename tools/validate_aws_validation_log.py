@@ -673,6 +673,12 @@ def validate_byteraft_process_semantics(
     for field in [
         "per_peer_pipeline_state_observed",
         "append_pipeline_state_observed",
+        "replicate_inflight_limits_observed",
+        "max_replicate_bytes_observed",
+        "oversized_log_rejection_observed",
+        "apply_batch_backpressure_observed",
+        "append_queue_depth_observed",
+        "replication_pressure_counters_observed",
         "snapshot_lifecycle_observed",
         "wal_segment_lifecycle_observed",
         "bounded_stale_partition_reads_observed",
