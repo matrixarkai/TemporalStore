@@ -375,6 +375,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `context_injection_prompt_pack_ordering` | Rust-executable/C++-static gate for prompt-pack ordering and selected-ref audit ordering. |
 | `context_benchmark_injection_entity_segment_index` | Rust-executable/C++-static gate for ContextEntity/ContextSegment benchmark injection, source secondary-index lookup, L0/L1/L2 prompt blocks, and selected-ref audit coverage. |
 | `context_extracted_event_default_index_fanout` | Rust-executable/C++-static gate translated from C++ `WRITE_EXTRACTED_EVENT` debug tests; default internal indexes fan out and disabled indexes do not return refs. |
+| `context_secondary_index_intersection` | Rust-executable/C++-static gate for C++-style secondary-index filter-group intersection, scope/range isolation, and duplicate ref suppression. |
 | `context_tree_embedding_summary_compression` | Rust-executable/C++-static gate translated from C++ tree/embedding/summary/compression round-trip behavior. |
 | `context_temporal_compression_replayable_summary` | Rust-executable/C++-static gate translated from C++ temporal compression behavior; compression must not delete source events. |
 | `context_events_segments_entities_child_refs` | Rust-executable/C++-static gate for ContextEvent, ContextSegment, ContextEntity, child refs, extracted-event fanout, node-context query behavior, timestamp-keyed context events under node/segment parents, compact embedding model hashes, and compact scope hot-record parity. |

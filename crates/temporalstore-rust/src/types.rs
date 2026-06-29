@@ -307,6 +307,16 @@ pub struct ContextIndexRef {
     pub event_id_hash: u64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextIndexLookup {
+    pub index_name: String,
+    pub index_value_hash: u64,
+    #[serde(default)]
+    pub scope_hash: u64,
+    pub start_time_ms: u64,
+    pub end_time_ms: u64,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
 pub enum InternalContextIndex {
@@ -1439,6 +1449,12 @@ pub enum Command {
         #[serde(default)]
         limit: Option<usize>,
     },
+    ContextQueryIndexIntersection {
+        tenant_hash: u64,
+        predicates: Vec<ContextIndexLookup>,
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     ContextWritePackAudit {
         tenant_hash: u64,
         audit: ContextPackAudit,
@@ -1700,6 +1716,12 @@ pub enum CommandResponse {
     ContextIndexRefs {
         object_key: String,
         refs: Vec<ContextIndexRef>,
+    },
+    ContextIndexIntersection {
+        refs: Vec<ContextIndexRef>,
+        matched_index_count: usize,
+        scanned_ref_count: usize,
+        deduped_ref_count: usize,
     },
     ContextPackAudits {
         object_key: String,

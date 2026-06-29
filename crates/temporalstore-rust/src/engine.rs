@@ -35,11 +35,11 @@ use crate::page_store::{LocalPageStore, PageAddress, PageStoreError, PageStoreOp
 use crate::types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditRef,
     ContextChildRef, ContextCompressionEvent, ContextEmbedding, ContextEntity, ContextEvent,
-    ContextExtractedEventIndexes, ContextIndexRef, ContextNode, ContextPackAudit, ContextSummary,
-    ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire, ExecuteRequest, ExecuteResponse,
-    FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, InternalContextIndex,
-    IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType, SequenceFeatureRow, SequenceQuerySpec,
-    ShardId, Status, StringSetCondition,
+    ContextExtractedEventIndexes, ContextIndexLookup, ContextIndexRef, ContextNode,
+    ContextPackAudit, ContextSummary, ContextSummaryDirtyMarker, ContextTraversedNode, ContextWire,
+    ExecuteRequest, ExecuteResponse, FeatureFilter, FeatureFilterOp, FeaturePoint,
+    FeatureWritePolicy, InternalContextIndex, IpsSnapshotReport, IpsStats, RiskFamily, RiskFolType,
+    SequenceFeatureRow, SequenceQuerySpec, ShardId, Status, StringSetCondition,
 };
 
 #[derive(Debug, Clone)]
@@ -8234,6 +8234,74 @@ fn execute_on_shard(
                 .unwrap_or_default();
             CommandResponse::ContextIndexRefs { object_key, refs }
         }
+        Command::ContextQueryIndexIntersection {
+            tenant_hash,
+            predicates,
+            limit,
+        } => {
+            let mut scanned_ref_count = 0usize;
+            let mut deduped_ref_count = 0usize;
+            let mut candidate_refs: Option<HashMap<(u64, u64, u64), ContextIndexRef>> = None;
+
+            for predicate in &predicates {
+                let object_key = context_index_key(
+                    tenant_hash,
+                    &predicate.index_name,
+                    predicate.index_value_hash,
+                    predicate.scope_hash,
+                );
+                let mut seen_for_predicate = HashMap::new();
+                if let Some(series) = shard.context_indexes.get(&object_key) {
+                    let mut page_cache = HashMap::new();
+                    for (timeline_key, address) in series.range(
+                        context_timeline_start(predicate.start_time_ms)
+                            ..context_timeline_end(predicate.end_time_ms),
+                    ) {
+                        if let Some(index_ref) = read_context_value_cached::<ContextIndexRef>(
+                            cache,
+                            page_store,
+                            shard_id,
+                            *timeline_key,
+                            address,
+                            &mut page_cache,
+                        ) {
+                            scanned_ref_count += 1;
+                            let key = context_index_ref_identity(&index_ref);
+                            if seen_for_predicate.insert(key, index_ref).is_some() {
+                                deduped_ref_count += 1;
+                            }
+                        }
+                    }
+                }
+
+                candidate_refs = match candidate_refs {
+                    None => Some(seen_for_predicate),
+                    Some(mut existing) => {
+                        existing.retain(|key, _| seen_for_predicate.contains_key(key));
+                        Some(existing)
+                    }
+                };
+                if candidate_refs.as_ref().is_some_and(HashMap::is_empty) {
+                    break;
+                }
+            }
+
+            let mut refs: Vec<_> = candidate_refs.unwrap_or_default().into_values().collect();
+            refs.sort_by_key(|index_ref| {
+                (
+                    index_ref.primary_event_time_ms,
+                    index_ref.event_id_hash,
+                    index_ref.primary_node_hash,
+                )
+            });
+            refs.truncate(context_limit(limit));
+            CommandResponse::ContextIndexIntersection {
+                refs,
+                matched_index_count: predicates.len(),
+                scanned_ref_count,
+                deduped_ref_count,
+            }
+        }
         Command::ContextWritePackAudit { tenant_hash, audit } => {
             let object_key = context_audit_key(tenant_hash, audit.session_hash);
             let timeline_key =
@@ -12076,6 +12144,14 @@ fn context_index_key(
     format!("ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}")
 }
 
+fn context_index_ref_identity(index_ref: &ContextIndexRef) -> (u64, u64, u64) {
+    (
+        index_ref.primary_node_hash,
+        index_ref.primary_event_time_ms,
+        index_ref.event_id_hash,
+    )
+}
+
 fn context_index_disabled(
     indexes: &ContextExtractedEventIndexes,
     index: InternalContextIndex,
@@ -12410,6 +12486,7 @@ fn command_object_keys(command: &Command) -> Vec<String> {
         | Command::ContextGetNode { .. }
         | Command::ContextQueryEvents { .. }
         | Command::ContextQueryIndex { .. }
+        | Command::ContextQueryIndexIntersection { .. }
         | Command::ContextQueryPackAudit { .. }
         | Command::ContextQuerySummaryDirty { .. }
         | Command::ContextGetEntity { .. }
@@ -12707,6 +12784,18 @@ fn validate_command_preconditions(
             validate_context_required(*index_value_hash != 0, "index_value_hash is required")?;
             validate_context_limit(*limit)?;
             validate_context_range(*start_time_ms, *end_time_ms)?;
+        }
+        Command::ContextQueryIndexIntersection {
+            tenant_hash,
+            predicates,
+            limit,
+        } => {
+            validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
+            validate_context_required(!predicates.is_empty(), "predicates are required")?;
+            validate_context_limit(*limit)?;
+            for predicate in predicates {
+                validate_context_index_lookup(predicate)?;
+            }
         }
         Command::ContextWritePackAudit { tenant_hash, audit } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
@@ -13124,6 +13213,15 @@ fn validate_context_index_ref(index_ref: &ContextIndexRef) -> Result<(), Status>
         "invalid context index ref",
     )?;
     validate_context_timestamp(index_ref.primary_event_time_ms)
+}
+
+fn validate_context_index_lookup(predicate: &ContextIndexLookup) -> Result<(), Status> {
+    validate_context_index_name(&predicate.index_name)?;
+    validate_context_required(
+        predicate.index_value_hash != 0,
+        "index_value_hash is required",
+    )?;
+    validate_context_range(predicate.start_time_ms, predicate.end_time_ms)
 }
 
 fn validate_context_extracted_indexes(
@@ -14128,6 +14226,125 @@ mod tests {
             recovery.total_page_refs >= 5,
             "context pages should be visible to recovery accounting"
         );
+    }
+
+    // shared-corpus: context_secondary_index_intersection
+    #[test]
+    fn context_secondary_index_intersection_matches_cpp_filter_groups() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+
+        let first_ref = ContextIndexRef {
+            primary_node_hash: 42,
+            primary_event_time_ms: 1_000,
+            event_id_hash: 100,
+        };
+        let second_ref = ContextIndexRef {
+            primary_node_hash: 43,
+            primary_event_time_ms: 1_100,
+            event_id_hash: 101,
+        };
+
+        for (index_name, index_value_hash, scope_hash, event_time_ms, index_ref) in [
+            ("entity", 501, 9, 1_000, first_ref.clone()),
+            ("entity", 501, 9, 1_001, first_ref.clone()),
+            ("status", 601, 9, 1_000, first_ref.clone()),
+            ("source", 701, 9, 1_000, first_ref.clone()),
+            ("entity", 501, 9, 1_100, second_ref.clone()),
+            ("source", 701, 9, 1_100, second_ref.clone()),
+            ("entity", 501, 10, 1_000, first_ref.clone()),
+        ] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteIndexRef {
+                    tenant_hash: 11,
+                    index_name: index_name.to_string(),
+                    index_value_hash,
+                    scope_hash,
+                    event_time_ms,
+                    index_ref,
+                },
+            });
+            assert!(
+                response.status.ok,
+                "index write failed for {index_name}: {:?}",
+                response.status
+            );
+        }
+
+        let intersection = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryIndexIntersection {
+                tenant_hash: 11,
+                predicates: vec![
+                    ContextIndexLookup {
+                        index_name: "entity".to_string(),
+                        index_value_hash: 501,
+                        scope_hash: 9,
+                        start_time_ms: 999,
+                        end_time_ms: 1_101,
+                    },
+                    ContextIndexLookup {
+                        index_name: "status".to_string(),
+                        index_value_hash: 601,
+                        scope_hash: 9,
+                        start_time_ms: 999,
+                        end_time_ms: 1_101,
+                    },
+                    ContextIndexLookup {
+                        index_name: "source".to_string(),
+                        index_value_hash: 701,
+                        scope_hash: 9,
+                        start_time_ms: 999,
+                        end_time_ms: 1_101,
+                    },
+                ],
+                limit: Some(10),
+            },
+        });
+        assert!(matches!(
+            intersection.response,
+            CommandResponse::ContextIndexIntersection {
+                refs,
+                matched_index_count: 3,
+                scanned_ref_count: 6,
+                deduped_ref_count: 1,
+            } if refs == vec![first_ref.clone()]
+        ));
+
+        let scoped_out = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextQueryIndexIntersection {
+                tenant_hash: 11,
+                predicates: vec![
+                    ContextIndexLookup {
+                        index_name: "entity".to_string(),
+                        index_value_hash: 501,
+                        scope_hash: 10,
+                        start_time_ms: 999,
+                        end_time_ms: 1_101,
+                    },
+                    ContextIndexLookup {
+                        index_name: "status".to_string(),
+                        index_value_hash: 601,
+                        scope_hash: 10,
+                        start_time_ms: 999,
+                        end_time_ms: 1_101,
+                    },
+                ],
+                limit: None,
+            },
+        });
+        assert!(matches!(
+            scoped_out.response,
+            CommandResponse::ContextIndexIntersection { refs, .. } if refs.is_empty()
+        ));
     }
 
     // shared-corpus: context_tree_embedding_summary_compression
