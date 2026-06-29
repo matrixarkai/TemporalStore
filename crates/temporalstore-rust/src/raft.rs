@@ -628,6 +628,14 @@ pub struct ByteRaftRuntimeAdminReport {
     pub wal_total_records: u64,
     pub wal_first_sequence: u64,
     pub wal_last_sequence: u64,
+    #[serde(default)]
+    pub wal_first_log_index: u64,
+    #[serde(default)]
+    pub wal_last_log_index: u64,
+    #[serde(default)]
+    pub wal_released_segment_count: u64,
+    #[serde(default)]
+    pub wal_slow_fsync_backpressure_observed: bool,
     pub pre_vote_enforced: bool,
     pub election_controls_enforced: bool,
     #[serde(default)]
@@ -864,6 +872,16 @@ struct RaftWalEnvelope {
     record: RaftWalRecord,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+struct RaftWalSegmentRuntimeState {
+    #[serde(default)]
+    released_segment_count: u64,
+    #[serde(default)]
+    last_fsync_elapsed_ms: u64,
+    #[serde(default)]
+    slow_fsync_backpressure_observed: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct RaftWalRecovery {
     pub record: Option<RaftWalRecord>,
@@ -880,12 +898,26 @@ pub struct RaftWalSegmentInfo {
     pub record_count: u64,
     pub first_sequence: u64,
     pub last_sequence: u64,
+    #[serde(default)]
+    pub first_log_index: u64,
+    #[serde(default)]
+    pub last_log_index: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftWalSegmentReport {
     pub active_segment_id: u64,
     pub segments: Vec<RaftWalSegmentInfo>,
+    #[serde(default)]
+    pub released_segment_count: u64,
+    #[serde(default)]
+    pub first_retained_log_index: u64,
+    #[serde(default)]
+    pub last_retained_log_index: u64,
+    #[serde(default)]
+    pub last_fsync_elapsed_ms: u64,
+    #[serde(default)]
+    pub slow_fsync_backpressure_observed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -949,6 +981,25 @@ impl LocalRaftWal {
         max_segment_bytes: u64,
         min_keep_segments: usize,
     ) -> io::Result<RaftWalSegmentReport> {
+        self.persist_node_segmented_with_fsync_threshold(
+            shard_id,
+            node_id,
+            record,
+            max_segment_bytes,
+            min_keep_segments,
+            u64::MAX,
+        )
+    }
+
+    pub fn persist_node_segmented_with_fsync_threshold(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        record: &RaftWalRecord,
+        max_segment_bytes: u64,
+        min_keep_segments: usize,
+        slow_fsync_threshold_ms: u64,
+    ) -> io::Result<RaftWalSegmentReport> {
         let max_segment_bytes = max_segment_bytes.max(1);
         let min_keep_segments = min_keep_segments.max(1);
         let segment_dir = self.node_segment_dir(shard_id, node_id);
@@ -983,9 +1034,19 @@ impl LocalRaftWal {
             .append(true)
             .open(&active_path)?;
         file.write_all(&encoded)?;
+        let fsync_started = Instant::now();
         file.sync_data()?;
+        let last_fsync_elapsed_ms = fsync_started.elapsed().as_millis() as u64;
+        let before_prune_segments = self.node_segments(shard_id, node_id)?.len();
         self.prune_node_segments(shard_id, node_id, min_keep_segments)?;
-        self.segment_report(shard_id, node_id)
+        let after_prune_segments = self.node_segments(shard_id, node_id)?.len();
+        let mut report = self.segment_report(shard_id, node_id)?;
+        report.released_segment_count =
+            before_prune_segments.saturating_sub(after_prune_segments) as u64;
+        report.last_fsync_elapsed_ms = last_fsync_elapsed_ms;
+        report.slow_fsync_backpressure_observed = last_fsync_elapsed_ms >= slow_fsync_threshold_ms;
+        self.persist_segment_runtime_state(shard_id, node_id, &report)?;
+        Ok(report)
     }
 
     pub fn recover_node_segmented(
@@ -1220,6 +1281,40 @@ impl LocalRaftWal {
             .join(format!("{segment_id:020}.wal"))
     }
 
+    fn node_segment_runtime_state_path(&self, shard_id: ShardId, node_id: RaftNodeId) -> PathBuf {
+        self.node_segment_dir(shard_id, node_id)
+            .join("segment-runtime-state.json")
+    }
+
+    fn persist_segment_runtime_state(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        report: &RaftWalSegmentReport,
+    ) -> io::Result<()> {
+        let state = RaftWalSegmentRuntimeState {
+            released_segment_count: report.released_segment_count,
+            last_fsync_elapsed_ms: report.last_fsync_elapsed_ms,
+            slow_fsync_backpressure_observed: report.slow_fsync_backpressure_observed,
+        };
+        let encoded = serde_json::to_vec_pretty(&state).map_err(io::Error::other)?;
+        fs::write(
+            self.node_segment_runtime_state_path(shard_id, node_id),
+            encoded,
+        )
+    }
+
+    fn read_segment_runtime_state(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+    ) -> RaftWalSegmentRuntimeState {
+        fs::read(self.node_segment_runtime_state_path(shard_id, node_id))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<RaftWalSegmentRuntimeState>(&bytes).ok())
+            .unwrap_or_default()
+    }
+
     fn node_segments(
         &self,
         shard_id: ShardId,
@@ -1242,7 +1337,7 @@ impl LocalRaftWal {
             let Ok(segment_id) = stem.parse::<u64>() else {
                 continue;
             };
-            let (record_count, first_sequence, last_sequence) =
+            let (record_count, first_sequence, last_sequence, first_log_index, last_log_index) =
                 Self::inspect_segment_sequences(&path)?;
             segments.push(RaftWalSegmentInfo {
                 segment_id,
@@ -1250,6 +1345,8 @@ impl LocalRaftWal {
                 record_count,
                 first_sequence,
                 last_sequence,
+                first_log_index,
+                last_log_index,
                 path: path.to_string_lossy().into_owned(),
             });
         }
@@ -1257,11 +1354,13 @@ impl LocalRaftWal {
         Ok(segments)
     }
 
-    fn inspect_segment_sequences(path: &Path) -> io::Result<(u64, u64, u64)> {
+    fn inspect_segment_sequences(path: &Path) -> io::Result<(u64, u64, u64, u64, u64)> {
         let file = OpenOptions::new().read(true).open(path)?;
         let mut record_count = 0u64;
         let mut first_sequence = 0u64;
         let mut last_sequence = 0u64;
+        let mut first_log_index = 0u64;
+        let mut last_log_index = 0u64;
         for line in BufReader::new(file).lines() {
             let line = line?;
             if line.trim().is_empty() {
@@ -1275,8 +1374,32 @@ impl LocalRaftWal {
                 first_sequence = envelope.sequence;
             }
             last_sequence = envelope.sequence;
+            let record_first_log_index = envelope
+                .record
+                .entries
+                .first()
+                .map(|entry| entry.index)
+                .unwrap_or(envelope.record.hard_state.commit_index);
+            let record_last_log_index = envelope
+                .record
+                .entries
+                .last()
+                .map(|entry| entry.index)
+                .unwrap_or(envelope.record.hard_state.commit_index);
+            if first_log_index == 0
+                || (record_first_log_index > 0 && record_first_log_index < first_log_index)
+            {
+                first_log_index = record_first_log_index;
+            }
+            last_log_index = last_log_index.max(record_last_log_index);
         }
-        Ok((record_count, first_sequence, last_sequence))
+        Ok((
+            record_count,
+            first_sequence,
+            last_sequence,
+            first_log_index,
+            last_log_index,
+        ))
     }
 
     fn prune_node_segments(
@@ -1304,12 +1427,27 @@ impl LocalRaftWal {
         node_id: RaftNodeId,
     ) -> io::Result<RaftWalSegmentReport> {
         let segments = self.node_segments(shard_id, node_id)?;
+        let runtime_state = self.read_segment_runtime_state(shard_id, node_id);
+        let first_retained_log_index = segments
+            .iter()
+            .find_map(|segment| (segment.first_log_index > 0).then_some(segment.first_log_index))
+            .unwrap_or_default();
+        let last_retained_log_index = segments
+            .iter()
+            .rev()
+            .find_map(|segment| (segment.last_log_index > 0).then_some(segment.last_log_index))
+            .unwrap_or_default();
         Ok(RaftWalSegmentReport {
             active_segment_id: segments
                 .last()
                 .map(|segment| segment.segment_id)
                 .unwrap_or(0),
             segments,
+            released_segment_count: runtime_state.released_segment_count,
+            first_retained_log_index,
+            last_retained_log_index,
+            last_fsync_elapsed_ms: runtime_state.last_fsync_elapsed_ms,
+            slow_fsync_backpressure_observed: runtime_state.slow_fsync_backpressure_observed,
         })
     }
 }
@@ -8339,6 +8477,10 @@ impl RaftClusterInner {
             wal_total_records,
             wal_first_sequence,
             wal_last_sequence,
+            wal_first_log_index,
+            wal_last_log_index,
+            wal_released_segment_count,
+            wal_slow_fsync_backpressure_observed,
         ) = self
             .wal
             .as_ref()
@@ -8391,16 +8533,21 @@ impl RaftClusterInner {
                     total_records,
                     first_sequence,
                     last_sequence,
+                    report.first_retained_log_index,
+                    report.last_retained_log_index,
+                    report.released_segment_count,
+                    report.slow_fsync_backpressure_observed,
                 )
             })
-            .unwrap_or_default();
+            .unwrap_or((0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, false));
         let wal_segment_lifecycle_present = wal_segment_count > 0
             && wal_active_segment_id >= wal_first_retained_segment_id
             && wal_last_retained_segment_id >= wal_first_retained_segment_id
             && wal_total_bytes > 0
             && wal_active_segment_bytes > 0
             && wal_total_records > 0
-            && wal_last_sequence >= wal_first_sequence;
+            && wal_last_sequence >= wal_first_sequence
+            && wal_last_log_index >= wal_first_log_index;
         let pre_vote_enforced = self.config.enable_pre_vote;
         let pre_vote_process_evidence_observed = self.config.enable_pre_vote
             && self.read_safety_state.pre_vote_requests > 0
@@ -8512,9 +8659,9 @@ impl RaftClusterInner {
             ByteRaftCapabilityEvidence {
                 capability: "wal_segment_lifecycle".to_string(),
                 ready: wal_segment_lifecycle_present,
-                evidence_field: "wal_{segment_count,active_segment_id,first_retained_segment_id,last_retained_segment_id,total_bytes,total_records,first_sequence,last_sequence}".to_string(),
+                evidence_field: "wal_{segment_count,active_segment_id,first_retained_segment_id,last_retained_segment_id,total_bytes,total_records,first_sequence,last_sequence,first_log_index,last_log_index,released_segment_count,slow_fsync_backpressure_observed}".to_string(),
                 detail: format!(
-                    "segments={wal_segment_count}; bytes={wal_total_bytes}; records={wal_total_records}; seq={wal_first_sequence}..{wal_last_sequence}"
+                    "segments={wal_segment_count}; bytes={wal_total_bytes}; records={wal_total_records}; seq={wal_first_sequence}..{wal_last_sequence}; log_index={wal_first_log_index}..{wal_last_log_index}; released={wal_released_segment_count}; slow_fsync={wal_slow_fsync_backpressure_observed}"
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -8694,6 +8841,10 @@ impl RaftClusterInner {
             wal_total_records,
             wal_first_sequence,
             wal_last_sequence,
+            wal_first_log_index,
+            wal_last_log_index,
+            wal_released_segment_count,
+            wal_slow_fsync_backpressure_observed,
             pre_vote_enforced,
             election_controls_enforced,
             pre_vote_process_evidence_observed,
@@ -9752,6 +9903,42 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_wal_last_sequence",
         &[("kind", kind.to_string())],
         report.wal_last_sequence,
+    );
+    out.push_str(
+        "# HELP temporalstore_raft_byteraft_wal_first_log_index First retained WAL log index.\n",
+    );
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_first_log_index gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_first_log_index",
+        &[("kind", kind.to_string())],
+        report.wal_first_log_index,
+    );
+    out.push_str(
+        "# HELP temporalstore_raft_byteraft_wal_last_log_index Last retained WAL log index.\n",
+    );
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_last_log_index gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_last_log_index",
+        &[("kind", kind.to_string())],
+        report.wal_last_log_index,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_released_segment_count WAL segments released by the last segmented append.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_released_segment_count gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_released_segment_count",
+        &[("kind", kind.to_string())],
+        report.wal_released_segment_count,
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed Whether slow fsync backpressure evidence was observed.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed",
+        &[("kind", kind.to_string())],
+        u64::from(report.wal_slow_fsync_backpressure_observed),
     );
     out.push_str("# HELP temporalstore_raft_byteraft_read_index_requests Read-index requests observed by the raft runtime.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_read_index_requests counter\n");

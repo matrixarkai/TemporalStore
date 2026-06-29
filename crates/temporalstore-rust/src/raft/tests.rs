@@ -6535,6 +6535,8 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard(7, [1, 2, 3]);
     let wal = LocalRaftWal::new(dir.path());
+    let mut released_segments = 0u64;
+    let mut slow_fsync_seen = false;
     for index in 0..8 {
         cluster
             .propose(Command::StringSet {
@@ -6543,8 +6545,13 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
             })
             .unwrap();
         for (node_id, record) in cluster.wal_records() {
-            wal.persist_node_segmented(7, node_id, &record, 256, 2)
+            let report = wal
+                .persist_node_segmented_with_fsync_threshold(7, node_id, &record, 256, 2, 0)
                 .unwrap();
+            if node_id == 1 {
+                released_segments = released_segments.saturating_add(report.released_segment_count);
+                slow_fsync_seen |= report.slow_fsync_backpressure_observed;
+            }
         }
     }
 
@@ -6552,6 +6559,16 @@ fn local_raft_wal_segments_roll_retain_and_recover_latest_state() {
     assert_eq!(report.segments.len(), 2);
     assert!(report.active_segment_id >= 2);
     assert!(report.segments.iter().all(|segment| segment.bytes > 0));
+    assert!(report
+        .segments
+        .iter()
+        .all(|segment| segment.first_log_index > 0
+            && segment.last_log_index >= segment.first_log_index));
+    assert!(released_segments > 0);
+    assert!(slow_fsync_seen);
+    assert!(report.slow_fsync_backpressure_observed);
+    assert!(report.first_retained_log_index > 0);
+    assert_eq!(report.last_retained_log_index, 8);
 
     let recovery = wal.recover_node(7, 1).unwrap();
     let record = recovery.record.unwrap();
@@ -6850,6 +6867,9 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
     assert!(admin.wal_active_segment_bytes > 0);
     assert!(admin.wal_total_records > 0);
     assert!(admin.wal_last_sequence >= admin.wal_first_sequence);
+    assert!(admin.wal_first_log_index > 0);
+    assert!(admin.wal_last_log_index >= admin.wal_first_log_index);
+    assert_eq!(admin.wal_last_log_index, 8);
     assert!(admin
         .capability_matrix
         .iter()
