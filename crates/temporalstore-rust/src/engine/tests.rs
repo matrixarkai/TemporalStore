@@ -6244,6 +6244,201 @@ fn core_index_loads_legacy_slot_page_field_names() {
     );
 }
 
+// shared-corpus: cpp_storage_object_page_slot_parity_surfaces
+#[test]
+fn slot_store_reports_all_layout_states_and_runtime_flags() {
+    let mut shard = ShardState::default();
+    shard.slot_index.slot_map.insert(
+        1,
+        SlotNode {
+            routing_slot: 1,
+            meta_loaded: true,
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        2,
+        SlotNode {
+            routing_slot: 2,
+            layout: SlotLayoutState::SingleObject,
+            dirty: true,
+            deleted: true,
+            meta_loaded: true,
+            in_memory: false,
+            ttl_ms: Some(5_000),
+            dirty_generation: 7,
+            object_index: [20].into_iter().collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        3,
+        SlotNode {
+            routing_slot: 3,
+            layout: SlotLayoutState::SinglePageObject,
+            meta_loaded: true,
+            in_memory: true,
+            object_index: [30].into_iter().collect(),
+            page_index: [(
+                "string:k::1:0".to_string(),
+                PageIndex {
+                    object_key: "k".to_string(),
+                    model_id: "string".to_string(),
+                    component: None,
+                    object_id: 30,
+                    address: PageAddress {
+                        page_segment_id: 1,
+                        offset: 0,
+                        length: 4,
+                        page_id: Some(1),
+                        object_id: Some(30),
+                        routing_slot: Some(3),
+                        extent_id: None,
+                        sha256: None,
+                    },
+                    dirty: false,
+                    deleted: false,
+                    log_backed: true,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        4,
+        SlotNode {
+            routing_slot: 4,
+            layout: SlotLayoutState::MultiPageObject,
+            meta_loaded: true,
+            loading: true,
+            in_memory: true,
+            object_index: [40].into_iter().collect(),
+            page_index: [
+                (
+                    "feature:k::2:0".to_string(),
+                    PageIndex {
+                        object_key: "feature-key".to_string(),
+                        model_id: "feature".to_string(),
+                        component: None,
+                        object_id: 40,
+                        address: PageAddress {
+                            page_segment_id: 2,
+                            offset: 0,
+                            length: 4,
+                            page_id: Some(2),
+                            object_id: Some(40),
+                            routing_slot: Some(4),
+                            extent_id: None,
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+                (
+                    "feature:k::2:4".to_string(),
+                    PageIndex {
+                        object_key: "feature-key".to_string(),
+                        model_id: "feature".to_string(),
+                        component: None,
+                        object_id: 40,
+                        address: PageAddress {
+                            page_segment_id: 2,
+                            offset: 4,
+                            length: 4,
+                            page_id: Some(3),
+                            object_id: Some(40),
+                            routing_slot: Some(4),
+                            extent_id: None,
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+    shard.slot_index.slot_map.insert(
+        5,
+        SlotNode {
+            routing_slot: 5,
+            layout: SlotLayoutState::MultiObject,
+            meta_loaded: true,
+            in_memory: true,
+            object_index: [50, 51].into_iter().collect(),
+            page_index: [
+                (
+                    "hash:k:a:3:0".to_string(),
+                    PageIndex {
+                        object_key: "hash-key".to_string(),
+                        model_id: "hash".to_string(),
+                        component: Some("a".to_string()),
+                        object_id: 50,
+                        address: PageAddress {
+                            page_segment_id: 3,
+                            offset: 0,
+                            length: 1,
+                            page_id: Some(4),
+                            object_id: Some(50),
+                            routing_slot: Some(5),
+                            extent_id: None,
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+                (
+                    "hash:k:b:3:1".to_string(),
+                    PageIndex {
+                        object_key: "hash-key".to_string(),
+                        model_id: "hash".to_string(),
+                        component: Some("b".to_string()),
+                        object_id: 51,
+                        address: PageAddress {
+                            page_segment_id: 3,
+                            offset: 1,
+                            length: 1,
+                            page_id: Some(5),
+                            object_id: Some(51),
+                            routing_slot: Some(5),
+                            extent_id: None,
+                            sha256: None,
+                        },
+                        dirty: false,
+                        deleted: false,
+                        log_backed: true,
+                    },
+                ),
+            ]
+            .into_iter()
+            .collect(),
+            ..SlotNode::default()
+        },
+    );
+
+    let report = slot_store::runtime_report(&shard);
+    assert_eq!(report.empty_slots, 1);
+    assert_eq!(report.single_object_slots, 1);
+    assert_eq!(report.single_page_object_slots, 1);
+    assert_eq!(report.multi_page_object_slots, 1);
+    assert_eq!(report.multi_object_slots, 1);
+    assert_eq!(report.deleted_slot_count, 1);
+    assert_eq!(report.loading_slot_count, 1);
+    assert_eq!(report.ttl_slot_count, 1);
+    assert_eq!(report.in_memory_slot_count, 3);
+    assert_eq!(report.max_dirty_generation, 7);
+}
+
 // shared-corpus: cpp_storage_object_page_slot_parity_surfaces;
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {

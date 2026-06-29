@@ -70,6 +70,8 @@ pub(super) struct SlotNode {
     #[serde(default)]
     pub(super) layout: SlotLayoutState,
     pub(super) dirty: bool,
+    #[serde(default)]
+    pub(super) deleted: bool,
     pub(super) meta_loaded: bool,
     pub(super) loading: bool,
     pub(super) in_memory: bool,
