@@ -6982,7 +6982,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         .is_some_and(|handoff| handoff.previous_load_version == 0
             && handoff.next_load_version == 1
             && handoff.applied));
-    assert_eq!(restore_engine.info(1).unwrap().load_version, 1);
+    assert_eq!(restore_engine.get_info(1).info.unwrap().load_version, 1);
     let get = restore_engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -7050,7 +7050,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     restarted.load_shard(1);
     assert_eq!(restarted.interrupted_slot_dump_installs(1).len(), 1);
     let restart_boundary = restarted.storage_recovery_boundary_report(1);
-    assert_eq!(restart_boundary.interrupted_slot_dump_install_count, 1);
+    assert_eq!(restart_boundary.interrupted_slot_dump_installs.len(), 1);
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
