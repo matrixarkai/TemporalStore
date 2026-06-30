@@ -27,9 +27,15 @@ and observable apply lag.
     compacted-entry rejection
   - `rustraft_parity_contract`
   - `rustraft_parity_report`
+  - `rustraft_production_readiness_report`, which fails closed unless semantic
+    readiness, peer pipeline, snapshot lifecycle, WAL lifecycle, data-node
+    rollout, and metaserver rollout evidence are all present
 - `temporalstore-rust` converts `RaftDistributedReadiness` into a
   `RustRaftReadinessSnapshot`, then asks the `rustraft` library to build the
   report.
+- `temporalstore-rust` re-exports the RustRaft production readiness report/input
+  so deployment gates can call the shared library contract through the normal
+  TemporalStore Rust API.
 - `temporalstore-rust` keeps app-specific data-node/metaserver state-machine,
   HTTP, topology, and durable storage glue, but aliases reusable RustRaft process
   evidence and rollout report types from the library.
@@ -47,6 +53,7 @@ and observable apply lag.
 | Metrics model | RustRaft metric names/status snapshots live in the library; TemporalStore still emits many app-specific metrics. | Route Raft dashboard panels through RustRaft metric-name constants where possible. | Grafana/Prometheus parity checks. |
 | Fault harness API | Fault cases are currently driven by TemporalStore harnesses. | Add a library-level deterministic harness for partitions, packet loss, slow WAL, restart, compaction, and snapshot install. | `raft_rustraft_*_fault_harness` cases. |
 | Storage adapter boundary | Durable storage remains TemporalStore-specific. | Define RustRaft storage traits for log append/read, hard state, snapshots, and tombstoned compacted entries. | Storage recovery and compaction gates. |
+| Production evidence wiring | The library gate exists, but live deployment scripts still need to feed all runtime evidence into it automatically. | Wire data-node/metaserver harness outputs into `rustraft_production_readiness_report` and fail CI/deployment if the report is blocked. | RustRaft production readiness artifact validation. |
 
 ## Implementation Order
 

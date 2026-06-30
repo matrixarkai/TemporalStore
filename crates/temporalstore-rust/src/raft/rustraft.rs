@@ -6,9 +6,10 @@ use rustraft::{
 use super::{distributed_raft_readiness, RaftDistributedReadiness};
 
 pub use rustraft::{
-    rustraft_pipeline_evidence, rustraft_snapshot_lifecycle_evidence,
-    rustraft_wal_lifecycle_evidence, RustRaftParityContract, RustRaftParityReport,
-    RustRaftPeerPipelineStatus, RustRaftPipelineEvidence, RustRaftPipelineLimits,
+    rustraft_pipeline_evidence, rustraft_production_readiness_report,
+    rustraft_snapshot_lifecycle_evidence, rustraft_wal_lifecycle_evidence, RustRaftParityContract,
+    RustRaftParityReport, RustRaftPeerPipelineStatus, RustRaftPipelineEvidence,
+    RustRaftPipelineLimits, RustRaftProductionReadinessInput, RustRaftProductionReadinessReport,
     RustRaftReadinessEvidence, RustRaftReadinessSnapshot, RustRaftSemanticRequirement,
     RustRaftSnapshotLifecycleEvidence, RustRaftWalLifecycleEvidence, RustRaftWalLifecycleStatus,
 };

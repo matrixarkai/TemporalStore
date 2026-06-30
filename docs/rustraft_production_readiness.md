@@ -7,18 +7,30 @@ those runtimes must prove.
 
 ## Status Labels
 
-`rustraft_parity_report` returns:
+`rustraft_parity_report` checks the semantic contract and returns:
 
 - `blocked`: one or more required production semantics are missing.
-- `feature_correct`: the contract is usable, but runtime evidence is not enough
-  for production readiness.
 - `production_ready`: all required semantics are present and OpenRaft is absent
   from the public RustRaft contract.
 
-The report also returns `production_blockers`, for example:
+The report also returns semantic `production_blockers`, for example:
 
 ```json
 ["durability:storage_apply_fence"]
+```
+
+`rustraft_production_readiness_report` is the stricter production gate. It wraps
+the parity report and also requires runtime evidence for peer pipeline behavior,
+snapshot lifecycle, WAL lifecycle, data-node process rollout, and metaserver
+process rollout. Missing evidence fails closed with precise blockers such as:
+
+```json
+[
+  "pipeline:append_backpressure",
+  "wal:compaction",
+  "data_node:operational_semantics",
+  "metaserver:read_index"
+]
 ```
 
 These blockers are meant for CI, readiness checks, and deployment gates.
@@ -43,6 +55,10 @@ TemporalStore now consumes the workspace RustRaft library and validates:
 - RustRaft is OpenRaft-free at the public contract boundary.
 - Each requirement has a category and readiness field.
 - Missing required evidence fails closed with category-qualified blockers.
+- Runtime production readiness uses `rustraft_production_readiness_report`, not
+  scattered ad-hoc checks.
+- The production gate requires peer pipeline, snapshot lifecycle, WAL lifecycle,
+  data-node rollout, and metaserver rollout evidence.
 - Current data-node/metaserver readiness reports `production_ready`.
 - C++ ByteRaft/DataRaft-style semantics execute in Rust through the shared
   corpus case `raft_cpp_byteraft_data_raft_semantics_in_rust`.
@@ -54,6 +70,22 @@ if production_status != "production_ready":
   block production Raft claim
   print production_blockers
 ```
+
+For production releases, use:
+
+```text
+rustraft_production_readiness_report({
+  readiness,
+  peer_pipeline,
+  snapshot_lifecycle,
+  wal_lifecycle,
+  data_node_rollout,
+  metaserver_rollout
+})
+```
+
+If any field is missing, the report stays `blocked`; the library does not infer
+production readiness from API presence alone.
 
 ## Metaserver Failover Proof
 

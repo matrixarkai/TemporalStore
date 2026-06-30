@@ -1698,7 +1698,7 @@ impl DataNodeRuntime {
                 selected_dirty_slot_count: plan.selected_dump_slots.len(),
                 undumped_oplog_records: plan.undumped_oplog_records,
                 wal_bytes: plan.undumped_oplog_records,
-                index_log_bytes: plan.index_log_sequence,
+                index_log_bytes: 0,
                 stale_page_segment_count: plan.stale_page_segment_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
                 reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
@@ -1723,7 +1723,6 @@ impl DataNodeRuntime {
                     .saturating_add(plan.selected_dump_slots.len())
                     as u64
                     + plan.undumped_oplog_records
-                    + plan.index_log_sequence
                     + plan.reclaimable_physical_bytes
                     + cache.memory_bytes
                     + cache.disk_bytes,
