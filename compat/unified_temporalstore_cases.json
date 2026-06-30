@@ -5246,6 +5246,27 @@
       ]
     },
     {
+      "description": "Shared C++/Rust WAL/index-log/GC case: reclaim is tied to durable slot generations and blocked by lagging follower cursors or Raft snapshot retention until released.",
+      "family": "storage/cache",
+      "name": "storage_wal_index_gc_generation_retention",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates parent and child slot dumps, proves lagging follower cursor and Raft snapshot refs block WAL/index-log reclaim, then releases retention and applies bounded index-GC.",
+            "expect_durable_slot_generation_frontier": true,
+            "expect_follower_cursor_block": true,
+            "expect_index_gc_budget": true,
+            "expect_raft_snapshot_block": true,
+            "expect_release_allows_reclaim": true,
+            "kind": "storage_wal_index_gc_generation_retention"
+          },
+          "name": "storage_wal_index_gc_generation_retention_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, multi-slot merged manifests, manifest validation, rollback/install markers, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
       "family": "storage/cache",
       "name": "storage_merged_dump_load_policy",
@@ -8816,6 +8837,7 @@
       "storage_stream_partial_extent_rebuild",
       "storage_manager_background_loop",
       "storage_manager_pressure_scale_evidence",
+      "storage_wal_index_gc_generation_retention",
       "storage_merged_dump_load_policy",
       "context_events_segments_entities_child_refs",
       "context_cpp_wire_model_descriptor_roundtrip",
@@ -8957,6 +8979,7 @@
       "storage_stream_reopen_scan",
       "storage_stream_partial_extent_rebuild",
       "storage_manager_pressure_scale_evidence",
+      "storage_wal_index_gc_generation_retention",
       "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
