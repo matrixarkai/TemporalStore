@@ -459,6 +459,23 @@ pub struct ProxySetCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyHashCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub field: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyHashSetCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub field: String,
+    pub value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ProxyHashMultiGetCommandRequest {
     pub namespace: String,
     pub table_name: String,
@@ -472,6 +489,22 @@ pub struct ProxyHashMultiSetCommandRequest {
     pub table_name: String,
     pub key: String,
     pub entries: Vec<(String, Vec<u8>)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxySetMemberCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub member: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProxyExpireCommandRequest {
+    pub namespace: String,
+    pub table_name: String,
+    pub key: String,
+    pub ttl_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -734,6 +767,43 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
+            ("POST", "/ProxyService/Delete") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::CommonDelete { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/Expire") => {
+                match parse_json::<ProxyExpireCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::CommonExpire {
+                            key: req.key,
+                            ttl_ms: req.ttl_ms,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/Ttl") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::CommonTtl { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
             ("POST", "/ProxyService/FeatureAdd") => {
                 match parse_json::<ProxyFeatureAddCommandRequest>(&request.body) {
                     Ok(req) => {
@@ -761,6 +831,64 @@ impl ProxyService {
                             key: req.key,
                             timestamp_ms: req.timestamp_ms,
                             amount: req.amount,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HGet") => {
+                match parse_json::<ProxyHashCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashGet {
+                            key: req.key,
+                            field: req.field,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HSet") => {
+                match parse_json::<ProxyHashSetCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashSet {
+                            key: req.key,
+                            field: req.field,
+                            value: req.value,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/HDel") => {
+                match parse_json::<ProxyHashCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::HashDelete {
+                            key: req.key,
+                            field: req.field,
                         };
                         json_response(
                             200,
@@ -826,6 +954,34 @@ impl ProxyService {
                     Ok(req) => json_response(
                         200,
                         &self.table_command(req, |key| Command::HashLen { key }),
+                    ),
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SAdd") => {
+                match parse_json::<ProxySetMemberCommandRequest>(&request.body) {
+                    Ok(req) => {
+                        let command = Command::SetAdd {
+                            key: req.key,
+                            member: req.member,
+                        };
+                        json_response(
+                            200,
+                            &self.table_execute(ProxyTableExecuteRequest {
+                                namespace: req.namespace,
+                                table_name: req.table_name,
+                                command,
+                            }),
+                        )
+                    }
+                    Err(err) => self.bad_execute_request(err),
+                }
+            }
+            ("POST", "/ProxyService/SMembers") => {
+                match parse_json::<ProxyKeyCommandRequest>(&request.body) {
+                    Ok(req) => json_response(
+                        200,
+                        &self.table_command(req, |key| Command::SetMembers { key }),
                     ),
                     Err(err) => self.bad_execute_request(err),
                 }
@@ -2984,6 +3140,65 @@ mod tests {
         );
         assert!(
             command_alias(
+                "/ProxyService/HSet",
+                serde_json::to_vec(&ProxyHashSetCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-h".to_string(),
+                    field: "single".to_string(),
+                    value: b"single-value".to_vec(),
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/HGet",
+                serde_json::to_vec(&ProxyHashCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-h".to_string(),
+                    field: "single".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Bytes {
+                value: Some(b"single-value".to_vec())
+            }
+        );
+        assert!(
+            command_alias(
+                "/ProxyService/HDel",
+                serde_json::to_vec(&ProxyHashCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-h".to_string(),
+                    field: "single".to_string(),
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/HGet",
+                serde_json::to_vec(&ProxyHashCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-h".to_string(),
+                    field: "single".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Bytes { value: None }
+        );
+        assert!(
+            command_alias(
                 "/ProxyService/HMSet",
                 serde_json::to_vec(&ProxyHashMultiSetCommandRequest {
                     namespace: "ns".to_string(),
@@ -3048,6 +3263,92 @@ mod tests {
         );
         assert!(
             command_alias(
+                "/ProxyService/SAdd",
+                serde_json::to_vec(&ProxySetMemberCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-set".to_string(),
+                    member: b"member-a".to_vec(),
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/SMembers",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-set".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Members {
+                members: vec![b"member-a".to_vec()]
+            }
+        );
+        assert!(
+            command_alias(
+                "/ProxyService/Expire",
+                serde_json::to_vec(&ProxyExpireCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-command".to_string(),
+                    ttl_ms: 60_000,
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        let ttl_response = command_alias(
+            "/ProxyService/Ttl",
+            serde_json::to_vec(&ProxyKeyCommandRequest {
+                namespace: "ns".to_string(),
+                table_name: "tbl".to_string(),
+                key: "cpp-proxy-command".to_string(),
+            })
+            .unwrap(),
+        )
+        .response;
+        match ttl_response {
+            CommandResponse::Integer { value } => {
+                assert!(value > 0);
+                assert!(value <= 60_000);
+            }
+            other => panic!("unexpected ttl response: {other:?}"),
+        }
+        assert!(
+            command_alias(
+                "/ProxyService/Delete",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-command".to_string(),
+                })
+                .unwrap(),
+            )
+            .status
+            .ok
+        );
+        assert_eq!(
+            command_alias(
+                "/ProxyService/Get",
+                serde_json::to_vec(&ProxyKeyCommandRequest {
+                    namespace: "ns".to_string(),
+                    table_name: "tbl".to_string(),
+                    key: "cpp-proxy-command".to_string(),
+                })
+                .unwrap(),
+            )
+            .response,
+            CommandResponse::Bytes { value: None }
+        );
+        assert!(
+            command_alias(
                 "/ProxyService/FeatureAdd",
                 serde_json::to_vec(&ProxyFeatureAddCommandRequest {
                     namespace: "ns".to_string(),
@@ -3079,7 +3380,7 @@ mod tests {
             .ok
         );
         let info = proxy.info();
-        assert_eq!(info.stats.execute_requests, 9);
+        assert_eq!(info.stats.execute_requests, 19);
         assert_eq!(info.stats.batch_execute_requests, 1);
         assert!(info.stats.route_cache_hits >= 1);
     }

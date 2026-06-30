@@ -769,6 +769,90 @@ impl ProxyClient {
         .map_err(json_error)
     }
 
+    pub fn hset(&self, key: &str, field: &str, value: &str) -> Result<()> {
+        let body = self.proxy_service_body(
+            key,
+            &[
+                ("field", serde_json::json!(field)),
+                ("value", serde_json::json!(value.as_bytes())),
+            ],
+        );
+        self.proxy_service_execute("/ProxyService/HSet", body)
+            .map(|_| ())
+    }
+
+    pub fn hget(&self, key: &str, field: &str) -> Result<String> {
+        let body = self.proxy_service_body(key, &[("field", serde_json::json!(field))]);
+        let response = self.proxy_service_execute("/ProxyService/HGet", body)?;
+        let value = response
+            .get("value")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default();
+        let bytes = value
+            .into_iter()
+            .map(|item| item.as_u64().unwrap_or_default() as u8)
+            .collect::<Vec<_>>();
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    pub fn hdel(&self, key: &str, field: &str) -> Result<()> {
+        let body = self.proxy_service_body(key, &[("field", serde_json::json!(field))]);
+        self.proxy_service_execute("/ProxyService/HDel", body)
+            .map(|_| ())
+    }
+
+    pub fn sadd(&self, key: &str, member: &str) -> Result<()> {
+        let body =
+            self.proxy_service_body(key, &[("member", serde_json::json!(member.as_bytes()))]);
+        self.proxy_service_execute("/ProxyService/SAdd", body)
+            .map(|_| ())
+    }
+
+    pub fn smembers(&self, key: &str) -> Result<Vec<String>> {
+        let body = self.proxy_service_body(key, &[]);
+        let response = self.proxy_service_execute("/ProxyService/SMembers", body)?;
+        let members = response
+            .get("members")
+            .and_then(|value| value.as_array())
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|member| {
+                let bytes = member
+                    .as_array()
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|item| item.as_u64().unwrap_or_default() as u8)
+                    .collect::<Vec<_>>();
+                String::from_utf8_lossy(&bytes).into_owned()
+            })
+            .collect();
+        Ok(members)
+    }
+
+    pub fn delete_object(&self, key: &str) -> Result<()> {
+        let body = self.proxy_service_body(key, &[]);
+        self.proxy_service_execute("/ProxyService/Delete", body)
+            .map(|_| ())
+    }
+
+    pub fn expire(&self, key: &str, ttl_ms: u64) -> Result<()> {
+        let body = self.proxy_service_body(key, &[("ttl_ms", serde_json::json!(ttl_ms))]);
+        self.proxy_service_execute("/ProxyService/Expire", body)
+            .map(|_| ())
+    }
+
+    pub fn ttl(&self, key: &str) -> Result<u64> {
+        let body = self.proxy_service_body(key, &[]);
+        let response = self.proxy_service_execute("/ProxyService/Ttl", body)?;
+        Ok(response
+            .get("value")
+            .and_then(|value| value.as_u64())
+            .unwrap_or_default())
+    }
+
     fn key_body(&self, key: &str, extra: &[(&str, serde_json::Value)]) -> serde_json::Value {
         let mut body = serde_json::json!({
             "namespace": self.options.namespace_name,
@@ -782,7 +866,77 @@ impl ProxyClient {
         body
     }
 
+    fn proxy_service_body(
+        &self,
+        key: &str,
+        extra: &[(&str, serde_json::Value)],
+    ) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "namespace": self.options.namespace_name,
+            "table_name": self.options.table_name,
+            "key": key,
+        });
+        let object = body.as_object_mut().expect("object body");
+        for (name, value) in extra {
+            object.insert((*name).to_string(), value.clone());
+        }
+        body
+    }
+
+    fn proxy_service_execute(
+        &self,
+        path: &str,
+        body: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let response = self.post_raw(path, body)?;
+        let status_ok = response
+            .get("status")
+            .and_then(|status| status.get("ok"))
+            .and_then(|ok| ok.as_bool())
+            .unwrap_or(false);
+        if !status_ok {
+            return Err(Error {
+                code: 0,
+                message: response
+                    .get("status")
+                    .and_then(|status| status.get("message"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("proxy service request failed")
+                    .to_string(),
+            });
+        }
+        Ok(response
+            .get("response")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})))
+    }
+
     fn post(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
+        let envelope = self.post_raw(path, body)?;
+        if !envelope
+            .get("ok")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false)
+        {
+            return Err(Error {
+                code: envelope
+                    .get("code")
+                    .and_then(|value| value.as_i64())
+                    .unwrap_or(0) as i32,
+                message: envelope
+                    .get("message")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("proxy request failed")
+                    .to_string(),
+            });
+        }
+        Ok(envelope
+            .get("data")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({})))
+    }
+
+    fn post_raw(&self, path: &str, body: serde_json::Value) -> Result<serde_json::Value> {
         let (host, port, base_path) = parse_http_endpoint(&self.endpoint)?;
         let request_path = format!("{base_path}{path}");
         let payload = serde_json::to_string(&body).map_err(json_error)?;
@@ -819,29 +973,7 @@ impl ProxyClient {
                     .to_string(),
             });
         }
-
-        let envelope: serde_json::Value = serde_json::from_str(body).map_err(json_error)?;
-        if !envelope
-            .get("ok")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false)
-        {
-            return Err(Error {
-                code: envelope
-                    .get("code")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or(0) as i32,
-                message: envelope
-                    .get("message")
-                    .and_then(|value| value.as_str())
-                    .unwrap_or("proxy request failed")
-                    .to_string(),
-            });
-        }
-        Ok(envelope
-            .get("data")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})))
+        serde_json::from_str(body).map_err(json_error)
     }
 }
 
@@ -891,6 +1023,8 @@ fn parse_http_endpoint(endpoint: &str) -> Result<(String, u16, String)> {
 mod tests {
     #[cfg(feature = "direct")]
     use super::Client;
+    #[cfg(feature = "proxy")]
+    use super::ProxyClient;
 
     #[cfg(feature = "direct")]
     #[test]
@@ -905,5 +1039,18 @@ mod tests {
         let _: fn(&Client, &str) -> super::Result<Vec<String>> = Client::smembers;
         let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
             Client::matrixark_batch_append_records;
+    }
+
+    #[cfg(feature = "proxy")]
+    #[test]
+    fn proxy_client_exposes_cpp_proxy_parity_methods() {
+        let _: fn(&ProxyClient, &str, &str, &str) -> super::Result<()> = ProxyClient::hset;
+        let _: fn(&ProxyClient, &str, &str) -> super::Result<String> = ProxyClient::hget;
+        let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::hdel;
+        let _: fn(&ProxyClient, &str) -> super::Result<()> = ProxyClient::delete_object;
+        let _: fn(&ProxyClient, &str, u64) -> super::Result<()> = ProxyClient::expire;
+        let _: fn(&ProxyClient, &str) -> super::Result<u64> = ProxyClient::ttl;
+        let _: fn(&ProxyClient, &str, &str) -> super::Result<()> = ProxyClient::sadd;
+        let _: fn(&ProxyClient, &str) -> super::Result<Vec<String>> = ProxyClient::smembers;
     }
 }
