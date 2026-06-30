@@ -8386,10 +8386,23 @@
           "command": {
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared StorageManager runtime case for continuous prepare, WAL reclaim, expire, evict, page GC, compaction, and index-GC with real pressure signals and per-phase reports.",
+            "expect_controls": [
+              "stoppable_loop",
+              "jitter",
+              "backoff",
+              "pause_resume"
+            ],
+            "expect_pressure_inputs": [
+              "dirty_slots",
+              "wal_bytes",
+              "index_log_bytes",
+              "stale_density",
+              "cache_pressure"
+            ],
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
-            "rust_runner": "cargo test -p temporalstore-rust storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_flags --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-unified-control-storage-validation --log <shared-case.json>",
             "suite": "cpp_storage_parity"
           },
