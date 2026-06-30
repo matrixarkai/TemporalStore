@@ -5260,6 +5260,8 @@
             "expect_load_version_handoff": true,
             "expect_manifest_checksum": true,
             "expect_multi_slot_merged_manifest": true,
+            "expect_interrupted_install_recovery": true,
+            "expect_interrupted_install_counters": true,
             "expect_replay_boundary": true,
             "expect_roll_forward": true,
             "expect_rollback_markers": true,

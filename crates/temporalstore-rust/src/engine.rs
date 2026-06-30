@@ -3617,9 +3617,23 @@ impl TemporalEngine {
             report.production_slice_ready = dry_run;
             return report;
         };
+        let interrupted_installs = self.interrupted_slot_dump_installs(shard_id);
+        report.interrupted_install_count = interrupted_installs.len();
+        report.roll_forward_recovery_count = lifecycle.install_roll_forward_reports.len();
+        report.rollback_marker_count = lifecycle
+            .install_roll_forward_reports
+            .iter()
+            .filter(|roll_forward| {
+                roll_forward.completed_install
+                    || roll_forward.completed_commit
+                    || roll_forward.obsolete_marker_files_removed > 0
+            })
+            .count();
+        report.interruption_recovery_validated =
+            report.interrupted_install_count == 0 || report.roll_forward_recovery_count > 0;
         report.install_marker_policy_checked = true;
-        report.install_roll_forward_checked = !lifecycle.install_roll_forward_reports.is_empty()
-            || self.interrupted_slot_dump_installs(shard_id).is_empty();
+        report.install_roll_forward_checked =
+            !lifecycle.install_roll_forward_reports.is_empty() || interrupted_installs.is_empty();
         let Some(manifest) = lifecycle.dump_manifest.as_ref() else {
             if !plan.selected_dump_slots.is_empty() {
                 report.blockers.push("dump_manifest_missing".to_string());
@@ -3705,6 +3719,9 @@ impl TemporalEngine {
         report.stale_object_conflict_reported = preflight.stale_object_conflict_count > 0;
         report.stale_page_conflict_reported =
             preflight.stale_manifest || preflight.stale_page_conflict_count > 0;
+        report.stale_object_conflict_count = preflight.stale_object_conflict_count;
+        report.stale_page_conflict_count = preflight.stale_page_conflict_count
+            + usize::from(preflight.stale_manifest && preflight.stale_page_conflict_count == 0);
         report.object_lifecycle_validated = expected_object_lifecycle
             .map(|expected| {
                 expected.live_object_ids == manifest.object_lifecycle.live_object_ids
@@ -3741,6 +3758,10 @@ impl TemporalEngine {
             (
                 report.load_version_handoff_validated,
                 "load_version_handoff",
+            ),
+            (
+                report.interruption_recovery_validated,
+                "interruption_recovery",
             ),
         ] {
             if !ready {

@@ -6930,6 +6930,12 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(report.object_lifecycle_validated);
     assert!(report.merged_manifest_validated);
     assert!(report.source_slot_coverage_validated);
+    assert!(report.interruption_recovery_validated);
+    assert_eq!(report.interrupted_install_count, 0);
+    assert_eq!(report.roll_forward_recovery_count, 0);
+    assert_eq!(report.rollback_marker_count, 0);
+    assert_eq!(report.stale_object_conflict_count, 0);
+    assert_eq!(report.stale_page_conflict_count, 0);
 
     let manifest = latest_slot_dump_manifest_at(&engine.index_dir, 1).unwrap();
     let restore_engine = TemporalEngine::with_local_dirs(
@@ -6981,11 +6987,52 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         .blockers
         .contains(&"stale_page_conflicts".to_string()));
     assert!(stale_preflight.stale_page_conflict_count > 0);
+    assert_eq!(stale_preflight.stale_object_conflict_count, 0);
     assert!(!engine
         .install_slot_dump_manifest(&manifest)
         .unwrap_err()
         .code
         .is_empty());
+
+    write_slot_dump_install_marker(
+        &engine.index_dir,
+        &SlotDumpInstallMarker {
+            shard_id: manifest.shard_id,
+            manifest_id: manifest.manifest_id.clone(),
+            phase: "install".to_string(),
+            oplog_sequence: manifest.oplog_sequence,
+            index_log_sequence: manifest.index_log_sequence,
+            created_unix_ms: now_ms(),
+        },
+    )
+    .unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "merged-c".to_string(),
+            value: b"v3".to_vec(),
+        },
+    });
+    let recovered =
+        engine.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
+            lifecycle: StorageLifecycleRequest {
+                shard_id: 1,
+                max_dump_slots_per_round: 16,
+                prune_slot_dump_manifests: true,
+                roll_forward_slot_dump_installs: true,
+                invalidate_cache: true,
+                warm_cache: true,
+                ..StorageLifecycleRequest::default()
+            },
+            create_dump_manifest: true,
+            install_dump_manifest: false,
+        });
+    assert!(recovered.policy_ready, "{recovered:?}");
+    assert!(recovered.interruption_recovery_validated);
+    assert_eq!(recovered.interrupted_install_count, 0);
+    assert!(recovered.roll_forward_recovery_count >= 1);
+    assert!(recovered.rollback_marker_count >= 1);
+    assert!(engine.interrupted_slot_dump_installs(1).is_empty());
 }
 
 #[test]
