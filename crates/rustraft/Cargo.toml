@@ -1,8 +1,14 @@
 [package]
 name = "rustraft"
+description = "TemporalStore-owned Raft contract, readiness, and safety helper library."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository = "https://github.com/bjmeetsfo/TemporalStore"
+homepage = "https://github.com/bjmeetsfo/TemporalStore"
+readme = "README.md"
+keywords = ["raft", "consensus", "temporalstore", "distributed-systems"]
+categories = ["algorithms", "data-structures"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

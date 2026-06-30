@@ -1,3 +1,25 @@
+#![forbid(unsafe_code)]
+//! RustRaft is the TemporalStore-owned Raft contract and readiness library.
+//!
+//! The crate intentionally focuses on portable consensus-facing contracts:
+//! request/response types, storage and transport traits, safety decisions,
+//! metrics names, and fail-closed production readiness reports. It does not run
+//! the TemporalStore data-node or metaserver by itself. Those runtimes consume
+//! this crate and attach live evidence for pipeline, WAL, snapshot, membership,
+//! failover, and process-rollout behavior.
+//!
+//! Typical integration flow:
+//!
+//! 1. Build a [`RustRaftReadinessSnapshot`] from the serving runtime.
+//! 2. Call [`rustraft_parity_report`] for semantic contract readiness.
+//! 3. Attach live runtime evidence to [`RustRaftProductionReadinessInput`].
+//! 4. Call [`rustraft_production_readiness_report`] and block production claims
+//!    unless the report is ready.
+//!
+//! The public API is OpenRaft-free by design. Compatibility with existing
+//! TemporalStore deployment semantics is expressed through RustRaft-owned types
+//! and tests instead of upstream-specific type aliases.
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -1912,6 +1934,16 @@ mod tests {
         let contract = rustraft_parity_contract();
         assert!(contract.openraft_dependency_removed);
         assert_eq!(contract.requirements.len(), 12);
+    }
+
+    #[test]
+    fn crate_readme_documents_open_source_contract_surface() {
+        let readme = include_str!("../README.md");
+        assert!(readme.contains("RustRaft"));
+        assert!(readme.contains("rustraft_parity_report"));
+        assert!(readme.contains("rustraft_production_readiness_report"));
+        assert!(readme.contains("OpenRaft-free"));
+        assert!(readme.contains("Apache-2.0"));
     }
 
     #[test]
