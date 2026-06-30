@@ -809,6 +809,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "cache pressure selects victims by routing-slot/object group before individual block, matching C++ Evicter slot-first pressure behavior".to_string(),
         "pin-aware eviction skip counters preserve active page/block handles".to_string(),
         "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
+        "shared case storage_cache_replacement_policy_soak exercises repeated pressure rounds, dump-before-evict, delete/drop eviction, and cold read refill through TemporalStore storage".to_string(),
     ];
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
