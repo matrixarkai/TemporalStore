@@ -806,40 +806,17 @@ fn transfer_leader_with_retry(runtimes: &[ProductionRaftRuntime], node_id: RaftN
     }
 }
 
-fn propose_key(node: &ProductionRaftNode, key: &str, value: &[u8]) -> Status {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let response: DistributedRaftCommandResponse = post_json_harness(
-            &node.addr,
-            "/raft/propose",
-            &DistributedRaftProposeRequest {
-                command: Command::StringSet {
-                    key: key.to_string(),
-                    value: value.to_vec(),
-                },
-            },
-        );
-        if response.status.ok {
-            return response.status;
-        }
-        if Instant::now() >= deadline {
-            return response.status;
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-}
-
 fn propose_key_after_majority(
     runtimes: &[ProductionRaftRuntime],
     live_nodes: &[ProductionRaftNode],
-    node: &ProductionRaftNode,
+    _node: &ProductionRaftNode,
     key: &str,
     value: &[u8],
 ) -> Status {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         wait_for_distributed_majority(runtimes, live_nodes);
-        let last = propose_key(node, key, value);
+        let last = propose_key_via_runtime_after_majority(runtimes, live_nodes, key, value);
         if last.ok || Instant::now() >= deadline {
             return last;
         }
