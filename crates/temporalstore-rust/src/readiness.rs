@@ -1057,7 +1057,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let mature_background_storage_manager_blockers = Vec::new();
     let merged_dump_load_policy_ready = true;
     let merged_dump_load_policy_evidence = vec![
-        "StorageMergedDumpLoadPolicyReport coordinates dirty-slot dump selection, checksum/generation validation, multi-slot merged manifest source coverage, load preflight, replay boundary, roll-forward/rollback marker counters, interrupted-install recovery counters, stale object/page conflict counts, follower-safe retention, and index-GC".to_string(),
+        "StorageMergedDumpLoadPolicyReport coordinates dirty-slot dump selection, checksum/generation validation, multi-slot merged manifest source coverage, load preflight, load-version handoff apply/mismatch rejection, restart-during-install recovery, replay boundary, roll-forward/rollback marker counters, interrupted-install recovery counters, stale object/page conflict counts, follower-safe retention, and index-GC".to_string(),
         "merged policy fails closed for missing manifests, unsafe load preflight, stale installs, broken manifest chains, blocked retention, and index-GC gaps".to_string(),
         "shared corpus case storage_merged_dump_load_policy validates restore-engine install and stale-load rejection".to_string(),
     ];
