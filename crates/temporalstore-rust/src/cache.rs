@@ -487,6 +487,12 @@ pub struct CacheReplacementPolicySoakReport {
     pub observed_evictions: u64,
     pub observed_pinned_skips: u64,
     pub observed_disk_refills: u64,
+    #[serde(default)]
+    pub observed_async_writeback_backpressure: u64,
+    #[serde(default)]
+    pub async_writeback_max_queue_depth: u64,
+    #[serde(default)]
+    pub async_writeback_max_queue_bytes: u64,
     pub get_latency_samples: u64,
     pub put_latency_samples: u64,
     #[serde(default)]
@@ -499,6 +505,16 @@ pub struct CacheReplacementPolicySoakReport {
     pub eviction_latency_samples: u64,
     #[serde(default)]
     pub compaction_latency_samples: u64,
+    #[serde(default)]
+    pub read_through_latency_bucketed: bool,
+    #[serde(default)]
+    pub refill_latency_bucketed: bool,
+    #[serde(default)]
+    pub writeback_latency_bucketed: bool,
+    #[serde(default)]
+    pub eviction_latency_bucketed: bool,
+    #[serde(default)]
+    pub compaction_latency_bucketed: bool,
     pub passed: bool,
     pub reasons: Vec<String>,
 }
@@ -548,6 +564,20 @@ pub fn validate_cache_pressure_policy(
     }
     report.passed = report.reasons.is_empty();
     report
+}
+
+fn latency_bucket_count(
+    le_10us: u64,
+    le_100us: u64,
+    le_1ms: u64,
+    le_10ms: u64,
+    gt_10ms: u64,
+) -> u64 {
+    le_10us
+        .saturating_add(le_100us)
+        .saturating_add(le_1ms)
+        .saturating_add(le_10ms)
+        .saturating_add(gt_10ms)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1419,6 +1449,41 @@ impl MultiLayerCache {
         let _ = self.drain_async_writeback(8);
         self.record_compaction_latency_micros(500);
         let stats = self.stats();
+        let read_through_latency_bucketed = latency_bucket_count(
+            stats.read_through_latency_le_10us,
+            stats.read_through_latency_le_100us,
+            stats.read_through_latency_le_1ms,
+            stats.read_through_latency_le_10ms,
+            stats.read_through_latency_gt_10ms,
+        ) == stats.read_through_latency_samples;
+        let refill_latency_bucketed = latency_bucket_count(
+            stats.refill_latency_le_10us,
+            stats.refill_latency_le_100us,
+            stats.refill_latency_le_1ms,
+            stats.refill_latency_le_10ms,
+            stats.refill_latency_gt_10ms,
+        ) == stats.refill_latency_samples;
+        let writeback_latency_bucketed = latency_bucket_count(
+            stats.writeback_latency_le_10us,
+            stats.writeback_latency_le_100us,
+            stats.writeback_latency_le_1ms,
+            stats.writeback_latency_le_10ms,
+            stats.writeback_latency_gt_10ms,
+        ) == stats.writeback_latency_samples;
+        let eviction_latency_bucketed = latency_bucket_count(
+            stats.eviction_latency_le_10us,
+            stats.eviction_latency_le_100us,
+            stats.eviction_latency_le_1ms,
+            stats.eviction_latency_le_10ms,
+            stats.eviction_latency_gt_10ms,
+        ) == stats.eviction_latency_samples;
+        let compaction_latency_bucketed = latency_bucket_count(
+            stats.compaction_latency_le_10us,
+            stats.compaction_latency_le_100us,
+            stats.compaction_latency_le_1ms,
+            stats.compaction_latency_le_10ms,
+            stats.compaction_latency_gt_10ms,
+        ) == stats.compaction_latency_samples;
         let mut report = CacheReplacementPolicySoakReport {
             iterations,
             hot_key_count: hot_keys.len(),
@@ -1430,6 +1495,9 @@ impl MultiLayerCache {
             observed_evictions: stats.memory_evictions,
             observed_pinned_skips: stats.eviction_pinned_skips,
             observed_disk_refills: stats.disk_hits,
+            observed_async_writeback_backpressure: stats.async_writeback_backpressure_rejections,
+            async_writeback_max_queue_depth: stats.async_writeback_max_queue_depth,
+            async_writeback_max_queue_bytes: stats.async_writeback_max_queue_bytes,
             get_latency_samples: stats.get_latency_samples,
             put_latency_samples: stats.put_latency_samples,
             read_through_latency_samples: stats.read_through_latency_samples,
@@ -1437,6 +1505,11 @@ impl MultiLayerCache {
             writeback_latency_samples: stats.writeback_latency_samples,
             eviction_latency_samples: stats.eviction_latency_samples,
             compaction_latency_samples: stats.compaction_latency_samples,
+            read_through_latency_bucketed,
+            refill_latency_bucketed,
+            writeback_latency_bucketed,
+            eviction_latency_bucketed,
+            compaction_latency_bucketed,
             ..CacheReplacementPolicySoakReport::default()
         };
         if report.iterations < 64 {
@@ -1472,6 +1545,14 @@ impl MultiLayerCache {
                 .reasons
                 .push("missing_restart_disk_refill_observation".to_string());
         }
+        if report.observed_async_writeback_backpressure == 0
+            || report.async_writeback_max_queue_depth == 0
+            || report.async_writeback_max_queue_bytes == 0
+        {
+            report
+                .reasons
+                .push("missing_async_writeback_backpressure".to_string());
+        }
         if report.get_latency_samples == 0 || report.put_latency_samples == 0 {
             report.reasons.push("missing_latency_samples".to_string());
         }
@@ -1484,6 +1565,16 @@ impl MultiLayerCache {
             report
                 .reasons
                 .push("missing_operation_latency_samples".to_string());
+        }
+        if !report.read_through_latency_bucketed
+            || !report.refill_latency_bucketed
+            || !report.writeback_latency_bucketed
+            || !report.eviction_latency_bucketed
+            || !report.compaction_latency_bucketed
+        {
+            report
+                .reasons
+                .push("missing_operation_latency_histograms".to_string());
         }
         report.passed = report.reasons.is_empty();
         report
@@ -2399,6 +2490,9 @@ mod tests {
         assert!(report.observed_evictions > 0);
         assert!(report.observed_pinned_skips > 0);
         assert!(report.observed_disk_refills > 0);
+        assert!(report.observed_async_writeback_backpressure > 0);
+        assert!(report.async_writeback_max_queue_depth > 0);
+        assert!(report.async_writeback_max_queue_bytes > 0);
         assert!(report.restart_disk_refill_ready);
         assert!(report.get_latency_samples > 0);
         assert!(report.put_latency_samples > 0);
@@ -2407,6 +2501,11 @@ mod tests {
         assert!(report.writeback_latency_samples > 0);
         assert!(report.eviction_latency_samples > 0);
         assert!(report.compaction_latency_samples > 0);
+        assert!(report.read_through_latency_bucketed);
+        assert!(report.refill_latency_bucketed);
+        assert!(report.writeback_latency_bucketed);
+        assert!(report.eviction_latency_bucketed);
+        assert!(report.compaction_latency_bucketed);
     }
 
     // shared-corpus: storage_cache_refill;

@@ -22,6 +22,54 @@ fn wait_for_fresh_admission_second() {
     }
 }
 
+fn assert_cache_latency_histograms_observed(stats: crate::cache::CacheStats) {
+    assert!(stats.read_through_latency_samples > 0);
+    assert!(stats.refill_latency_samples > 0);
+    assert!(stats.writeback_latency_samples > 0);
+    assert!(stats.eviction_latency_samples > 0);
+    assert!(stats.compaction_latency_samples > 0);
+    assert_eq!(
+        stats.read_through_latency_samples,
+        stats.read_through_latency_le_10us
+            + stats.read_through_latency_le_100us
+            + stats.read_through_latency_le_1ms
+            + stats.read_through_latency_le_10ms
+            + stats.read_through_latency_gt_10ms
+    );
+    assert_eq!(
+        stats.refill_latency_samples,
+        stats.refill_latency_le_10us
+            + stats.refill_latency_le_100us
+            + stats.refill_latency_le_1ms
+            + stats.refill_latency_le_10ms
+            + stats.refill_latency_gt_10ms
+    );
+    assert_eq!(
+        stats.writeback_latency_samples,
+        stats.writeback_latency_le_10us
+            + stats.writeback_latency_le_100us
+            + stats.writeback_latency_le_1ms
+            + stats.writeback_latency_le_10ms
+            + stats.writeback_latency_gt_10ms
+    );
+    assert_eq!(
+        stats.eviction_latency_samples,
+        stats.eviction_latency_le_10us
+            + stats.eviction_latency_le_100us
+            + stats.eviction_latency_le_1ms
+            + stats.eviction_latency_le_10ms
+            + stats.eviction_latency_gt_10ms
+    );
+    assert_eq!(
+        stats.compaction_latency_samples,
+        stats.compaction_latency_le_10us
+            + stats.compaction_latency_le_100us
+            + stats.compaction_latency_le_1ms
+            + stats.compaction_latency_le_10ms
+            + stats.compaction_latency_gt_10ms
+    );
+}
+
 // shared-corpus: dynamic_event_replication_mode_selection
 #[test]
 fn replicated_execute_selects_sync_async_or_raft_without_restart() {
@@ -2577,7 +2625,7 @@ fn cache_replacement_policy_soak() {
     );
     assert_eq!(
         engine.cache().get_memory(&target_page_key),
-        Some(target_value),
+        Some(target_value.clone()),
         "cold read should refill memory from disk cache or page store"
     );
     assert!(
@@ -2585,6 +2633,48 @@ fn cache_replacement_policy_soak() {
             || engine.block_store().stats().reads > block_reads_before,
         "cold read should be backed by disk cache or persistent page store"
     );
+    engine.cache().clear_memory_for_test();
+    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    let refill_samples_before = engine.cache().stats().refill_latency_samples;
+    let disk_refill_target = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "soak-target".to_string(),
+        },
+    });
+    assert_eq!(
+        disk_refill_target.response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    assert!(
+        engine.cache().stats().refill_latency_samples > refill_samples_before,
+        "second cold read should hit disk cache and record refill latency"
+    );
+    engine.cache().set_async_writeback_queue_limit_for_test(1);
+    engine
+        .cache()
+        .enqueue_async_writeback(
+            CacheKey::page_with_slot(1, 50_000, 0, 8, Some(99)),
+            b"writeback".to_vec(),
+        )
+        .unwrap();
+    assert!(engine
+        .cache()
+        .enqueue_async_writeback(
+            CacheKey::page_with_slot(1, 50_001, 0, 8, Some(99)),
+            b"overflow".to_vec(),
+        )
+        .is_err());
+    let drained = engine.cache().drain_async_writeback(8).unwrap();
+    assert_eq!(drained.drained, 1);
+    engine.cache().record_compaction_latency_micros(750);
+    let stats = engine.cache().stats();
+    assert!(stats.async_writeback_backpressure_rejections > 0);
+    assert!(stats.async_writeback_max_queue_depth > 0);
+    assert!(stats.async_writeback_max_queue_bytes > 0);
+    assert_cache_latency_histograms_observed(stats);
 
     let drop_dir = tempfile::tempdir().unwrap();
     let drop_engine = TemporalEngine::with_local_dirs(

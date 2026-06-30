@@ -236,7 +236,7 @@ evidence is present:
 | Merged dump/load recovery | `storage_merged_dump_load_policy_report.policy_ready`, manifest checksum/generation validation, multi-slot merged manifest source coverage, rollback/install markers, load preflight, stale object/page conflict reporting, and install/restart logical reads. |
 | StorageManager continuous phase loop | `run_storage_manager_cycle` stages for prepare, WAL reclaim, expire, evict, page GC, compaction, index-GC, and reap metrics with per-phase pressure, selected slots, skipped reasons, bytes reclaimed, and floors. |
 | GC/WAL/index-log reclaim rules | WAL/index-log reclaim reports must show slot-dump durability, follower cursor retention, Raft snapshot/install floor awareness, and recovery after reclaim/index-GC. |
-| Cache and eviction soak | `storage_cache_replacement_policy_soak` plus cold page-address read tests must show weighted replacement, pinned-skip accounting, disk/page fallback, memory refill, dump-before-evict, delete/drop eviction, writeback/backpressure, latency samples, and restart refill. |
+| Cache and eviction soak | `storage_cache_replacement_policy_soak` plus cold page-address read tests must show weighted replacement, pinned-skip accounting, memory/disk pressure, disk/page/shared-store fallback, memory refill, dump-before-evict, delete/drop eviction, writeback/backpressure, bucketed read-through/refill/writeback/eviction/compaction latency samples, and restart refill. |
 | Stream/extent manifest rebuild | Page-store recovery must show stream record inspection, extent manifest rebuild from local segments, active/sealed/delayed-destroy state, and post-reopen append/read behavior. |
 | Risk/context page-backed parity | Risk and context model tests must verify page-backed storage, secondary view reconciliation from slot/object/page authority, and logical reads after reload/compaction. |
 
@@ -267,7 +267,9 @@ C++ byte-for-byte ObjectManager hot-object memory layout, byte-for-byte stream b
 C++ byte-for-byte cleaner internals, and direct CacheLib/mtcache binary/API compatibility. The
 slot-first index, ObjectManager runtime report, stream-backed extent report, StorageManager loop
 report, merged dump/load policy report, layout evidence, and Rust-native cache replacement soak are
-real readiness evidence, but they are not treated as byte-for-byte C++ runtime parity.
+real readiness evidence, but they are not treated as byte-for-byte C++ runtime parity. Exact
+mtcache/cachelib-equivalent integration remains optional later work unless direct C++ cache binary/API
+compatibility is re-scoped into the Rust-native target.
 
 The global readiness gate now uses the Docker/AWS deployment-scale SLO report as the broader
 release evidence for this storage path. The `scale_testing` area is ready when
