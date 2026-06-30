@@ -204,13 +204,14 @@ conflicts. The focused shared test now drives growth, delete/tombstone, page com
 install, and unload/load recovery before comparing ObjectManager residency counters. That makes
 native Rust ObjectManager runtime mechanics readiness-backed rather than only doc-described.
 
-Rust also has stream-backed extent runtime evidence. The page store appends self-describing stream
-records, supports logical range reads that skip envelopes and decompress records across page
+Rust also has stream-backed extent runtime evidence. The block store appends self-describing block
+stream records, supports logical range reads that skip envelopes and decompress records across block
 boundaries, rolls segments by sealing the previous extent and opening a new active extent, persists the
-extent manifest across reopen, and tracks active/sealed/delayed-destroy/purged extent states.
+extent manifest across reopen, and tracks active/sealed/delayed-destroy/purged extent states. Legacy
+page/zone type names remain as compatibility aliases only.
 `StreamBackedExtentRuntimeReport` now also exposes stream record count, first/last page ids,
 page-id continuity, logical stream read bytes, manifest boundary validation, extent state transition
-count, and purge lifecycle readiness. The shared stream runtime test validates roll -> delayed
+count, explicit extent lifecycle states, and purge lifecycle readiness. The shared stream runtime test validates roll -> delayed
 destroy -> reopen -> purge using those fields.
 
 Page compaction is tied to model layout and tombstones through `ShardCompactionReport`.

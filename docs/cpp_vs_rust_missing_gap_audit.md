@@ -2178,13 +2178,14 @@ classes, layout transition counters, object-page ownership transition counters,
 hot/cold/deleted page-ref counts, missing owner refs, owner mismatches, and
 object-id reuse conflicts. The shared ObjectManager test now exercises growth,
 delete/tombstone, page compaction, dump/load install, and unload/load recovery.
-Rust stream-backed zone runtime evidence covers
-self-describing page stream records, logical range reads across envelopes and
-compressed records, segment roll/seal/open transitions, persisted zone
+Rust stream-backed extent runtime evidence covers
+self-describing block stream records, logical range reads across envelopes and
+compressed records, segment roll/seal/open transitions, persisted extent
 manifests, active/sealed/delayed-destroy/purged lifecycle states, stream record
 count, first/last page ids, page-id continuity, logical stream read bytes,
-manifest boundary validation, extent state transition count, and purge lifecycle
-readiness. The C++
+manifest boundary validation, explicit extent lifecycle states, extent state
+transition count, and purge lifecycle readiness. Legacy page/zone names remain
+compatibility aliases only. The C++
 model-layout/tombstone compaction gap is now covered by `ShardCompactionReport`:
 it reports readiness, per-model layouts, packed timestamped page preservation,
 rewritten object/page counts, stale-page density, slot layout transitions, and

@@ -75,7 +75,7 @@ The shared cases are:
   stale manifest, and corrupt page-segment rejection.
 - `storage_follower_safe_gc`: Rust runs storage lifecycle with a lagging follower cursor and
   verifies recovery stays clean.
-- `storage_cache_refill`: Rust invalidates cache, warms from page-store refs, and verifies memory
+- `storage_cache_refill`: Rust invalidates cache, warms from block-store refs, and verifies memory
   refill stats.
 - `storage_shared_store_sync_replay` and `storage_shared_store_async_replay`: Rust replays the C++
   migration storage corpus through sync and async local shared-store replication.
