@@ -2394,6 +2394,19 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             value: b"value".to_vec(),
         },
     });
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringSet {
+            key: "runtime-live".to_string(),
+            value: b"value-newer".repeat(32),
+        },
+    });
+    runtime.execute(ExecuteRequest {
+        shard_id: 8,
+        command: Command::StringGet {
+            key: "runtime-live".to_string(),
+        },
+    });
 
     let manager = runtime.start_storage_manager_runtime(StorageManagerRuntimeOptions {
         interval_ms: 5,
@@ -2441,6 +2454,14 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.last_status.as_ref().is_some_and(|status| status.ok));
     assert!(running.last_completed_cycle.is_some());
     assert!(running.last_pressure_snapshot.is_some());
+    let pressure = running.last_pressure_snapshot.as_ref().unwrap();
+    assert!(pressure.dirty_slot_count >= 1, "{pressure:?}");
+    assert!(pressure.undumped_oplog_records >= 1, "{pressure:?}");
+    assert!(pressure.wal_bytes >= 1, "{pressure:?}");
+    assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
+    assert!(pressure.cache_memory_bytes >= 1, "{pressure:?}");
+    assert!(pressure.memory_cache_pressure_score >= pressure.cache_memory_bytes);
+    assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(running
         .last_phase_reports
@@ -2448,6 +2469,11 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
         .any(|stage| stage.stage == "prepare"
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
+    assert!(running
+        .last_phase_reports
+        .iter()
+        .any(|stage| stage.pressure_signal.contains("stale_density")
+            || stage.pressure_signal.contains("cache_pressure")));
     assert!(
         running
             .last_phase_reports

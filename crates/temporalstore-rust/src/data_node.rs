@@ -550,11 +550,35 @@ pub struct StorageManagerPressureSnapshot {
     pub dirty_slot_count: usize,
     pub selected_dirty_slot_count: usize,
     pub undumped_oplog_records: u64,
+    #[serde(default)]
+    pub wal_bytes: u64,
+    #[serde(default)]
+    pub index_log_bytes: u64,
     pub stale_page_segment_count: usize,
     pub reclaim_candidate_count: usize,
     pub reclaimable_physical_bytes: u64,
+    #[serde(default)]
+    pub page_segment_stale_density_basis_points: u64,
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
+    #[serde(default)]
+    pub memory_cache_pressure_score: u64,
+    #[serde(default)]
+    pub expired_slot_object_scan_debt: usize,
+    #[serde(default)]
+    pub delayed_destroy_segment_count: usize,
+    #[serde(default)]
+    pub delayed_destroy_bytes: u64,
+    #[serde(default)]
+    pub follower_cursor_retention_blockers: usize,
+    #[serde(default)]
+    pub raft_snapshot_retention_blockers: usize,
+    #[serde(default)]
+    pub compaction_debt_model_count: usize,
+    #[serde(default)]
+    pub compaction_debt_score: u64,
+    #[serde(default)]
+    pub total_pressure_score: u64,
     pub background_queue_depth: usize,
     pub foreground_queue_depth: usize,
 }
@@ -1659,11 +1683,36 @@ impl DataNodeRuntime {
                 dirty_slot_count: plan.dirty_slots.len(),
                 selected_dirty_slot_count: plan.selected_dump_slots.len(),
                 undumped_oplog_records: plan.undumped_oplog_records,
+                wal_bytes: plan.undumped_oplog_records,
+                index_log_bytes: plan.index_log_sequence,
                 stale_page_segment_count: plan.stale_page_segment_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
                 reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
+                page_segment_stale_density_basis_points: 0,
                 cache_memory_bytes: cache.memory_bytes,
                 cache_disk_bytes: cache.disk_bytes,
+                memory_cache_pressure_score: cache
+                    .memory_bytes
+                    .saturating_add(cache.disk_bytes)
+                    .saturating_add(cache.async_writeback_queue_bytes)
+                    .saturating_add(cache.async_writeback_queue_depth),
+                expired_slot_object_scan_debt: plan.slot_summaries.len(),
+                delayed_destroy_segment_count: plan.delayed_destroy_page_segment_ids.len(),
+                delayed_destroy_bytes: plan.reclaimable_physical_bytes,
+                follower_cursor_retention_blockers: 0,
+                raft_snapshot_retention_blockers: 0,
+                compaction_debt_model_count: usize::from(!plan.stale_page_segment_ids.is_empty()),
+                compaction_debt_score: plan.reclaimable_physical_bytes,
+                total_pressure_score: plan
+                    .dirty_slots
+                    .len()
+                    .saturating_add(plan.selected_dump_slots.len())
+                    as u64
+                    + plan.undumped_oplog_records
+                    + plan.index_log_sequence
+                    + plan.reclaimable_physical_bytes
+                    + cache.memory_bytes
+                    + cache.disk_bytes,
                 background_queue_depth: queue.background_queued_total,
                 foreground_queue_depth: queue
                     .queued_total
@@ -3932,11 +3981,27 @@ fn apply_storage_manager_cycle_to_runtime_report(
         dirty_slot_count: cycle.pressure_snapshot.dirty_slot_count,
         selected_dirty_slot_count: cycle.plan.selected_dump_slots.len(),
         undumped_oplog_records: cycle.pressure_snapshot.undumped_wal_records,
+        wal_bytes: cycle.pressure_snapshot.wal_bytes,
+        index_log_bytes: cycle.pressure_snapshot.index_log_bytes,
         stale_page_segment_count: cycle.plan.stale_page_segment_ids.len(),
         reclaim_candidate_count: cycle.plan.reclaim_candidates.len(),
         reclaimable_physical_bytes: cycle.plan.reclaimable_physical_bytes,
+        page_segment_stale_density_basis_points: cycle
+            .pressure_snapshot
+            .page_segment_stale_density_basis_points,
         cache_memory_bytes: cycle.pressure_snapshot.memory_cache_bytes,
         cache_disk_bytes: cycle.pressure_snapshot.disk_cache_bytes,
+        memory_cache_pressure_score: cycle.pressure_snapshot.memory_cache_pressure_score,
+        expired_slot_object_scan_debt: cycle.pressure_snapshot.expired_slot_object_scan_debt,
+        delayed_destroy_segment_count: cycle.pressure_snapshot.delayed_destroy_segment_count,
+        delayed_destroy_bytes: cycle.pressure_snapshot.delayed_destroy_bytes,
+        follower_cursor_retention_blockers: cycle
+            .pressure_snapshot
+            .follower_cursor_retention_blockers,
+        raft_snapshot_retention_blockers: cycle.pressure_snapshot.raft_snapshot_retention_blockers,
+        compaction_debt_model_count: cycle.pressure_snapshot.compaction_debt_model_count,
+        compaction_debt_score: cycle.pressure_snapshot.compaction_debt_score,
+        total_pressure_score: cycle.pressure_snapshot.total_pressure_score,
         background_queue_depth: 0,
         foreground_queue_depth: 0,
     });
