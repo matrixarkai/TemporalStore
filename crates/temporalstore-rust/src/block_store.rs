@@ -232,6 +232,14 @@ pub struct BlockStoreExtentDescriptor {
     pub first_page_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_page_id: Option<u64>,
+    #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub has_corruption: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error_offset: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_error: Option<String>,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -325,6 +333,14 @@ pub struct StreamBackedExtentRuntimeReport {
     pub extent_manifest_ready: bool,
     #[serde(default)]
     pub extent_manifest_rebuild_ready: bool,
+    #[serde(default)]
+    pub corrupt_extent_count: u64,
+    #[serde(default)]
+    pub partial_extent_count: u64,
+    #[serde(default)]
+    pub readable_prefix_physical_bytes: u64,
+    #[serde(default)]
+    pub partial_extent_recovery_ready: bool,
     pub envelope_checksum_ready: bool,
     pub compression_stream_ready: bool,
     pub delayed_destroy_ready: bool,
@@ -408,12 +424,13 @@ impl LocalBlockStore {
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
         let manifest_exists =
             extent_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
-        let mut extents = if manifest_exists {
-            load_extent_manifest_at(&root)
-                .or_else(|_| rebuild_extent_manifest_at(&root))
-                .unwrap_or_default()
+        let (mut extents, manifest_rebuilt) = if manifest_exists {
+            match load_extent_manifest_at(&root) {
+                Ok(extents) => (extents, false),
+                Err(_) => (rebuild_extent_manifest_at(&root).unwrap_or_default(), true),
+            }
         } else {
-            rebuild_extent_manifest_at(&root).unwrap_or_default()
+            (rebuild_extent_manifest_at(&root).unwrap_or_default(), true)
         };
         ensure_extent_descriptor(
             &mut extents,
@@ -421,7 +438,7 @@ impl LocalBlockStore {
             page_segment_id,
             BlockStoreExtentState::Active,
         );
-        if !manifest_exists {
+        if manifest_rebuilt {
             let _ = persist_extent_manifest(&root, &extents);
         }
         Self {
@@ -536,6 +553,10 @@ impl LocalBlockStore {
             updated_unix_ms: Some(transition_unix_ms),
             first_page_id: None,
             last_page_id: None,
+            readable_prefix_physical_bytes: 0,
+            has_corruption: false,
+            first_error_offset: None,
+            first_error: None,
         };
         let page_segment_id = inner.page_segment_id;
         inner.extents.insert(page_segment_id, new_extent);
@@ -675,6 +696,10 @@ impl LocalBlockStore {
                 updated_unix_ms: Some(now),
                 first_page_id: extent_summary.first_page_id,
                 last_page_id: extent_summary.last_page_id,
+                readable_prefix_physical_bytes: bytes.len() as u64,
+                has_corruption: false,
+                first_error_offset: None,
+                first_error: None,
             },
         );
         if is_current_segment {
@@ -1172,6 +1197,22 @@ impl LocalBlockStore {
             .iter()
             .map(|report| report.page_count)
             .sum::<u64>();
+        let corrupt_extent_count = segment_reports
+            .iter()
+            .filter(|report| report.has_corruption)
+            .count() as u64;
+        let partial_extent_count = segment_reports
+            .iter()
+            .filter(|report| {
+                report.has_corruption
+                    && report.readable_prefix_physical_bytes > 0
+                    && report.readable_prefix_physical_bytes < report.physical_bytes
+            })
+            .count() as u64;
+        let readable_prefix_physical_bytes = segment_reports
+            .iter()
+            .map(|report| report.readable_prefix_physical_bytes)
+            .sum::<u64>();
         let first_page_id = segment_reports
             .iter()
             .filter_map(|report| report.first_page_id)
@@ -1207,9 +1248,30 @@ impl LocalBlockStore {
                     .map(|extent| {
                         extent.first_page_id == report.first_page_id
                             && extent.last_page_id == report.last_page_id
+                            && extent.logical_bytes == report.logical_bytes
+                            && extent.readable_prefix_physical_bytes
+                                == report.readable_prefix_physical_bytes
+                            && extent.has_corruption == report.has_corruption
                     })
                     .unwrap_or(false)
             });
+        let partial_extent_recovery_ready = corrupt_extent_count == 0
+            || segment_reports
+                .iter()
+                .filter(|report| report.has_corruption)
+                .all(|report| {
+                    extents
+                        .get(&report.page_segment_id)
+                        .map(|extent| {
+                            extent.has_corruption
+                                && extent.first_error_offset == report.first_error_offset
+                                && extent.readable_prefix_physical_bytes
+                                    == report.readable_prefix_physical_bytes
+                                && extent.first_page_id == report.first_page_id
+                                && extent.last_page_id == report.last_page_id
+                        })
+                        .unwrap_or(false)
+                });
         let envelope_checksum_ready = segment_reports
             .iter()
             .filter(|report| report.page_count > 0)
@@ -1251,6 +1313,12 @@ impl LocalBlockStore {
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
         }
+        if corrupt_extent_count > 0 && partial_extent_recovery_ready {
+            blockers.push(
+                "corrupt stream extent detected; readable prefix was preserved in rebuilt manifest"
+                    .to_string(),
+            );
+        }
         if !page_id_continuity_ready {
             blockers.push("stream page ids are not contiguous across extents".to_string());
         }
@@ -1277,6 +1345,10 @@ impl LocalBlockStore {
             append_roll_ready,
             extent_manifest_ready,
             extent_manifest_rebuild_ready,
+            corrupt_extent_count,
+            partial_extent_count,
+            readable_prefix_physical_bytes,
+            partial_extent_recovery_ready,
             envelope_checksum_ready,
             compression_stream_ready,
             delayed_destroy_ready,
@@ -1502,7 +1574,7 @@ fn rebuild_extent_manifest_at(
     for page_segment_id in segment_ids_at(root)? {
         let path = segment_path(root, page_segment_id);
         let bytes = fs::read(&path)?;
-        let summary = summarize_segment(&bytes, page_segment_id)?;
+        let report = inspect_segment(&bytes, page_segment_id);
         extents.insert(
             page_segment_id,
             BlockStoreExtentDescriptor {
@@ -1514,13 +1586,17 @@ fn rebuild_extent_manifest_at(
                     BlockStoreExtentState::Sealed
                 },
                 physical_bytes: bytes.len() as u64,
-                logical_bytes: summary.logical_bytes,
+                logical_bytes: report.logical_bytes,
                 created_unix_ms: file_created_unix_ms(&path)
                     .or_else(|| file_modified_unix_ms(&path)),
                 updated_unix_ms: file_modified_unix_ms(&path)
                     .or_else(|| file_created_unix_ms(&path)),
-                first_page_id: summary.first_page_id,
-                last_page_id: summary.last_page_id,
+                first_page_id: report.first_page_id,
+                last_page_id: report.last_page_id,
+                readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
+                has_corruption: report.has_corruption,
+                first_error_offset: report.first_error_offset,
+                first_error: report.first_error,
             },
         );
     }
@@ -1542,6 +1618,10 @@ fn rebuild_extent_manifest_at(
                 updated_unix_ms: delayed.modified_unix_ms,
                 first_page_id: None,
                 last_page_id: None,
+                readable_prefix_physical_bytes: 0,
+                has_corruption: false,
+                first_error_offset: None,
+                first_error: None,
             });
     }
     Ok(extents)
@@ -1677,6 +1757,10 @@ fn ensure_extent_descriptor(
             updated_unix_ms: file_modified_unix_ms(&segment_path(root, page_segment_id)),
             first_page_id: None,
             last_page_id: None,
+            readable_prefix_physical_bytes: physical_bytes,
+            has_corruption: false,
+            first_error_offset: None,
+            first_error: None,
         }
     });
     let transition_unix_ms = now_unix_ms();
@@ -1710,10 +1794,18 @@ fn upsert_extent_after_append(
             updated_unix_ms: Some(now_unix_ms()),
             first_page_id: Some(page_id),
             last_page_id: Some(page_id),
+            readable_prefix_physical_bytes: 0,
+            has_corruption: false,
+            first_error_offset: None,
+            first_error: None,
         });
     let updated_unix_ms = now_unix_ms();
     extent.state = BlockStoreExtentState::Active;
     extent.physical_bytes = physical_bytes;
+    extent.readable_prefix_physical_bytes = physical_bytes;
+    extent.has_corruption = false;
+    extent.first_error_offset = None;
+    extent.first_error = None;
     extent.logical_bytes = extent.logical_bytes.saturating_add(logical_bytes_written);
     if extent.created_unix_ms.is_none() {
         extent.created_unix_ms = Some(updated_unix_ms);
@@ -1752,6 +1844,10 @@ fn set_extent_state(
             updated_unix_ms: Some(now_unix_ms()),
             first_page_id: None,
             last_page_id: None,
+            readable_prefix_physical_bytes: 0,
+            has_corruption: false,
+            first_error_offset: None,
+            first_error: None,
         });
 }
 
@@ -1858,7 +1954,7 @@ fn next_page_id_at(root: &Path) -> Result<u64, BlockStoreError> {
     let mut max_page_id = None;
     for page_segment_id in segment_ids_at(root)? {
         let bytes = fs::read(segment_path(root, page_segment_id))?;
-        if let Some(segment_max) = summarize_segment(&bytes, page_segment_id)?.last_page_id {
+        if let Some(segment_max) = inspect_segment(&bytes, page_segment_id).last_page_id {
             max_page_id =
                 Some(max_page_id.map_or(segment_max, |current: u64| current.max(segment_max)));
         }
@@ -2245,6 +2341,78 @@ mod tests {
         assert_eq!(extents[1].last_page_id, second.page_id);
         assert!(extents[1].created_unix_ms.is_some());
         assert!(extents[1].updated_unix_ms.is_some());
+        assert!(extent_manifest_path(dir.path()).exists());
+
+        let report = rebuilt.stream_backed_extent_runtime_report().unwrap();
+        assert!(report.runtime_ready, "{report:?}");
+        assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
+        assert!(report.extent_manifest_ready);
+        assert!(report.extent_manifest_rebuild_ready);
+        assert_eq!(report.corrupt_extent_count, 0);
+        assert_eq!(report.partial_extent_count, 0);
+        assert!(report.partial_extent_recovery_ready);
+        assert_eq!(report.readable_prefix_physical_bytes, report.physical_bytes);
+    }
+
+    // shared-corpus: storage_stream_partial_extent_rebuild;
+    #[test]
+    fn partial_extent_manifest_rebuild_preserves_readable_prefix_and_reports_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first_payload = b"sealed-readable-prefix".repeat(64);
+        let first = store.append(&first_payload).unwrap();
+        store.roll_segment().unwrap();
+        let second = store.append(b"active-clean-tail").unwrap();
+
+        let first_segment = segment_path(dir.path(), first.page_segment_id);
+        let readable_prefix = fs::metadata(&first_segment).unwrap().len();
+        OpenOptions::new()
+            .append(true)
+            .open(&first_segment)
+            .unwrap()
+            .write_all(b"partial-corrupt-tail")
+            .unwrap();
+        fs::remove_file(extent_manifest_path(dir.path())).unwrap();
+
+        let rebuilt = LocalBlockStore::new(dir.path());
+        assert_eq!(rebuilt.read(&first).unwrap(), first_payload);
+        assert_eq!(rebuilt.read(&second).unwrap(), b"active-clean-tail");
+
+        let extents = rebuilt.extent_descriptors();
+        let sealed = extents
+            .iter()
+            .find(|extent| extent.page_segment_id == first.page_segment_id)
+            .unwrap();
+        assert_eq!(sealed.state, BlockStoreExtentState::Sealed);
+        assert!(sealed.has_corruption);
+        assert_eq!(sealed.first_error_offset, Some(readable_prefix));
+        assert_eq!(sealed.readable_prefix_physical_bytes, readable_prefix);
+        assert_eq!(sealed.first_page_id, first.page_id);
+        assert_eq!(sealed.last_page_id, first.page_id);
+        assert!(sealed
+            .first_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("mixed raw bytes"));
+        assert!(extent_manifest_path(dir.path()).exists());
+
+        let report = rebuilt.stream_backed_extent_runtime_report().unwrap();
+        assert!(!report.runtime_ready, "{report:?}");
+        assert!(report.extent_manifest_ready);
+        assert!(report.extent_manifest_rebuild_ready);
+        assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
+        assert_eq!(report.corrupt_extent_count, 1);
+        assert_eq!(report.partial_extent_count, 1);
+        assert_eq!(
+            report.readable_prefix_physical_bytes,
+            readable_prefix + second.length
+        );
+        assert!(report.partial_extent_recovery_ready);
+        assert!(!report.envelope_checksum_ready);
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.contains("readable prefix was preserved")));
     }
 
     #[test]
