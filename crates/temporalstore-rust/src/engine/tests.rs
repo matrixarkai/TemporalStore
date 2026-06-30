@@ -7677,10 +7677,43 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
         released_anchor.index_log_sequence.saturating_add(1)
     );
 
+    let threshold_blocked_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        follower_replay_cursors: vec![released_cursor.clone()],
+        raft_snapshot_refs: vec![released_snapshot.clone()],
+        index_gc_index_log_bytes_threshold: u64::MAX,
+        index_gc_usage_ratio_trigger_basis_points: 0,
+        index_gc_max_entries_per_round: 1,
+        min_undumped_oplog_records: 0,
+        enable_oplog_reclaim: false,
+        ..StorageManagerCycleRequest::default()
+    });
+    let threshold_blocked_index_gc = threshold_blocked_cycle.index_gc_report.as_ref().unwrap();
+    assert!(!threshold_blocked_index_gc.applied);
+    assert_eq!(
+        threshold_blocked_index_gc.skipped_reason,
+        "index-log byte threshold not reached"
+    );
+
+    let final_anchor = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    let final_cursor = SlotDumpFollowerReplayCursor {
+        follower_id: "follower-final".to_string(),
+        shard_id: 1,
+        oplog_sequence: final_anchor.oplog_sequence,
+        index_log_sequence: final_anchor.index_log_sequence,
+    };
+    let final_snapshot = SlotDumpRaftSnapshotRef {
+        snapshot_id: "raft-snapshot-final".to_string(),
+        shard_id: 1,
+        last_included_index: 13,
+        last_included_term: 2,
+        oplog_sequence: final_anchor.oplog_sequence,
+        index_log_sequence: final_anchor.index_log_sequence,
+    };
     let released_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,
-        follower_replay_cursors: vec![released_cursor],
-        raft_snapshot_refs: vec![released_snapshot],
+        follower_replay_cursors: vec![final_cursor],
+        raft_snapshot_refs: vec![final_snapshot],
         index_gc_index_log_bytes_threshold: 0,
         index_gc_usage_ratio_trigger_basis_points: 0,
         index_gc_max_entries_per_round: 1,
@@ -7696,6 +7729,126 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     assert!(released_index_gc.applied, "{released_index_gc:?}");
     assert_eq!(released_index_gc.records_removed, 1);
     assert!(released_index_gc.budget_exhausted);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("restart-cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    restarted.load_shard(1);
+    let get = restarted.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "reclaim-slot".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"v2".to_vec())
+        }
+    );
+    let restart_boundary = restarted.storage_recovery_boundary_report(1);
+    assert!(restart_boundary.latest_safe_index_log_sequence >= final_anchor.index_log_sequence);
+    assert!(restart_boundary.stale_index_page_refs.is_empty());
+    assert_eq!(restart_boundary.missing_owner_page_refs, 0);
+}
+
+// shared-corpus: storage_gc_dependency_retention_matrix
+#[test]
+fn storage_page_gc_blocks_all_retention_dependencies_before_reclaim() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "gc-key".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    engine.block_store().roll_segment().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "gc-key".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    assert_eq!(engine.live_page_segment_ids(1), vec![1]);
+    let delayed = engine
+        .block_store()
+        .gc_segments_before_with_live_refs_delayed_destroy(1, engine.live_page_segment_ids(1))
+        .unwrap();
+    assert_eq!(delayed.delayed_destroy_page_segment_ids, vec![0]);
+
+    let matrix = engine.storage_page_gc_dependency_plan(
+        1,
+        vec![0, 1],
+        vec![StoragePageGcReplayCursor {
+            cursor_id: "shared-follower-a".to_string(),
+            shard_id: 1,
+            retain_from_page_segment_id: 0,
+            reason: "shared-store follower is behind segment zero".to_string(),
+        }],
+        vec![SlotDumpRaftSnapshotRef {
+            snapshot_id: "raft-snapshot-a".to_string(),
+            shard_id: 1,
+            last_included_index: 7,
+            last_included_term: 2,
+            oplog_sequence: parent.oplog_sequence,
+            index_log_sequence: 0,
+        }],
+        Some(0),
+        Some(0),
+        60_000,
+    );
+    assert!(!matrix.safe_to_reclaim, "{matrix:?}");
+    assert_eq!(matrix.candidate_page_segment_ids, vec![0, 1]);
+    assert_eq!(matrix.live_ref_block_count, 1);
+    assert_eq!(matrix.slot_dump_manifest_block_count, 1);
+    assert_eq!(matrix.shared_store_cursor_block_count, 2);
+    assert_eq!(matrix.raft_snapshot_ref_block_count, 2);
+    assert_eq!(matrix.checkpoint_snapshot_floor_block_count, 2);
+    assert_eq!(matrix.raft_snapshot_install_floor_block_count, 2);
+    assert_eq!(matrix.delayed_destroy_grace_block_count, 1);
+    for expected in [
+        "live_page_ref",
+        "slot_dump_manifest",
+        "shared_store_replay_cursor",
+        "raft_snapshot_ref",
+        "checkpoint_snapshot_floor",
+        "raft_snapshot_install_floor",
+        "delayed_destroy_grace_period",
+    ] {
+        assert!(
+            matrix.blocker_reasons.contains(&expected.to_string()),
+            "{matrix:?}"
+        );
+    }
+
+    let released = engine.storage_page_gc_dependency_plan(
+        1,
+        vec![0],
+        Vec::<StoragePageGcReplayCursor>::new(),
+        Vec::<SlotDumpRaftSnapshotRef>::new(),
+        None,
+        None,
+        0,
+    );
+    assert!(!released.safe_to_reclaim, "{released:?}");
+    assert_eq!(released.slot_dump_manifest_block_count, 1);
+    assert_eq!(released.delayed_destroy_grace_block_count, 0);
+    assert!(released
+        .blocker_reasons
+        .contains(&"slot_dump_manifest".to_string()));
 }
 
 #[test]

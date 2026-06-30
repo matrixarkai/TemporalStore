@@ -5267,6 +5267,29 @@
       ]
     },
     {
+      "description": "Shared C++/Rust page-GC dependency matrix case: page reclaim refuses deletion while live refs, dump manifests, checkpoints, follower cursors, Raft snapshots, install floors, or delayed-destroy grace still retain data.",
+      "family": "storage/cache",
+      "name": "storage_gc_dependency_retention_matrix",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates live, stale, and delayed-destroy segments, then verifies every C++-style page-GC retention dependency is surfaced and blocks reclaim before release.",
+            "expect_checkpoint_floor_block": true,
+            "expect_delayed_destroy_grace_block": true,
+            "expect_dump_manifest_block": true,
+            "expect_follower_cursor_block": true,
+            "expect_live_ref_block": true,
+            "expect_raft_install_floor_block": true,
+            "expect_raft_snapshot_block": true,
+            "kind": "storage_gc_dependency_retention_matrix"
+          },
+          "name": "storage_gc_dependency_retention_matrix_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, multi-slot merged manifests, manifest validation, rollback/install markers, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
       "family": "storage/cache",
       "name": "storage_merged_dump_load_policy",
@@ -8838,6 +8861,7 @@
       "storage_manager_background_loop",
       "storage_manager_pressure_scale_evidence",
       "storage_wal_index_gc_generation_retention",
+      "storage_gc_dependency_retention_matrix",
       "storage_merged_dump_load_policy",
       "context_events_segments_entities_child_refs",
       "context_cpp_wire_model_descriptor_roundtrip",
@@ -8980,6 +9004,7 @@
       "storage_stream_partial_extent_rebuild",
       "storage_manager_pressure_scale_evidence",
       "storage_wal_index_gc_generation_retention",
+      "storage_gc_dependency_retention_matrix",
       "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
