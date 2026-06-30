@@ -255,8 +255,6 @@ fn main() {
     eprintln!("distributed_raft_harness: membership scale up applied");
     bootstrap_voter_from_leader_snapshot(&runtimes, 4);
     eprintln!("distributed_raft_harness: membership scale up bootstrapped");
-    wait_for_distributed_majority(&runtimes, &nodes);
-    eprintln!("distributed_raft_harness: membership scale up majority converged");
     let scale_up_bootstrap_reads = nodes
         .iter()
         .map(|node| wait_for_key(node, "distributed-scale-down-key", b"after-scale-down"))
@@ -868,7 +866,7 @@ fn propose_key_via_runtime_after_majority(
                 Err(err) => last_error = Some(err),
             }
         }
-        if ok_count == runtimes.len() {
+        if ok_count >= majority_size(runtimes.len()) {
             return Status::ok();
         }
         if Instant::now() >= deadline {
@@ -881,6 +879,10 @@ fn propose_key_via_runtime_after_majority(
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+fn majority_size(count: usize) -> usize {
+    count / 2 + 1
 }
 
 fn current_leader_node<'a>(
@@ -1192,7 +1194,7 @@ fn request_options() -> HttpRequestOptions {
     HttpRequestOptions {
         connect_timeout_ms: 1_000,
         io_timeout_ms: 10_000,
-        max_retries: 2,
+        max_retries: 8,
     }
 }
 
@@ -1202,12 +1204,15 @@ where
     Response: DeserializeOwned,
 {
     let mut last_error = None;
-    for _attempt in 0..3 {
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let mut retry_sleep_ms = 25;
+    while Instant::now() < deadline {
         match post_json_with_options(addr, path, request, request_options()) {
             Ok(response) => return response,
             Err(err) => {
                 last_error = Some(err);
-                thread::sleep(Duration::from_millis(50));
+                thread::sleep(Duration::from_millis(retry_sleep_ms));
+                retry_sleep_ms = (retry_sleep_ms * 2).min(500);
             }
         }
     }

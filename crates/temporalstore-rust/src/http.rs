@@ -204,13 +204,38 @@ fn request_raw_with_options(
     options: HttpRequestOptions,
 ) -> Result<Vec<u8>, HttpError> {
     let mut last_error = None;
-    for _attempt in 0..=options.max_retries {
+    let mut retry_sleep_ms = 2;
+    for attempt in 0..=options.max_retries {
         match request_raw_once(addr, method, path, body, extra_headers, options) {
             Ok(response) => return Ok(response),
-            Err(err) => last_error = Some(err),
+            Err(err) => {
+                let retryable = is_retryable_request_error(&err);
+                last_error = Some(err);
+                if attempt < options.max_retries && retryable {
+                    thread::sleep(Duration::from_millis(retry_sleep_ms));
+                    retry_sleep_ms = (retry_sleep_ms * 2).min(50);
+                }
+            }
         }
     }
     Err(last_error.unwrap_or_else(|| HttpError::BadResponse("request failed".to_string())))
+}
+
+fn is_retryable_request_error(err: &HttpError) -> bool {
+    match err {
+        HttpError::Io(err) => matches!(
+            err.kind(),
+            ErrorKind::WouldBlock
+                | ErrorKind::TimedOut
+                | ErrorKind::Interrupted
+                | ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+        ),
+        HttpError::BadResponse(message) => {
+            message.contains("incomplete response") || message.contains("missing response header")
+        }
+        HttpError::Json(_) => false,
+    }
 }
 
 fn request_raw_once(

@@ -36,8 +36,13 @@ AREAS: tuple[ReadinessArea, ...] = (
             Evidence(
                 "crates/temporalstore-rust/Cargo.toml",
                 (
-                    'rustraft = { git = "https://github.com/bjmeetsfo/RustRaft.git"',
-                    'rev = "',
+                    'rustraft = { path = "../rustraft" }',
+                ),
+            ),
+            Evidence(
+                "Cargo.toml",
+                (
+                    '"crates/rustraft"',
                 ),
             ),
             Evidence(

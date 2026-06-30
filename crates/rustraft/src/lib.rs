@@ -79,6 +79,8 @@ pub struct RustRaftProductionReadinessInput {
     pub data_node_rollout: Option<RustRaftDataNodeProcessRolloutReport>,
     #[serde(default)]
     pub metaserver_rollout: Option<RustRaftMetaProcessRolloutReport>,
+    #[serde(default)]
+    pub membership_transitions: Vec<RustRaftMembershipTransitionEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -596,6 +598,74 @@ pub struct RustRaftMetaProcessRolloutReport {
     pub blockers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RustRaftMembershipScope {
+    Metaserver,
+    DataNode,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum RustRaftMembershipTransitionKind {
+    Failover,
+    ScaleUp,
+    ScaleDown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustRaftMembershipTransitionEvidence {
+    pub scope: RustRaftMembershipScope,
+    pub transition: RustRaftMembershipTransitionKind,
+    #[serde(default)]
+    pub before_voters: Vec<u64>,
+    #[serde(default)]
+    pub after_voters: Vec<u64>,
+    #[serde(default)]
+    pub before_learners: Vec<u64>,
+    #[serde(default)]
+    pub after_learners: Vec<u64>,
+    pub leader_before: Option<u64>,
+    pub leader_after: Option<u64>,
+    #[serde(default)]
+    pub failed_or_removed_nodes: Vec<u64>,
+    #[serde(default)]
+    pub added_nodes: Vec<u64>,
+    #[serde(default)]
+    pub caught_up_nodes: Vec<u64>,
+    pub commit_index_before: u64,
+    pub commit_index_after: u64,
+    pub applied_index_after: u64,
+    pub joint_consensus_used: bool,
+    pub old_majority_preserved: bool,
+    pub new_majority_reached: bool,
+    pub stale_leader_rejected: bool,
+    pub read_index_validated_after: bool,
+    pub write_validated_after: bool,
+    pub snapshot_floor_preserved: bool,
+    pub secondary_replication_visible: bool,
+    #[serde(default)]
+    pub scheduler_generation_advanced: bool,
+    #[serde(default)]
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustRaftMembershipTransitionDecision {
+    pub scope: RustRaftMembershipScope,
+    pub transition: RustRaftMembershipTransitionKind,
+    pub ready: bool,
+    pub missing: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustRaftMembershipReadinessReport {
+    pub ready: bool,
+    pub satisfied: Vec<String>,
+    pub missing: Vec<String>,
+    pub decisions: Vec<RustRaftMembershipTransitionDecision>,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RustRaftRole {
@@ -1086,6 +1156,13 @@ pub fn rustraft_production_readiness_report(
         &mut production_blockers,
         &mut recommended_next_actions,
     );
+    require_membership_transitions(
+        &input.membership_transitions,
+        &mut satisfied,
+        &mut missing,
+        &mut production_blockers,
+        &mut recommended_next_actions,
+    );
 
     let ready = missing.is_empty() && production_blockers.is_empty();
     RustRaftProductionReadinessReport {
@@ -1102,6 +1179,177 @@ pub fn rustraft_production_readiness_report(
         production_blockers,
         recommended_next_actions,
     }
+}
+
+pub fn rustraft_membership_readiness_report(
+    transitions: &[RustRaftMembershipTransitionEvidence],
+) -> RustRaftMembershipReadinessReport {
+    let required = [
+        (
+            RustRaftMembershipScope::Metaserver,
+            RustRaftMembershipTransitionKind::Failover,
+        ),
+        (
+            RustRaftMembershipScope::Metaserver,
+            RustRaftMembershipTransitionKind::ScaleUp,
+        ),
+        (
+            RustRaftMembershipScope::Metaserver,
+            RustRaftMembershipTransitionKind::ScaleDown,
+        ),
+        (
+            RustRaftMembershipScope::DataNode,
+            RustRaftMembershipTransitionKind::Failover,
+        ),
+        (
+            RustRaftMembershipScope::DataNode,
+            RustRaftMembershipTransitionKind::ScaleUp,
+        ),
+        (
+            RustRaftMembershipScope::DataNode,
+            RustRaftMembershipTransitionKind::ScaleDown,
+        ),
+    ];
+    let mut satisfied = Vec::new();
+    let mut missing = Vec::new();
+    let mut decisions = Vec::new();
+
+    for (scope, transition) in required {
+        let id = membership_transition_id(scope, transition);
+        let Some(evidence) = transitions
+            .iter()
+            .find(|item| item.scope == scope && item.transition == transition)
+        else {
+            missing.push(format!("{id}:evidence_present"));
+            decisions.push(RustRaftMembershipTransitionDecision {
+                scope,
+                transition,
+                ready: false,
+                missing: vec!["evidence_present".to_string()],
+            });
+            continue;
+        };
+        let transition_missing = rustraft_membership_transition_missing(evidence);
+        if transition_missing.is_empty() {
+            satisfied.push(id);
+            decisions.push(RustRaftMembershipTransitionDecision {
+                scope,
+                transition,
+                ready: true,
+                missing: Vec::new(),
+            });
+        } else {
+            missing.extend(
+                transition_missing
+                    .iter()
+                    .map(|requirement| format!("{id}:{requirement}")),
+            );
+            decisions.push(RustRaftMembershipTransitionDecision {
+                scope,
+                transition,
+                ready: false,
+                missing: transition_missing,
+            });
+        }
+    }
+
+    RustRaftMembershipReadinessReport {
+        ready: missing.is_empty(),
+        satisfied,
+        missing,
+        decisions,
+    }
+}
+
+pub fn rustraft_membership_transition_missing(
+    evidence: &RustRaftMembershipTransitionEvidence,
+) -> Vec<String> {
+    let mut missing = Vec::new();
+    let before_majority = majority_size(evidence.before_voters.len());
+    let after_majority = majority_size(evidence.after_voters.len());
+    if evidence.before_voters.len() < 3 {
+        missing.push("before_voter_quorum_size".to_string());
+    }
+    if evidence.after_voters.len() < 3 {
+        missing.push("after_voter_quorum_size".to_string());
+    }
+    if evidence.commit_index_after < evidence.commit_index_before {
+        missing.push("monotonic_commit_index".to_string());
+    }
+    if evidence.applied_index_after < evidence.commit_index_after {
+        missing.push("apply_catches_commit".to_string());
+    }
+    if !evidence.old_majority_preserved {
+        missing.push(format!("old_majority_preserved_{before_majority}"));
+    }
+    if !evidence.new_majority_reached {
+        missing.push(format!("new_majority_reached_{after_majority}"));
+    }
+    if !evidence.stale_leader_rejected {
+        missing.push("stale_leader_rejected".to_string());
+    }
+    if !evidence.read_index_validated_after {
+        missing.push("read_index_after_transition".to_string());
+    }
+    if !evidence.write_validated_after {
+        missing.push("write_after_transition".to_string());
+    }
+    if !evidence.snapshot_floor_preserved {
+        missing.push("snapshot_floor_preserved".to_string());
+    }
+    if !evidence.secondary_replication_visible {
+        missing.push("secondary_replication_visible".to_string());
+    }
+    if matches!(evidence.scope, RustRaftMembershipScope::Metaserver)
+        && !evidence.scheduler_generation_advanced
+    {
+        missing.push("scheduler_generation_advanced".to_string());
+    }
+    match evidence.transition {
+        RustRaftMembershipTransitionKind::Failover => {
+            if evidence.leader_before.is_none() || evidence.leader_after.is_none() {
+                missing.push("leader_before_after_present".to_string());
+            }
+            if evidence.leader_before == evidence.leader_after {
+                missing.push("leader_changed_after_failover".to_string());
+            }
+            if evidence.failed_or_removed_nodes.is_empty() {
+                missing.push("failed_node_recorded".to_string());
+            }
+        }
+        RustRaftMembershipTransitionKind::ScaleUp => {
+            if !evidence.joint_consensus_used {
+                missing.push("joint_consensus_used".to_string());
+            }
+            if evidence.added_nodes.is_empty() {
+                missing.push("added_node_recorded".to_string());
+            }
+            if evidence.after_voters.len() <= evidence.before_voters.len() {
+                missing.push("voter_count_increased".to_string());
+            }
+            if evidence.caught_up_nodes.is_empty() {
+                missing.push("learner_catchup_observed".to_string());
+            }
+        }
+        RustRaftMembershipTransitionKind::ScaleDown => {
+            if !evidence.joint_consensus_used {
+                missing.push("joint_consensus_used".to_string());
+            }
+            if evidence.failed_or_removed_nodes.is_empty() {
+                missing.push("removed_node_recorded".to_string());
+            }
+            if evidence.after_voters.len() >= evidence.before_voters.len() {
+                missing.push("voter_count_decreased".to_string());
+            }
+        }
+    }
+    missing.extend(
+        evidence
+            .blockers
+            .iter()
+            .map(|blocker| format!("blocker:{blocker}")),
+    );
+    missing
 }
 
 pub fn rustraft_pipeline_evidence(
@@ -1697,6 +1945,40 @@ fn require_meta_rollout(
     }
 }
 
+fn require_membership_transitions(
+    transitions: &[RustRaftMembershipTransitionEvidence],
+    satisfied: &mut Vec<String>,
+    missing: &mut Vec<String>,
+    blockers: &mut Vec<String>,
+    actions: &mut Vec<String>,
+) {
+    let report = rustraft_membership_readiness_report(transitions);
+    if report.ready {
+        satisfied.push("membership:all_required_transitions".to_string());
+    } else {
+        missing.extend(report.missing.iter().map(|id| format!("membership:{id}")));
+        blockers.extend(report.missing.iter().map(|id| format!("membership:{id}")));
+        actions.push(
+            "run metaserver and data-node RustRaft failover, scale-up, and scale-down transitions"
+                .to_string(),
+        );
+    }
+    for id in report.satisfied {
+        satisfied.push(format!("membership:{id}"));
+    }
+}
+
+fn membership_transition_id(
+    scope: RustRaftMembershipScope,
+    transition: RustRaftMembershipTransitionKind,
+) -> String {
+    format!("{scope:?}:{transition:?}").to_lowercase()
+}
+
+fn majority_size(voters: usize) -> usize {
+    voters / 2 + 1
+}
+
 fn readiness_field_present(snapshot: &RustRaftReadinessSnapshot, field: &str) -> bool {
     match field {
         "rustraft_leader_write_authority_present" => {
@@ -1894,6 +2176,110 @@ mod tests {
         }
     }
 
+    fn membership_transition(
+        scope: RustRaftMembershipScope,
+        transition: RustRaftMembershipTransitionKind,
+    ) -> RustRaftMembershipTransitionEvidence {
+        match transition {
+            RustRaftMembershipTransitionKind::Failover => RustRaftMembershipTransitionEvidence {
+                scope,
+                transition,
+                before_voters: vec![1, 2, 3],
+                after_voters: vec![1, 2, 3],
+                before_learners: Vec::new(),
+                after_learners: Vec::new(),
+                leader_before: Some(1),
+                leader_after: Some(2),
+                failed_or_removed_nodes: vec![1],
+                added_nodes: Vec::new(),
+                caught_up_nodes: vec![2, 3],
+                commit_index_before: 100,
+                commit_index_after: 104,
+                applied_index_after: 104,
+                joint_consensus_used: false,
+                old_majority_preserved: true,
+                new_majority_reached: true,
+                stale_leader_rejected: true,
+                read_index_validated_after: true,
+                write_validated_after: true,
+                snapshot_floor_preserved: true,
+                secondary_replication_visible: true,
+                scheduler_generation_advanced: matches!(scope, RustRaftMembershipScope::Metaserver),
+                blockers: Vec::new(),
+            },
+            RustRaftMembershipTransitionKind::ScaleUp => RustRaftMembershipTransitionEvidence {
+                scope,
+                transition,
+                before_voters: vec![1, 2, 3],
+                after_voters: vec![1, 2, 3, 4],
+                before_learners: vec![4],
+                after_learners: Vec::new(),
+                leader_before: Some(1),
+                leader_after: Some(1),
+                failed_or_removed_nodes: Vec::new(),
+                added_nodes: vec![4],
+                caught_up_nodes: vec![4],
+                commit_index_before: 100,
+                commit_index_after: 108,
+                applied_index_after: 108,
+                joint_consensus_used: true,
+                old_majority_preserved: true,
+                new_majority_reached: true,
+                stale_leader_rejected: true,
+                read_index_validated_after: true,
+                write_validated_after: true,
+                snapshot_floor_preserved: true,
+                secondary_replication_visible: true,
+                scheduler_generation_advanced: matches!(scope, RustRaftMembershipScope::Metaserver),
+                blockers: Vec::new(),
+            },
+            RustRaftMembershipTransitionKind::ScaleDown => RustRaftMembershipTransitionEvidence {
+                scope,
+                transition,
+                before_voters: vec![1, 2, 3, 4],
+                after_voters: vec![1, 2, 3],
+                before_learners: Vec::new(),
+                after_learners: Vec::new(),
+                leader_before: Some(1),
+                leader_after: Some(1),
+                failed_or_removed_nodes: vec![4],
+                added_nodes: Vec::new(),
+                caught_up_nodes: vec![1, 2, 3],
+                commit_index_before: 108,
+                commit_index_after: 112,
+                applied_index_after: 112,
+                joint_consensus_used: true,
+                old_majority_preserved: true,
+                new_majority_reached: true,
+                stale_leader_rejected: true,
+                read_index_validated_after: true,
+                write_validated_after: true,
+                snapshot_floor_preserved: true,
+                secondary_replication_visible: true,
+                scheduler_generation_advanced: matches!(scope, RustRaftMembershipScope::Metaserver),
+                blockers: Vec::new(),
+            },
+        }
+    }
+
+    fn ready_membership_transitions() -> Vec<RustRaftMembershipTransitionEvidence> {
+        [
+            RustRaftMembershipScope::Metaserver,
+            RustRaftMembershipScope::DataNode,
+        ]
+        .into_iter()
+        .flat_map(|scope| {
+            [
+                RustRaftMembershipTransitionKind::Failover,
+                RustRaftMembershipTransitionKind::ScaleUp,
+                RustRaftMembershipTransitionKind::ScaleDown,
+            ]
+            .into_iter()
+            .map(move |transition| membership_transition(scope, transition))
+        })
+        .collect()
+    }
+
     fn ready_production_input() -> RustRaftProductionReadinessInput {
         RustRaftProductionReadinessInput {
             readiness: ready_snapshot(),
@@ -1926,6 +2312,7 @@ mod tests {
             }),
             data_node_rollout: Some(ready_data_node_rollout()),
             metaserver_rollout: Some(ready_meta_rollout()),
+            membership_transitions: ready_membership_transitions(),
         }
     }
 
@@ -1978,6 +2365,7 @@ mod tests {
             wal_lifecycle: None,
             data_node_rollout: None,
             metaserver_rollout: None,
+            membership_transitions: Vec::new(),
         });
         assert!(!report.ready);
         assert_eq!(report.production_status, RustRaftProductionStatus::Blocked);
@@ -1994,6 +2382,10 @@ mod tests {
         assert!(report
             .missing
             .contains(&"metaserver:evidence_present".to_string()));
+        assert!(report
+            .missing
+            .iter()
+            .any(|item| item == "membership:datanode:scaledown:evidence_present"));
     }
 
     #[test]
@@ -2049,5 +2441,48 @@ mod tests {
             .safe
         );
         assert!(rustraft_learner_promotion_decision(&status, 2, 0).promotable);
+    }
+
+    #[test]
+    fn membership_readiness_requires_failover_scale_up_and_scale_down_for_meta_and_data_nodes() {
+        let report = rustraft_membership_readiness_report(&ready_membership_transitions());
+        assert!(report.ready, "{report:#?}");
+        assert!(report
+            .satisfied
+            .contains(&"metaserver:failover".to_string()));
+        assert!(report.satisfied.contains(&"metaserver:scaleup".to_string()));
+        assert!(report
+            .satisfied
+            .contains(&"metaserver:scaledown".to_string()));
+        assert!(report.satisfied.contains(&"datanode:failover".to_string()));
+        assert!(report.satisfied.contains(&"datanode:scaleup".to_string()));
+        assert!(report.satisfied.contains(&"datanode:scaledown".to_string()));
+    }
+
+    #[test]
+    fn membership_readiness_fails_closed_when_transition_evidence_is_missing() {
+        let transitions = ready_membership_transitions()
+            .into_iter()
+            .filter(|item| {
+                !(item.scope == RustRaftMembershipScope::DataNode
+                    && item.transition == RustRaftMembershipTransitionKind::ScaleDown)
+            })
+            .collect::<Vec<_>>();
+        let report = rustraft_membership_readiness_report(&transitions);
+        assert!(!report.ready);
+        assert!(report
+            .missing
+            .contains(&"datanode:scaledown:evidence_present".to_string()));
+    }
+
+    #[test]
+    fn membership_readiness_rejects_unsafe_scale_up_without_joint_consensus() {
+        let mut transition = membership_transition(
+            RustRaftMembershipScope::Metaserver,
+            RustRaftMembershipTransitionKind::ScaleUp,
+        );
+        transition.joint_consensus_used = false;
+        let missing = rustraft_membership_transition_missing(&transition);
+        assert!(missing.contains(&"joint_consensus_used".to_string()));
     }
 }

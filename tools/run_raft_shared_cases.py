@@ -102,8 +102,15 @@ def validate_case(case: dict, cpp_repo: Path | None) -> tuple[int, int]:
     for step in steps:
         command = step.get("command", {})
         location = f"{case.get('name')}/{step.get('name')}"
-        if command.get("kind") != "existing_test":
-            raise SystemExit(f"{location}: Raft step must use existing_test command")
+        if command.get("kind") not in {"existing_test", "raft_linearizable_hash_failover"}:
+            raise SystemExit(
+                f"{location}: Raft step must use existing_test or raft_linearizable_hash_failover command"
+            )
+        if command.get("kind") == "raft_linearizable_hash_failover":
+            if command.get("scenario") != "data_node_mixed_rw_failover":
+                raise SystemExit(f"{location}: unexpected Raft hash-failover scenario")
+            rust_runners += 1
+            continue
         if command.get("suite") != RAFT_SUITE:
             raise SystemExit(f"{location}: unexpected suite {command.get('suite')!r}")
         if command.get("mode") not in {"runtime", "stress"}:
