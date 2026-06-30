@@ -1301,6 +1301,18 @@ pub struct StorageMergedDumpLoadPolicyReport {
     #[serde(default)]
     pub stale_page_conflict_reported: bool,
     #[serde(default)]
+    pub stale_object_conflict_count: usize,
+    #[serde(default)]
+    pub stale_page_conflict_count: usize,
+    #[serde(default)]
+    pub interrupted_install_count: usize,
+    #[serde(default)]
+    pub roll_forward_recovery_count: usize,
+    #[serde(default)]
+    pub rollback_marker_count: usize,
+    #[serde(default)]
+    pub interruption_recovery_validated: bool,
+    #[serde(default)]
     pub blockers: Vec<String>,
 }
 
