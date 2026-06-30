@@ -1051,6 +1051,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "compact phase calls model-layout/tombstone page compaction".to_string(),
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
         "StorageManager pressure decisions expose observed/threshold signals for dirty slots, oplog backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
+        "shared case storage_manager_pressure_scale_evidence runs repeated pressure rounds and validates every C++-style StorageManager phase stays active under scale-like write/read/TTL/cache/stale-page pressure".to_string(),
     ];
     let mature_background_storage_manager_blockers = Vec::new();
     let merged_dump_load_policy_ready = true;

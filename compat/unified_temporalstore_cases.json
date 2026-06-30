@@ -5219,6 +5219,33 @@
       ]
     },
     {
+      "description": "Shared C++/Rust StorageManager scale-evidence case: repeated pressure rounds keep prepare, WAL reclaim, eviction, expiry, page GC, compaction, index-GC, and metrics phases active.",
+      "family": "storage/cache",
+      "name": "storage_manager_pressure_scale_evidence",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates repeated write/read/TTL/cache/stale-page pressure and verifies multiple StorageManager rounds execute every C++-style phase with pressure signals and stats.",
+            "expect_min_rounds": 4,
+            "expect_phases": [
+              "prepare",
+              "reclaim_oplog",
+              "reclaim_memory",
+              "expire",
+              "reclaim_page",
+              "compact_pages",
+              "reclaim_index",
+              "reap_metrics"
+            ],
+            "kind": "storage_manager_pressure_scale_evidence"
+          },
+          "name": "storage_manager_pressure_scale_evidence_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust storage dump/load case: one merged policy coordinates dirty-slot dump, multi-slot merged manifests, manifest validation, rollback/install markers, load preflight, replay boundary, roll-forward, follower-safe prune, and index-GC.",
       "family": "storage/cache",
       "name": "storage_merged_dump_load_policy",
@@ -8758,6 +8785,7 @@
       "storage_stream_backed_extent_runtime",
       "storage_stream_partial_extent_rebuild",
       "storage_manager_background_loop",
+      "storage_manager_pressure_scale_evidence",
       "storage_merged_dump_load_policy",
       "context_events_segments_entities_child_refs",
       "context_cpp_wire_model_descriptor_roundtrip",
@@ -8898,6 +8926,7 @@
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
       "storage_stream_partial_extent_rebuild",
+      "storage_manager_pressure_scale_evidence",
       "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
