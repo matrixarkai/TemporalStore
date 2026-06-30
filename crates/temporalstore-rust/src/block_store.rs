@@ -292,6 +292,8 @@ pub struct BlockStoreExtentSummary {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamBackedExtentRuntimeReport {
     pub runtime_ready: bool,
+    #[serde(default)]
+    pub extent_lifecycle_states: Vec<String>,
     #[serde(alias = "zone_count")]
     pub extent_count: u64,
     #[serde(alias = "active_zones")]
@@ -524,7 +526,7 @@ impl LocalBlockStore {
             previous.state = BlockStoreExtentState::Sealed;
             previous.updated_unix_ms = Some(transition_unix_ms);
         }
-        let new_zone = BlockStoreExtentDescriptor {
+        let new_extent = BlockStoreExtentDescriptor {
             extent_id: extent_id_for_segment(inner.page_segment_id),
             page_segment_id: inner.page_segment_id,
             state: BlockStoreExtentState::Active,
@@ -536,7 +538,7 @@ impl LocalBlockStore {
             last_page_id: None,
         };
         let page_segment_id = inner.page_segment_id;
-        inner.extents.insert(page_segment_id, new_zone);
+        inner.extents.insert(page_segment_id, new_extent);
         persist_extent_manifest(&inner.root, &inner.extents)?;
         Ok(BlockStoreRollReport {
             previous_page_segment_id,
@@ -1219,6 +1221,7 @@ impl LocalBlockStore {
         let delayed_destroy_ready =
             summary.delayed_destroy_extents > 0 || summary.purged_extents > 0;
         let purge_lifecycle_ready = summary.purged_extents > 0;
+        let extent_lifecycle_states = extent_lifecycle_states(&summary);
         let extent_state_transition_count = [
             summary.active_extents,
             summary.sealed_extents,
@@ -1231,7 +1234,7 @@ impl LocalBlockStore {
 
         let mut blockers = Vec::new();
         if !logical_stream_read_ready {
-            blockers.push("no readable page stream records found".to_string());
+            blockers.push("no readable block stream records found".to_string());
         }
         if !append_roll_ready {
             blockers.push(
@@ -1255,6 +1258,7 @@ impl LocalBlockStore {
         let runtime_ready = blockers.is_empty();
         Ok(StreamBackedExtentRuntimeReport {
             runtime_ready,
+            extent_lifecycle_states,
             extent_count: extents.len() as u64,
             active_extents: summary.active_extents,
             sealed_extents: summary.sealed_extents,
@@ -1279,11 +1283,12 @@ impl LocalBlockStore {
             purge_lifecycle_ready,
             blockers,
             evidence: vec![
-                "page records are appended as self-describing stream envelopes".to_string(),
+                "block records are appended as self-describing stream envelopes".to_string(),
                 "logical stream reads span records while skipping envelopes and decompression"
                     .to_string(),
                 "segment roll seals the previous extent and opens a new active extent".to_string(),
-                "extent manifest persists active/sealed/delayed-destroy/purged state".to_string(),
+                "extent manifest persists active/sealed/delayed-destroy/purged lifecycle state"
+                    .to_string(),
                 "stream runtime reports page-id continuity and logical read byte evidence"
                     .to_string(),
                 "extent manifest descriptors are validated against inspected stream boundaries"
@@ -1310,6 +1315,23 @@ impl LocalBlockStore {
     pub fn stats(&self) -> BlockStoreStats {
         self.inner.lock().expect("block store lock poisoned").stats
     }
+}
+
+fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
+    let mut states = Vec::new();
+    if summary.active_extents > 0 {
+        states.push("active".to_string());
+    }
+    if summary.sealed_extents > 0 {
+        states.push("sealed".to_string());
+    }
+    if summary.delayed_destroy_extents > 0 {
+        states.push("delayed_destroy".to_string());
+    }
+    if summary.purged_extents > 0 {
+        states.push("purged".to_string());
+    }
+    states
 }
 
 impl Default for LocalBlockStore {
@@ -2308,6 +2330,7 @@ mod tests {
         assert!(before_gc.runtime_ready, "{before_gc:?}");
         assert_eq!(before_gc.active_extents, 1);
         assert_eq!(before_gc.sealed_extents, 1);
+        assert_eq!(before_gc.extent_lifecycle_states, vec!["active", "sealed"]);
         assert_eq!(before_gc.stream_record_count, 3);
         assert_eq!(before_gc.first_page_id, first.page_id);
         assert_eq!(before_gc.last_page_id, third.page_id);
@@ -2333,6 +2356,10 @@ mod tests {
         assert!(report.runtime_ready, "{report:?}");
         assert_eq!(report.active_extents, 1);
         assert_eq!(report.delayed_destroy_extents, 1);
+        assert_eq!(
+            report.extent_lifecycle_states,
+            vec!["active", "delayed_destroy"]
+        );
         assert!(report.extent_count >= 2);
         assert!(report.stream_segment_count >= 1);
         assert!(report.logical_stream_read_ready);
@@ -2372,6 +2399,7 @@ mod tests {
         assert_eq!(purged.active_extents, 1);
         assert_eq!(purged.delayed_destroy_extents, 0);
         assert_eq!(purged.purged_extents, 1);
+        assert_eq!(purged.extent_lifecycle_states, vec!["active", "purged"]);
         assert!(purged.purge_lifecycle_ready);
         assert!(purged.append_roll_ready);
         assert!(purged.page_id_continuity_ready);

@@ -175,13 +175,13 @@ C++ execution should progressively cover every executable case.
 | `storage_shared_store_oplog_cursor_retention` | Shared-store oplog GC refuses to reclaim oplog objects still needed by a saved follower replay cursor. |
 | `storage_shared_store_checkpoint_cursor_retention` | Shared-store checkpoint GC retains the checkpoint generation anchoring a saved follower replay cursor. |
 | `codex_mcp_multi_agent_context_hook_parity` | Rust-executable/C++-static gate for Codex/Claude/Cursor/generic agent context hook payload extraction, profile routing, session indexing, source-kind mapping, and role mapping. |
-| `storage_cache_refill` | Rust invalidates cache, warms from page-store refs, and verifies memory refill stats. |
+| `storage_cache_refill` | Rust invalidates cache, warms from block-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
 | `storage_rustraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
 | `storage_rustraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_rustraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |
-| `storage_rustraft_cache_refill_pressure` | Tiny-cache refill pressure validates page-store reads, memory refill, admission/eviction stats, and refill failures. |
+| `storage_rustraft_cache_refill_pressure` | Tiny-cache refill pressure validates block-store reads, memory refill, admission/eviction stats, and refill failures. |
 | `storage_rustraft_shared_store_sync_replay` | Sync local shared-store replay preserves converted pages and oplog/index-log ordering. |
 | `storage_rustraft_shared_store_async_replay` | Async local shared-store replay preserves converted pages and oplog/index-log ordering under delayed follower catch-up. |
 | `storage_recovery_sidecar_dependency_matrix` | Storage recovery validates index refs, page refs, manifest refs, context sidecar refs, follower cursor retention, and cache refill as one dependency matrix. |
