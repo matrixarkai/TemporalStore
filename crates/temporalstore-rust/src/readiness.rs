@@ -809,7 +809,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "cache pressure selects victims by routing-slot/object group before individual block, matching C++ Evicter slot-first pressure behavior".to_string(),
         "pin-aware eviction skip counters preserve active page/block handles".to_string(),
         "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
-        "shared case storage_cache_replacement_policy_soak exercises repeated pressure rounds, dump-before-evict, delete/drop eviction, and cold read refill through TemporalStore storage".to_string(),
+        "shared case storage_cache_replacement_policy_soak exercises repeated pressure rounds, memory/disk pressure, dump-before-evict, delete/drop eviction, cold read refill, async writeback backpressure, and bucketed latency histograms through TemporalStore storage".to_string(),
     ];
     let local_pressure_ready = memory_read_through_ready
         && disk_block_cache_ready
@@ -851,7 +851,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
             .to_string(),
         "current local metrics expose average and max latency for Rust-native diagnostics"
             .to_string(),
-        "remaining gap: mature p50/p95/p99 histograms, SLO windows, and per-tier latency alert evidence are not yet mtcache-class ready"
+        "Rust-native cache reports bucketed read-through, refill, writeback, eviction, and compaction latency samples; remaining gap: mtcache-class p50/p95/p99 SLO windows and per-tier alert evidence are not yet ready"
             .to_string(),
     ];
     let mtcache_class_production_ready = mtcache_class_replacement_policy_ready
