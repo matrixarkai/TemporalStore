@@ -2912,9 +2912,14 @@
       "steps": [
         {
           "command": {
+            "cpp_runner_contract": "C++ storage runner clears or ignores logical accelerators and proves SlotMap/PageIndex page-address fallback returns the object bytes after cache miss.",
+            "description": "Shared storage cold-read case: logical model map is unavailable, so Rust and C++ must follow slot/object/page index address into cache, disk/page store, or shared-store fallback and refill memory.",
             "kind": "storage_cold_read_page_address_fallback",
             "migration_case": "cpp_logical_storage_models_packed_timestamped_pages",
-            "required_path": "slot_page_address_to_cache_disk_shared_store"
+            "mode": "rust_executable_cxx_static",
+            "required_path": "slot_page_address_to_cache_disk_shared_store",
+            "rust_runner": "cargo test -p temporalstore-rust cold_read_uses_slot_page_address_after_cache_and_model_maps_are_cleared --lib -- --test-threads=1",
+            "suite": "cpp_storage_parity"
           },
           "name": "storage_cold_read_uses_page_address_cache_disk_shared_store",
           "skip_client": true
@@ -2932,6 +2937,63 @@
             "required_path": "slot_index_rebuilds_model_views_on_recovery"
           },
           "name": "storage_recovery_reconciles_slot_authority_to_secondary_views",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_slot_layout_transitions",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "cpp_runner_contract": "C++ SlotStore runner emits the same layout state counts and runtime flags from SlotMap, SlotNode, and PageIndex structures.",
+            "description": "Shared SlotStore case for empty, single-object, single-page-object, multi-page-object, and multi-object layouts plus dirty, deleted, loading, in-memory, and TTL flags.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "rust_runner": "cargo test -p temporalstore-rust slot_store_reports_all_layout_states_and_runtime_flags --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_slotstore_layout_transitions_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_object_hot_cold_reload",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "cpp_runner_contract": "C++ ObjectManager runner emits matching hot, cold, deleted residency, object-page ownership, dirty generation, and reload-stability fields.",
+            "description": "Shared ObjectManager case for hot/cold/tombstone object residency, object-page ownership transitions, compaction, dump/load install, unload/load recovery, and conflict-free owner refs.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "rust_runner": "cargo test -p temporalstore-rust object_manager_runtime_report_tracks_residency_layout_and_tombstones --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_object_manager_hot_cold_reload_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "storage_tombstone_compaction",
+      "shard_id": 11,
+      "steps": [
+        {
+          "command": {
+            "cpp_runner_contract": "C++ compaction runner emits before/after stale density, tombstone preservation, rewritten page/object counts, and per-model layout policy evidence.",
+            "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
+            "suite": "cpp_storage_parity"
+          },
+          "name": "storage_tombstone_and_model_layout_compaction_shared",
           "skip_client": true
         }
       ]
