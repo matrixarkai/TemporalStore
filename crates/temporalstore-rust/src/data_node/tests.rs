@@ -1515,6 +1515,150 @@ fn runtime_storage_manager_loop_runs_cpp_style_pressure_stages() {
 }
 
 #[test]
+// shared-corpus: storage_manager_pressure_scale_evidence;
+fn runtime_storage_manager_scale_repeats_cpp_style_pressure_stages() {
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        512,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(17);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 8);
+    let mut reports = Vec::new();
+
+    for round in 0..4 {
+        for key_index in 0..16 {
+            let key = format!("manager-scale-{round}-{key_index}");
+            let first = runtime.execute(ExecuteRequest {
+                shard_id: 17,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: vec![round as u8; 128 + key_index],
+                },
+            });
+            assert!(first.status.ok, "{first:?}");
+            let second = runtime.execute(ExecuteRequest {
+                shard_id: 17,
+                command: Command::StringSet {
+                    key: key.clone(),
+                    value: vec![(round + 1) as u8; 192 + key_index],
+                },
+            });
+            assert!(second.status.ok, "{second:?}");
+            let cached = runtime.execute(ExecuteRequest {
+                shard_id: 17,
+                command: Command::StringGet { key },
+            });
+            assert!(cached.status.ok, "{cached:?}");
+        }
+        let ttl_key = format!("manager-scale-ttl-{round}");
+        let ttl = runtime.execute(ExecuteRequest {
+            shard_id: 17,
+            command: Command::StringSetEx {
+                key: ttl_key,
+                value: b"expire-me".repeat(16),
+                ttl_ms: 1,
+            },
+        });
+        assert!(ttl.status.ok, "{ttl:?}");
+        std::thread::sleep(Duration::from_millis(3));
+
+        let report = runtime.run_storage_manager_once(
+            17,
+            StorageManagerOptions {
+                max_dump_slots_per_round: 64,
+                min_undumped_oplog_records: 1,
+                dirty_slot_pressure: 1,
+                stale_page_segment_pressure: 1,
+                reclaimable_physical_bytes_pressure: 1,
+                cache_memory_bytes_pressure: 1,
+                cache_disk_bytes_pressure: 1,
+                ..StorageManagerOptions::default()
+            },
+        );
+        assert!(report.status.ok, "{report:?}");
+        reports.push(report);
+    }
+
+    let required_stages = [
+        "prepare",
+        "reclaim_oplog",
+        "reclaim_memory",
+        "expire",
+        "reclaim_page",
+        "compact_pages",
+        "reclaim_index",
+        "reap_metrics",
+    ];
+    for report in &reports {
+        for stage in required_stages {
+            assert!(
+                report
+                    .pressure_decisions
+                    .iter()
+                    .any(|decision| decision.stage == stage
+                        && decision.enabled
+                        && decision.executed
+                        && !decision.signals.is_empty()),
+                "missing executed pressure decision {stage}: {report:?}"
+            );
+        }
+        assert!(report.pressure.dirty_slot_count >= 1, "{report:?}");
+        assert!(report.pressure.undumped_oplog_records >= 1, "{report:?}");
+        assert!(report.lifecycle_report.is_some(), "{report:?}");
+        assert!(
+            report.gc_report.as_ref().is_some_and(|gc| gc.status.ok),
+            "{report:?}"
+        );
+        assert!(
+            report
+                .compaction_report
+                .as_ref()
+                .is_some_and(|compaction| compaction.status.ok),
+            "{report:?}"
+        );
+    }
+
+    assert!(reports
+        .iter()
+        .any(|report| report.expired_records_removed >= 1));
+    assert!(reports.iter().any(|report| {
+        report
+            .pressure_decisions
+            .iter()
+            .any(|decision| decision.stage == "reclaim_memory" && decision.pressure_active)
+    }));
+    assert!(reports.iter().any(|report| {
+        report
+            .pressure_decisions
+            .iter()
+            .any(|decision| decision.stage == "compact_pages" && decision.pressure_active)
+    }));
+    assert!(runtime.dirty_objects().is_empty());
+
+    let stats = runtime.stats();
+    assert_eq!(stats.storage_manager_loops, reports.len() as u64);
+    assert_eq!(stats.storage_manager_prepare_runs, reports.len() as u64);
+    assert_eq!(
+        stats.storage_manager_reclaim_oplog_runs,
+        reports.len() as u64
+    );
+    assert_eq!(
+        stats.storage_manager_reclaim_memory_runs,
+        reports.len() as u64
+    );
+    assert_eq!(stats.storage_manager_expire_runs, reports.len() as u64);
+    assert_eq!(
+        stats.storage_manager_reclaim_page_runs,
+        reports.len() as u64
+    );
+    assert_eq!(stats.storage_manager_compact_runs, reports.len() as u64);
+    assert_eq!(stats.storage_manager_index_gc_runs, reports.len() as u64);
+}
+
+#[test]
 // rust-internal: validates periodic runtime scheduling for the StorageManager loop
 fn runtime_storage_manager_scheduler_runs_continuous_loop() {
     let engine = TemporalEngine::default();
