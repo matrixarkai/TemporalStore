@@ -5176,6 +5176,25 @@
       ]
     },
     {
+      "description": "Shared C++/Rust storage stream case: missing manifests rebuild from sealed/active extents and partial corrupt tails preserve readable prefixes with explicit corruption evidence.",
+      "family": "storage/cache",
+      "name": "storage_stream_partial_extent_rebuild",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Removes the extent manifest, appends a corrupt partial tail to a sealed extent, reopens storage, verifies readable-prefix manifest rebuild, and reports corruption without hiding healthy extents.",
+            "expect_corrupt_extent_count": 1,
+            "expect_extent_manifest_rebuild": true,
+            "expect_partial_extent_recovery": true,
+            "kind": "storage_stream_partial_extent_rebuild"
+          },
+          "name": "partial_extent_manifest_rebuild_preserves_readable_prefix",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "description": "Shared C++/Rust StorageManager lifecycle case: one background loop reports prepare, reclaim, evict, expire, compact, and index-GC phases.",
       "family": "storage/cache",
       "name": "storage_manager_background_loop",
@@ -8737,6 +8756,7 @@
       "storage_stream_cross_block_large_values",
       "storage_stream_random_size_reopen_scan",
       "storage_stream_backed_extent_runtime",
+      "storage_stream_partial_extent_rebuild",
       "storage_manager_background_loop",
       "storage_merged_dump_load_policy",
       "context_events_segments_entities_child_refs",
@@ -8877,6 +8897,7 @@
       "storage_recovery_reconciles_slot_index_to_model_views",
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
+      "storage_stream_partial_extent_rebuild",
       "raft_linearizable_hash_failover",
       "ops_readiness_service_summary",
       "redis_feature_module_flow",
