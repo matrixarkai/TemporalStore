@@ -6944,10 +6944,45 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         dir.path().join("pages"),
         dir.path().join("restore-indexes"),
     );
-    restore_engine.load_shard(1);
-    restore_engine
-        .install_slot_dump_manifest(&manifest)
-        .expect("merged policy manifest should install into restore engine");
+    assert!(
+        restore_engine
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 0,
+                local_node_id: Some(10),
+                shard_uri: "local://restore/1".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 16_383,
+                readonly: false,
+                table_name: "restore".to_string(),
+            })
+            .status
+            .ok
+    );
+    let merged_manifest = engine
+        .create_merged_slot_dump_manifest(
+            1,
+            manifest.slot_ids.clone(),
+            vec![manifest.manifest_id.clone()],
+            Some(1),
+        )
+        .expect("merged manifest with load-version handoff");
+    let install_report = restore_engine.install_merged_slot_dump_manifest(&merged_manifest);
+    assert!(install_report.installed, "{install_report:?}");
+    assert!(install_report.rollback_marker_written);
+    assert!(install_report.prepare_marker_written);
+    assert!(install_report.install_marker_written);
+    assert!(install_report.commit_marker_written);
+    assert_eq!(install_report.source_manifest_count, 1);
+    assert_eq!(install_report.stale_object_conflict_count, 0);
+    assert_eq!(install_report.stale_page_conflict_count, 0);
+    assert!(install_report
+        .load_version_handoff
+        .as_ref()
+        .is_some_and(|handoff| handoff.previous_load_version == 0
+            && handoff.next_load_version == 1
+            && handoff.applied));
+    assert_eq!(restore_engine.info(1).unwrap().load_version, 1);
     let get = restore_engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -7006,6 +7041,16 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         },
     )
     .unwrap();
+    let restarted = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache-restarted"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    restarted.load_shard(1);
+    assert_eq!(restarted.interrupted_slot_dump_installs(1).len(), 1);
+    let restart_boundary = restarted.storage_recovery_boundary_report(1);
+    assert_eq!(restart_boundary.interrupted_slot_dump_install_count, 1);
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {
@@ -7033,6 +7078,33 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(recovered.roll_forward_recovery_count >= 1);
     assert!(recovered.rollback_marker_count >= 1);
     assert!(engine.interrupted_slot_dump_installs(1).is_empty());
+
+    let mismatch_restore = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("mismatch-cache"),
+        dir.path().join("pages"),
+        dir.path().join("mismatch-indexes"),
+    );
+    assert!(
+        mismatch_restore
+            .load_shard_with(LoadShardRequest {
+                shard_id: 1,
+                load_version: 2,
+                local_node_id: Some(11),
+                shard_uri: "local://mismatch/1".to_string(),
+                start_routing_slot: 0,
+                end_routing_slot: 16_383,
+                readonly: false,
+                table_name: "mismatch".to_string(),
+            })
+            .status
+            .ok
+    );
+    let mismatch = mismatch_restore.slot_dump_install_preflight_report(&merged_manifest);
+    assert!(!mismatch.install_safe, "{mismatch:?}");
+    assert!(mismatch
+        .blockers
+        .contains(&"load_version_handoff_mismatch".to_string()));
 }
 
 #[test]
