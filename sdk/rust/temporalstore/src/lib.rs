@@ -114,6 +114,13 @@ struct CHashEntry {
 
 #[cfg(feature = "direct")]
 #[repr(C)]
+struct CStringArray {
+    count: usize,
+    values: *mut *mut c_char,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
 struct CSequenceFeatureRowArray {
     count: usize,
     rows: *mut CSequenceFeatureRow,
@@ -144,6 +151,23 @@ extern "C" {
         value: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_delete_object(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_expire(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        ttl_ms: u64,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_ttl(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        ttl_ms: *mut u64,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
     fn temporalstore_hset(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -158,6 +182,25 @@ extern "C" {
         value: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_hdel(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        field: *const c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_sadd(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        member: *const c_char,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_smembers(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        members: *mut CStringArray,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
+    fn temporalstore_string_array_free(array: *mut CStringArray);
     fn temporalstore_matrixark_batch_append_records(
         client: *mut TemporalStoreClientOpaque,
         entries: *const CHashEntry,
@@ -301,13 +344,42 @@ impl Client {
         Ok(out)
     }
 
+    pub fn delete_object(&self, key: &str) -> Result<()> {
+        let key = cstring(key)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_delete_object(self.raw, key.as_ptr(), &mut error) };
+        check(code, error)
+    }
+
+    pub fn expire(&self, key: &str, ttl_ms: u64) -> Result<()> {
+        let key = cstring(key)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_expire(self.raw, key.as_ptr(), ttl_ms, &mut error) };
+        check(code, error)
+    }
+
+    pub fn ttl(&self, key: &str) -> Result<u64> {
+        let key = cstring(key)?;
+        let mut ttl_ms = 0_u64;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_ttl(self.raw, key.as_ptr(), &mut ttl_ms, &mut error) };
+        check(code, error)?;
+        Ok(ttl_ms)
+    }
+
     pub fn hset(&self, key: &str, field: &str, value: &str) -> Result<()> {
         let key = cstring(key)?;
         let field = cstring(field)?;
         let value = cstring(value)?;
         let mut error: *mut c_char = ptr::null_mut();
         let code = unsafe {
-            temporalstore_hset(self.raw, key.as_ptr(), field.as_ptr(), value.as_ptr(), &mut error)
+            temporalstore_hset(
+                self.raw,
+                key.as_ptr(),
+                field.as_ptr(),
+                value.as_ptr(),
+                &mut error,
+            )
         };
         check(code, error)
     }
@@ -317,11 +389,65 @@ impl Client {
         let field = cstring(field)?;
         let mut value: *mut c_char = ptr::null_mut();
         let mut error: *mut c_char = ptr::null_mut();
-        let code = unsafe { temporalstore_hget(self.raw, key.as_ptr(), field.as_ptr(), &mut value, &mut error) };
+        let code = unsafe {
+            temporalstore_hget(
+                self.raw,
+                key.as_ptr(),
+                field.as_ptr(),
+                &mut value,
+                &mut error,
+            )
+        };
         check(code, error)?;
         let out = unsafe { CStr::from_ptr(value).to_string_lossy().into_owned() };
         unsafe { temporalstore_free_string(value) };
         Ok(out)
+    }
+
+    pub fn hdel(&self, key: &str, field: &str) -> Result<()> {
+        let key = cstring(key)?;
+        let field = cstring(field)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code =
+            unsafe { temporalstore_hdel(self.raw, key.as_ptr(), field.as_ptr(), &mut error) };
+        check(code, error)
+    }
+
+    pub fn sadd(&self, key: &str, member: &str) -> Result<()> {
+        let key = cstring(key)?;
+        let member = cstring(member)?;
+        let mut error: *mut c_char = ptr::null_mut();
+        let code =
+            unsafe { temporalstore_sadd(self.raw, key.as_ptr(), member.as_ptr(), &mut error) };
+        check(code, error)
+    }
+
+    pub fn smembers(&self, key: &str) -> Result<Vec<String>> {
+        let key = cstring(key)?;
+        let mut out = CStringArray {
+            count: 0,
+            values: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_smembers(self.raw, key.as_ptr(), &mut out, &mut error) };
+        check(code, error)?;
+        let values = if out.values.is_null() {
+            Vec::new()
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(out.values, out.count) };
+            slice
+                .iter()
+                .filter_map(|value| {
+                    if value.is_null() {
+                        None
+                    } else {
+                        Some(unsafe { CStr::from_ptr(*value).to_string_lossy().into_owned() })
+                    }
+                })
+                .collect()
+        };
+        unsafe { temporalstore_string_array_free(&mut out) };
+        Ok(values)
     }
 
     pub fn matrixark_batch_append_records(
@@ -367,8 +493,12 @@ impl Client {
                 self.raw,
                 entries_ptr,
                 c_entries.len(),
-                count_key_c.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
-                count_value_c.as_ref().map_or(ptr::null(), |value| value.as_ptr()),
+                count_key_c
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
+                count_value_c
+                    .as_ref()
+                    .map_or(ptr::null(), |value| value.as_ptr()),
                 &mut error,
             )
         };
@@ -755,4 +885,25 @@ fn parse_http_endpoint(endpoint: &str) -> Result<(String, u16, String)> {
         format!("/{path}")
     };
     Ok((host, port, base_path))
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(feature = "direct")]
+    use super::Client;
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn direct_client_exposes_cpp_c_abi_parity_methods() {
+        let _: fn(&Client, &str, &str, &str) -> super::Result<()> = Client::hset;
+        let _: fn(&Client, &str, &str) -> super::Result<String> = Client::hget;
+        let _: fn(&Client, &str, &str) -> super::Result<()> = Client::hdel;
+        let _: fn(&Client, &str) -> super::Result<()> = Client::delete_object;
+        let _: fn(&Client, &str, u64) -> super::Result<()> = Client::expire;
+        let _: fn(&Client, &str) -> super::Result<u64> = Client::ttl;
+        let _: fn(&Client, &str, &str) -> super::Result<()> = Client::sadd;
+        let _: fn(&Client, &str) -> super::Result<Vec<String>> = Client::smembers;
+        let _: fn(&Client, &[(&str, &str, &str)], Option<&str>, Option<&str>) -> super::Result<()> =
+            Client::matrixark_batch_append_records;
+    }
 }
