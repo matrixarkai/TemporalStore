@@ -8397,7 +8397,19 @@
               "wal_bytes",
               "index_log_bytes",
               "stale_density",
-              "cache_pressure"
+              "cache_pressure",
+              "expired_scan_debt",
+              "delayed_destroy",
+              "follower_cursors",
+              "raft_snapshot_floor"
+            ],
+            "expect_phase_report_fields": [
+              "selected_slots",
+              "skipped_reasons",
+              "reclaimed_bytes",
+              "pressure_before_after",
+              "retention_blockers",
+              "wal_index_log_floors"
             ],
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",

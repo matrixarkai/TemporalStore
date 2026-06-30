@@ -2424,6 +2424,21 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             enable_page_compaction: false,
             enable_index_gc: true,
             warm_cache: true,
+            follower_replay_cursors: vec![crate::engine::reports::SlotDumpFollowerReplayCursor {
+                follower_id: "follower-lagging-runtime".to_string(),
+                shard_id: 8,
+                oplog_sequence: 1,
+                index_log_sequence: 1,
+            }],
+            raft_snapshot_refs: vec![crate::engine::reports::SlotDumpRaftSnapshotRef {
+                snapshot_id: "raft-snapshot-runtime".to_string(),
+                shard_id: 8,
+                last_included_index: 1,
+                last_included_term: 1,
+                oplog_sequence: 1,
+                index_log_sequence: 1,
+            }],
+            page_gc_raft_install_floor_segment_id: Some(1),
             ..StorageManagerCycleRequest::default()
         },
         controller: RequestController { timeout_ms: 30_000 },
@@ -2450,6 +2465,12 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(running.phase_page_gc_enabled);
     assert!(!running.phase_compaction_enabled);
     assert!(running.phase_index_gc_enabled);
+    assert_eq!(running.configured_follower_cursor_count, 1);
+    assert_eq!(running.configured_raft_snapshot_ref_count, 1);
+    assert_eq!(
+        running.configured_page_gc_raft_install_floor_segment_id,
+        Some(1)
+    );
     assert!(running.last_job_id.is_some());
     assert!(running.last_status.as_ref().is_some_and(|status| status.ok));
     assert!(running.last_completed_cycle.is_some());
@@ -2461,14 +2482,40 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.index_log_bytes >= 1, "{pressure:?}");
     assert!(pressure.cache_memory_bytes >= 1, "{pressure:?}");
     assert!(pressure.memory_cache_pressure_score >= pressure.cache_memory_bytes);
+    assert!(pressure.follower_cursor_retention_blockers >= 1);
+    assert!(pressure.raft_snapshot_retention_blockers >= 1);
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
+    assert!(!running.last_selected_slots.is_empty());
+    assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
+    assert!(running.last_wal_floor_sequence >= 1);
+    assert!(running.last_index_log_floor_sequence >= 1);
+    assert!(running.last_retention_blockers >= 1);
+    assert!(running
+        .last_phase_blockers
+        .iter()
+        .any(|blocker| blocker.contains("retention_blockers")));
     assert!(running
         .last_phase_reports
         .iter()
         .any(|stage| stage.stage == "prepare"
             && stage.pressure_signal.contains("dirty_slots")
             && stage.pressure_before >= stage.pressure_after));
+    assert!(running.last_phase_reports.iter().any(|stage| {
+        stage.stage == "reclaim_oplog"
+            && !stage.selected_slots.is_empty()
+            && stage.wal_floor_sequence >= 1
+            && stage.index_log_floor_sequence >= 1
+            && stage.retention_blockers >= 1
+            && stage.pressure_before >= stage.pressure_after
+    }));
+    assert!(running.last_phase_reports.iter().any(|stage| {
+        stage.stage == "reclaim_page"
+            && (stage
+                .skipped_reason
+                .contains("retained dependencies remain")
+                || stage.retention_blockers >= 1)
+    }));
     assert!(running
         .last_phase_reports
         .iter()

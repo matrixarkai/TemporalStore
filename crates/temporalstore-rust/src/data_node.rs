@@ -686,6 +686,12 @@ pub struct StorageManagerRuntimeReport {
     pub phase_index_gc_enabled: bool,
     pub bounded_max_dump_slots_per_round: usize,
     #[serde(default)]
+    pub configured_follower_cursor_count: usize,
+    #[serde(default)]
+    pub configured_raft_snapshot_ref_count: usize,
+    #[serde(default)]
+    pub configured_page_gc_raft_install_floor_segment_id: Option<u64>,
+    #[serde(default)]
     pub last_completed_cycle: Option<StorageManagerCycleReport>,
     #[serde(default)]
     pub last_pressure_snapshot: Option<StorageManagerPressureSnapshot>,
@@ -701,6 +707,14 @@ pub struct StorageManagerRuntimeReport {
     pub last_pressure_before: u64,
     #[serde(default)]
     pub last_pressure_after: u64,
+    #[serde(default)]
+    pub last_wal_floor_sequence: u64,
+    #[serde(default)]
+    pub last_index_log_floor_sequence: u64,
+    #[serde(default)]
+    pub last_retention_blockers: usize,
+    #[serde(default)]
+    pub last_phase_blockers: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -3925,6 +3939,11 @@ fn storage_manager_runtime_initial_report(
         phase_compaction_enabled: options.request.enable_page_compaction,
         phase_index_gc_enabled: options.request.enable_index_gc,
         bounded_max_dump_slots_per_round: options.request.max_dump_slots_per_round,
+        configured_follower_cursor_count: options.request.follower_replay_cursors.len(),
+        configured_raft_snapshot_ref_count: options.request.raft_snapshot_refs.len(),
+        configured_page_gc_raft_install_floor_segment_id: options
+            .request
+            .page_gc_raft_install_floor_segment_id,
         ..StorageManagerRuntimeReport::default()
     }
 }
@@ -3957,9 +3976,13 @@ fn apply_storage_manager_cycle_to_runtime_report(
 ) {
     let mut selected_slots = BTreeSet::new();
     let mut skipped_reasons = BTreeSet::new();
+    let mut phase_blockers = BTreeSet::new();
     let mut bytes_reclaimed = 0u64;
     let mut pressure_before = 0u64;
     let mut pressure_after = 0u64;
+    let mut wal_floor_sequence = 0u64;
+    let mut index_log_floor_sequence = 0u64;
+    let mut retention_blockers = 0usize;
     for stage in &cycle.stages {
         selected_slots.extend(stage.selected_slots.iter().copied());
         if stage.skipped && !stage.reason.is_empty() {
@@ -3968,6 +3991,12 @@ fn apply_storage_manager_cycle_to_runtime_report(
         if !stage.skipped_reason.is_empty() {
             skipped_reasons.insert(stage.skipped_reason.clone());
         }
+        if stage.retention_blockers > 0 {
+            phase_blockers.insert(format!("{}:retention_blockers", stage.stage));
+        }
+        for error in &stage.errors {
+            phase_blockers.insert(error.clone());
+        }
         bytes_reclaimed = bytes_reclaimed
             .saturating_add(stage.bytes_reclaimed)
             .saturating_add(stage.page_bytes_reclaimed)
@@ -3975,6 +4004,9 @@ fn apply_storage_manager_cycle_to_runtime_report(
             .saturating_add(stage.before_bytes.saturating_sub(stage.after_bytes));
         pressure_before = pressure_before.max(stage.pressure_before);
         pressure_after = pressure_after.max(stage.pressure_after);
+        wal_floor_sequence = wal_floor_sequence.max(stage.wal_floor_sequence);
+        index_log_floor_sequence = index_log_floor_sequence.max(stage.index_log_floor_sequence);
+        retention_blockers = retention_blockers.max(stage.retention_blockers);
     }
     report.last_pressure_snapshot = Some(StorageManagerPressureSnapshot {
         shard_id: cycle.shard_id,
@@ -4011,6 +4043,10 @@ fn apply_storage_manager_cycle_to_runtime_report(
     report.last_bytes_reclaimed = bytes_reclaimed;
     report.last_pressure_before = pressure_before.max(cycle.pressure_snapshot.total_pressure_score);
     report.last_pressure_after = pressure_after;
+    report.last_wal_floor_sequence = wal_floor_sequence;
+    report.last_index_log_floor_sequence = index_log_floor_sequence;
+    report.last_retention_blockers = retention_blockers;
+    report.last_phase_blockers = phase_blockers.into_iter().collect();
     report.last_completed_cycle = Some(cycle);
 }
 
