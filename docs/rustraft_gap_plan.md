@@ -8,21 +8,31 @@ and observable apply lag.
 
 ## What Is Implemented Now
 
-- `RustRaft` now lives in its own repository:
-  `https://github.com/bjmeetsfo/RustRaft`.
-- `crates/temporalstore-rust` consumes the external `rustraft` crate through a
-  pinned git dependency.
+- `RustRaft` now lives as the workspace library crate `crates/rustraft`.
+- `crates/temporalstore-rust` consumes `rustraft` through a path dependency, so
+  local TemporalStore builds and tests no longer depend on a pinned external git
+  revision for the RustRaft contract.
 - The library owns:
   - `RustRaftSemanticRequirement`
   - `RustRaftParityContract`
   - `RustRaftParityReport`
   - `RustRaftReadinessEvidence`
   - `RustRaftReadinessSnapshot`
+  - `RustRaftStorage`
+  - `RustRaftTransport`
+  - RustRaft RPC request/response structs for append, vote, install snapshot,
+    and read-index
+  - RustRaft status, metric-name, process evidence, and rollout report structs
+  - RustRaft safety helpers for read safety, learner promotion, and append
+    compacted-entry rejection
   - `rustraft_parity_contract`
   - `rustraft_parity_report`
 - `temporalstore-rust` converts `RaftDistributedReadiness` into a
   `RustRaftReadinessSnapshot`, then asks the `rustraft` library to build the
   report.
+- `temporalstore-rust` keeps app-specific data-node/metaserver state-machine,
+  HTTP, topology, and durable storage glue, but aliases reusable RustRaft process
+  evidence and rollout report types from the library.
 - Shared corpus and Rust tests use `raft_rustraft_*` case names.
 - OpenRaft is not part of the RustRaft contract.
 
@@ -30,21 +40,21 @@ and observable apply lag.
 
 | Gap | Why It Matters | Target Implementation | Shared Gate |
 |---|---|---|---|
-| Native log runtime | The contract is now separate, but runtime code still lives inside `temporalstore-rust`. | Move reusable log entry, hard-state, membership, snapshot-floor, and read-index primitives into the `RustRaft` repo. | RustRaft unit tests plus TemporalStore integration tests. |
-| Transport abstraction | Production data-node and metaserver paths need a stable RPC contract independent of the app crate. | Add RustRaft transport traits for append, vote, install-snapshot, and read-index. | Shared Raft transport contract cases. |
+| Native log runtime | Core contract and RPC/status types are separate, but production log application still lives inside `temporalstore-rust`. | Move reusable membership planner/state transitions and snapshot-floor state machine into `crates/rustraft`; keep storage engine calls in TemporalStore adapters. | RustRaft unit tests plus TemporalStore integration tests. |
+| Transport abstraction | The trait and message contract now live in `crates/rustraft`; production HTTP wiring is still TemporalStore-specific. | Make data-node/metaserver transport clients implement `RustRaftTransport` directly. | Shared Raft transport contract cases. |
 | Snapshot lifecycle | Snapshot floor, chunk retry, stale chunk rejection, and tail catch-up are still tested mostly through TemporalStore. | Add library-level snapshot state machine and fault tests. | `raft_rustraft_snapshot_lifecycle_depth`. |
 | Membership workflow | Learner catch-up, promote, remove, transfer leader, and joint membership need a reusable library state model. | Add membership planner/state transitions to the `RustRaft` repo; TemporalStore metaserver consumes it. | `raft_rustraft_leader_transfer_high_write_fault_harness` and membership cases. |
-| Metrics model | Runtime metrics are emitted in TemporalStore-specific structures. | Add RustRaft metric names and status snapshots so C++ and Rust deployments share dashboards. | Grafana/Prometheus parity checks. |
+| Metrics model | RustRaft metric names/status snapshots live in the library; TemporalStore still emits many app-specific metrics. | Route Raft dashboard panels through RustRaft metric-name constants where possible. | Grafana/Prometheus parity checks. |
 | Fault harness API | Fault cases are currently driven by TemporalStore harnesses. | Add a library-level deterministic harness for partitions, packet loss, slow WAL, restart, compaction, and snapshot install. | `raft_rustraft_*_fault_harness` cases. |
 | Storage adapter boundary | Durable storage remains TemporalStore-specific. | Define RustRaft storage traits for log append/read, hard state, snapshots, and tombstoned compacted entries. | Storage recovery and compaction gates. |
 
 ## Implementation Order
 
-1. Keep `https://github.com/bjmeetsfo/RustRaft` as the stable public RustRaft
-   contract crate.
+1. Keep `crates/rustraft` as the stable public RustRaft contract crate.
 2. Move pure contract/state types first; keep TemporalStore process and storage code
    where it is until the library boundary is stable.
-3. Add RustRaft transport and storage traits without changing production behavior.
+3. Keep RustRaft transport and storage traits independent of TemporalStore
+   process code.
 4. Add library-level deterministic state-machine tests for read-index, stale leader,
    learner promotion, snapshot floor, and compacted-entry rejection.
 5. Make TemporalStore data-node and metaserver code consume the shared RustRaft

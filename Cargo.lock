@@ -978,10 +978,9 @@ dependencies = [
 [[package]]
 name = "rustraft"
 version = "0.1.0"
-source = "git+https://github.com/bjmeetsfo/RustRaft.git?rev=baf9bd8f4ffb4773856ee64199a15eac24161bd6#baf9bd8f4ffb4773856ee64199a15eac24161bd6"
 dependencies = [
  "serde",
- "serde_json",
+ "thiserror",
 ]
 
 [[package]]

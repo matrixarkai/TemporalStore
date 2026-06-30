@@ -1,5 +1,9 @@
 [workspace]
-members = ["crates/temporalstore-snapshot", "crates/temporalstore-rust"]
+members = [
+    "crates/rustraft",
+    "crates/temporalstore-snapshot",
+    "crates/temporalstore-rust",
+]
 exclude = ["sdk/rust/temporalstore"]
 resolver = "2"
 
