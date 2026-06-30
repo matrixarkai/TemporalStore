@@ -4,6 +4,7 @@
 #include <chrono>
 #include <ctime>
 #include <mutex>
+#include <shared_mutex>
 #include <sstream>
 #include <thread>
 #include <utility>
@@ -177,11 +178,11 @@ struct TemporalStoreClient::Impl {
     std::unique_ptr<Table> table;
     TableCore* table_core = nullptr;
     bool closed = true;
-    std::mutex mutex;
+    mutable std::shared_mutex mutex;
 
     template <typename Fn>
     Status WithRetry(bool write, Fn fn) {
-        std::lock_guard<std::mutex> lock(mutex);
+        std::shared_lock<std::shared_mutex> lock(mutex);
         if (closed || table == nullptr || table_core == nullptr) {
             return Status::FailedPrecondition("client is closed");
         }
@@ -326,7 +327,7 @@ Status TemporalStoreClient::Close() {
     if (!impl_ || impl_->closed) {
         return Status::OK();
     }
-    std::lock_guard<std::mutex> lock(impl_->mutex);
+    std::unique_lock<std::shared_mutex> lock(impl_->mutex);
     if (impl_->closed) {
         return Status::OK();
     }
