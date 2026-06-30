@@ -2458,6 +2458,173 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
 }
 
 #[test]
+// shared-corpus: storage_cache_replacement_policy_soak;
+fn cache_replacement_policy_soak() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let target_value = b"target-value-0123456789".to_vec();
+    for round in 0..4 {
+        for item in 0..8 {
+            let key = format!("soak-{round}-{item}");
+            let value = format!("soak-value-{round}-{item}").into_bytes();
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet { key, value },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+    }
+    let target_write = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "soak-target".to_string(),
+            value: target_value.clone(),
+        },
+    });
+    assert!(target_write.status.ok, "{target_write:?}");
+
+    for round in 0..4 {
+        for item in 0..8 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("soak-{round}-{item}"),
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+    }
+    let warm_target = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "soak-target".to_string(),
+        },
+    });
+    assert_eq!(
+        warm_target.response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+
+    assert!(
+        engine.cache().stats().memory_evictions > 0,
+        "tiny memory cache should perform replacement during the pressure pass"
+    );
+    assert!(
+        engine.cache().stats().disk_bytes > 0,
+        "pressure pass should leave a disk-cache tier for cold read refill"
+    );
+
+    let target_page_key = {
+        let shards = engine.shards.read().expect("shards lock poisoned");
+        let address = shards
+            .get(&1)
+            .expect("loaded shard")
+            .strings
+            .get("soak-target")
+            .expect("target page address")
+            .clone();
+        CacheKey::page_with_slot(
+            1,
+            address.page_segment_id,
+            address.offset,
+            address.length,
+            address.routing_slot,
+        )
+    };
+
+    let evict_report = engine.apply_storage_eviction(1, 1, 4, true, false);
+    assert_eq!(evict_report.mode, "evict_cache");
+    assert!(evict_report.pressure_gate_open, "{evict_report:?}");
+    assert!(evict_report.pressure_before > 0, "{evict_report:?}");
+    assert!(
+        !evict_report.selected_victims.is_empty(),
+        "{evict_report:?}"
+    );
+    assert!(
+        !evict_report.dump_manifest_ids.is_empty(),
+        "dump-before-evict should durably dump dirty victim slots: {evict_report:?}"
+    );
+    assert!(
+        evict_report.cache_entries_removed > 0 || evict_report.cache_disk_bytes_removed > 0,
+        "eviction should remove at least one cache entry or disk-cache block: {evict_report:?}"
+    );
+
+    let _ = engine.cache().invalidate(&target_page_key);
+    engine.cache().clear_memory_for_test();
+    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    let block_reads_before = engine.block_store().stats().reads;
+    let disk_hits_before = engine.cache().stats().disk_hits;
+    let cold_target = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: "soak-target".to_string(),
+        },
+    });
+    assert_eq!(
+        cold_target.response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    assert_eq!(
+        engine.cache().get_memory(&target_page_key),
+        Some(target_value),
+        "cold read should refill memory from disk cache or page store"
+    );
+    assert!(
+        engine.cache().stats().disk_hits > disk_hits_before
+            || engine.block_store().stats().reads > block_reads_before,
+        "cold read should be backed by disk cache or persistent page store"
+    );
+
+    let drop_dir = tempfile::tempdir().unwrap();
+    let drop_engine = TemporalEngine::with_local_dirs(
+        64,
+        drop_dir.path().join("cache"),
+        drop_dir.path().join("pages"),
+        drop_dir.path().join("indexes"),
+    );
+    drop_engine.load_shard(7);
+    for item in 0..6 {
+        let key = format!("drop-{item}");
+        let response = drop_engine.execute(ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringSet {
+                key: key.clone(),
+                value: format!("drop-value-{item}").repeat(10).into_bytes(),
+            },
+        });
+        assert!(response.status.ok, "{response:?}");
+        assert!(
+            drop_engine
+                .execute(ExecuteRequest {
+                    shard_id: 7,
+                    command: Command::StringGet { key },
+                })
+                .status
+                .ok
+        );
+    }
+    let drop_report = drop_engine.apply_storage_eviction(7, 1, 2, true, true);
+    assert_eq!(drop_report.mode, "delete_drop");
+    assert!(drop_report.pressure_gate_open, "{drop_report:?}");
+    assert!(!drop_report.selected_victims.is_empty(), "{drop_report:?}");
+    assert!(
+        drop_report.dropped_object_count > 0,
+        "delete/drop eviction mode should drop selected cold objects: {drop_report:?}"
+    );
+}
+
+#[test]
 fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");
