@@ -7542,6 +7542,162 @@ fn slot_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
     );
 }
 
+// shared-corpus: storage_wal_index_gc_generation_retention
+#[test]
+fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_release() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "reclaim-slot".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    let parent = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: "reclaim-slot".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    let child = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    assert!(child.oplog_sequence > parent.oplog_sequence);
+    assert!(child.index_log_sequence > parent.index_log_sequence);
+
+    let lagging_cursor = SlotDumpFollowerReplayCursor {
+        follower_id: "follower-lagging".to_string(),
+        shard_id: 1,
+        oplog_sequence: parent.oplog_sequence,
+        index_log_sequence: parent.index_log_sequence,
+    };
+    let lagging_snapshot = SlotDumpRaftSnapshotRef {
+        snapshot_id: "raft-snapshot-lagging".to_string(),
+        shard_id: 1,
+        last_included_index: 11,
+        last_included_term: 2,
+        oplog_sequence: parent.oplog_sequence,
+        index_log_sequence: parent.index_log_sequence,
+    };
+    let blocked = engine.storage_wal_reclaim_plan(
+        1,
+        vec![lagging_cursor.clone()],
+        vec![lagging_snapshot.clone()],
+    );
+    assert!(!blocked.safe_to_reclaim, "{blocked:?}");
+    assert_eq!(blocked.follower_cursor_block_count, 1);
+    assert_eq!(blocked.raft_snapshot_block_count, 1);
+    assert_eq!(
+        blocked.durable_slot_generation_frontier_oplog_sequence,
+        child.oplog_sequence
+    );
+    assert_eq!(
+        blocked.durable_slot_generation_frontier_index_log_sequence,
+        child.index_log_sequence
+    );
+    assert_eq!(blocked.retain_from_oplog_sequence, 0);
+    assert_eq!(blocked.retain_from_index_log_sequence, 0);
+    assert!(blocked
+        .blocker_reasons
+        .contains(&"follower_cursor_retains_logs:follower-lagging".to_string()));
+    assert!(blocked
+        .blocker_reasons
+        .contains(&"raft_snapshot_retains_logs:raft-snapshot-lagging".to_string()));
+
+    let blocked_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        follower_replay_cursors: vec![lagging_cursor],
+        raft_snapshot_refs: vec![lagging_snapshot],
+        index_gc_index_log_bytes_threshold: 0,
+        index_gc_usage_ratio_trigger_basis_points: 0,
+        index_gc_max_entries_per_round: 8,
+        min_undumped_oplog_records: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
+    assert!(!blocked_wal.applied);
+    assert_eq!(blocked_wal.oplog_records_removed, 0);
+    assert!(!blocked_cycle.index_gc_report.as_ref().unwrap().applied);
+    assert_eq!(
+        blocked_cycle
+            .index_gc_report
+            .as_ref()
+            .unwrap()
+            .skipped_reason,
+        "durable WAL/index frontier not safe"
+    );
+    assert!(
+        blocked_cycle
+            .stages
+            .iter()
+            .find(|stage| stage.stage == "reclaim_oplog")
+            .unwrap()
+            .retention_blockers
+            >= 2
+    );
+
+    let released_anchor = engine.create_slot_dump_manifest(1, Vec::new()).unwrap();
+    assert!(released_anchor.oplog_sequence >= child.oplog_sequence);
+    assert!(released_anchor.index_log_sequence >= child.index_log_sequence);
+    let released_cursor = SlotDumpFollowerReplayCursor {
+        follower_id: "follower-caught-up".to_string(),
+        shard_id: 1,
+        oplog_sequence: released_anchor.oplog_sequence,
+        index_log_sequence: released_anchor.index_log_sequence,
+    };
+    let released_snapshot = SlotDumpRaftSnapshotRef {
+        snapshot_id: "raft-snapshot-caught-up".to_string(),
+        shard_id: 1,
+        last_included_index: 12,
+        last_included_term: 2,
+        oplog_sequence: released_anchor.oplog_sequence,
+        index_log_sequence: released_anchor.index_log_sequence,
+    };
+    let released = engine.storage_wal_reclaim_plan(
+        1,
+        vec![released_cursor.clone()],
+        vec![released_snapshot.clone()],
+    );
+    assert!(released.safe_to_reclaim, "{released:?}");
+    assert_eq!(released.follower_cursor_block_count, 0);
+    assert_eq!(released.raft_snapshot_block_count, 0);
+    assert_eq!(
+        released.retain_from_oplog_sequence,
+        released_anchor.oplog_sequence.saturating_add(1)
+    );
+    assert_eq!(
+        released.retain_from_index_log_sequence,
+        released_anchor.index_log_sequence.saturating_add(1)
+    );
+
+    let released_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        follower_replay_cursors: vec![released_cursor],
+        raft_snapshot_refs: vec![released_snapshot],
+        index_gc_index_log_bytes_threshold: 0,
+        index_gc_usage_ratio_trigger_basis_points: 0,
+        index_gc_max_entries_per_round: 1,
+        min_undumped_oplog_records: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
+    assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
+    assert!(released_wal.applied, "{released_wal:?}");
+    assert!(released_wal.oplog_records_removed > 0, "{released_wal:?}");
+    let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
+    assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
+    assert!(released_index_gc.applied, "{released_index_gc:?}");
+    assert_eq!(released_index_gc.records_removed, 1);
+    assert!(released_index_gc.budget_exhausted);
+}
+
 #[test]
 fn slot_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     let dir = tempfile::tempdir().unwrap();

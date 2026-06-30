@@ -2301,18 +2301,26 @@ impl TemporalEngine {
             blocker_reasons.push("slot_generation_without_durable_dump".to_string());
         }
 
+        if durable_oplog_frontier == u64::MAX {
+            durable_oplog_frontier = 0;
+        }
+        if durable_index_log_frontier == u64::MAX {
+            durable_index_log_frontier = 0;
+        }
         let mut follower_cursor_block_count = 0usize;
         for cursor in follower_replay_cursors
             .iter()
             .filter(|cursor| cursor.shard_id == shard_id)
         {
-            follower_cursor_block_count = follower_cursor_block_count.saturating_add(1);
-            durable_oplog_frontier = durable_oplog_frontier.min(cursor.oplog_sequence);
-            durable_index_log_frontier = durable_index_log_frontier.min(cursor.index_log_sequence);
-            blocker_reasons.push(format!(
-                "follower_cursor_retains_logs:{}",
-                cursor.follower_id
-            ));
+            if cursor.oplog_sequence < durable_oplog_frontier
+                || cursor.index_log_sequence < durable_index_log_frontier
+            {
+                follower_cursor_block_count = follower_cursor_block_count.saturating_add(1);
+                blocker_reasons.push(format!(
+                    "follower_cursor_retains_logs:{}",
+                    cursor.follower_id
+                ));
+            }
         }
 
         let mut raft_snapshot_block_count = 0usize;
@@ -2320,26 +2328,22 @@ impl TemporalEngine {
             .iter()
             .filter(|snapshot| snapshot.shard_id == shard_id)
         {
-            raft_snapshot_block_count = raft_snapshot_block_count.saturating_add(1);
-            durable_oplog_frontier = durable_oplog_frontier.min(snapshot.oplog_sequence);
-            durable_index_log_frontier =
-                durable_index_log_frontier.min(snapshot.index_log_sequence);
-            blocker_reasons.push(format!(
-                "raft_snapshot_retains_logs:{}",
-                snapshot.snapshot_id
-            ));
-        }
-
-        if durable_oplog_frontier == u64::MAX {
-            durable_oplog_frontier = 0;
-        }
-        if durable_index_log_frontier == u64::MAX {
-            durable_index_log_frontier = 0;
+            if snapshot.oplog_sequence < durable_oplog_frontier
+                || snapshot.index_log_sequence < durable_index_log_frontier
+            {
+                raft_snapshot_block_count = raft_snapshot_block_count.saturating_add(1);
+                blocker_reasons.push(format!(
+                    "raft_snapshot_retains_logs:{}",
+                    snapshot.snapshot_id
+                ));
+            }
         }
         let safe_to_reclaim = missing_slot_generations.is_empty()
             && covered_slot_count == slot_summaries.len()
             && durable_oplog_frontier > 0
-            && durable_index_log_frontier > 0;
+            && durable_index_log_frontier > 0
+            && follower_cursor_block_count == 0
+            && raft_snapshot_block_count == 0;
         let retain_from_oplog_sequence = if safe_to_reclaim {
             durable_oplog_frontier.saturating_add(1)
         } else {
@@ -3074,6 +3078,15 @@ impl TemporalEngine {
             index_log_records_removed: wal_reclaim_report
                 .as_ref()
                 .map(|report| report.index_log_records_removed)
+                .unwrap_or_default(),
+            retention_blockers: wal_reclaim_report
+                .as_ref()
+                .map(|report| {
+                    report
+                        .plan
+                        .follower_cursor_block_count
+                        .saturating_add(report.plan.raft_snapshot_block_count)
+                })
                 .unwrap_or_default(),
             retain_from_wal_sequence: wal_reclaim_report
                 .as_ref()

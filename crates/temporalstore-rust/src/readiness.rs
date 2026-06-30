@@ -1050,6 +1050,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
         "compact phase calls model-layout/tombstone page compaction".to_string(),
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
+        "WAL/index-log reclaim is tied to durable slot dump generations and shared case storage_wal_index_gc_generation_retention validates lagging follower cursor and Raft snapshot blockers before bounded index-GC can truncate logs".to_string(),
         "StorageManager pressure decisions expose observed/threshold signals for dirty slots, oplog backlog, cache bytes, stale segments, reclaimable bytes, expired records, manifest/index-GC work, and queue depth".to_string(),
         "shared case storage_manager_pressure_scale_evidence runs repeated pressure rounds and validates every C++-style StorageManager phase stays active under scale-like write/read/TTL/cache/stale-page pressure".to_string(),
         "continuous StorageManager runtime report preserves stoppable loop, jitter/backoff, pause/resume, dirty-slot, WAL byte, index-log byte, stale-density, cache-pressure, expired scan debt, delayed-destroy, follower cursor, Raft snapshot floor, retention blocker, selected-slot, skipped-reason, reclaimed-byte, pressure before/after, and compaction-debt evidence".to_string(),

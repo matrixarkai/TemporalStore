@@ -1686,6 +1686,7 @@ impl DataNodeRuntime {
                 warm_cache: false,
             });
         let cache = self.inner.engine.cache().stats();
+        let log_pressure = self.inner.engine.storage_log_compatibility_report(shard_id);
         let queue = self
             .inner
             .queue
@@ -1698,7 +1699,7 @@ impl DataNodeRuntime {
                 selected_dirty_slot_count: plan.selected_dump_slots.len(),
                 undumped_oplog_records: plan.undumped_oplog_records,
                 wal_bytes: plan.undumped_oplog_records,
-                index_log_bytes: 0,
+                index_log_bytes: log_pressure.index_log_bytes,
                 stale_page_segment_count: plan.stale_page_segment_ids.len(),
                 reclaim_candidate_count: plan.reclaim_candidates.len(),
                 reclaimable_physical_bytes: plan.reclaimable_physical_bytes,
@@ -1723,6 +1724,7 @@ impl DataNodeRuntime {
                     .saturating_add(plan.selected_dump_slots.len())
                     as u64
                     + plan.undumped_oplog_records
+                    + log_pressure.index_log_bytes
                     + plan.reclaimable_physical_bytes
                     + cache.memory_bytes
                     + cache.disk_bytes,
