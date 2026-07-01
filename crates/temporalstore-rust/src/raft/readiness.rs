@@ -113,8 +113,156 @@ pub struct RaftTemporalRaftRolloutReadiness {
     pub missing: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftProcessPathReadinessReport {
+    pub ready: bool,
+    pub multi_process_data_node_and_metaserver_raft: bool,
+    pub failover_on_both_planes: bool,
+    pub membership_add_remove_under_load: bool,
+    pub secondary_lag_and_catchup: bool,
+    pub snapshot_restart_after_compaction: bool,
+    #[serde(default)]
+    pub remaining_blockers: Vec<RaftReadinessEvidenceBlocker>,
+}
+
 pub fn raft_temporal_raft_rollout_readiness() -> RaftTemporalRaftRolloutReadiness {
     raft_temporal_raft_rollout_readiness_from_reports(None, None)
+}
+
+pub fn raft_process_path_readiness_report_from_reports(
+    data_node_report: &TemporalRaftDataNodeProcessRolloutReport,
+    metaserver_report: &TemporalRaftMetaProcessRolloutReport,
+) -> RaftProcessPathReadinessReport {
+    let data_process_path = process_path_proof_is_complete(
+        data_node_report.spawned_process_count,
+        data_node_report.independent_wal_dirs,
+        data_node_report.independent_snapshot_dirs,
+        data_node_report.observed_process_requests,
+        data_node_report.read_index_responses_observed,
+        data_node_report.restarted_node_count,
+        data_node_report.per_node_log_store_inspection_count,
+        &data_node_report.nodes,
+    ) && data_node_report.write_proposed_through_process_api
+        && data_node_report.multi_process_log_store_validated
+        && data_node_report.nodes.iter().all(|node| {
+            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
+        });
+    let meta_process_path = process_path_proof_is_complete(
+        metaserver_report.spawned_process_count,
+        metaserver_report.independent_wal_dirs,
+        metaserver_report.independent_snapshot_dirs,
+        metaserver_report.observed_process_requests,
+        metaserver_report.read_index_responses_observed,
+        metaserver_report.restarted_node_count,
+        metaserver_report.per_node_log_store_inspection_count,
+        &metaserver_report.nodes,
+    ) && metaserver_report.mutation_proposed_through_process_api
+        && metaserver_report.applied_raft_mutations > 0
+        && metaserver_report.multi_process_log_store_validated
+        && metaserver_report.nodes.iter().all(|node| {
+            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
+        });
+    let multi_process_data_node_and_metaserver_raft = data_process_path && meta_process_path;
+    let failover_on_both_planes =
+        data_node_report.failover_validated && metaserver_report.failover_validated;
+    let membership_add_remove_under_load = data_node_report.membership_change_validated
+        && metaserver_report.membership_change_validated
+        && data_node_report
+            .operational_semantics
+            .leader_transfer_under_load_validated
+        && metaserver_report
+            .operational_semantics
+            .leader_transfer_under_load_validated;
+    let secondary_lag_and_catchup = data_node_report.follower_lag_validated
+        && data_node_report.secondary_read_validated
+        && metaserver_report.follower_lag_validated
+        && metaserver_report.secondary_read_validated
+        && data_node_report
+            .operational_semantics
+            .healed_follower_catchup_observed
+        && metaserver_report
+            .operational_semantics
+            .healed_follower_catchup_observed;
+    let snapshot_restart_after_compaction = data_node_report.snapshot_install_validated
+        && data_node_report.restart_recovery_validated
+        && data_node_report.recovered_after_restart
+        && metaserver_report.snapshot_install_validated
+        && metaserver_report.recovered_after_restart
+        && data_node_report
+            .operational_semantics
+            .follower_rejoin_after_compaction_validated
+        && metaserver_report
+            .operational_semantics
+            .follower_rejoin_after_compaction_validated;
+
+    let mut remaining_blockers = Vec::new();
+    remaining_blockers.extend(process_rollout_evidence_blockers(
+        "data_node_report",
+        Some(DataNodeRolloutView::from(data_node_report)),
+    ));
+    remaining_blockers.extend(process_rollout_evidence_blockers(
+        "metaserver_report",
+        Some(MetaRolloutView::from(metaserver_report)),
+    ));
+    push_if_false(
+        &mut remaining_blockers,
+        multi_process_data_node_and_metaserver_raft,
+        "final_raft_readiness",
+        "multi_process_data_node_and_metaserver_raft",
+        "both data-node and metaserver Raft evidence must come from spawned process paths with independent WAL/snapshot dirs, observed process requests, read-index responses, restart recovery, and per-node log-store inspection",
+    );
+    push_if_false(
+        &mut remaining_blockers,
+        failover_on_both_planes,
+        "final_raft_readiness",
+        "failover_on_both_planes",
+        "data-node and metaserver failover must both be validated",
+    );
+    push_if_false(
+        &mut remaining_blockers,
+        membership_add_remove_under_load,
+        "final_raft_readiness",
+        "membership_add_remove_under_load",
+        "membership add/remove must be observed on both planes while the Raft runtime proves leader transfer under active write load",
+    );
+    push_if_false(
+        &mut remaining_blockers,
+        secondary_lag_and_catchup,
+        "final_raft_readiness",
+        "secondary_lag_and_catchup",
+        "secondary replica lag, read rejection while lagging, catch-up, and read eligibility must be observed on both planes",
+    );
+    push_if_false(
+        &mut remaining_blockers,
+        snapshot_restart_after_compaction,
+        "final_raft_readiness",
+        "snapshot_restart_after_compaction",
+        "snapshot install, restart recovery, and follower rejoin after compacted logs must be observed on both planes",
+    );
+    remaining_blockers.sort_by(|left, right| {
+        left.evidence_field
+            .cmp(&right.evidence_field)
+            .then(left.blocker.cmp(&right.blocker))
+    });
+    remaining_blockers.dedup_by(|left, right| {
+        left.blocker == right.blocker && left.evidence_field == right.evidence_field
+    });
+    let ready = multi_process_data_node_and_metaserver_raft
+        && failover_on_both_planes
+        && membership_add_remove_under_load
+        && secondary_lag_and_catchup
+        && snapshot_restart_after_compaction
+        && remaining_blockers.is_empty();
+
+    RaftProcessPathReadinessReport {
+        ready,
+        multi_process_data_node_and_metaserver_raft,
+        failover_on_both_planes,
+        membership_add_remove_under_load,
+        secondary_lag_and_catchup,
+        snapshot_restart_after_compaction,
+        remaining_blockers,
+    }
 }
 
 pub fn raft_temporal_raft_rollout_readiness_from_reports(
@@ -576,7 +724,7 @@ fn process_rollout_evidence_blockers<T: RolloutEvidenceView>(
         blockers.push(RaftReadinessEvidenceBlocker {
             blocker: format!("{prefix}_operational_semantics_missing"),
             evidence_field: format!("{prefix}.operational_semantics.{missing}"),
-            detail: "RustRaft/RustRaft-derived operational semantics evidence is incomplete."
+            detail: "RustRaft/ByteRaft-derived operational semantics evidence is incomplete."
                 .to_string(),
         });
     }

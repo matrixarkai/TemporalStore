@@ -21,7 +21,6 @@ pub mod redis;
 pub mod replica_replay;
 pub mod sdk;
 pub mod shared_store;
-pub mod storage_config;
 pub mod types;
 pub mod wal;
 
@@ -179,7 +178,8 @@ pub use raft::temporal_raft_integration::{
 pub use raft::{
     apply_data_raft_membership_from_topology, distributed_raft_readiness,
     handle_authenticated_raft_http, handle_raft_http, production_raft_security_from_env,
-    require_production_raft_ready, rustraft_parity_contract, rustraft_parity_report,
+    raft_process_path_readiness_report_from_reports, require_production_raft_ready,
+    rustraft_parity_contract, rustraft_parity_report,
     rustraft_parity_report_from_current_readiness, rustraft_production_readiness_report,
     validate_raft_deployment_mode, AppendEntriesRequest, AppendEntriesResponse,
     DataRaftConsensusBackend, DataRaftConsensusOptions, DataRaftPeer, DataRaftStatus,
@@ -195,14 +195,14 @@ pub use raft::{
     RaftControlLeadershipRequest, RaftDataNodeAtomicDurabilityReport, RaftDeploymentMode,
     RaftDistributedReadiness, RaftError, RaftFailoverReport, RaftHardState, RaftMembership,
     RaftMembershipChangeKind, RaftMembershipChangePlan, RaftMembershipChangeReport, RaftNodeId,
-    RaftNodeStatus, RaftProductionReadinessError, RaftReadOptions, RaftReadStrategy, RaftRole,
-    RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport, RaftWalRecord, RaftWalSegmentInfo,
-    RaftWalSegmentReport, ReadIndexResponse, RustRaftParityContract, RustRaftParityReport,
-    RustRaftProductionReadinessInput, RustRaftProductionReadinessReport,
-    RustRaftSemanticRequirement, TemporalRaftDataNodeProcessRolloutReport,
-    TemporalRaftMetaProcessRolloutReport, TemporalRaftProcessNodeEvidence,
-    TemporalRaftProcessOperationalSemanticsEvidence, UnavailableDataRaftConsensusBackend,
-    VoteRequest, VoteResponse,
+    RaftNodeStatus, RaftProcessPathReadinessReport, RaftProductionReadinessError, RaftReadOptions,
+    RaftReadStrategy, RaftRole, RaftRpcRuntimeOptions, RaftTickOutcome, RaftTransport,
+    RaftWalRecord, RaftWalSegmentInfo, RaftWalSegmentReport, ReadIndexResponse,
+    RustRaftParityContract, RustRaftParityReport, RustRaftProductionReadinessInput,
+    RustRaftProductionReadinessReport, RustRaftSemanticRequirement,
+    TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
+    TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
+    UnavailableDataRaftConsensusBackend, VoteRequest, VoteResponse,
 };
 pub use readiness::{
     metaserver_scheduler_execution_readiness_report, production_readiness_report,
@@ -227,14 +227,6 @@ pub use shared_store::{
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
-};
-pub use storage_config::{
-    context_page_target_bytes, effective_block_segment_target_bytes, StorageTuningConfig,
-    DEFAULT_BLOCK_SEGMENT_TARGET_BYTES, DEFAULT_COLD_SCAN_NO_CACHE_FILL,
-    DEFAULT_COMPACTION_WATERMARK_BYTES, DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
-    DEFAULT_STORAGE_ZONE_SIZE, DEFAULT_STREAM_MAX_BLOB_SIZE, TS_BLOCK_SEGMENT_TARGET_BYTES,
-    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
-    TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,

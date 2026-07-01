@@ -3081,6 +3081,79 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .any(|item| item.contains("meta mutation/WAL persistence/snapshot install/apply fence")));
 }
 
+// shared-corpus: raft_byteraft_process_rollout_multiplane_report_contract
+#[test]
+fn raft_process_path_readiness_report_maps_remaining_blockers_to_fields() {
+    let data_report = ready_data_node_temporal_raft_rollout_report();
+    let meta_report = ready_meta_temporal_raft_rollout_report();
+    let ready = raft_process_path_readiness_report_from_reports(&data_report, &meta_report);
+    assert!(ready.ready);
+    assert!(ready.multi_process_data_node_and_metaserver_raft);
+    assert!(ready.failover_on_both_planes);
+    assert!(ready.membership_add_remove_under_load);
+    assert!(ready.secondary_lag_and_catchup);
+    assert!(ready.snapshot_restart_after_compaction);
+    assert!(ready.remaining_blockers.is_empty());
+
+    let mut missing_data_failover = ready_data_node_temporal_raft_rollout_report();
+    missing_data_failover.failover_validated = false;
+    let rejected = raft_process_path_readiness_report_from_reports(
+        &missing_data_failover,
+        &ready_meta_temporal_raft_rollout_report(),
+    );
+    assert!(!rejected.ready);
+    assert!(!rejected.failover_on_both_planes);
+    assert!(rejected.remaining_blockers.iter().any(|item| {
+        item.evidence_field == "data_node_report.failover_validated"
+            || item.evidence_field == "final_raft_readiness.failover_on_both_planes"
+    }));
+
+    let mut missing_membership_load = ready_meta_temporal_raft_rollout_report();
+    missing_membership_load
+        .operational_semantics
+        .leader_transfer_under_load_validated = false;
+    let rejected = raft_process_path_readiness_report_from_reports(
+        &ready_data_node_temporal_raft_rollout_report(),
+        &missing_membership_load,
+    );
+    assert!(!rejected.membership_add_remove_under_load);
+    assert!(rejected.remaining_blockers.iter().any(|item| {
+        item.evidence_field
+            == "metaserver_report.operational_semantics.leader_transfer_under_load_validated"
+            || item.evidence_field == "final_raft_readiness.membership_add_remove_under_load"
+    }));
+
+    let mut missing_secondary_catchup = ready_data_node_temporal_raft_rollout_report();
+    missing_secondary_catchup
+        .operational_semantics
+        .healed_follower_catchup_observed = false;
+    let rejected = raft_process_path_readiness_report_from_reports(
+        &missing_secondary_catchup,
+        &ready_meta_temporal_raft_rollout_report(),
+    );
+    assert!(!rejected.secondary_lag_and_catchup);
+    assert!(rejected.remaining_blockers.iter().any(|item| {
+        item.evidence_field
+            == "data_node_report.operational_semantics.healed_follower_catchup_observed"
+            || item.evidence_field == "final_raft_readiness.secondary_lag_and_catchup"
+    }));
+
+    let mut missing_snapshot_rejoin = ready_meta_temporal_raft_rollout_report();
+    missing_snapshot_rejoin
+        .operational_semantics
+        .follower_rejoin_after_compaction_validated = false;
+    let rejected = raft_process_path_readiness_report_from_reports(
+        &ready_data_node_temporal_raft_rollout_report(),
+        &missing_snapshot_rejoin,
+    );
+    assert!(!rejected.snapshot_restart_after_compaction);
+    assert!(rejected.remaining_blockers.iter().any(|item| {
+        item.evidence_field
+            == "metaserver_report.operational_semantics.follower_rejoin_after_compaction_validated"
+            || item.evidence_field == "final_raft_readiness.snapshot_restart_after_compaction"
+    }));
+}
+
 #[test]
 fn raft_atomic_apply_readiness_covers_data_node_atomic_durability() {
     let readiness = raft_atomic_apply_readiness();
