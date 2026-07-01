@@ -603,6 +603,49 @@ def attach_storage_route(record: Json) -> Json:
     return record
 
 
+def context_placement_key(record: Json, *, scope_key: str = "", node_hash: Any = None) -> str:
+    explicit = str(record.get("placement_key") or "")
+    if explicit:
+        return explicit
+    scope_key = scope_key or str(record.get("scope_key") or "")
+    if not scope_key:
+        scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+        scope_key = canonical_scope_key(scope) if scope else ""
+    if node_hash is None:
+        node_hash = record.get("node_hash") or record.get("node_id")
+    try:
+        node_hash_int = int(node_hash or 0)
+    except (TypeError, ValueError):
+        node_hash_int = 0
+    if scope_key and node_hash_int:
+        return f"context:{scope_key}:node={node_hash_int}"
+    if scope_key:
+        return f"context:{scope_key}"
+    try:
+        tenant_hash = int(record.get("tenant_hash") or 0)
+    except (TypeError, ValueError):
+        tenant_hash = 0
+    return f"context:t={tenant_hash}" if tenant_hash else ""
+
+
+def attach_context_placement(record: Json, *, scope_key: str = "", node_hash: Any = None) -> Json:
+    placement_key = context_placement_key(record, scope_key=scope_key, node_hash=node_hash)
+    if not placement_key:
+        return record
+    placement_hash = stable_hash(placement_key)
+    route = record.get("storage_route") if isinstance(record.get("storage_route"), dict) else {}
+    route = dict(route)
+    route["placement_key"] = placement_key
+    route["placement_hash"] = placement_hash
+    route.setdefault("routing_key", placement_key)
+    route.setdefault("partition_key", placement_key)
+    route.setdefault("colocation_group", "matrixark_context")
+    record["placement_key"] = placement_key
+    record["placement_hash"] = placement_hash
+    record["storage_route"] = route
+    return record
+
+
 def materialize_serving_records(record: Json) -> list[Json]:
     """Split bulky provider/debug fields from hot serving records.
 
@@ -629,6 +672,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
         serving.setdefault("node_id", node_hash)
     if record_type in NODE_PATH_HEAVY_RECORD_TYPES:
         serving.pop("node_path", None)
+    serving = attach_context_placement(serving, scope_key=scope_key, node_hash=node_hash)
 
     debug_payload: Json = {}
     debug_type = ""
@@ -674,6 +718,7 @@ def materialize_serving_records(record: Json) -> list[Json]:
         "debug_payload": debug_payload,
         "updated_at_ms": record.get("updated_at_ms") or (envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else now_ms()),
     }
+    debug_record = attach_context_placement(debug_record, scope_key=scope_key, node_hash=record.get("node_hash"))
     return [debug_record, serving]
 
 
@@ -774,6 +819,7 @@ def compact_context_index_postings(records: list[Json]) -> list[Json]:
                 "posting_count": len(ref_hashes),
                 "updated_at_ms": context_index_timestamp_key(record),
             }
+            posting = attach_context_placement(posting, scope_key=scope_key, node_hash=node_hash)
             postings[key] = posting
             posting_positions[key] = len(output)
             output.append(posting)

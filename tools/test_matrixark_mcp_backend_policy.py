@@ -108,6 +108,35 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = "1"
         self.assertTrue(mcp.backend_ready_required("local"))
 
+    def test_context_serving_records_share_stable_placement_route(self) -> None:
+        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
+        node_hash = 44
+        records = [
+            {"record_type": "context_event", "event_id_hash": 1, "scope": scope, "node_hash": node_hash, "updated_at_ms": 1780000000000, "text": "event"},
+            {"record_type": "context_entity", "entity_hash": 2, "scope": scope, "node_hash": node_hash, "state": "entity"},
+            {"record_type": "context_segment", "segment_hash": 3, "scope": scope, "node_hash": node_hash, "text": "segment"},
+            {"record_type": "context_embedding", "ref_hash": 4, "scope": scope, "node_hash": node_hash, "embedding": [0.1]},
+            {"record_type": "resource_chunk", "chunk_hash": 5, "scope": scope, "node_hash": node_hash, "text": "chunk"},
+            {"record_type": "skill_section", "section_hash": 6, "scope": scope, "node_hash": node_hash, "text": "skill"},
+            {"record_type": "context_index", "index_name": "source_type:message", "ref_hash": 7, "scope": scope, "node_hash": node_hash},
+        ]
+
+        materialized = [
+            record
+            for record in mcp_core.materialize_serving_record_batch(records)
+            if record.get("record_type") != "context_debug_record"
+        ]
+
+        placement_keys = {record.get("placement_key") for record in materialized}
+        self.assertEqual(placement_keys, {"context:t=11|u=22|s=33|:node=44"})
+        for record in materialized:
+            route = record.get("storage_route")
+            self.assertIsInstance(route, dict)
+            self.assertEqual(route.get("placement_key"), record.get("placement_key"))
+            self.assertEqual(route.get("routing_key"), record.get("placement_key"))
+            self.assertEqual(route.get("partition_key"), record.get("placement_key"))
+            self.assertEqual(route.get("colocation_group"), "matrixark_context")
+            self.assertEqual(route.get("placement_hash"), record.get("placement_hash"))
 
     def test_direct_append_prefers_native_matrixark_batch_append_records(self) -> None:
         client = _NativeAppendClient()
