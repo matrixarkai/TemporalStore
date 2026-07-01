@@ -41,40 +41,9 @@ pub use readiness::*;
 pub use rustraft::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
-pub type RaftNodeId = u64;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RaftRole {
-    Leader,
-    Follower,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum RaftReplicaRole {
-    Voter,
-    Learner,
-    Witness,
-}
-
-impl RaftReplicaRole {
-    fn participates_in_quorum(self) -> bool {
-        matches!(self, Self::Voter | Self::Witness)
-    }
-
-    fn can_serve_data(self) -> bool {
-        matches!(self, Self::Voter | Self::Learner)
-    }
-
-    fn can_be_leader(self) -> bool {
-        matches!(self, Self::Voter)
-    }
-}
-
-impl Default for RaftReplicaRole {
-    fn default() -> Self {
-        Self::Voter
-    }
-}
+pub type RaftNodeId = ::rustraft::RustRaftNodeId;
+pub type RaftRole = ::rustraft::RustRaftRole;
+pub type RaftReplicaRole = ::rustraft::RustRaftReplicaRole;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RaftLogEntry {

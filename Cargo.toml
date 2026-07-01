@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/rustraft",
     "crates/temporalstore-snapshot",
     "crates/temporalstore-rust",
 ]

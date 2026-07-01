@@ -1,10 +1,11 @@
 # RustRaft Production Readiness
 
 RustRaft is the standalone TemporalStore-owned Raft contract library in the
-separate `RustRaft` repository, consumed by `crates/temporalstore-rust` through
-the Git dependency `https://github.com/bjmeetsfo/RustRaft.git`. It does not
-replace the data-node or metaserver by itself. It defines the production
-semantics that those runtimes must prove.
+separate `RustRaft` repository. In this TemporalStore repo, the mirrored
+workspace crate lives at `crates/rustraft` and `crates/temporalstore-rust`
+consumes it directly through a path dependency so local builds prove the library
+boundary. It does not replace the data-node or metaserver by itself. It defines
+the production semantics that those runtimes must prove.
 
 ## Status Labels
 
@@ -54,6 +55,10 @@ RustRaft production readiness requires evidence in these categories:
 TemporalStore consumes the separate RustRaft library and validates:
 
 - RustRaft is OpenRaft-free at the public contract boundary.
+- Generic Raft contract primitives such as `RustRaftNodeId`,
+  `RustRaftRole`, and `RustRaftReplicaRole` live in the RustRaft library; the
+  TemporalStore runtime keeps compatibility aliases but no longer owns those
+  definitions.
 - Each requirement has a category and readiness field.
 - Missing required evidence fails closed with category-qualified blockers.
 - Runtime production readiness uses `rustraft_production_readiness_report`, not
