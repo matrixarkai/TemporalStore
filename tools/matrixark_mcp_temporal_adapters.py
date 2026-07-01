@@ -1704,14 +1704,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "stale_superseded_state": "exclude_unless_include_superseded_resources",
             },
             "execution_plan_requirements": {
-                "phase": "phase2_placement_compact_index",
+                "phase": "phase4_native_score_rerank_pack",
                 "context_record_route": "context:{scope_key}:node={node_hash}",
                 "traversal": "score_l0_l1_then_fetch_selected_node_partitions",
                 "candidate_fetch": "selected_node_placement_partitions_only",
                 "candidate_cache": "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
                 "candidate_cache_payload": "compact_structs_not_json_strings",
                 "secondary_index": "compact_postings_by_scope_index_time_bucket",
+                "scoring": "native_embedding_similarity_temporal_decay_business_boost_same_session_boost",
+                "quotas": "native_shared_resource_quota_cross_session_quota_current_session_priority",
+                "rerank": "native_score_fusion_then_budget_aware_rerank",
+                "token_budget_pack": "native_budget_pack_with_selected_refs_and_dropped_summary",
                 "pack_assembly": "native_score_rank_budget_pack_selected_refs_dropped_summary",
+                "python_role": "dispatcher_only_no_candidate_materialization_no_hot_path_pack",
                 "write_path": "native_batch_append_records_append_queue_coalesced_persistence",
                 "broad_prefix_scan": "disabled_unless_explicit_debug_fallback",
                 "fallback_telemetry_required": True,
@@ -1734,6 +1739,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "index_postings_touched": True,
                 "candidate_cache_hit": True,
                 "candidate_cache_key_shape": True,
+                "native_pack_assembly": True,
+                "raw_candidate_tables": False,
+                "python_pack_fallback": False,
                 "broad_scan_used": True,
             },
         }
@@ -1755,6 +1763,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         selected_refs = pack.get("selected_refs", [])
         groups = pack.get("groups", [])
         if not isinstance(selected_refs, list) and not isinstance(groups, (list, dict)):
+            return None
+        raw_candidate_tables = (
+            pack.get("candidate_records")
+            or pack.get("raw_candidate_records")
+            or pack.get("candidate_tables")
+            or pack.get("raw_candidate_tables")
+        )
+        if raw_candidate_tables:
+            _mcp_debug_log("matrixark native context pack returned raw candidate tables; falling back to reference packer")
             return None
         pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
         pack.setdefault("context_pack_assembly", "native_cpp_direct")
@@ -1790,6 +1807,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "placement_partitions_touched": int(native_telemetry.get("placement_partitions_touched") or 0),
                 "index_postings_touched": int(native_telemetry.get("index_postings_touched") or native_telemetry.get("native_index_postings_found") or 0),
                 "candidate_cache_key_shape": str(native_telemetry.get("candidate_cache_key_shape") or "scope_key+node_hash+record_type+append_watermark+resource_version_watermark"),
+                "native_pack_assembly": True,
+                "python_pack_fallback": False,
+                "raw_candidate_tables_returned": False,
                 "broad_scan_used": bool(native_telemetry.get("broad_scan_used", False)),
                 "broad_scan_blocked": bool(native_telemetry.get("broad_scan_blocked", False)),
                 "broad_scan_fallback_allowed": bool(native_telemetry.get("broad_scan_fallback_allowed", False)),

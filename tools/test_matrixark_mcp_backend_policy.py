@@ -877,13 +877,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
         self.assertEqual(request["normalization_requirements"]["scope_key"], "canonical")
         self.assertEqual(request["normalization_requirements"]["placement_key"], "context:{scope_key}:node={node_hash}")
-        self.assertEqual(request["execution_plan_requirements"]["phase"], "phase2_placement_compact_index")
+        self.assertEqual(request["execution_plan_requirements"]["phase"], "phase4_native_score_rerank_pack")
         self.assertEqual(request["execution_plan_requirements"]["candidate_fetch"], "selected_node_placement_partitions_only")
         self.assertEqual(
             request["execution_plan_requirements"]["candidate_cache"],
             "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
         )
         self.assertEqual(request["execution_plan_requirements"]["candidate_cache_payload"], "compact_structs_not_json_strings")
+        self.assertEqual(
+            request["execution_plan_requirements"]["scoring"],
+            "native_embedding_similarity_temporal_decay_business_boost_same_session_boost",
+        )
+        self.assertEqual(
+            request["execution_plan_requirements"]["quotas"],
+            "native_shared_resource_quota_cross_session_quota_current_session_priority",
+        )
+        self.assertEqual(request["execution_plan_requirements"]["rerank"], "native_score_fusion_then_budget_aware_rerank")
+        self.assertEqual(request["execution_plan_requirements"]["token_budget_pack"], "native_budget_pack_with_selected_refs_and_dropped_summary")
+        self.assertEqual(request["execution_plan_requirements"]["python_role"], "dispatcher_only_no_candidate_materialization_no_hot_path_pack")
         self.assertEqual(request["execution_plan_requirements"]["pack_assembly"], "native_score_rank_budget_pack_selected_refs_dropped_summary")
         self.assertEqual(request["execution_plan_requirements"]["write_path"], "native_batch_append_records_append_queue_coalesced_persistence")
         self.assertEqual(request["execution_plan_requirements"]["secondary_index"], "compact_postings_by_scope_index_time_bucket")
@@ -892,11 +903,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn("score_threshold", request["required_output"]["drop_counters"])
         self.assertTrue(request["required_output"]["broad_scan_used"])
         self.assertTrue(request["required_output"]["candidate_cache_key_shape"])
+        self.assertTrue(request["required_output"]["native_pack_assembly"])
+        self.assertFalse(request["required_output"]["raw_candidate_tables"])
+        self.assertFalse(request["required_output"]["python_pack_fallback"])
         self.assertTrue(request["required_output"]["selected_refs"])
         self.assertTrue(request["required_output"]["dropped_summary"])
         self.assertTrue(request["required_output"]["retrieval_metrics"])
         self.assertEqual(result["retrieval_metrics"]["query_plan_ms"], 1.5)
         self.assertEqual(result["retrieval_metrics"]["placement_partitions_touched"], 2)
+        self.assertTrue(result["retrieval_metrics"]["native_pack_assembly"])
+        self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])
+        self.assertFalse(result["retrieval_metrics"]["raw_candidate_tables_returned"])
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["scope"], 1)
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["score_threshold"], 6)
         self.assertEqual(

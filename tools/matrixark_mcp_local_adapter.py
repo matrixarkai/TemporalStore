@@ -4981,6 +4981,9 @@ class MatrixArkLocalAdapter:
                 )
             ),
             "placement_partitions_touched": len(placement.get("locations", []) or []) if isinstance(placement, dict) else 0,
+            "native_pack_assembly": False,
+            "python_pack_fallback": True,
+            "raw_candidate_tables_returned": False,
             "source": "python_reference_pack",
         }
         if bool(args.get("include_retrieval_metrics")):
