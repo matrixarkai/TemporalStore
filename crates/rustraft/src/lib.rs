@@ -685,6 +685,36 @@ pub enum RustRaftRole {
     Learner,
 }
 
+pub type RustRaftNodeId = u64;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RustRaftReplicaRole {
+    Voter,
+    Learner,
+    Witness,
+}
+
+impl RustRaftReplicaRole {
+    pub fn participates_in_quorum(self) -> bool {
+        matches!(self, Self::Voter | Self::Witness)
+    }
+
+    pub fn can_serve_data(self) -> bool {
+        matches!(self, Self::Voter | Self::Learner)
+    }
+
+    pub fn can_be_leader(self) -> bool {
+        matches!(self, Self::Voter)
+    }
+}
+
+impl Default for RustRaftReplicaRole {
+    fn default() -> Self {
+        Self::Voter
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustRaftLogId {
     pub term: u64,
@@ -2471,6 +2501,23 @@ mod tests {
             .safe
         );
         assert!(rustraft_learner_promotion_decision(&status, 2, 0).promotable);
+    }
+
+    #[test]
+    fn replica_role_semantics_are_owned_by_rustraft() {
+        assert!(RustRaftReplicaRole::Voter.participates_in_quorum());
+        assert!(RustRaftReplicaRole::Voter.can_serve_data());
+        assert!(RustRaftReplicaRole::Voter.can_be_leader());
+
+        assert!(!RustRaftReplicaRole::Learner.participates_in_quorum());
+        assert!(RustRaftReplicaRole::Learner.can_serve_data());
+        assert!(!RustRaftReplicaRole::Learner.can_be_leader());
+
+        assert!(RustRaftReplicaRole::Witness.participates_in_quorum());
+        assert!(!RustRaftReplicaRole::Witness.can_serve_data());
+        assert!(!RustRaftReplicaRole::Witness.can_be_leader());
+
+        assert_eq!(RustRaftReplicaRole::default(), RustRaftReplicaRole::Voter);
     }
 
     #[test]
