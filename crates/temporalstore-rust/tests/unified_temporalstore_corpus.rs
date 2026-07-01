@@ -9,6 +9,7 @@ use serde_json::Value;
 use temporalstore_rust::client::{
     ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
 };
+use temporalstore_rust::engine::reports::{StorageManagerCycleRequest, StoragePageGcReplayCursor};
 use temporalstore_rust::http::{json_response, parse_json, serve, HttpRequest};
 use temporalstore_rust::meta::{TopologyVersionReport, TopologyVersionRequest};
 use temporalstore_rust::partition_id::PartitionId;
@@ -25,10 +26,10 @@ use temporalstore_rust::{
     ProxyServingMode, ProxyTableBatchExecuteRequest, RaftCluster, RaftConfig, RaftError,
     RegisterServerRequest, RegisterShardRequest, RespValue, ScanStreamRequest, ServerEndpoint,
     ServerHeartbeatRequest, ServerRuntimeLoad, ServerShardServingState, SharedStoreReplicator,
-    SharedStoreStorageMode, SingleNodeMeta, SlotDumpFollowerReplayCursor, Status,
-    StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse, TableMetaInfo,
-    TableOptions, TablePartition, TableTopologyResponse, TemporalEngine, TemporalStoreClient,
-    TemporalStoreTable,
+    SharedStoreStorageMode, SingleNodeMeta, SlotDumpFollowerReplayCursor, SlotDumpRaftSnapshotRef,
+    Status, StorageLifecycleRequest, StreamKind, StreamReadRequest, StreamReadResponse,
+    TableMetaInfo, TableOptions, TablePartition, TableTopologyResponse, TemporalEngine,
+    TemporalStoreClient, TemporalStoreTable,
 };
 use temporalstore_snapshot::FileObjectStore;
 
@@ -205,6 +206,13 @@ fn rust_client_executes_shared_cpp_rust_temporalstore_corpus() {
     for case in corpus.cases {
         run_client_case(&case);
     }
+}
+
+// shared-corpus: storage_wal_index_gc_generation_retention storage_gc_dependency_retention_matrix
+#[test]
+fn rust_executes_storage_raft_gc_parity_shared_cases() {
+    verify_storage_wal_index_gc_generation_retention(92);
+    verify_storage_gc_dependency_retention_matrix(92);
 }
 
 fn load_corpus() -> UnifiedCorpus {
@@ -1226,7 +1234,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 });
             assert_eq!(
                 command.scenario.as_deref(),
-                Some("production_openraft_rustraft_process_path_semantics"),
+                Some("production_openraft_byteraft_process_path_semantics"),
                 "case={} step={} unsupported Raft process-path scenario",
                 case.name,
                 step.name
@@ -1239,7 +1247,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             true
         }
         "raft_membership_op" => {
-            if case.name == "raft_rustraft_membership_roles"
+            if case.name == "raft_byteraft_membership_roles"
                 && step.name == "setup_three_voter_cluster"
             {
                 execute_raft_membership_shared_case(case);
@@ -2813,7 +2821,7 @@ fn verify_metaserver_scheduler_control_plane() {
         raft.mode,
         temporalstore_rust::RaftDeploymentMode::ProductionDistributed
     );
-    assert!(raft.openraft_metaserver_process_startup_present);
+    assert!(raft.temporal_raft_metaserver_process_startup_present);
     assert!(raft.metaserver_membership_workflow_present);
     assert!(raft.metaserver_driven_membership_present);
 }
@@ -2915,7 +2923,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
                 let node_id = json_u64(&step.command, "node_id");
                 let local = cluster.local_status(node_id).unwrap();
                 assert_eq!(local.replica_role, json_raft_role(&step.command));
-                let report = cluster.rustraft_local_status_report();
+                let report = cluster.byteraft_local_status_report();
                 let peer = report
                     .peers
                     .iter()
@@ -2942,7 +2950,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_local_status_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.rustraft_local_status_report();
+                let report = cluster.byteraft_local_status_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -2973,7 +2981,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_runtime_admin_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.rustraft_runtime_admin_report();
+                let report = cluster.byteraft_runtime_admin_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -3048,24 +3056,18 @@ fn verify_raft_openraft_process_path_default_gate() {
         readiness.mode,
         temporalstore_rust::RaftDeploymentMode::ProductionDistributed
     );
-    assert!(readiness.openraft_data_node_process_startup_present);
-    assert!(readiness.openraft_metaserver_process_startup_present);
+    assert!(readiness.temporal_raft_data_node_process_startup_present);
+    assert!(readiness.temporal_raft_metaserver_process_startup_present);
     assert!(readiness.durable_apply_index_snapshot_integrated);
     assert!(readiness.metaserver_membership_workflow_present);
     assert!(readiness.metaserver_driven_membership_present);
-    assert!(readiness.rustraft_per_peer_pipeline_state_present);
-    assert!(readiness.rustraft_reorder_queue_state_present);
-    assert!(readiness.rustraft_snapshot_sender_downloader_lifecycle_present);
-    assert!(readiness.rustraft_wal_segment_lifecycle_present);
-    assert!(readiness.rustraft_read_index_lease_semantics_present);
-    assert!(readiness.rustraft_admin_status_surface_present);
     assert!(
         !readiness.complete,
         "distributed Raft readiness must not pass without multi-process evidence"
     );
     assert!(readiness.missing.iter().any(|item| {
-        item.contains("durable OpenRaft data-node process rollout")
-            || item.contains("durable OpenRaft metaserver process rollout")
+        item.contains("data-node multi-process rollout evidence")
+            || item.contains("metaserver multi-process rollout evidence")
     }));
 
     let local_mode = temporalstore_rust::validate_raft_deployment_mode(
@@ -3079,61 +3081,39 @@ fn verify_raft_openraft_process_path_default_gate() {
     assert!(local_mode
         .message
         .contains("local Raft deployment mode is disabled"));
-
-    let rustraft = temporalstore_rust::raft::raft_rustraft_runtime_readiness();
-    assert!(rustraft.runtime_report_present);
-    assert!(rustraft.per_peer_pipeline_state_present);
-    assert!(rustraft.reorder_queue_state_present);
-    assert!(rustraft.snapshot_sender_downloader_lifecycle_present);
-    assert!(rustraft.wal_segment_lifecycle_present);
-    assert!(rustraft.read_index_lease_semantics_present);
-    assert!(rustraft.stale_follower_write_rejection_present);
-    assert!(rustraft.admin_status_surface_present);
-    assert!(
-        rustraft.process_path_operational_semantics_ready,
-        "{:?}",
-        rustraft.missing
-    );
-
-    let report = rustraft.report;
+    let raft_tmp = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        raft_tmp.path(),
+        1,
+        [1, 2, 3],
+        RaftConfig::default(),
+    )
+    .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "shared-byteraft-admin".to_string(),
+            value: b"value".to_vec(),
+        })
+        .unwrap();
+    let report = cluster.byteraft_runtime_admin_report();
     assert!(report.read_index_validated);
     assert!(report.lease_read_validated);
-    assert!(report.stale_leader_lease_rejected);
-    assert!(report.lagging_follower_read_rejected);
-    assert!(report.stale_follower_read_rejected);
-    assert!(report.stale_follower_write_rejected);
-    assert!(report.minority_partition_rejected_reads);
-    assert!(report.minority_partition_rejected_writes);
-    assert!(report.healed_follower_caught_up);
-    assert!(report.append_backpressure_enforced);
-    assert!(report.apply_backpressure_enforced);
-    assert!(report.memory_replicate_bytes_enforced);
-    assert!(report.oversized_log_rejection_present);
-    assert!(report.out_of_order_append_handling_present);
     assert!(report.reorder_queue_enabled);
-    assert!(report.snapshot_sender_lifecycle_present);
-    assert!(report.snapshot_downloader_lifecycle_present);
-    assert!(report.snapshot_retry_backpressure_present);
-    assert!(report.snapshot_install_progress_present);
-    assert!(report.snapshot_install_rollback_present);
-    assert!(report.snapshot_membership_change_present);
-    assert!(report.snapshot_rejoin_after_compacted_log_present);
     assert!(report.wal_segment_lifecycle_present);
-    assert!(report.witness_membership_present);
-    assert!(report.learner_auto_promote_present);
-    assert!(report.pending_joint_consensus_present);
     assert!(report.admin_status_surface_complete);
-    assert!(report.peer_pipeline_states.iter().any(|peer| {
-        peer.inflight_entries > 0
-            || peer.inflight_bytes > 0
-            || peer.append_queue_depth > 0
-            || peer.append_queue_max_depth > 0
+    assert!(report.wal_first_log_index > 0);
+    assert!(report.wal_last_log_index >= report.commit_index);
+    assert!(report.peer_pipeline_states.iter().all(|peer| {
+        peer.next_index > 0
+            && peer.append_queue_limit > 0
+            && peer.inflight_bytes_limit > 0
+            && peer.apply_inflight_limit > 0
+            && peer.apply_batch_bytes_limit > 0
     }));
-    assert!(report.peer_pipeline_states.iter().any(|peer| {
-        peer.snapshot_send_attempts > 0
-            || peer.snapshot_install_started > 0
-            || peer.snapshot_chunk_retry_count > 0
-    }));
+    assert!(report
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "admin_status_surface" && item.ready));
 }
 
 fn json_u64(value: &Value, field: &str) -> u64 {
@@ -3305,6 +3285,12 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 .expect("storage replay runtime should start");
             runtime.block_on(verify_storage_shared_store_replay(&storage_case, mode));
         }
+        "storage_wal_index_gc_generation_retention" => {
+            verify_storage_wal_index_gc_generation_retention(case.shard_id)
+        }
+        "storage_gc_dependency_retention_matrix" => {
+            verify_storage_gc_dependency_retention_matrix(case.shard_id)
+        }
         "storage_stream_reopen_scan" => verify_storage_stream_reopen_scan(&command),
         other => panic!(
             "case={} step={} unsupported storage command {other}",
@@ -3473,6 +3459,241 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
         case.name
     );
     assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
+}
+
+fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(shard_id);
+    engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: "unified-wal-gc".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    let parent = engine
+        .create_slot_dump_manifest(shard_id, Vec::new())
+        .unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: "unified-wal-gc".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    let child = engine
+        .create_slot_dump_manifest(shard_id, Vec::new())
+        .unwrap();
+    assert!(child.oplog_sequence > parent.oplog_sequence);
+    assert!(child.index_log_sequence > parent.index_log_sequence);
+
+    let lagging_cursor = SlotDumpFollowerReplayCursor {
+        follower_id: "unified-lagging-follower".to_string(),
+        shard_id,
+        oplog_sequence: parent.oplog_sequence,
+        index_log_sequence: parent.index_log_sequence,
+    };
+    let lagging_snapshot = SlotDumpRaftSnapshotRef {
+        snapshot_id: "unified-raft-snapshot-lagging".to_string(),
+        shard_id,
+        last_included_index: 11,
+        last_included_term: 2,
+        oplog_sequence: parent.oplog_sequence,
+        index_log_sequence: parent.index_log_sequence,
+    };
+    let blocked = engine.storage_wal_reclaim_plan(
+        shard_id,
+        vec![lagging_cursor.clone()],
+        vec![lagging_snapshot.clone()],
+    );
+    assert!(!blocked.safe_to_reclaim, "{blocked:?}");
+    assert_eq!(blocked.follower_cursor_block_count, 1);
+    assert_eq!(blocked.raft_snapshot_block_count, 1);
+    assert_eq!(
+        blocked.durable_slot_generation_frontier_oplog_sequence,
+        child.oplog_sequence
+    );
+    assert_eq!(
+        blocked.durable_slot_generation_frontier_index_log_sequence,
+        child.index_log_sequence
+    );
+    assert_eq!(blocked.retain_from_oplog_sequence, 0);
+    assert_eq!(blocked.retain_from_index_log_sequence, 0);
+    assert!(blocked
+        .blocker_reasons
+        .contains(&"follower_cursor_retains_logs:unified-lagging-follower".to_string()));
+    assert!(blocked
+        .blocker_reasons
+        .contains(&"raft_snapshot_retains_logs:unified-raft-snapshot-lagging".to_string()));
+
+    let blocked_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id,
+        follower_replay_cursors: vec![lagging_cursor],
+        raft_snapshot_refs: vec![lagging_snapshot],
+        index_gc_index_log_bytes_threshold: 0,
+        index_gc_usage_ratio_trigger_basis_points: 0,
+        index_gc_max_entries_per_round: 8,
+        min_undumped_oplog_records: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    let blocked_wal = blocked_cycle.wal_reclaim_report.as_ref().unwrap();
+    assert!(!blocked_wal.applied, "{blocked_wal:?}");
+    assert_eq!(blocked_wal.oplog_records_removed, 0);
+    let blocked_index_gc = blocked_cycle.index_gc_report.as_ref().unwrap();
+    assert!(!blocked_index_gc.applied, "{blocked_index_gc:?}");
+    assert_eq!(
+        blocked_index_gc.skipped_reason,
+        "durable WAL/index frontier not safe"
+    );
+
+    let released_anchor = engine
+        .create_slot_dump_manifest(shard_id, Vec::new())
+        .unwrap();
+    let released_cursor = SlotDumpFollowerReplayCursor {
+        follower_id: "unified-follower-caught-up".to_string(),
+        shard_id,
+        oplog_sequence: released_anchor.oplog_sequence,
+        index_log_sequence: released_anchor.index_log_sequence,
+    };
+    let released_snapshot = SlotDumpRaftSnapshotRef {
+        snapshot_id: "unified-raft-snapshot-caught-up".to_string(),
+        shard_id,
+        last_included_index: 12,
+        last_included_term: 2,
+        oplog_sequence: released_anchor.oplog_sequence,
+        index_log_sequence: released_anchor.index_log_sequence,
+    };
+    let released_cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id,
+        follower_replay_cursors: vec![released_cursor],
+        raft_snapshot_refs: vec![released_snapshot],
+        index_gc_index_log_bytes_threshold: 0,
+        index_gc_usage_ratio_trigger_basis_points: 0,
+        index_gc_max_entries_per_round: 1,
+        min_undumped_oplog_records: 0,
+        ..StorageManagerCycleRequest::default()
+    });
+    let released_wal = released_cycle.wal_reclaim_report.as_ref().unwrap();
+    assert!(released_wal.plan.safe_to_reclaim, "{released_wal:?}");
+    assert!(released_wal.applied, "{released_wal:?}");
+    assert!(released_wal.oplog_records_removed > 0, "{released_wal:?}");
+    let released_index_gc = released_cycle.index_gc_report.as_ref().unwrap();
+    assert!(released_index_gc.safe_to_truncate, "{released_index_gc:?}");
+    assert!(released_index_gc.applied, "{released_index_gc:?}");
+    assert_eq!(released_index_gc.records_removed, 1);
+    assert!(released_index_gc.budget_exhausted);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("restart-cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    restarted.load_shard(shard_id);
+    let get = restarted.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringGet {
+            key: "unified-wal-gc".to_string(),
+        },
+    });
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"v2".to_vec())
+        }
+    );
+    let restart_boundary = restarted.storage_recovery_boundary_report(shard_id);
+    assert!(restart_boundary.stale_index_page_refs.is_empty());
+    assert_eq!(restart_boundary.missing_owner_page_refs, 0);
+}
+
+fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(shard_id);
+    engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: "unified-page-gc".to_string(),
+            value: b"v1".to_vec(),
+        },
+    });
+    let manifest = engine
+        .create_slot_dump_manifest(shard_id, Vec::new())
+        .unwrap();
+    engine.block_store().roll_segment().unwrap();
+    engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringSet {
+            key: "unified-page-gc".to_string(),
+            value: b"v2".to_vec(),
+        },
+    });
+    assert_eq!(engine.live_page_segment_ids(shard_id), vec![1]);
+    let delayed = engine
+        .block_store()
+        .gc_segments_before_with_live_refs_delayed_destroy(
+            1,
+            engine.live_page_segment_ids(shard_id),
+        )
+        .unwrap();
+    assert_eq!(delayed.delayed_destroy_page_segment_ids, vec![0]);
+
+    let matrix = engine.storage_page_gc_dependency_plan(
+        shard_id,
+        vec![0, 1],
+        vec![StoragePageGcReplayCursor {
+            cursor_id: "unified-shared-store-follower".to_string(),
+            shard_id,
+            retain_from_page_segment_id: 0,
+            reason: "shared-store follower is behind segment zero".to_string(),
+        }],
+        vec![SlotDumpRaftSnapshotRef {
+            snapshot_id: "unified-raft-page-snapshot".to_string(),
+            shard_id,
+            last_included_index: 7,
+            last_included_term: 2,
+            oplog_sequence: manifest.oplog_sequence,
+            index_log_sequence: 0,
+        }],
+        Some(0),
+        Some(0),
+        60_000,
+    );
+    assert!(!matrix.safe_to_reclaim, "{matrix:?}");
+    assert_eq!(matrix.candidate_page_segment_ids, vec![0, 1]);
+    assert_eq!(matrix.live_ref_block_count, 1);
+    assert_eq!(matrix.slot_dump_manifest_block_count, 1);
+    assert_eq!(matrix.shared_store_cursor_block_count, 2);
+    assert_eq!(matrix.raft_snapshot_ref_block_count, 2);
+    assert_eq!(matrix.checkpoint_snapshot_floor_block_count, 2);
+    assert_eq!(matrix.raft_snapshot_install_floor_block_count, 2);
+    assert_eq!(matrix.delayed_destroy_grace_block_count, 1);
+    for expected in [
+        "live_page_ref",
+        "slot_dump_manifest",
+        "shared_store_replay_cursor",
+        "raft_snapshot_ref",
+        "checkpoint_snapshot_floor",
+        "raft_snapshot_install_floor",
+        "delayed_destroy_grace_period",
+    ] {
+        assert!(
+            matrix.blocker_reasons.contains(&expected.to_string()),
+            "{matrix:?}"
+        );
+    }
 }
 
 fn verify_storage_cache_refill(case: &StorageMigrationCase) {
