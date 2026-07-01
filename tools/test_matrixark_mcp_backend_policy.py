@@ -83,6 +83,45 @@ class _NativeIndexClient:
         if count_key is not None and count_value is not None:
             self.put_string(str(count_key), str(count_value))
 
+
+class _NativeContextPackClient:
+    def __init__(self) -> None:
+        self.requests: list[dict] = []
+        self.batch_hget_calls = 0
+
+    def get_string(self, key: str) -> str:
+        if key.endswith(":record_count"):
+            return "7"
+        return ""
+
+    def batch_hget(self, entries) -> list[dict]:
+        self.batch_hget_calls += 1
+        raise AssertionError("native context pack path should not materialize records in Python")
+
+    def matrixark_retrieve_context_pack(self, request) -> dict:
+        if isinstance(request, str):
+            request = json.loads(request)
+        self.requests.append(dict(request))
+        return {
+            "context_pack_id": "native-pack-1",
+            "selected_refs": [
+                {
+                    "ref_type": "event",
+                    "ref_hash": 101,
+                    "context_class": "event",
+                    "text": "Alice approved the GPU budget.",
+                    "score": 0.91,
+                    "token_estimate": 6,
+                }
+            ],
+            "used_remote_context_tokens": 6,
+            "used_local_context_tokens": int(request.get("local_context_tokens") or 0),
+            "total_prompt_context_tokens": 6 + int(request.get("local_context_tokens") or 0),
+            "remote_context_budget_tokens": 1024,
+            "dropped_refs": {"over_budget_count": 2, "low_score_count": 3},
+            "quality_warnings": [],
+        }
+
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
         raise RuntimeError("Slot not found for deploy_ns/deploy_table")
@@ -565,6 +604,43 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         direct_after_append_result = direct.retrieval_records(**kwargs)
         self.assertFalse(direct_after_append_result["scan_stats"]["native_placement_candidate_cache_hit"])
         self.assertIn(("context_event", 404), logical_refs(direct_after_append_result["records"]))
+
+    def test_direct_retrieve_uses_native_context_pack_api_when_available(self) -> None:
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "max_context_tokens": 2048,
+                "local_context_tokens": 128,
+                "ranking": {"max_selected_refs": 8},
+                "debug_context_pack": True,
+            }
+        )
+
+        self.assertEqual(result["context_pack_id"], "native-pack-1")
+        self.assertTrue(result["native_context_pack"])
+        self.assertEqual(result["context_pack_assembly"], "native_cpp_direct")
+        self.assertEqual(client.batch_hget_calls, 0)
+        self.assertEqual(len(client.requests), 1)
+        request = client.requests[0]
+        self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack")
+        self.assertEqual(request["watermark_count"], 7)
+        self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
+        self.assertTrue(request["required_output"]["selected_refs"])
+        self.assertTrue(request["required_output"]["dropped_summary"])
+        self.assertEqual(
+            result["recall_policy"]["backend_retrieval_pushdown"]["execution_mode"],
+            "native_context_pack",
+        )
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [

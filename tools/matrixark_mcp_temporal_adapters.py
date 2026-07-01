@@ -1581,6 +1581,105 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 records.append(decoded)
         return records
 
+    def _try_native_context_pack(self, args: Json) -> Json | None:
+        if os.environ.get("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", "").strip().lower() in {"1", "true", "yes"}:
+            return None
+        native_retrieve = getattr(self._client, "matrixark_retrieve_context_pack", None)
+        if not callable(native_retrieve):
+            return None
+        scope = optional_object(args, "scope")
+        query = require_string(args, "query")
+        ranking = optional_object(args, "ranking")
+        local_context = args.get("local_context", [])
+        if not isinstance(local_context, list):
+            local_context = []
+        request: Json = {
+            "api_version": 1,
+            "storage_prefix": self._storage_prefix,
+            "backend": self._backend_label(),
+            "watermark_count": self._entry_count_cache if self._entry_count_cache is not None else self._get_count(),
+            "query": query,
+            "scope": scope,
+            "scope_key": canonical_scope_key(scope),
+            "ranking": ranking,
+            "storage_options": optional_object(args, "storage_options"),
+            "max_context_tokens": int(args.get("max_context_tokens") or DEFAULT_MAX_CONTEXT_TOKENS),
+            "local_context": local_context,
+            "local_context_tokens": int(args.get("local_context_tokens") or 0),
+            "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),
+            "reference_time_ms": args.get("reference_time_ms", now_ms()),
+            "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
+            "debug_context_pack": bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
+            "required_output": {
+                "context_pack": True,
+                "selected_refs": True,
+                "dropped_summary": True,
+                "telemetry": True,
+            },
+        }
+        started_perf = time.perf_counter()
+        try:
+            response = native_retrieve(request)
+        except TypeError:
+            response = native_retrieve(json.dumps(request, sort_keys=True, separators=(",", ":")))
+        except Exception as exc:
+            _mcp_debug_log(f"matrixark native context pack failed; falling back to Python reference packer: {exc}")
+            return None
+        try:
+            pack = json.loads(response) if isinstance(response, str) else response
+        except Exception as exc:
+            _mcp_debug_log(f"matrixark native context pack returned invalid JSON; falling back: {exc}")
+            return None
+        if not isinstance(pack, dict):
+            return None
+        selected_refs = pack.get("selected_refs", [])
+        groups = pack.get("groups", [])
+        if not isinstance(selected_refs, list) and not isinstance(groups, (list, dict)):
+            return None
+        pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
+        pack.setdefault("context_pack_assembly", "native_cpp_direct")
+        pack.setdefault("native_context_pack", True)
+        pack.setdefault("query_embedding_model", embedding_model_name())
+        pack.setdefault("embedding_execution_mode", embedding_execution_mode_name())
+        pack.setdefault("embedding_fallback_used", embedding_fallback_used())
+        if selected_refs and "remote_context_refs" not in pack:
+            pack["remote_context_refs"] = selected_refs
+        if "recall_policy" not in pack:
+            pack["recall_policy"] = {}
+        if isinstance(pack["recall_policy"], dict):
+            pack["recall_policy"].setdefault(
+                "backend_retrieval_pushdown",
+                {
+                    "backend": self._backend_label(),
+                    "execution_mode": "native_context_pack",
+                    "native_pack_assembly": True,
+                    "watermark_count": request["watermark_count"],
+                    "python_materialized_records": 0,
+                },
+            )
+            pack["recall_policy"].setdefault(
+                "stage_latency_budgets",
+                {
+                    "native_context_pack_ms": round((time.perf_counter() - started_perf) * 1000.0, 3),
+                },
+            )
+        dropped_refs = pack.get("dropped_refs")
+        if isinstance(dropped_refs, list):
+            pack["dropped_refs"] = {"refs": dropped_refs, "native_summary": True}
+        elif not isinstance(dropped_refs, dict):
+            pack["dropped_refs"] = {"refs": [], "native_summary": True}
+        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
+            return pack
+        if isinstance(selected_refs, list) and selected_refs:
+            return compact_context_pack_for_serving(pack)
+        return pack
+
+    def retrieve(self, args: Json) -> Json:
+        native_pack = self._try_native_context_pack(args)
+        if native_pack is not None:
+            return native_pack
+        return super().retrieve(args)
+
     def _native_locations_for_selected_nodes(self, *, scope: Json, selected_node_hashes: set[int]) -> Json:
         batch_hget = getattr(self._client, "batch_hget", None)
         scope_key = canonical_scope_key(scope)
