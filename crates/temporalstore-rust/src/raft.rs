@@ -8711,7 +8711,18 @@ impl RaftClusterInner {
             && election_prohibition_observed
             && offline_timeout_observed
             && transfer_timeout_observed;
+        let peer_admin_surface_complete = peer_pipeline_states.iter().all(|peer| {
+            peer.next_index > 0
+                && peer.append_queue_limit > 0
+                && peer.inflight_bytes_limit > 0
+                && peer.apply_inflight_limit > 0
+                && peer.apply_batch_bytes_limit > 0
+                && peer.snapshot_install_progress_per_mille <= 1_000
+        });
         let admin_status_surface_complete = !peer_pipeline_states.is_empty()
+            && peer_admin_surface_complete
+            && wal_segment_lifecycle_present
+            && wal_last_log_index >= status.commit_index
             && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
             && status.majority > 0
             && status.commit_index

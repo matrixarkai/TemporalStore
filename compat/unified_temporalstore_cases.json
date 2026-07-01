@@ -8240,6 +8240,36 @@
       ]
     },
     {
+      "name": "raft_byteraft_admin_status_surface",
+      "shard_id": 64,
+      "steps": [
+        {
+          "command": {
+            "acceptance": {
+              "admin_surface_requires_wal_evidence": true,
+              "peer_pipeline_limits_nonzero": true,
+              "wal_first_last_log_index_present": true
+            },
+            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete.",
+            "description": "Shared ByteRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence and per-peer pipeline fields are required.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-byteraft-admin-surface.json>",
+            "suite": "cpp_data_raft_parity"
+          },
+          "name": "byteraft_admin_surface_requires_wal_and_peer_pipeline_shared",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "server_raft_byteraft_runtime_admin_route",
       "shard_id": 77,
       "steps": [
