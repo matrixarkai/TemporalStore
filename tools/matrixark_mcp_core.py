@@ -463,8 +463,8 @@ def scope_key_prefix_for_query(query_scope: Json) -> str:
     tenant_hash = int(query_scope.get("tenant_hash") or 0)
     if not tenant_hash:
         return ""
-    user_hash = int(query_scope.get("user_hash") or 0) if "user_id" in explicit_keys else 0
-    session_hash = int(query_scope.get("session_hash") or 0) if "session_id" in explicit_keys else 0
+    user_hash = int(query_scope.get("user_hash") or 0) if "user_id" in explicit_keys or query_scope.get("user_hash") else 0
+    session_hash = int(query_scope.get("session_hash") or 0) if "session_id" in explicit_keys or query_scope.get("session_hash") else 0
     return scope_key_from_hashes(tenant_hash, user_hash, session_hash)
 
 
@@ -486,12 +486,12 @@ def scope_key_matches_query(record_scope_key: str, query_scope: Json, explicit_k
     tenant_hash = int(query_scope.get("tenant_hash") or 0)
     if tenant_hash and record_parts.get("t") != tenant_hash:
         return False
-    if "user_id" in explicit_keys:
-        user_hash = int(query_scope.get("user_hash") or 0)
+    user_hash = int(query_scope.get("user_hash") or 0)
+    if "user_id" in explicit_keys or "user_hash" in explicit_keys or user_hash:
         if user_hash and record_parts.get("u") != user_hash:
             return False
-    if "session_id" in explicit_keys:
-        session_hash = int(query_scope.get("session_hash") or 0)
+    session_hash = int(query_scope.get("session_hash") or 0)
+    if "session_id" in explicit_keys or "session_hash" in explicit_keys or session_hash:
         if session_hash and record_parts.get("s") != session_hash:
             return False
     return True

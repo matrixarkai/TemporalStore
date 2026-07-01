@@ -461,12 +461,22 @@ class MatrixArkLocalAdapter:
         scanned = 0
         dropped_type = 0
         dropped_scope = 0
+        dropped_node = 0
+        selected_nodes = selected_node_hashes or set()
         for record in raw_records:
             scanned += 1
             record_type = str(record.get("record_type") or "")
             if record_type not in allowed_types:
                 dropped_type += 1
                 continue
+            if selected_nodes:
+                try:
+                    record_node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    record_node_hash = None
+                if record_node_hash is not None and record_node_hash not in selected_nodes:
+                    dropped_node += 1
+                    continue
             if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
                 if not scope_matches(candidate_access_scope(record), scope):
                     dropped_scope += 1
@@ -486,6 +496,7 @@ class MatrixArkLocalAdapter:
                 "returned_records": len(filtered),
                 "dropped_by_type": dropped_type,
                 "dropped_by_scope": dropped_scope,
+                "dropped_by_node": dropped_node,
                 "secondary_index_groups_supplied": len(secondary_index_groups or []),
                 "selected_node_hashes_supplied": len(selected_node_hashes or set()),
             },
