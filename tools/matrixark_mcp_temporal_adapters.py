@@ -522,6 +522,123 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     fallback = route
         return fallback
 
+    def _context_index_lookup_key(self, scope_key: str) -> str:
+        scope_hash = stable_hash(scope_key) if scope_key else 0
+        return f"{self._storage_prefix}:context_index_lookup:{scope_hash}"
+
+    def _context_ref_locator_key(self) -> str:
+        return f"{self._storage_prefix}:context_ref_locator"
+
+    def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
+        refs: list[int] = []
+        seen: set[int] = set()
+        if existing_value:
+            try:
+                decoded = json.loads(existing_value)
+            except Exception:
+                decoded = {}
+            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
+            for value in raw_refs if isinstance(raw_refs, list) else []:
+                try:
+                    ref_hash = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if ref_hash and ref_hash not in seen:
+                    refs.append(ref_hash)
+                    seen.add(ref_hash)
+        for ref_hash in new_refs:
+            if ref_hash and ref_hash not in seen:
+                refs.append(ref_hash)
+                seen.add(ref_hash)
+        return refs
+
+    def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
+        locations: list[Json] = []
+        seen: set[tuple[str, str]] = set()
+        if existing_value:
+            try:
+                decoded = json.loads(existing_value)
+            except Exception:
+                decoded = {}
+            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
+            for location in raw_locations if isinstance(raw_locations, list) else []:
+                if not isinstance(location, dict):
+                    continue
+                key = str(location.get("key") or "")
+                field = str(location.get("field") or "")
+                if not key or not field or (key, field) in seen:
+                    continue
+                locations.append({"key": key, "field": field})
+                seen.add((key, field))
+        for location in new_locations:
+            key = str(location.get("key") or "")
+            field = str(location.get("field") or "")
+            if not key or not field or (key, field) in seen:
+                continue
+            locations.append({"key": key, "field": field})
+            seen.add((key, field))
+        return locations
+
+    def _read_hash_value_best_effort(self, key: str, field: str) -> str:
+        reader = getattr(self._client, "hget", None)
+        if not callable(reader):
+            return ""
+        try:
+            value = reader(key, field)
+        except Exception:
+            return ""
+        return str(value or "")
+
+    def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
+        """Build sidecar lookup rows so retrieval can avoid broad record scans.
+
+        ContextIndex remains compact and bucketed.  These sidecar hashes make the
+        compact postings and ref-to-record locations directly addressable by the
+        native C++/Rust hash API.
+        """
+        lookup_updates: dict[tuple[str, str], list[int]] = {}
+        locator_updates: dict[int, list[Json]] = {}
+        for bundle, record_key, record_id in bundles:
+            location = {"key": record_key, "field": record_id}
+            for record in bundle:
+                for ref_hash in context_index_ref_hashes(record):
+                    locator_updates.setdefault(ref_hash, []).append(location)
+                if record.get("record_type") != "context_index":
+                    continue
+                index_name = str(record.get("index_name") or "").strip()
+                if not index_name:
+                    continue
+                scope_key = str(record.get("scope_key") or "")
+                if not scope_key:
+                    scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+                    scope_key = canonical_scope_key(scope) if scope else ""
+                ref_hashes = context_index_ref_hashes(record)
+                if scope_key and ref_hashes:
+                    lookup_updates.setdefault((self._context_index_lookup_key(scope_key), index_name), []).extend(ref_hashes)
+
+        entries: list[Json] = []
+        for (key, field), new_refs in lookup_updates.items():
+            merged_refs = self._merge_ref_hashes(self._read_hash_value_best_effort(key, field), new_refs)
+            entries.append(
+                {
+                    "key": key,
+                    "field": field,
+                    "value": json.dumps({"ref_hashes": merged_refs}, separators=(",", ":")),
+                }
+            )
+        locator_key = self._context_ref_locator_key()
+        for ref_hash, new_locations in locator_updates.items():
+            field = str(ref_hash)
+            merged_locations = self._merge_ref_locations(self._read_hash_value_best_effort(locator_key, field), new_locations)
+            entries.append(
+                {
+                    "key": locator_key,
+                    "field": field,
+                    "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
+                }
+            )
+        return entries
+
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
         return context_event_timestamp_ms(record)
 
@@ -829,23 +946,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
             sequence = count
             entries = []
+            located_bundles: list[tuple[list[Json], str, str]] = []
             for bundle in self._record_bundles(records):
                 record_key, record_id = self._record_location(sequence)
                 payload_value: Json
                 payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
+                located_bundles.append((bundle, record_key, record_id))
                 sequence += 1
+            native_index_entries = self._native_side_index_entries_for_bundles(located_bundles)
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
-                    lambda: append_records(event_time_entries + entries, count_key=self._count_key, count_value=str(sequence)),
+                    lambda: append_records(event_time_entries + native_index_entries + entries, count_key=self._count_key, count_value=str(sequence)),
                     op="matrixark_batch_append_records",
                 )
                 if self._write_throttle_s > 0:
                     time.sleep(self._write_throttle_s)
             else:
-                self._hset_many_with_backoff(event_time_entries + entries)
+                self._hset_many_with_backoff(event_time_entries + native_index_entries + entries)
                 self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             if self._records_cache is not None:
@@ -1196,6 +1316,153 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 for key in list(_DIRECT_RETRIEVAL_CANDIDATE_CACHE)[:overflow]:
                     _DIRECT_RETRIEVAL_CANDIDATE_CACHE.pop(key, None)
 
+    def _native_index_ref_hashes(self, *, scope: Json, secondary_index_groups: list[set[str]] | None) -> Json:
+        scope_key = canonical_scope_key(scope)
+        groups = secondary_index_groups or []
+        if not scope_key or not groups:
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "missing_scope_or_filters"}
+        batch_hget = getattr(self._client, "batch_hget", None)
+        if not callable(batch_hget):
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "backend_has_no_batch_hget"}
+        index_terms = sorted({term for group in groups for term in group if term})
+        entries = [{"key": self._context_index_lookup_key(scope_key), "field": term} for term in index_terms]
+        try:
+            rows = batch_hget(entries)
+        except Exception as exc:
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "eligible": False, "reason": f"index_lookup_failed:{exc}"}
+        ref_hashes: set[int] = set()
+        postings_found = 0
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("value")
+            if not value:
+                continue
+            try:
+                decoded = json.loads(str(value))
+            except Exception:
+                continue
+            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
+            if isinstance(raw_refs, list):
+                postings_found += 1
+                for value in raw_refs:
+                    try:
+                        ref_hash = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if ref_hash:
+                        ref_hashes.add(ref_hash)
+        return {
+            "ref_hashes": ref_hashes,
+            "postings_found": postings_found,
+            "index_terms": index_terms,
+            "eligible": bool(ref_hashes),
+            "reason": "ok" if ref_hashes else "no_matching_postings",
+        }
+
+    def _native_locations_for_refs(self, ref_hashes: set[int]) -> Json:
+        batch_hget = getattr(self._client, "batch_hget", None)
+        if not callable(batch_hget) or not ref_hashes:
+            return {"locations": [], "locator_rows": 0}
+        entries = [{"key": self._context_ref_locator_key(), "field": str(ref_hash)} for ref_hash in sorted(ref_hashes)]
+        try:
+            rows = batch_hget(entries)
+        except Exception:
+            return {"locations": [], "locator_rows": 0}
+        locations: list[Json] = []
+        seen: set[tuple[str, str]] = set()
+        locator_rows = 0
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("value")
+            if not value:
+                continue
+            try:
+                decoded = json.loads(str(value))
+            except Exception:
+                continue
+            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
+            if not isinstance(raw_locations, list):
+                continue
+            locator_rows += 1
+            for location in raw_locations:
+                if not isinstance(location, dict):
+                    continue
+                key = str(location.get("key") or "")
+                field = str(location.get("field") or "")
+                if not key or not field or (key, field) in seen:
+                    continue
+                locations.append({"key": key, "field": field})
+                seen.add((key, field))
+        return {"locations": locations, "locator_rows": locator_rows}
+
+    def _load_records_from_locations(self, locations: list[Json]) -> list[Json]:
+        batch_hget = getattr(self._client, "batch_hget", None)
+        if not callable(batch_hget) or not locations:
+            return []
+        try:
+            rows = batch_hget(locations)
+        except Exception:
+            return []
+        records: list[Json] = []
+        for item in rows if isinstance(rows, list) else []:
+            if not isinstance(item, dict):
+                continue
+            payload = item.get("value", "")
+            if not payload:
+                continue
+            try:
+                decoded = json.loads(str(payload))
+            except Exception:
+                continue
+            if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
+                records.extend(row for row in decoded["record_bundle"] if isinstance(row, dict))
+            elif isinstance(decoded, dict):
+                records.append(decoded)
+        return records
+
+    def _filter_retrieval_candidates(
+        self,
+        records: list[Json],
+        *,
+        scope: Json,
+        allowed_types: set[str],
+        selected_nodes: set[int],
+    ) -> tuple[list[Json], Json]:
+        filtered: list[Json] = []
+        dropped_type = 0
+        dropped_scope = 0
+        dropped_node = 0
+        for record in records:
+            record_type = str(record.get("record_type") or "")
+            if record_type not in allowed_types:
+                dropped_type += 1
+                continue
+            if selected_nodes:
+                try:
+                    record_node_hash = int(record.get("node_hash"))
+                except (TypeError, ValueError):
+                    record_node_hash = None
+                if record_node_hash is not None and record_node_hash not in selected_nodes:
+                    dropped_node += 1
+                    continue
+            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
+                if not scope_matches(candidate_access_scope(record), scope):
+                    dropped_scope += 1
+                    continue
+            elif not access_scope_matches_before_scoring(record, scope):
+                dropped_scope += 1
+                continue
+            filtered.append(record)
+        return filtered, {
+            "scanned": len(records),
+            "returned": len(filtered),
+            "dropped_type": dropped_type,
+            "dropped_scope": dropped_scope,
+            "dropped_node": dropped_node,
+        }
+
     def retrieval_records(
         self,
         *,
@@ -1225,50 +1492,57 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 return result
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
-        raw_records = self.read_all()
-        filtered: list[Json] = []
-        scanned = 0
-        dropped_type = 0
-        dropped_scope = 0
-        dropped_node = 0
         selected_nodes = selected_node_hashes or set()
-        for record in raw_records:
-            scanned += 1
-            record_type = str(record.get("record_type") or "")
-            if record_type not in allowed_types:
-                dropped_type += 1
-                continue
-            if selected_nodes:
-                try:
-                    record_node_hash = int(record.get("node_hash"))
-                except (TypeError, ValueError):
-                    record_node_hash = None
-                if record_node_hash is not None and record_node_hash not in selected_nodes:
-                    dropped_node += 1
-                    continue
-            if record_type in {"context_embedding", "context_index", "context_summary", "resource_manifest", "skill_registry_update"}:
-                if not scope_matches(candidate_access_scope(record), scope):
-                    dropped_scope += 1
-                    continue
-            elif not access_scope_matches_before_scoring(record, scope):
-                dropped_scope += 1
-                continue
-            filtered.append(record)
+        index_result = self._native_index_ref_hashes(scope=scope, secondary_index_groups=secondary_index_groups)
+        fallback_reason = ""
+        raw_records: list[Json] = []
+        native_pushdown = False
+        if bool(index_result.get("eligible")):
+            location_result = self._native_locations_for_refs(index_result.get("ref_hashes", set()))
+            raw_records = self._load_records_from_locations(location_result.get("locations", []))
+            native_pushdown = bool(raw_records)
+            if not raw_records:
+                fallback_reason = "native_index_locations_empty"
+        else:
+            location_result = {"locations": [], "locator_rows": 0}
+            fallback_reason = str(index_result.get("reason") or "native_index_not_eligible")
+
+        if native_pushdown:
+            filtered, filter_stats = self._filter_retrieval_candidates(
+                raw_records,
+                scope=scope,
+                allowed_types=allowed_types,
+                selected_nodes=selected_nodes,
+            )
+            if not filtered:
+                fallback_reason = "native_index_filtered_empty"
+                native_pushdown = False
+
+        if not native_pushdown:
+            raw_records = self.read_all()
+            filtered, filter_stats = self._filter_retrieval_candidates(
+                raw_records,
+                scope=scope,
+                allowed_types=allowed_types,
+                selected_nodes=selected_nodes,
+            )
         result = {
             "records": filtered,
             "count": count,
             "scan_stats": {
                 "backend": self._backend_label(),
-                "execution_mode": "temporalstore_candidate_cache",
-                "native_pushdown": True,
+                "execution_mode": "native_secondary_index_prefilter" if native_pushdown else "temporalstore_candidate_cache_fallback",
+                "native_pushdown": native_pushdown,
+                "native_index_terms": index_result.get("index_terms", []),
+                "native_index_postings_found": index_result.get("postings_found", 0),
+                "native_index_ref_hash_count": len(index_result.get("ref_hashes", set())),
+                "native_locator_rows": location_result.get("locator_rows", 0),
+                "native_locations": len(location_result.get("locations", [])),
+                "fallback_reason": fallback_reason,
                 "candidate_cache_hit": False,
                 "candidate_cache_scope": "process_global",
                 "watermark_count": count,
-                "scanned": scanned,
-                "returned": len(filtered),
-                "dropped_type": dropped_type,
-                "dropped_scope": dropped_scope,
-                "dropped_node": dropped_node,
+                **filter_stats,
                 "record_types": sorted(allowed_types),
             },
         }

@@ -46,6 +46,39 @@ class _CandidateCacheClient:
             rows.append({"key": entry["key"], "field": entry["field"], "value": json.dumps(self.records[index])})
         return rows
 
+
+class _NativeIndexClient:
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str], str] = {}
+        self.batch_hget_entries: list[list[dict]] = []
+
+    def get_string(self, key: str) -> str:
+        if key.endswith(":record_count"):
+            return self.store.get((key, "__string__"), "0")
+        return self.store.get((key, "__string__"), "")
+
+    def put_string(self, key: str, value: str) -> None:
+        self.store[(key, "__string__")] = value
+
+    def hget(self, key: str, field: str) -> str:
+        return self.store.get((key, field), "")
+
+    def hset(self, key: str, field: str, value: str) -> None:
+        self.store[(key, field)] = value
+
+    def batch_hget(self, entries) -> list[dict]:
+        self.batch_hget_entries.append(list(entries))
+        return [
+            {"key": entry["key"], "field": entry["field"], "value": self.store.get((entry["key"], entry["field"]), "")}
+            for entry in entries
+        ]
+
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
+        for entry in entries:
+            self.hset(str(entry["key"]), str(entry["field"]), str(entry["value"]))
+        if count_key is not None and count_value is not None:
+            self.put_string(str(count_key), str(count_value))
+
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
         raise RuntimeError("Slot not found for deploy_ns/deploy_table")
@@ -247,6 +280,79 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual([record["event_id_hash"] for record in second["records"]], [1])
         self.assertEqual(second["scan_stats"]["dropped_type"], 1)
         self.assertEqual(second["scan_stats"]["dropped_scope"], 1)
+
+    def test_direct_retrieval_uses_native_compact_index_prefilter(self) -> None:
+        client = _NativeIndexClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-index"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._metrics_lock = threading.RLock()
+        adapter._write_retries = 0
+        adapter._write_backoff_s = 0.0
+        adapter._write_throttle_s = 0.0
+
+        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
+        adapter.append_many(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 101,
+                    "scope": scope,
+                    "node_hash": 44,
+                    "updated_at_ms": 1780000000000,
+                    "text": "Alice approved the GPU budget.",
+                },
+                {
+                    "record_type": "context_embedding",
+                    "embedding_type": "event_text",
+                    "ref_type": "event",
+                    "ref_hash": 101,
+                    "scope": scope,
+                    "node_hash": 44,
+                    "embedding": [0.1, 0.2],
+                },
+                {
+                    "record_type": "context_index",
+                    "index_name": "source_type:message",
+                    "ref_type": "event",
+                    "ref_hash": 101,
+                    "scope": scope,
+                    "node_hash": 44,
+                    "updated_at_ms": 1780000000000,
+                },
+            ]
+        )
+
+        result = adapter.retrieval_records(
+            scope=scope,
+            record_types={"context_event", "context_embedding", "context_index"},
+            secondary_index_groups=[{"source_type:message"}],
+        )
+
+        stats = result["scan_stats"]
+        self.assertTrue(stats["native_pushdown"])
+        self.assertEqual(stats["execution_mode"], "native_secondary_index_prefilter")
+        self.assertEqual(stats["native_index_ref_hash_count"], 1)
+        self.assertGreaterEqual(stats["native_locations"], 1)
+        self.assertEqual({record["record_type"] for record in result["records"]}, {"context_event", "context_embedding", "context_index"})
+        broad_record_loads = [
+            entries
+            for entries in client.batch_hget_entries
+            if entries and all(str(entry["key"]).startswith(f"{adapter._record_hash_key}:") for entry in entries)
+        ]
+        self.assertTrue(broad_record_loads)
+        self.assertTrue(all(len(entries) < adapter._shard_size for entries in broad_record_loads))
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [
