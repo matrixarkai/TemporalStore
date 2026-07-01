@@ -8682,7 +8682,9 @@
               "independent_wal_snapshot_dirs": true,
               "observed_process_api_requests": true,
               "read_index_responses": true,
-              "per_node_log_store_inspection": true
+              "per_node_log_store_inspection": true,
+              "final_readiness_report": true,
+              "remaining_blockers_have_evidence_fields": true
             },
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -8695,7 +8697,9 @@
               "case_fields": [
                 "name",
                 "status",
-                "steps"
+                "steps",
+                "evidence.final_process_path_readiness",
+                "evidence.final_process_path_readiness.remaining_blockers[*].evidence_field"
               ],
               "step_fields": [
                 "name",
@@ -8704,7 +8708,7 @@
                 "latency_ms"
               ]
             },
-            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust raft_process_path_readiness_report_maps_remaining_blockers_to_fields --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
             "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",

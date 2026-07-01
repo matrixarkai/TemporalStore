@@ -5,9 +5,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use temporalstore_rust::raft::RaftReplicaRole;
 use temporalstore_rust::{
-    AddNamespaceRequest, Command, MetaCommand, MetaMutation, MetaOwnedDataRaftMembershipReport,
-    ProductionMetaRaftRuntime, ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind,
-    ProductionRaftNode, RaftCluster, RaftConfig, RaftMembershipChangeReport, RaftNodeId,
+    raft_process_path_readiness_report_from_reports, AddNamespaceRequest, Command, MetaCommand,
+    MetaMutation, MetaOwnedDataRaftMembershipReport, ProductionMetaRaftRuntime,
+    ProductionMetaRaftRuntimeOptions, ProductionRaftEngineKind, ProductionRaftNode, RaftCluster,
+    RaftConfig, RaftMembershipChangeReport, RaftNodeId, RaftProcessPathReadinessReport,
     ShardLocation, TemporalRaftDataNodeProcessRolloutReport, TemporalRaftMetaProcessRolloutReport,
     TemporalRaftProcessNodeEvidence, TemporalRaftProcessOperationalSemanticsEvidence,
 };
@@ -44,6 +45,7 @@ struct MetaserverRaftHarnessSummary {
     temporal_raft_process_rollout: TemporalRaftMetaProcessRolloutReport,
     data_node_process_rollout: TemporalRaftDataNodeProcessRolloutReport,
     meta_owned_data_raft_membership: MetaOwnedDataRaftMembershipReport,
+    final_process_path_readiness: RaftProcessPathReadinessReport,
     elapsed_ms: u128,
 }
 
@@ -277,6 +279,10 @@ fn main() {
         &meta_owned_data_raft_membership,
         &data_node_process_rollout,
     );
+    let final_process_path_readiness = raft_process_path_readiness_report_from_reports(
+        &data_node_process_rollout,
+        &temporal_raft_process_rollout,
+    );
 
     let summary = MetaserverRaftHarnessSummary {
         root: options.root.display().to_string(),
@@ -304,6 +310,7 @@ fn main() {
         temporal_raft_process_rollout,
         data_node_process_rollout,
         meta_owned_data_raft_membership,
+        final_process_path_readiness,
         elapsed_ms: started.elapsed().as_millis(),
     };
     assert_eq!(
@@ -345,6 +352,11 @@ fn main() {
         serde_json::to_string(&summary.scheduler_execution_coverage).unwrap(),
         serde_json::to_string(&summary.temporal_raft_process_rollout).unwrap(),
         serde_json::to_string(&summary.data_node_process_rollout).unwrap()
+    );
+    assert!(
+        summary.final_process_path_readiness.ready,
+        "final Raft readiness must map every remaining blocker to concrete evidence fields: {}",
+        serde_json::to_string(&summary.final_process_path_readiness).unwrap()
     );
     println!("{}", serde_json::to_string_pretty(&summary).unwrap());
 }
