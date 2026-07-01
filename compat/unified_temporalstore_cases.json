@@ -8540,9 +8540,10 @@
               "pending_joint_consensus_persisted": true,
               "secondary_lag_and_catchup": true,
               "snapshot_restart_after_compaction": true,
-              "stale_membership_rejected": true
+              "stale_membership_rejected": true,
+              "leader_transfer_exact_once_commit_ids_present": true
             },
-            "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8567,7 +8568,8 @@
               "case_fields": [
                 "name",
                 "status",
-                "steps"
+                "steps",
+                "evidence.leader_transfer_exact_once_commit_ids"
               ],
               "step_fields": [
                 "name",
@@ -8762,7 +8764,8 @@
               "learner_promote": true,
               "voter_remove": true,
               "leader_transfer_exact_once_commit_ids": true,
-              "stale_generation_rejected": true
+              "stale_generation_rejected": true,
+              "leader_transfer_exact_once_commit_ids_present": true
             },
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -8775,7 +8778,8 @@
               "case_fields": [
                 "name",
                 "status",
-                "steps"
+                "steps",
+                "evidence.leader_transfer_exact_once_commit_ids"
               ],
               "step_fields": [
                 "name",
@@ -8786,7 +8790,7 @@
             },
             "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes evidence.leader_transfer_exact_once_commit_ids with unique committed Raft indexes for active leader-transfer writes.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",

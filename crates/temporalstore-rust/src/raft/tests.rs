@@ -4722,6 +4722,12 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         1
     );
     assert_eq!(
+        admin
+            .membership_evidence
+            .leader_transfer_exact_once_commit_ids,
+        vec![1]
+    );
+    assert_eq!(
         cluster.read_local(
             1,
             Command::StringGet {
@@ -4768,6 +4774,7 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         "temporalstore_raft_byteraft_membership_learner_add_count",
         "temporalstore_raft_byteraft_membership_voter_remove_count",
         "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_count",
+        "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_id_count",
     ] {
         assert!(
             metrics.contains(metric),
