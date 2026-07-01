@@ -869,6 +869,8 @@ pub struct RaftMembershipRuntimeEvidence {
     #[serde(default)]
     pub leader_transfer_exact_once_commit_count: u64,
     #[serde(default)]
+    pub leader_transfer_exact_once_commit_ids: Vec<u64>,
+    #[serde(default)]
     pub pending_joint_consensus_persist_count: u64,
     #[serde(default)]
     pub pending_joint_consensus_restore_count: u64,
@@ -4978,6 +4980,16 @@ impl RaftCluster {
                 .membership_evidence
                 .leader_transfer_exact_once_commit_count
                 .saturating_add(1);
+            if !inner
+                .membership_evidence
+                .leader_transfer_exact_once_commit_ids
+                .contains(&entry.index)
+            {
+                inner
+                    .membership_evidence
+                    .leader_transfer_exact_once_commit_ids
+                    .push(entry.index);
+            }
         }
         let config = inner.config.clone();
         refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
@@ -8681,10 +8693,21 @@ impl RaftClusterInner {
         let learner_catchup_present = membership_evidence.learner_catchup_count > 0;
         let learner_promote_present = membership_evidence.learner_promote_count > 0;
         let voter_remove_present = membership_evidence.voter_remove_count > 0;
+        let unique_leader_transfer_commit_ids = membership_evidence
+            .leader_transfer_exact_once_commit_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            .len() as u64;
         let leader_transfer_exact_once_present = membership_evidence.leader_transfer_write_count
             > 0
             && membership_evidence.leader_transfer_exact_once_commit_count
-                >= membership_evidence.leader_transfer_write_count;
+                >= membership_evidence.leader_transfer_write_count
+            && unique_leader_transfer_commit_ids >= membership_evidence.leader_transfer_write_count
+            && unique_leader_transfer_commit_ids
+                == membership_evidence
+                    .leader_transfer_exact_once_commit_ids
+                    .len() as u64;
         let pending_joint_consensus_restart_present =
             membership_evidence.pending_joint_consensus_persist_count > 0
                 && membership_evidence.pending_joint_consensus_restore_count > 0;
@@ -8976,7 +8999,7 @@ impl RaftClusterInner {
                     && leader_transfer_exact_once_present
                     && pending_joint_consensus_present
                     && pending_joint_consensus_restart_present,
-                evidence_field: "membership_evidence.{learner_add_count,learner_catchup_count,learner_promote_count,voter_remove_count,witness_add_count,auto_promote_count,leader_transfer_write_count,leader_transfer_exact_once_commit_count,pending_joint_consensus_persist_count,pending_joint_consensus_restore_count}; witness_membership_present; learner_auto_promote_present; pending_joint_consensus_present".to_string(),
+                evidence_field: "membership_evidence.{learner_add_count,learner_catchup_count,learner_promote_count,voter_remove_count,witness_add_count,auto_promote_count,leader_transfer_write_count,leader_transfer_exact_once_commit_count,leader_transfer_exact_once_commit_ids,pending_joint_consensus_persist_count,pending_joint_consensus_restore_count}; witness_membership_present; learner_auto_promote_present; pending_joint_consensus_present".to_string(),
                 detail: format!(
                     "learner_add={learner_add_present}; catchup={learner_catchup_present}; promote={learner_promote_present}; remove={voter_remove_present}; witness={witness_membership_present}; auto_promote={learner_auto_promote_present}; transfer_exact_once={leader_transfer_exact_once_present}; pending_joint_consensus={pending_joint_consensus_present}; restart={pending_joint_consensus_restart_present}"
                 ),
@@ -9509,6 +9532,13 @@ fn merge_membership_evidence(
     target.leader_transfer_exact_once_commit_count = target
         .leader_transfer_exact_once_commit_count
         .max(source.leader_transfer_exact_once_commit_count);
+    let mut commit_ids = target
+        .leader_transfer_exact_once_commit_ids
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    commit_ids.extend(source.leader_transfer_exact_once_commit_ids.iter().copied());
+    target.leader_transfer_exact_once_commit_ids = commit_ids.into_iter().collect();
     target.pending_joint_consensus_persist_count = target
         .pending_joint_consensus_persist_count
         .max(source.pending_joint_consensus_persist_count);
@@ -10185,6 +10215,13 @@ fn append_byteraft_runtime_admin_prometheus(
             report
                 .membership_evidence
                 .leader_transfer_exact_once_commit_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_id_count",
+            report
+                .membership_evidence
+                .leader_transfer_exact_once_commit_ids
+                .len() as u64,
         ),
         (
             "temporalstore_raft_byteraft_membership_pending_joint_consensus_restore_count",
