@@ -41,9 +41,40 @@ pub use readiness::*;
 pub use rustraft::*;
 use temporalstore_snapshot::{ObjectStore, S3SnapshotStore, SnapshotRef, SnapshotStore};
 
-pub type RaftNodeId = ::rustraft::RustRaftNodeId;
-pub type RaftRole = ::rustraft::RustRaftRole;
-pub type RaftReplicaRole = ::rustraft::RustRaftReplicaRole;
+pub type RaftNodeId = u64;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaftRole {
+    Leader,
+    Follower,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RaftReplicaRole {
+    Voter,
+    Learner,
+    Witness,
+}
+
+impl RaftReplicaRole {
+    fn participates_in_quorum(self) -> bool {
+        matches!(self, Self::Voter | Self::Witness)
+    }
+
+    fn can_serve_data(self) -> bool {
+        matches!(self, Self::Voter | Self::Learner)
+    }
+
+    fn can_be_leader(self) -> bool {
+        matches!(self, Self::Voter)
+    }
+}
+
+impl Default for RaftReplicaRole {
+    fn default() -> Self {
+        Self::Voter
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RaftLogEntry {
@@ -8926,16 +8957,20 @@ impl RaftClusterInner {
                 ready: read_index_validated
                     && lease_read_validated
                     && stale_follower_read_rejected
+                    && stale_follower_write_rejected
                     && stale_leader_lease_rejected
                     && lagging_follower_read_rejected
                     && bounded_stale_read_accepted
                     && bounded_stale_read_rejected
+                    && minority_partition_rejected_reads
+                    && minority_partition_rejected_writes
+                    && healed_follower_caught_up
                     && pre_vote_enforced
                     && pre_vote_process_evidence_observed,
                 evidence_field: "read_index_*; lease_read_*; stale_leader_lease_rejection_count; lagging_follower_read_rejection_count; bounded_stale_read_*; minority_partition_*_rejection_count; stale_follower_write_rejection_count; healed_follower_catchup_count; pre_vote_*; peer_pipeline_states[*].pre_vote_rejections"
                     .to_string(),
                 detail: format!(
-                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}; pre_vote_observed={pre_vote_process_evidence_observed}"
+                    "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; stale_write_rejected={stale_follower_write_rejected}; minority_read_rejected={minority_partition_rejected_reads}; minority_write_rejected={minority_partition_rejected_writes}; healed_catchup={healed_follower_caught_up}; pre_vote={pre_vote_enforced}; pre_vote_observed={pre_vote_process_evidence_observed}"
                 ),
             },
             ByteRaftCapabilityEvidence {

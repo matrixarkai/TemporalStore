@@ -4043,6 +4043,7 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
         [1, 2, 3],
         RaftConfig {
             lease_duration_ms: 10,
+            election_cycle_tick: 1,
             enable_pre_vote: true,
             ..RaftConfig::default()
         },
@@ -4113,7 +4114,10 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
             key: "read-safety".to_string(),
             value: b"minority-write".to_vec(),
         }),
-        Err(RaftError::LeaderUnavailable)
+        Err(RaftError::NoMajority {
+            live: 1,
+            required: 2,
+        })
     );
 
     cluster.set_alive(2, true).unwrap();
@@ -4154,6 +4158,16 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
         }
     );
 
+    cluster.set_alive(1, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    assert_eq!(
+        cluster.tick_election().unwrap(),
+        RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
+    );
+    cluster.set_alive(1, true).unwrap();
+    cluster.set_alive(3, true).unwrap();
+    assert!(cluster.read_index(1).is_ok());
+
     let admin = cluster.byteraft_runtime_admin_report();
     let state = cluster.read_safety_runtime_state();
     assert!(state.stale_leader_lease_rejected > 0);
@@ -4173,6 +4187,10 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     assert!(admin.minority_partition_rejected_reads);
     assert!(admin.minority_partition_rejected_writes);
     assert!(admin.healed_follower_caught_up);
+    assert!(admin.pre_vote_enforced);
+    assert!(admin.pre_vote_process_evidence_observed);
+    assert!(admin.pre_vote_requests > 0);
+    assert!(admin.pre_vote_rejected > 0);
     assert_eq!(
         admin.stale_leader_lease_rejection_count,
         state.stale_leader_lease_rejected
@@ -4191,10 +4209,28 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     );
     assert!(admin.read_index_requests >= 3);
     assert!(admin.read_index_rejected >= 2);
-    assert!(admin
+    let read_safety_capability = admin
         .capability_matrix
         .iter()
-        .any(|item| item.capability == "lease_read_index_pre_vote_semantics" && item.ready));
+        .find(|item| item.capability == "lease_read_index_pre_vote_semantics")
+        .expect("lease/read-index/pre-vote capability should be reported");
+    assert!(
+        read_safety_capability.ready,
+        "{}",
+        read_safety_capability.detail
+    );
+    assert!(read_safety_capability
+        .detail
+        .contains("stale_write_rejected=true"));
+    assert!(read_safety_capability
+        .detail
+        .contains("minority_read_rejected=true"));
+    assert!(read_safety_capability
+        .detail
+        .contains("minority_write_rejected=true"));
+    assert!(read_safety_capability
+        .detail
+        .contains("healed_catchup=true"));
 }
 
 #[test]
