@@ -83,6 +83,19 @@ context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs
 are part of the shared lifecycle/cold-scan config surface so C++ and Rust
 benchmarks can run with the same named production profile.
 
+C++ launchers consume the same names through `tools/temporalstore_runtime_env.sh`.
+The C++ storage-facing subset maps into existing gflags:
+`TS_STORAGE_ZONE_SIZE -> --storage_zone_size` and
+`TS_STREAM_MAX_BLOB_SIZE -> --stream_max_blob_size`. Existing
+`TEMPORALSTORE_STORAGE_ZONE_SIZE` and `TEMPORALSTORE_STREAM_MAX_BLOB_SIZE`
+overrides still work for compatibility.
+
+Keep the C++ and Rust surfaces synchronized with:
+
+```bash
+python3 tools/validate_storage_tuning_parity.py
+```
+
 For process-path Raft evidence, use the harnesses:
 
 ```bash
