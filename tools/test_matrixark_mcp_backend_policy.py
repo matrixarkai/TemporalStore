@@ -10,8 +10,10 @@ import matrixark_mcp_server as mcp
 
 try:
     from tools import matrixark_mcp_core as mcp_core
+    from tools.run_matrixark_cpp_rust_scale_report import selected_ref_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
+    from run_matrixark_cpp_rust_scale_report import selected_ref_count
 
 
 
@@ -109,6 +111,33 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = self._old_allow_local
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = self._old_require_ready
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
+
+    def test_scale_report_counts_compact_context_pack_groups(self) -> None:
+        self.assertEqual(
+            selected_ref_count(
+                {
+                    "context_pack_id": "pack",
+                    "groups": [
+                        {"type": "event", "n": 2, "items": [{"text": "a"}, {"text": "b"}]},
+                        {"type": "resource_chunk", "n": 1, "items": [{"text": "c"}]},
+                    ],
+                }
+            ),
+            3,
+        )
+        self.assertEqual(
+            selected_ref_count(
+                {
+                    "context_pack": {
+                        "groups": {
+                            "same_session:event": [{"text": "a"}],
+                            "shared:resource_chunk": [{"text": "b"}, {"text": "c"}],
+                        }
+                    }
+                }
+            ),
+            3,
+        )
 
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
