@@ -2768,6 +2768,40 @@ fn raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports() {
         .iter()
         .any(|item| item.contains("independent WAL/snapshot dirs")));
 
+    let mut duplicate_process_identity = ready_data_node_temporal_raft_rollout_report();
+    duplicate_process_identity.nodes[1].addr = duplicate_process_identity.nodes[0].addr.clone();
+    duplicate_process_identity.nodes[1].wal_dir =
+        duplicate_process_identity.nodes[0].wal_dir.clone();
+    duplicate_process_identity.nodes[1].snapshot_dir =
+        duplicate_process_identity.nodes[0].snapshot_dir.clone();
+    let rejected_duplicate_identity = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&duplicate_process_identity),
+        Some(&ready_meta_temporal_raft_rollout_report()),
+    );
+    assert!(!rejected_duplicate_identity.data_node_real_process_rollout_validated);
+    assert!(!rejected_duplicate_identity.production_ready);
+
+    let mut missing_api_write = ready_data_node_temporal_raft_rollout_report();
+    missing_api_write.write_proposed_through_process_api = false;
+    missing_api_write.restart_recovery_validated = false;
+    let rejected_missing_api_write = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&missing_api_write),
+        Some(&ready_meta_temporal_raft_rollout_report()),
+    );
+    assert!(!rejected_missing_api_write.data_node_real_process_rollout_validated);
+    assert!(!rejected_missing_api_write.production_ready);
+
+    let mut missing_meta_api_mutation = ready_meta_temporal_raft_rollout_report();
+    missing_meta_api_mutation.mutation_proposed_through_process_api = false;
+    missing_meta_api_mutation.read_index_validated = false;
+    missing_meta_api_mutation.per_node_log_store_inspection_count = 1;
+    let rejected_missing_meta_api_mutation = raft_temporal_raft_rollout_readiness_from_reports(
+        Some(&ready_data_node_temporal_raft_rollout_report()),
+        Some(&missing_meta_api_mutation),
+    );
+    assert!(!rejected_missing_meta_api_mutation.metaserver_real_process_rollout_validated);
+    assert!(!rejected_missing_meta_api_mutation.production_ready);
+
     let mut missing_behavior_evidence = ready_data_node_temporal_raft_rollout_report();
     missing_behavior_evidence.failover_validated = false;
     missing_behavior_evidence.membership_change_validated = false;
