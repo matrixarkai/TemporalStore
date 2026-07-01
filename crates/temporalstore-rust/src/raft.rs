@@ -660,6 +660,20 @@ pub struct ByteRaftRuntimeAdminReport {
     pub learner_auto_promote_present: bool,
     #[serde(default)]
     pub pending_joint_consensus_present: bool,
+    #[serde(default)]
+    pub learner_add_present: bool,
+    #[serde(default)]
+    pub learner_catchup_present: bool,
+    #[serde(default)]
+    pub learner_promote_present: bool,
+    #[serde(default)]
+    pub voter_remove_present: bool,
+    #[serde(default)]
+    pub leader_transfer_exact_once_present: bool,
+    #[serde(default)]
+    pub pending_joint_consensus_restart_present: bool,
+    #[serde(default)]
+    pub membership_evidence: RaftMembershipRuntimeEvidence,
     pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
     pub append_backpressure_enforced: bool,
     #[serde(default)]
@@ -836,6 +850,30 @@ pub struct RaftMembership {
     pub leader_id: RaftNodeId,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftMembershipRuntimeEvidence {
+    #[serde(default)]
+    pub learner_add_count: u64,
+    #[serde(default)]
+    pub learner_catchup_count: u64,
+    #[serde(default)]
+    pub learner_promote_count: u64,
+    #[serde(default)]
+    pub voter_remove_count: u64,
+    #[serde(default)]
+    pub witness_add_count: u64,
+    #[serde(default)]
+    pub auto_promote_count: u64,
+    #[serde(default)]
+    pub leader_transfer_write_count: u64,
+    #[serde(default)]
+    pub leader_transfer_exact_once_commit_count: u64,
+    #[serde(default)]
+    pub pending_joint_consensus_persist_count: u64,
+    #[serde(default)]
+    pub pending_joint_consensus_restore_count: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RaftWalRecord {
     pub hard_state: RaftHardState,
@@ -856,6 +894,8 @@ pub struct RaftWalRecord {
     pub pipeline_state: RaftPeerPipelineRuntimeState,
     #[serde(default)]
     pub read_safety_state: RaftReadSafetyRuntimeState,
+    #[serde(default)]
+    pub membership_evidence: RaftMembershipRuntimeEvidence,
     pub entries: Vec<RaftLogEntry>,
 }
 
@@ -4658,6 +4698,7 @@ struct RaftClusterInner {
     latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
     pending_snapshots: BTreeMap<(RaftNodeId, String), PendingSnapshotChunks>,
     read_safety_state: RaftReadSafetyRuntimeState,
+    membership_evidence: RaftMembershipRuntimeEvidence,
 }
 
 impl RaftCluster {
@@ -4704,6 +4745,7 @@ impl RaftCluster {
                 latest_external_snapshot_ref: None,
                 pending_snapshots: BTreeMap::new(),
                 read_safety_state: RaftReadSafetyRuntimeState::default(),
+                membership_evidence: RaftMembershipRuntimeEvidence::default(),
             })),
         })
     }
@@ -4739,6 +4781,7 @@ impl RaftCluster {
         let mut joint_membership = None;
         let mut latest_external_snapshot_ref = None;
         let mut read_safety_state = RaftReadSafetyRuntimeState::default();
+        let mut membership_evidence = RaftMembershipRuntimeEvidence::default();
         for node_id in node_ids {
             let record = wal
                 .load_node(shard_id, node_id)
@@ -4782,6 +4825,7 @@ impl RaftCluster {
                     latest_external_snapshot_ref = record.latest_external_snapshot_ref;
                 }
                 read_safety_state = record.read_safety_state;
+                merge_membership_evidence(&mut membership_evidence, &record.membership_evidence);
                 node
             } else {
                 new_node(node_id, RaftRole::Follower, shard_id)
@@ -4796,6 +4840,11 @@ impl RaftCluster {
             .unwrap_or(1);
         if let Some(leader) = nodes.get_mut(&leader_id) {
             leader.role = RaftRole::Leader;
+        }
+        if joint_membership.is_some() {
+            membership_evidence.pending_joint_consensus_restore_count = membership_evidence
+                .pending_joint_consensus_restore_count
+                .saturating_add(1);
         }
         refresh_all_pipeline_states(&mut nodes, leader_id, &config);
         let leader_lease_deadline_ms = initial_leader_lease_deadline_ms(&config);
@@ -4813,6 +4862,7 @@ impl RaftCluster {
                 latest_external_snapshot_ref,
                 pending_snapshots: BTreeMap::new(),
                 read_safety_state,
+                membership_evidence,
             })),
         })
     }
@@ -4912,6 +4962,22 @@ impl RaftCluster {
                     leader_response = response;
                 }
             }
+        }
+        if inner
+            .nodes
+            .values()
+            .any(|node| node.pipeline_state.transfer_leader_target)
+        {
+            inner.membership_evidence.leader_transfer_write_count = inner
+                .membership_evidence
+                .leader_transfer_write_count
+                .saturating_add(1);
+            inner
+                .membership_evidence
+                .leader_transfer_exact_once_commit_count = inner
+                .membership_evidence
+                .leader_transfer_exact_once_commit_count
+                .saturating_add(1);
         }
         let config = inner.config.clone();
         refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
@@ -5458,6 +5524,21 @@ impl RaftCluster {
             leader.commit_index,
         );
         inner.nodes.insert(node_id, node);
+        match replica_role {
+            RaftReplicaRole::Learner => {
+                inner.membership_evidence.learner_add_count = inner
+                    .membership_evidence
+                    .learner_add_count
+                    .saturating_add(1);
+            }
+            RaftReplicaRole::Witness => {
+                inner.membership_evidence.witness_add_count = inner
+                    .membership_evidence
+                    .witness_add_count
+                    .saturating_add(1);
+            }
+            RaftReplicaRole::Voter => {}
+        }
         inner.persist_configured_wal()?;
         Ok(())
     }
@@ -5491,6 +5572,14 @@ impl RaftCluster {
             RaftReplicaRole::Learner => {
                 node.pipeline_state.auto_promoted_from_learner = true;
                 node.replica_role = RaftReplicaRole::Voter;
+                inner.membership_evidence.learner_promote_count = inner
+                    .membership_evidence
+                    .learner_promote_count
+                    .saturating_add(1);
+                inner.membership_evidence.auto_promote_count = inner
+                    .membership_evidence
+                    .auto_promote_count
+                    .saturating_add(1);
                 inner.persist_configured_wal()
             }
             RaftReplicaRole::Voter => Ok(()),
@@ -5516,6 +5605,10 @@ impl RaftCluster {
             .nodes
             .remove(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
+        inner.membership_evidence.voter_remove_count = inner
+            .membership_evidence
+            .voter_remove_count
+            .saturating_add(1);
         if inner.leader_id == node_id {
             inner.promote_best_live_follower()?;
         }
@@ -5613,6 +5706,12 @@ impl RaftCluster {
             new_voters,
         };
         inner.joint_membership = Some(membership.clone());
+        inner
+            .membership_evidence
+            .pending_joint_consensus_persist_count = inner
+            .membership_evidence
+            .pending_joint_consensus_persist_count
+            .saturating_add(1);
         inner.persist_configured_wal()?;
         Ok(membership)
     }
@@ -5718,6 +5817,10 @@ impl RaftCluster {
         if node.replica_role.can_serve_data() {
             apply_committed(node);
         }
+        inner.membership_evidence.learner_catchup_count = inner
+            .membership_evidence
+            .learner_catchup_count
+            .saturating_add(1);
         let config = inner.config.clone();
         refresh_all_pipeline_states(&mut inner.nodes, leader_id, &config);
         inner.persist_configured_wal()?;
@@ -5837,6 +5940,7 @@ impl RaftCluster {
                         storage_apply_fence: raft_storage_apply_fence(inner.shard_id, node),
                         pipeline_state: node.pipeline_state.clone(),
                         read_safety_state: inner.read_safety_state.clone(),
+                        membership_evidence: inner.membership_evidence.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -8329,6 +8433,7 @@ impl RaftClusterInner {
                         storage_apply_fence: raft_storage_apply_fence(self.shard_id, node),
                         pipeline_state: node.pipeline_state.clone(),
                         read_safety_state: self.read_safety_state.clone(),
+                        membership_evidence: self.membership_evidence.clone(),
                         entries: node.log.clone(),
                     },
                 )
@@ -8571,6 +8676,18 @@ impl RaftClusterInner {
             .values()
             .any(|node| node.pipeline_state.auto_promoted_from_learner);
         let pending_joint_consensus_present = self.joint_membership.is_some();
+        let membership_evidence = self.membership_evidence.clone();
+        let learner_add_present = membership_evidence.learner_add_count > 0;
+        let learner_catchup_present = membership_evidence.learner_catchup_count > 0;
+        let learner_promote_present = membership_evidence.learner_promote_count > 0;
+        let voter_remove_present = membership_evidence.voter_remove_count > 0;
+        let leader_transfer_exact_once_present = membership_evidence.leader_transfer_write_count
+            > 0
+            && membership_evidence.leader_transfer_exact_once_commit_count
+                >= membership_evidence.leader_transfer_write_count;
+        let pending_joint_consensus_restart_present =
+            membership_evidence.pending_joint_consensus_persist_count > 0
+                && membership_evidence.pending_joint_consensus_restore_count > 0;
         let read_index_validated = status.leader_lease_valid && status.has_majority;
         let lease_read_validated =
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
@@ -8851,11 +8968,17 @@ impl RaftClusterInner {
             ByteRaftCapabilityEvidence {
                 capability: "membership_role_semantics".to_string(),
                 ready: witness_membership_present
+                    && learner_add_present
+                    && learner_catchup_present
+                    && learner_promote_present
+                    && voter_remove_present
                     && learner_auto_promote_present
-                    && pending_joint_consensus_present,
-                evidence_field: "witness_membership_present; learner_auto_promote_present; pending_joint_consensus_present; peer_pipeline_states[*].auto_promoted_from_learner; byteraft_local_status_report.pending_joint_consensus".to_string(),
+                    && leader_transfer_exact_once_present
+                    && pending_joint_consensus_present
+                    && pending_joint_consensus_restart_present,
+                evidence_field: "membership_evidence.{learner_add_count,learner_catchup_count,learner_promote_count,voter_remove_count,witness_add_count,auto_promote_count,leader_transfer_write_count,leader_transfer_exact_once_commit_count,pending_joint_consensus_persist_count,pending_joint_consensus_restore_count}; witness_membership_present; learner_auto_promote_present; pending_joint_consensus_present".to_string(),
                 detail: format!(
-                    "witness={witness_membership_present}; auto_promote={learner_auto_promote_present}; pending_joint_consensus={pending_joint_consensus_present}"
+                    "learner_add={learner_add_present}; catchup={learner_catchup_present}; promote={learner_promote_present}; remove={voter_remove_present}; witness={witness_membership_present}; auto_promote={learner_auto_promote_present}; transfer_exact_once={leader_transfer_exact_once_present}; pending_joint_consensus={pending_joint_consensus_present}; restart={pending_joint_consensus_restart_present}"
                 ),
             },
         ];
@@ -8954,11 +9077,29 @@ impl RaftClusterInner {
         if !witness_membership_present {
             blockers.push("witness_membership_missing".to_string());
         }
+        if !learner_add_present {
+            blockers.push("learner_add_evidence_missing".to_string());
+        }
+        if !learner_catchup_present {
+            blockers.push("learner_catchup_evidence_missing".to_string());
+        }
+        if !learner_promote_present {
+            blockers.push("learner_promote_evidence_missing".to_string());
+        }
+        if !voter_remove_present {
+            blockers.push("voter_remove_evidence_missing".to_string());
+        }
         if !learner_auto_promote_present {
             blockers.push("learner_auto_promote_missing".to_string());
         }
+        if !leader_transfer_exact_once_present {
+            blockers.push("leader_transfer_exact_once_evidence_missing".to_string());
+        }
         if !pending_joint_consensus_present {
             blockers.push("pending_joint_consensus_evidence_missing".to_string());
+        }
+        if !pending_joint_consensus_restart_present {
+            blockers.push("pending_joint_consensus_restart_evidence_missing".to_string());
         }
         if !pre_vote_enforced {
             blockers.push("pre_vote_not_enforced".to_string());
@@ -9001,6 +9142,13 @@ impl RaftClusterInner {
             witness_membership_present,
             learner_auto_promote_present,
             pending_joint_consensus_present,
+            learner_add_present,
+            learner_catchup_present,
+            learner_promote_present,
+            voter_remove_present,
+            leader_transfer_exact_once_present,
+            pending_joint_consensus_restart_present,
+            membership_evidence,
             peer_pipeline_states,
             append_backpressure_enforced,
             apply_backpressure_enforced,
@@ -9339,6 +9487,34 @@ fn new_node(id: RaftNodeId, role: RaftRole, shard_id: ShardId) -> RaftNode {
             ..RaftPeerPipelineRuntimeState::default()
         },
     }
+}
+
+fn merge_membership_evidence(
+    target: &mut RaftMembershipRuntimeEvidence,
+    source: &RaftMembershipRuntimeEvidence,
+) {
+    target.learner_add_count = target.learner_add_count.max(source.learner_add_count);
+    target.learner_catchup_count = target
+        .learner_catchup_count
+        .max(source.learner_catchup_count);
+    target.learner_promote_count = target
+        .learner_promote_count
+        .max(source.learner_promote_count);
+    target.voter_remove_count = target.voter_remove_count.max(source.voter_remove_count);
+    target.witness_add_count = target.witness_add_count.max(source.witness_add_count);
+    target.auto_promote_count = target.auto_promote_count.max(source.auto_promote_count);
+    target.leader_transfer_write_count = target
+        .leader_transfer_write_count
+        .max(source.leader_transfer_write_count);
+    target.leader_transfer_exact_once_commit_count = target
+        .leader_transfer_exact_once_commit_count
+        .max(source.leader_transfer_exact_once_commit_count);
+    target.pending_joint_consensus_persist_count = target
+        .pending_joint_consensus_persist_count
+        .max(source.pending_joint_consensus_persist_count);
+    target.pending_joint_consensus_restore_count = target
+        .pending_joint_consensus_restore_count
+        .max(source.pending_joint_consensus_restore_count);
 }
 
 fn refresh_all_pipeline_states(
@@ -9955,6 +10131,70 @@ fn append_byteraft_runtime_admin_prometheus(
         &[("kind", kind.to_string())],
         u64::from(report.witness_membership_present),
     );
+    for (name, value) in [
+        (
+            "temporalstore_raft_byteraft_learner_add_present",
+            report.learner_add_present,
+        ),
+        (
+            "temporalstore_raft_byteraft_learner_catchup_present",
+            report.learner_catchup_present,
+        ),
+        (
+            "temporalstore_raft_byteraft_learner_promote_present",
+            report.learner_promote_present,
+        ),
+        (
+            "temporalstore_raft_byteraft_voter_remove_present",
+            report.voter_remove_present,
+        ),
+        (
+            "temporalstore_raft_byteraft_leader_transfer_exact_once_present",
+            report.leader_transfer_exact_once_present,
+        ),
+        (
+            "temporalstore_raft_byteraft_pending_joint_consensus_restart_present",
+            report.pending_joint_consensus_restart_present,
+        ),
+    ] {
+        push_raft_metric(out, name, &[("kind", kind.to_string())], u64::from(value));
+    }
+    for (name, value) in [
+        (
+            "temporalstore_raft_byteraft_membership_learner_add_count",
+            report.membership_evidence.learner_add_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_learner_catchup_count",
+            report.membership_evidence.learner_catchup_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_learner_promote_count",
+            report.membership_evidence.learner_promote_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_voter_remove_count",
+            report.membership_evidence.voter_remove_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_leader_transfer_write_count",
+            report.membership_evidence.leader_transfer_write_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_count",
+            report
+                .membership_evidence
+                .leader_transfer_exact_once_commit_count,
+        ),
+        (
+            "temporalstore_raft_byteraft_membership_pending_joint_consensus_restore_count",
+            report
+                .membership_evidence
+                .pending_joint_consensus_restore_count,
+        ),
+    ] {
+        push_raft_metric(out, name, &[("kind", kind.to_string())], value);
+    }
     push_raft_metric(
         out,
         "temporalstore_raft_byteraft_learner_auto_promote_present",
