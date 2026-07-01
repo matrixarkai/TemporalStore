@@ -4022,6 +4022,8 @@ def compact_context_pack_for_serving(pack: Json) -> Json:
         compact["partial"] = True
     if pack.get("insufficient_context"):
         compact["insufficient_context"] = True
+    if pack.get("include_retrieval_metrics") and isinstance(pack.get("retrieval_metrics"), dict):
+        compact["retrieval_metrics"] = pack["retrieval_metrics"]
     return compact
 
 

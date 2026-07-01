@@ -13,11 +13,11 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count, summarize_retrieval_metrics
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
+    from run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count, summarize_retrieval_metrics
 
 
 
@@ -121,6 +121,19 @@ class _NativeContextPackClient:
             "total_prompt_context_tokens": 6 + int(request.get("local_context_tokens") or 0),
             "remote_context_budget_tokens": 1024,
             "dropped_refs": {"over_budget_count": 2, "low_score_count": 3},
+            "retrieval_metrics": {
+                "query_plan_ms": 1.5,
+                "node_traversal_ms": 2.5,
+                "index_prefilter_ms": 3.5,
+                "candidate_fetch_ms": 4.5,
+                "score_ms": 5.5,
+                "pack_ms": 6.5,
+                "audit_ms": 0.0,
+                "selected_refs": 1,
+                "scanned_records": 7,
+                "cache_hit": True,
+                "placement_partitions_touched": 2,
+            },
             "quality_warnings": [],
         }
 
@@ -263,6 +276,38 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(
             any(row["metric"] == "selected_refs_avg" and not row["parity_passed"] for row in result["rows"])
         )
+
+    def test_scale_report_compares_retrieval_stage_metrics(self) -> None:
+        stage_metrics = summarize_retrieval_metrics(
+            [
+                {
+                    "query_plan_ms": 1,
+                    "node_traversal_ms": 2,
+                    "index_prefilter_ms": 3,
+                    "candidate_fetch_ms": 4,
+                    "score_ms": 5,
+                    "pack_ms": 6,
+                    "audit_ms": 0.5,
+                    "selected_refs": 2,
+                    "scanned_records": 10,
+                    "cache_hit": True,
+                    "placement_partitions_touched": 1,
+                }
+            ]
+        )
+        base = {
+            "status": "passed",
+            "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
+            "ingest_messages": {"message_qps": 100},
+            "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
+            "retrieve": {"qps": 100, "p50_ms": 1, "p95_ms": 1, "p99_ms": 1, "selected_refs_avg": 2, "stage_metrics": stage_metrics},
+        }
+
+        result = comparison(base, base)
+
+        self.assertEqual(stage_metrics["stage_p95_ms"]["pack_ms"], 6.0)
+        self.assertTrue(any(row["metric"] == "pack_p95_ms" for row in result["rows"]))
+        self.assertTrue(any(row["metric"] == "cache_hit_rate" for row in result["rows"]))
 
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
@@ -699,6 +744,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "local_context_tokens": 128,
                 "ranking": {"max_selected_refs": 8},
                 "debug_context_pack": True,
+                "include_retrieval_metrics": True,
             }
         )
 
@@ -713,10 +759,36 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
         self.assertTrue(request["required_output"]["selected_refs"])
         self.assertTrue(request["required_output"]["dropped_summary"])
+        self.assertTrue(request["required_output"]["retrieval_metrics"])
+        self.assertEqual(result["retrieval_metrics"]["query_plan_ms"], 1.5)
+        self.assertEqual(result["retrieval_metrics"]["placement_partitions_touched"], 2)
         self.assertEqual(
             result["recall_policy"]["backend_retrieval_pushdown"]["execution_mode"],
             "native_context_pack",
         )
+
+    def test_direct_retrieve_compact_pack_can_include_native_retrieval_metrics(self) -> None:
+        client = _NativeContextPackClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "include_retrieval_metrics": True,
+            }
+        )
+
+        self.assertIn("groups", result)
+        self.assertNotIn("selected_refs", result)
+        self.assertEqual(result["retrieval_metrics"]["score_ms"], 5.5)
+        self.assertEqual(result["retrieval_metrics"]["scanned_records"], 7)
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [
