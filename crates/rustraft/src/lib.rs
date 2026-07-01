@@ -167,6 +167,8 @@ pub struct RustRaftPeerPipelineStatus {
     pub reorder_entries_rejected: u64,
     pub reorder_entry_timeouts: u64,
     pub reorder_dropped_packages: u64,
+    #[serde(default)]
+    pub stale_term_rejections: u64,
     pub snapshot_sending: bool,
     pub snapshot_installing: bool,
     pub snapshot_installed_index: u64,
@@ -205,6 +207,8 @@ pub struct RustRaftPipelineEvidence {
     pub memory_replicate_bytes_enforced: bool,
     pub oversized_log_rejection_present: bool,
     pub out_of_order_append_handling_present: bool,
+    pub reorder_timeout_drop_present: bool,
+    pub stale_term_rejection_present: bool,
     pub reorder_queue_enabled: bool,
 }
 
@@ -1379,6 +1383,10 @@ pub fn rustraft_pipeline_evidence(
                 || peer.reorder_entry_timeouts > 0
                 || peer.reorder_dropped_packages > 0
         }),
+        reorder_timeout_drop_present: peers
+            .iter()
+            .any(|peer| peer.reorder_entry_timeouts > 0 && peer.reorder_dropped_packages > 0),
+        stale_term_rejection_present: peers.iter().any(|peer| peer.stale_term_rejections > 0),
         reorder_queue_enabled: limits.enable_reorder_queue
             && limits.reorder_window_size > 0
             && limits.reorder_timeout_us > 0
@@ -2290,6 +2298,8 @@ mod tests {
                 memory_replicate_bytes_enforced: true,
                 oversized_log_rejection_present: true,
                 out_of_order_append_handling_present: true,
+                reorder_timeout_drop_present: true,
+                stale_term_rejection_present: true,
                 reorder_queue_enabled: true,
             }),
             snapshot_lifecycle: Some(RustRaftSnapshotLifecycleEvidence {

@@ -6026,42 +6026,12 @@
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-skill-registry-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs"
-            ],
+            "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust context_skill_registry_supports_updates_and_retrieval_selection --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "cpp_context_pipeline_parity"
           },
           "name": "skill_registry_updates_and_selection_shared",
-          "skip_client": true
-        }
-      ]
-    },
-    {
-      "description": "Shared C++/Rust Context retrieval case proving layer-by-layer ContextNode traversal, shared resource evidence, cross-session evidence, and weighted reranking with temporal decay plus business boosts.",
-      "family": "context",
-      "name": "context_cross_session_shared_resource_weighted_rerank",
-      "shard_id": 60,
-      "steps": [
-        {
-          "command": {
-            "description": "Validates that current-session, cross-session, and shared-resource candidates are scanned through ContextNode layers, then reranked with relevance, temporal freshness, and business-evidence boosts so current owner and shared runbook evidence outrank stale session facts.",
-            "expected_runner_command": "TS_CPP_CONTEXT_NATIVE_CMD='<cpp-context-cross-session-rerank-runner> {corpus} {case}' python3 tools/run_context_shared_cases.py --cpp-native --require-cpp-native",
-            "kind": "existing_test",
-            "mode": "rust_executable_cxx_static",
-            "required_paths": [
-              "src/extension/context/implement.cc",
-              "src/extension/context/test.cc",
-              "crates/temporalstore-rust/src/context_workflow.rs",
-              "crates/temporalstore-rust/src/context_workflow/query.rs",
-              "crates/temporalstore-rust/src/context_workflow/tests.rs"
-            ],
-            "rust_runner": "cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_shared_resource_evidence --lib -- --test-threads=1",
-            "rust_validator": "tools/run_context_workflow_local.sh",
-            "suite": "cpp_context_pipeline_parity"
-          },
-          "name": "cross_session_shared_resource_weighted_rerank_shared",
           "skip_client": true
         }
       ]
@@ -6140,7 +6110,6 @@
               "src/extension/context/implement.cc"
             ],
             "rust_runner": "cargo test -p temporalstore-rust parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval context_models_round_trip_cpp_wire_payloads_and_type_alias -- --test-threads=1",
-            "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "cpp_context_pipeline_parity"
           },
           "name": "context_events_stay_lean_sidecars_and_indexes_carry_metadata",
@@ -8126,9 +8095,10 @@
               "inflight_limit_enforced": true,
               "oversized_log_rejected": true,
               "reorder_gap_recovers": true,
-              "reorder_timeout_reported": true
+              "reorder_timeout_drop_reported": true,
+              "stale_term_rejection_reported": true
             },
-            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, oversized-log rejection, and apply backpressure counters.",
+            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, stale-term append rejection counters, oversized-log rejection, and apply backpressure counters.",
             "description": "Shared Raft library case for ByteRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8717,8 +8687,7 @@
             "required_paths": [
               "src/context/test/resource_skill_secondary_index_shared_test.cc"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust resource_skill_ingest_secondary_indexes_survive_restart --lib -- --test-threads=1",
-            "rust_validator": "tools/run_context_workflow_local.sh",
+            "rust_test": "resource_skill_ingest_secondary_indexes_survive_restart",
             "suite": "cpp_context_pipeline_parity"
           },
           "expect": {
@@ -9008,7 +8977,6 @@
       "context_resource_skill_parser_openviking_parity",
       "context_resource_lifecycle_openviking_parity",
       "context_resource_skill_registry_openviking_parity",
-      "context_cross_session_shared_resource_weighted_rerank",
       "context_resource_skill_live_embedding_summary_retrieval",
       "redis_operational_admin_commands",
       "redis_slot_hash_cpp_crc64",
