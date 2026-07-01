@@ -547,6 +547,7 @@ NODE_PATH_HEAVY_RECORD_TYPES = {
 }
 EVENT_DEBUG_FIELDS = {"envelope", "internal_extraction", "prior_context", "agent_hook", "storage_options", "summary_embedding"}
 ENTITY_DEBUG_FIELDS = {"previous_state", "field_patches", "patch_results"}
+CONTEXT_TIMELINE_FANOUT = 1024 * 1024
 
 
 def _record_debug_ref(record: Json) -> tuple[str, Any]:
@@ -562,6 +563,33 @@ def _record_debug_ref(record: Json) -> tuple[str, Any]:
     if record_type == "skill_section":
         return "skill_section", record.get("section_hash")
     return record_type, record.get("ref_hash")
+
+
+def context_event_timestamp_ms(record: Json) -> int:
+    envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+    for value in (
+        envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else None,
+        record.get("timestamp_key_ms"),
+        record.get("updated_at_ms"),
+        record.get("created_at_ms"),
+        record.get("event_time_ms"),
+    ):
+        try:
+            timestamp = int(value)
+        except (TypeError, ValueError):
+            continue
+        if timestamp > 0:
+            return timestamp
+    return now_ms()
+
+
+def context_event_time_key(timestamp_ms: int, event_id_hash: Any) -> int:
+    try:
+        event_hash = int(event_id_hash or 0)
+    except (TypeError, ValueError):
+        event_hash = 0
+    disambiguator = stable_hash(f"context_event_time_key:{event_hash}") if event_hash else 0
+    return int(timestamp_ms) * CONTEXT_TIMELINE_FANOUT + (disambiguator % CONTEXT_TIMELINE_FANOUT)
 
 
 def attach_storage_route(record: Json) -> Json:
@@ -614,6 +642,12 @@ def materialize_serving_records(record: Json) -> list[Json]:
         serving["event_type"] = extraction.get("event_type", serving.get("event_type", ""))
         serving["status"] = extraction.get("status", serving.get("status", "observed"))
         serving["source_kind"] = envelope.get("kind", serving.get("source_kind", "message")) if isinstance(envelope, dict) else serving.get("source_kind", "message")
+        timestamp_ms = context_event_timestamp_ms(serving)
+        event_id_hash = serving.get("event_id_hash")
+        serving["timestamp_key_ms"] = timestamp_ms
+        serving.setdefault("updated_at_ms", timestamp_ms)
+        if event_id_hash is not None:
+            serving["context_event_key"] = context_event_time_key(timestamp_ms, event_id_hash)
         debug_payload = {field: record[field] for field in EVENT_DEBUG_FIELDS if field in record and record[field] not in (None, "", [], {})}
         debug_type = "event_extraction_detail"
         for field in EVENT_DEBUG_FIELDS:

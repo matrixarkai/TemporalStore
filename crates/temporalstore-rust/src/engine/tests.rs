@@ -269,8 +269,11 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
     event_b.text = "second".to_string();
+    let mut event_c = event_a.clone();
+    event_c.event_id_hash = 5 + 1_048_576;
+    event_c.text = "same millisecond same timeline slot".to_string();
 
-    for event in [event_a.clone(), event_b.clone()] {
+    for event in [event_a.clone(), event_b.clone(), event_c.clone()] {
         let write = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ContextWriteEvent {
@@ -322,7 +325,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
         CommandResponse::ContextEvents { ref object_key, ref events }
             if object_key == "ctx:event:11:42"
                 && events.iter().map(|event| event.text.as_str()).collect::<Vec<_>>()
-                    == vec!["first", "second"]
+                    == vec!["first", "same millisecond same timeline slot", "second"]
     ));
 
     let index_ref = ContextIndexRef {

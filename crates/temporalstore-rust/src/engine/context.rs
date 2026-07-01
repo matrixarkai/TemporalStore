@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use crate::cache::MultiLayerCache;
 use crate::engine::constants::*;
@@ -92,6 +92,38 @@ pub(super) fn context_timeline_key(timestamp_ms: u64, disambiguator: u64) -> u64
     timestamp_ms
         .saturating_mul(CONTEXT_TIMELINE_FANOUT)
         .saturating_add(disambiguator % CONTEXT_TIMELINE_FANOUT)
+}
+
+pub(super) fn context_event_timeline_key_for_write(
+    series: &BTreeMap<u64, PageAddress>,
+    cache: &MultiLayerCache,
+    page_store: &LocalPageStore,
+    shard_id: ShardId,
+    event: &ContextEvent,
+    first_write_only: bool,
+) -> Option<u64> {
+    let primary_time_ms = event.primary_time_ms();
+    let start = context_timeline_key(primary_time_ms, event.event_id_hash);
+    let end = context_timeline_end(primary_time_ms);
+    let mut timeline_key = start;
+    while timeline_key < end {
+        let Some(address) = series.get(&timeline_key) else {
+            return Some(timeline_key);
+        };
+        if let Some(existing) =
+            read_context_value::<ContextEvent>(cache, page_store, shard_id, timeline_key, address)
+        {
+            if existing.event_id_hash == event.event_id_hash {
+                return if first_write_only {
+                    None
+                } else {
+                    Some(timeline_key)
+                };
+            }
+        }
+        timeline_key = timeline_key.saturating_add(1);
+    }
+    None
 }
 
 pub(super) fn context_timeline_start(timestamp_ms: u64) -> u64 {

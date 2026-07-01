@@ -138,7 +138,15 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "scope_key": "scope",
                     "updated_at_ms": 1780000000000,
                     "text": "native batch append works",
-                }
+                },
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 123 + mcp_core.CONTEXT_TIMELINE_FANOUT,
+                    "tenant_hash": 1,
+                    "scope_key": "scope",
+                    "updated_at_ms": 1780000000000,
+                    "text": "same millisecond collision slot",
+                },
             ]
         )
 
@@ -149,11 +157,14 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         keys = {entry["key"] for entry in call["entries"]}
         self.assertIn("matrixark:test:native-append:records:000000", keys)
         self.assertTrue(any("context_event_by_ingestion_time" in key for key in keys))
-        time_index_entry = next(entry for entry in call["entries"] if "context_event_by_ingestion_time" in entry["key"])
-        time_index_payload = json.loads(time_index_entry["value"])
-        self.assertEqual(time_index_payload["record_type"], "context_event_ref")
-        self.assertEqual(time_index_payload["ref_hash"], 123)
-        self.assertNotIn("text", time_index_payload)
+        time_index_entries = [entry for entry in call["entries"] if "context_event_by_ingestion_time" in entry["key"]]
+        self.assertEqual(len(time_index_entries), 2)
+        time_index_payloads = [json.loads(entry["value"]) for entry in time_index_entries]
+        self.assertEqual({payload["record_type"] for payload in time_index_payloads}, {"context_event_ref"})
+        self.assertEqual({payload["ref_hash"] for payload in time_index_payloads}, {123, 123 + mcp_core.CONTEXT_TIMELINE_FANOUT})
+        self.assertEqual({payload["timestamp_key_ms"] for payload in time_index_payloads}, {1780000000000})
+        self.assertEqual(len({payload["context_event_key"] for payload in time_index_payloads}), 2)
+        self.assertTrue(all("text" not in payload for payload in time_index_payloads))
 
     def test_direct_retrieval_records_reuses_candidate_cache_by_count_and_scope(self) -> None:
         records = [

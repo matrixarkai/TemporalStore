@@ -519,19 +519,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         return {}
 
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
-        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
-        for value in (
-            envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else None,
-            record.get("updated_at_ms"),
-            record.get("created_at_ms"),
-        ):
-            try:
-                timestamp = int(value)
-            except (TypeError, ValueError):
-                continue
-            if timestamp > 0:
-                return timestamp
-        return now_ms()
+        return context_event_timestamp_ms(record)
 
     def _context_event_time_index_key(self, record: Json) -> str:
         scope_key = str(record.get("scope_key") or "")
@@ -540,7 +528,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _context_event_time_index_field(self, record: Json) -> str:
         event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
-        return f"{self._context_event_ingestion_time_ms(record):020d}:{event_hash}"
+        timestamp_ms = self._context_event_ingestion_time_ms(record)
+        return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
 
     def _context_event_time_index_payload(self, record: Json) -> str:
         """Compact timestamp-index payload.
@@ -562,6 +551,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "scope_key": scope_key,
             "timestamp_key_ms": self._context_event_ingestion_time_ms(record),
         }
+        payload["context_event_key"] = context_event_time_key(payload["timestamp_key_ms"], payload["ref_hash"])
         source_chunk_hash = record.get("source_chunk_hash")
         if source_chunk_hash is not None:
             payload["source_chunk_hash"] = source_chunk_hash
