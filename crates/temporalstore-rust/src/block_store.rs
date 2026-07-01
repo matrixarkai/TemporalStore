@@ -7,6 +7,10 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::storage_config::{
+    StorageTuningConfig, DEFAULT_BLOCK_SEGMENT_TARGET_BYTES, DEFAULT_STREAM_MAX_BLOB_SIZE,
+};
+
 mod paths;
 mod record;
 
@@ -92,6 +96,10 @@ pub struct BlockStoreOptions {
     pub compression_min_bytes: usize,
     #[serde(default = "default_page_record_compression_level")]
     pub compression_level: i32,
+    #[serde(default = "default_block_segment_target_bytes")]
+    pub block_segment_target_bytes: u64,
+    #[serde(default = "default_stream_max_blob_size")]
+    pub stream_max_blob_size: u64,
 }
 
 impl Default for BlockStoreOptions {
@@ -100,8 +108,42 @@ impl Default for BlockStoreOptions {
             compression_enabled: default_page_record_compression_enabled(),
             compression_min_bytes: default_page_record_compression_min_bytes(),
             compression_level: default_page_record_compression_level(),
+            block_segment_target_bytes: default_block_segment_target_bytes(),
+            stream_max_blob_size: default_stream_max_blob_size(),
         }
     }
+}
+
+impl BlockStoreOptions {
+    pub fn from_storage_tuning(config: StorageTuningConfig) -> Self {
+        Self {
+            block_segment_target_bytes: config.block_segment_target_bytes,
+            stream_max_blob_size: config.stream_max_blob_size,
+            ..Self::default()
+        }
+    }
+
+    pub fn from_env() -> Self {
+        let config = StorageTuningConfig::from_env();
+        Self {
+            block_segment_target_bytes: config.block_segment_target_bytes,
+            stream_max_blob_size: config.stream_max_blob_size,
+            ..Self::default()
+        }
+    }
+
+    pub fn effective_segment_target_bytes(self) -> u64 {
+        self.block_segment_target_bytes
+            .min(self.stream_max_blob_size)
+    }
+}
+
+fn default_block_segment_target_bytes() -> u64 {
+    DEFAULT_BLOCK_SEGMENT_TARGET_BYTES
+}
+
+fn default_stream_max_blob_size() -> u64 {
+    DEFAULT_STREAM_MAX_BLOB_SIZE
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -474,18 +516,32 @@ impl LocalBlockStore {
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let extent_id = extent_id_for_segment(inner.page_segment_id);
-        let record = encode_page_record(
+        let mut record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_slot,
-            extent_id,
+            extent_id_for_segment(inner.page_segment_id),
             inner.options,
         )?;
+        let segment_target_bytes = inner.options.effective_segment_target_bytes();
+        if inner.write_offset > 0
+            && inner.write_offset.saturating_add(record.bytes.len() as u64) > segment_target_bytes
+        {
+            roll_segment_locked(&mut inner)?;
+            record = encode_page_record(
+                bytes,
+                page_id,
+                object_id,
+                routing_slot,
+                extent_id_for_segment(inner.page_segment_id),
+                inner.options,
+            )?;
+        }
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        let extent_id = extent_id_for_segment(inner.page_segment_id);
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -524,47 +580,7 @@ impl LocalBlockStore {
 
     pub fn roll_segment(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        fs::create_dir_all(&inner.root)?;
-        let previous_page_segment_id = inner.page_segment_id;
-        let next_from_current = inner.page_segment_id.saturating_add(1);
-        let next_from_disk = segment_ids_at(&inner.root)?
-            .into_iter()
-            .max()
-            .map(|id| id.saturating_add(1))
-            .unwrap_or_default();
-        inner.page_segment_id = next_from_current.max(next_from_disk);
-        inner.write_offset = 0;
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let file = File::create(&path)?;
-        file.sync_all()?;
-        sync_parent_dir(&path)?;
-        let transition_unix_ms = now_unix_ms();
-        if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
-            previous.state = BlockStoreExtentState::Sealed;
-            previous.updated_unix_ms = Some(transition_unix_ms);
-        }
-        let new_extent = BlockStoreExtentDescriptor {
-            extent_id: extent_id_for_segment(inner.page_segment_id),
-            page_segment_id: inner.page_segment_id,
-            state: BlockStoreExtentState::Active,
-            physical_bytes: 0,
-            logical_bytes: 0,
-            created_unix_ms: Some(transition_unix_ms),
-            updated_unix_ms: Some(transition_unix_ms),
-            first_page_id: None,
-            last_page_id: None,
-            readable_prefix_physical_bytes: 0,
-            has_corruption: false,
-            first_error_offset: None,
-            first_error: None,
-        };
-        let page_segment_id = inner.page_segment_id;
-        inner.extents.insert(page_segment_id, new_extent);
-        persist_extent_manifest(&inner.root, &inner.extents)?;
-        Ok(BlockStoreRollReport {
-            previous_page_segment_id,
-            new_page_segment_id: inner.page_segment_id,
-        })
+        roll_segment_locked(&mut inner)
     }
 
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
@@ -1389,6 +1405,54 @@ impl LocalBlockStore {
     }
 }
 
+fn roll_segment_locked(
+    inner: &mut BlockStoreInner,
+) -> Result<BlockStoreRollReport, BlockStoreError> {
+    fs::create_dir_all(&inner.root)?;
+    let previous_page_segment_id = inner.page_segment_id;
+    let next_from_current = inner.page_segment_id.saturating_add(1);
+    let next_from_disk = segment_ids_at(&inner.root)?
+        .into_iter()
+        .max()
+        .map(|id| id.saturating_add(1))
+        .unwrap_or_default();
+    inner.page_segment_id = next_from_current.max(next_from_disk);
+    inner.write_offset = 0;
+    let path = segment_path(&inner.root, inner.page_segment_id);
+    let file = File::create(&path)?;
+    file.sync_all()?;
+    sync_parent_dir(&path)?;
+
+    let transition_unix_ms = now_unix_ms();
+    if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
+        previous.state = BlockStoreExtentState::Sealed;
+        previous.updated_unix_ms = Some(transition_unix_ms);
+    }
+    let new_extent = BlockStoreExtentDescriptor {
+        extent_id: extent_id_for_segment(inner.page_segment_id),
+        page_segment_id: inner.page_segment_id,
+        state: BlockStoreExtentState::Active,
+        physical_bytes: 0,
+        logical_bytes: 0,
+        created_unix_ms: Some(transition_unix_ms),
+        updated_unix_ms: Some(transition_unix_ms),
+        first_page_id: None,
+        last_page_id: None,
+        readable_prefix_physical_bytes: 0,
+        has_corruption: false,
+        first_error_offset: None,
+        first_error: None,
+    };
+    let page_segment_id = inner.page_segment_id;
+    inner.extents.insert(page_segment_id, new_extent);
+    persist_extent_manifest(&inner.root, &inner.extents)?;
+
+    Ok(BlockStoreRollReport {
+        previous_page_segment_id,
+        new_page_segment_id: inner.page_segment_id,
+    })
+}
+
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
     let mut states = Vec::new();
     if summary.active_extents > 0 {
@@ -2004,6 +2068,43 @@ mod tests {
         assert_eq!(second.offset, 0);
         assert_eq!(store.read(&first).unwrap(), b"first");
         assert_eq!(store.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn append_auto_rolls_when_public_segment_target_is_exceeded() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::with_options(
+            dir.path(),
+            BlockStoreOptions {
+                compression_enabled: false,
+                block_segment_target_bytes: 256,
+                stream_max_blob_size: 256,
+                ..BlockStoreOptions::default()
+            },
+        );
+        let first = store.append(&vec![b'a'; 192]).unwrap();
+        let second = store.append(&vec![b'b'; 192]).unwrap();
+
+        assert_eq!(first.page_segment_id, 0);
+        assert_eq!(second.page_segment_id, 1);
+        assert_eq!(second.offset, 0);
+        assert_eq!(first.extent_id, Some(extent_id_for_segment(0)));
+        assert_eq!(second.extent_id, Some(extent_id_for_segment(1)));
+        assert_eq!(store.read(&first).unwrap(), vec![b'a'; 192]);
+        assert_eq!(store.read(&second).unwrap(), vec![b'b'; 192]);
+    }
+
+    #[test]
+    fn block_store_options_follow_storage_tuning_segment_limit() {
+        let options = BlockStoreOptions::from_storage_tuning(StorageTuningConfig {
+            block_segment_target_bytes: 8192,
+            stream_max_blob_size: 4096,
+            ..StorageTuningConfig::default()
+        });
+
+        assert_eq!(options.block_segment_target_bytes, 8192);
+        assert_eq!(options.stream_max_blob_size, 4096);
+        assert_eq!(options.effective_segment_target_bytes(), 4096);
     }
 
     #[test]

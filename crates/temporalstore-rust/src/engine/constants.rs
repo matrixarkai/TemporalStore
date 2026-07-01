@@ -2,7 +2,9 @@ use std::sync::atomic::AtomicU64;
 
 pub(super) const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 pub(super) const FEATURE_PAGE_MAGIC: &[u8] = b"TSFPG1\n";
-pub(super) const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize = 64 * 1024;
+#[cfg(test)]
+pub(super) const TIMESTAMPED_KV_PAGE_TARGET_BYTES: usize =
+    crate::storage_config::DEFAULT_CONTEXT_PAGE_TARGET_BYTES;
 pub(super) const CONTEXT_TIMELINE_FANOUT: u64 = 1024 * 1024;
 pub(super) const CONTEXT_DEFAULT_LIMIT: usize = 100;
 pub(super) const CONTEXT_MAX_LIMIT: usize = 1000;

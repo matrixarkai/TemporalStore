@@ -107,25 +107,42 @@ def run_case(args: argparse.Namespace, *, events: int, retrieve_workers: int, ru
     if args.skip_context_pipeline:
         cmd.append("--skip-context-pipeline")
     started = time.perf_counter()
-    completed = subprocess.run(cmd, cwd=str(ROOT), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(1, args.case_timeout_sec),
+        )
+        returncode = completed.returncode
+        stdout_tail = completed.stdout[-2000:]
+        stderr_tail = completed.stderr[-2000:]
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        returncode = None
+        stdout_tail = (exc.stdout or "")[-2000:] if isinstance(exc.stdout, str) else ""
+        stderr_tail = (exc.stderr or "")[-2000:] if isinstance(exc.stderr, str) else ""
+        timed_out = True
     elapsed_s = round(time.perf_counter() - started, 3)
-    report = load_json(case_dir / "comparison.json")
+    report = load_json(case_dir / "comparison.json") if not timed_out else {}
     comparison = report.get("comparison", {}) if isinstance(report.get("comparison"), dict) else {}
     backends = report.get("backends", {}) if isinstance(report.get("backends"), dict) else {}
     case_result = {
         "case_id": case_id,
         "events": events,
         "retrieve_workers": retrieve_workers,
-        "status": "passed" if completed.returncode == 0 else "failed",
-        "returncode": completed.returncode,
+        "status": "blocked_timeout" if timed_out else "passed" if returncode == 0 else "failed",
+        "returncode": returncode,
         "elapsed_s": elapsed_s,
         "artifact_dir": str(case_dir),
-        "comparison_status": comparison.get("status", "missing"),
+        "comparison_status": "blocked_timeout" if timed_out else comparison.get("status", "missing"),
         "selected_ref_parity": selected_ref_parity_status(comparison),
         "fallback_flags": fallback_flags(backends),
         "backend_statuses": {backend: row.get("status") for backend, row in backends.items() if isinstance(row, dict)},
-        "stdout_tail": completed.stdout[-2000:],
-        "stderr_tail": completed.stderr[-2000:],
+        "stdout_tail": stdout_tail,
+        "stderr_tail": stderr_tail,
     }
     (case_dir / "case_result.json").write_text(json.dumps(case_result, indent=2, sort_keys=True), encoding="utf-8")
     return case_result
@@ -194,6 +211,7 @@ def main() -> int:
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
     parser.add_argument("--ingest-deadline-ms", type=int, default=60000)
     parser.add_argument("--retrieve-deadline-ms", type=int, default=10000)
+    parser.add_argument("--case-timeout-sec", type=int, default=900)
     parser.add_argument("--skip-context-pipeline", action="store_true")
     parser.add_argument("--fail-on-case-failure", action="store_true")
     args = parser.parse_args()

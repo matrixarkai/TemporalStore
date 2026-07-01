@@ -21,6 +21,7 @@ pub mod redis;
 pub mod replica_replay;
 pub mod sdk;
 pub mod shared_store;
+pub mod storage_config;
 pub mod types;
 pub mod wal;
 
@@ -226,6 +227,14 @@ pub use shared_store::{
     SharedStoreOplogEntry, SharedStoreOplogObject, SharedStorePageSegment, SharedStoreReplayCursor,
     SharedStoreReplicationError, SharedStoreReplicator, SharedStoreRetryPolicy,
     SharedStoreStorageMode, SharedStoreStorageWriter, SharedStoreWriteReport,
+};
+pub use storage_config::{
+    context_page_target_bytes, effective_block_segment_target_bytes, StorageTuningConfig,
+    DEFAULT_BLOCK_SEGMENT_TARGET_BYTES, DEFAULT_COLD_SCAN_NO_CACHE_FILL,
+    DEFAULT_COMPACTION_WATERMARK_BYTES, DEFAULT_CONTEXT_PAGE_TARGET_BYTES,
+    DEFAULT_STORAGE_ZONE_SIZE, DEFAULT_STREAM_MAX_BLOB_SIZE, TS_BLOCK_SEGMENT_TARGET_BYTES,
+    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_PAGE_TARGET_BYTES,
+    TS_STORAGE_ZONE_SIZE, TS_STREAM_MAX_BLOB_SIZE,
 };
 pub use types::{
     BatchExecuteRequest, BatchExecuteResponse, Command, CommandResponse, ContextAuditModel,
