@@ -645,6 +645,96 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
     score
 }
 
+pub(super) fn context_weighted_rerank_score(
+    query: &str,
+    block: &ContextBlock,
+    reference_time_ms: u64,
+) -> u64 {
+    let relevance = context_relevance_score(query, &block.text) as u64;
+    let time = context_temporal_decay_boost(block.event_time_ms, reference_time_ms);
+    let business = context_business_boost(query, block);
+    relevance
+        .saturating_mul(1_000)
+        .saturating_add(time)
+        .saturating_add(business)
+}
+
+pub(super) fn context_temporal_decay_boost(event_time_ms: u64, reference_time_ms: u64) -> u64 {
+    if event_time_ms == 0 || reference_time_ms == 0 {
+        return 0;
+    }
+    if event_time_ms >= reference_time_ms {
+        return 180;
+    }
+    let age_ms = reference_time_ms.saturating_sub(event_time_ms);
+    let hour_ms = 60 * 60 * 1_000;
+    if age_ms <= hour_ms {
+        180
+    } else if age_ms <= 24 * hour_ms {
+        140
+    } else if age_ms <= 7 * 24 * hour_ms {
+        90
+    } else if age_ms <= 30 * 24 * hour_ms {
+        45
+    } else {
+        10
+    }
+}
+
+pub(super) fn context_business_boost(query: &str, block: &ContextBlock) -> u64 {
+    let query_terms = context_query_terms(query);
+    let question_type = context_query_question_type(&query_terms);
+    let text = format!(
+        "{} {} {}",
+        block.text.to_ascii_lowercase(),
+        block.source_ref.to_ascii_lowercase(),
+        block.uri.to_ascii_lowercase()
+    );
+    let mut boost = match block.tier {
+        ContextTier::L0 => 25,
+        ContextTier::L1 => 35,
+        ContextTier::L2 => 45,
+    };
+    if text.contains("skill") || text.contains("skill.md") {
+        boost += if question_type == "procedure" {
+            240
+        } else {
+            80
+        };
+    }
+    if text.contains("resource")
+        || text.contains("document")
+        || text.contains("runbook")
+        || text.contains(".pdf")
+        || text.contains(".md")
+    {
+        boost += if matches!(question_type.as_str(), "fact" | "current_state") {
+            150
+        } else {
+            90
+        };
+    }
+    if text.contains("shared") || text.contains("tenant/shared") || text.contains("global") {
+        boost += 70;
+    }
+    if text.contains("approval")
+        || text.contains("approved")
+        || text.contains("owner")
+        || text.contains("deadline")
+        || text.contains("cost")
+        || text.contains("policy")
+        || text.contains("procedure")
+    {
+        boost += 80;
+    }
+    if question_type == "current_state"
+        && (text.contains("latest") || text.contains("current") || text.contains("now"))
+    {
+        boost += 100;
+    }
+    boost
+}
+
 pub(super) fn context_query_terms(query: &str) -> Vec<String> {
     query
         .split(|ch: char| !ch.is_ascii_alphanumeric())

@@ -508,6 +508,137 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
         .contains("tree traversal"));
 }
 
+// shared-corpus: context_cross_session_shared_resource_weighted_rerank
+#[test]
+fn context_retrieval_reranks_cross_session_and_shared_resource_evidence() {
+    let engine = test_engine();
+    let stale_session = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 5150,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "session:old/project_aurora".to_string(),
+            title: "Old Project Aurora procurement owner".to_string(),
+            body: "Earlier session: Carol temporarily owned Project Aurora GPU procurement before finance review.".to_string(),
+            timestamp_ms: 1_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let current_session = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 5150,
+            source_kind: ContextSourceKind::Chat,
+            source_id: "session:current/project_aurora".to_string(),
+            title: "Current Project Aurora procurement owner".to_string(),
+            body: "Latest cross-session update: Bob now owns Project Aurora GPU procurement after Alice approved the purchase.".to_string(),
+            timestamp_ms: 20_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    let shared_resource = extract_context(
+        &engine,
+        ContextExtractRequest {
+            shard_id: 1,
+            tenant_hash: 5150,
+            source_kind: ContextSourceKind::Document,
+            source_id: "tenant/shared/resources/project_aurora_gpu_runbook.pdf#page=1".to_string(),
+            title: "Shared Project Aurora GPU runbook".to_string(),
+            body: "Shared resource runbook: Bob is the owner for Project Aurora GPU procurement; approval evidence is Alice from finance.".to_string(),
+            timestamp_ms: 18_000,
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(stale_session.status.ok, "{:?}", stale_session.status);
+    assert!(current_session.status.ok, "{:?}", current_session.status);
+    assert!(shared_resource.status.ok, "{:?}", shared_resource.status);
+
+    let current_pack = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 5150,
+            node_hashes: vec![
+                stale_session.node.node_hash,
+                current_session.node.node_hash,
+                shared_resource.node.node_hash,
+            ],
+            query: "Who owns Project Aurora GPU procurement now after approval?".to_string(),
+            start_time_ms: 0,
+            end_time_ms: 30_000,
+            max_events: 12,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(current_pack.status.ok, "{:?}", current_pack.status);
+    assert!(!current_pack.blocks.is_empty());
+    assert!(
+        current_pack.blocks[0].text.contains("Bob"),
+        "expected current cross-session Bob evidence first, got {:?}",
+        current_pack.blocks[0]
+    );
+    assert!(
+        current_pack
+            .blocks
+            .iter()
+            .position(|block| block.text.contains("Bob"))
+            < current_pack
+                .blocks
+                .iter()
+                .position(|block| block.text.contains("Carol"))
+                .or(Some(usize::MAX)),
+        "current cross-session evidence should outrank stale evidence: {:?}",
+        current_pack.blocks
+    );
+    assert_eq!(
+        current_pack
+            .query_understanding_debug
+            .tree_traversal_summary
+            .summary_embedding_candidate_count,
+        3
+    );
+
+    let shared_pack = retrieve_context(
+        &engine,
+        ContextRetrieveRequest {
+            shard_id: 1,
+            tenant_hash: 5150,
+            node_hashes: vec![
+                stale_session.node.node_hash,
+                current_session.node.node_hash,
+                shared_resource.node.node_hash,
+            ],
+            query: "What does the shared runbook say about Project Aurora GPU procurement owner?"
+                .to_string(),
+            start_time_ms: 0,
+            end_time_ms: 30_000,
+            max_events: 12,
+            min_confidence: 0.0,
+            min_importance: 0.0,
+            tiers: vec![ContextTier::L0, ContextTier::L1, ContextTier::L2],
+            provider: ContextModelProviderConfig::default(),
+        },
+    );
+    assert!(shared_pack.status.ok, "{:?}", shared_pack.status);
+    assert!(!shared_pack.blocks.is_empty());
+    assert!(
+        shared_pack.blocks[0]
+            .text
+            .to_ascii_lowercase()
+            .contains("runbook")
+            || shared_pack.blocks[0]
+                .source_ref
+                .contains("tenant/shared/resources"),
+        "expected shared resource evidence first, got {:?}",
+        shared_pack.blocks[0]
+    );
+}
+
 // shared-corpus: context_benchmark_injection_entity_segment_index
 #[test]
 fn context_benchmark_injection_uses_entity_segment_l0_l1_and_secondary_index() {
