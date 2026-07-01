@@ -73,11 +73,25 @@ def summarize_latencies(latencies_ms: list[float], *, total_ops: int, elapsed_s:
 def selected_ref_count(result: Json) -> int:
     pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
     refs = pack.get("refs") or pack.get("selected_refs") or pack.get("context_refs") or []
-    if isinstance(refs, list):
+    if isinstance(refs, list) and refs:
         return len(refs)
     grouped = pack.get("groups")
     if isinstance(grouped, dict):
         return sum(len(v) for v in grouped.values() if isinstance(v, list))
+    if isinstance(grouped, list):
+        total = 0
+        for group in grouped:
+            if not isinstance(group, dict):
+                continue
+            items = group.get("items")
+            if isinstance(items, list):
+                total += len(items)
+                continue
+            try:
+                total += max(0, int(group.get("n") or 0))
+            except (TypeError, ValueError):
+                continue
+        return total
     return 0
 
 
