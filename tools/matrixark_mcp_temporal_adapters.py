@@ -606,7 +606,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         compact postings and ref-to-record locations directly addressable by the
         native C++/Rust hash API.
         """
-        lookup_updates: dict[tuple[str, str], list[int]] = {}
+        lookup_updates: dict[tuple[str, str], Json] = {}
         locator_updates: dict[int, list[Json]] = {}
         placement_updates: dict[tuple[str, str], list[Json]] = {}
         route_by_hash_field: dict[tuple[str, str], Json] = {}
@@ -645,18 +645,48 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 ref_hashes = context_index_ref_hashes(record)
                 if scope_key and ref_hashes:
                     lookup_key = (self._context_index_lookup_key(scope_key), index_name)
-                    lookup_updates.setdefault(lookup_key, []).extend(ref_hashes)
+                    update = lookup_updates.setdefault(lookup_key, {"ref_hashes": [], "posting_buckets": set()})
+                    update["ref_hashes"].extend(ref_hashes)
+                    update["posting_buckets"].add(context_index_posting_bucket(context_index_timestamp_key(record)))
                     if route:
                         route_by_hash_field.setdefault(lookup_key, route)
 
         entries: list[Json] = []
-        for (key, field), new_refs in lookup_updates.items():
+        for (key, field), update in lookup_updates.items():
+            new_refs = update.get("ref_hashes", []) if isinstance(update, dict) else []
+            new_buckets = update.get("posting_buckets", set()) if isinstance(update, dict) else set()
             merged_refs = self._merge_ref_hashes(self._read_hash_value_best_effort(key, field), new_refs)
+            existing_value = self._read_hash_value_best_effort(key, field)
+            existing_buckets: set[int] = set()
+            if existing_value:
+                try:
+                    decoded_existing = json.loads(existing_value)
+                except Exception:
+                    decoded_existing = {}
+                raw_buckets = decoded_existing.get("posting_buckets", []) if isinstance(decoded_existing, dict) else []
+                if isinstance(raw_buckets, list):
+                    for value in raw_buckets:
+                        try:
+                            bucket = int(value)
+                        except (TypeError, ValueError):
+                            continue
+                        if bucket:
+                            existing_buckets.add(bucket)
+            for value in new_buckets if isinstance(new_buckets, set) else set():
+                try:
+                    bucket = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if bucket:
+                    existing_buckets.add(bucket)
             entries.append(
                 {
                     "key": key,
                     "field": field,
-                    "value": json.dumps({"ref_hashes": merged_refs}, separators=(",", ":")),
+                    "value": json.dumps(
+                        {"ref_hashes": merged_refs, "posting_buckets": sorted(existing_buckets)},
+                        separators=(",", ":"),
+                    ),
                     "storage_route": route_by_hash_field.get((key, field), {}),
                 }
             )
@@ -1489,17 +1519,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         scope_key = canonical_scope_key(scope)
         groups = secondary_index_groups or []
         if not scope_key or not groups:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "missing_scope_or_filters"}
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "missing_scope_or_filters"}
         batch_hget = getattr(self._client, "batch_hget", None)
         if not callable(batch_hget):
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "backend_has_no_batch_hget"}
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "backend_has_no_batch_hget"}
         index_terms = sorted({term for group in groups for term in group if term})
         entries = [{"key": self._context_index_lookup_key(scope_key), "field": term} for term in index_terms]
         try:
             rows = batch_hget(entries)
         except Exception as exc:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "eligible": False, "reason": f"index_lookup_failed:{exc}"}
+            return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "posting_buckets": [], "eligible": False, "reason": f"index_lookup_failed:{exc}"}
         ref_hashes: set[int] = set()
+        posting_buckets: set[int] = set()
         postings_found = 0
         for row in rows if isinstance(rows, list) else []:
             if not isinstance(row, dict):
@@ -1512,6 +1543,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             except Exception:
                 continue
             raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
+            raw_buckets = decoded.get("posting_buckets", []) if isinstance(decoded, dict) else []
             if isinstance(raw_refs, list):
                 postings_found += 1
                 for value in raw_refs:
@@ -1521,10 +1553,19 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                         continue
                     if ref_hash:
                         ref_hashes.add(ref_hash)
+            if isinstance(raw_buckets, list):
+                for value in raw_buckets:
+                    try:
+                        bucket = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if bucket:
+                        posting_buckets.add(bucket)
         return {
             "ref_hashes": ref_hashes,
             "postings_found": postings_found,
             "index_terms": index_terms,
+            "posting_buckets": sorted(posting_buckets),
             "eligible": bool(ref_hashes),
             "reason": "ok" if ref_hashes else "no_matching_postings",
         }
@@ -1630,6 +1671,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "shared_resource_scope": "tenant_or_global_visible_before_scoring",
                 "stale_superseded_state": "exclude_unless_include_superseded_resources",
             },
+            "execution_plan_requirements": {
+                "phase": "phase2_placement_compact_index",
+                "context_record_route": "context:{scope_key}:node={node_hash}",
+                "traversal": "score_l0_l1_then_fetch_selected_node_partitions",
+                "candidate_fetch": "selected_node_placement_partitions_only",
+                "secondary_index": "compact_postings_by_scope_index_time_bucket",
+                "broad_prefix_scan": "disabled_unless_explicit_debug_fallback",
+                "fallback_telemetry_required": True,
+            },
             "required_output": {
                 "context_pack": True,
                 "selected_refs": True,
@@ -1644,6 +1694,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 ],
                 "telemetry": True,
                 "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
+                "placement_partitions_touched": True,
+                "index_postings_touched": True,
+                "broad_scan_used": True,
             },
         }
         started_perf = time.perf_counter()
@@ -1697,6 +1750,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "scanned_records": int(native_telemetry.get("scanned_records") or 0),
                 "cache_hit": bool(native_telemetry.get("cache_hit", False)),
                 "placement_partitions_touched": int(native_telemetry.get("placement_partitions_touched") or 0),
+                "index_postings_touched": int(native_telemetry.get("index_postings_touched") or native_telemetry.get("native_index_postings_found") or 0),
+                "broad_scan_used": bool(native_telemetry.get("broad_scan_used", False)),
+                "broad_scan_blocked": bool(native_telemetry.get("broad_scan_blocked", False)),
+                "broad_scan_fallback_allowed": bool(native_telemetry.get("broad_scan_fallback_allowed", False)),
+                "fallback_reason": str(native_telemetry.get("fallback_reason") or ""),
                 "native_context_pack_ms": total_native_ms,
                 "source": "native_context_pack",
             }
@@ -1847,6 +1905,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         record_types: set[str] | None = None,
         secondary_index_groups: list[set[str]] | None = None,
         selected_node_hashes: set[int] | None = None,
+        allow_broad_scan_fallback: bool | None = None,
     ) -> Json:
         count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
         cache_key = self._retrieval_candidate_cache_key(
@@ -1870,8 +1929,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
         selected_nodes = selected_node_hashes or set()
+        broad_scan_allowed = (
+            bool(allow_broad_scan_fallback)
+            if allow_broad_scan_fallback is not None
+            else not bool(selected_nodes or secondary_index_groups)
+        )
         placement_result = self._native_locations_for_selected_nodes(scope=scope, selected_node_hashes=selected_nodes)
-        index_result = {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "skipped_for_placement_lookup"}
+        index_result = {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "skipped_for_placement_lookup"}
         fallback_reason = ""
         raw_records: list[Json] = []
         native_pushdown = False
@@ -1915,21 +1979,40 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 fallback_reason = "native_index_filtered_empty"
                 native_pushdown = False
 
-        if not native_pushdown:
+        broad_scan_used = False
+        broad_scan_blocked = False
+        if not native_pushdown and broad_scan_allowed:
             raw_records = self.read_all()
+            broad_scan_used = True
             filtered, filter_stats = self._filter_retrieval_candidates(
                 raw_records,
                 scope=scope,
                 allowed_types=allowed_types,
                 selected_nodes=selected_nodes,
             )
+        elif not native_pushdown:
+            broad_scan_blocked = True
+            raw_records = []
+            filtered = []
+            filter_stats = {
+                "scanned": 0,
+                "returned": 0,
+                "dropped_type": 0,
+                "dropped_scope": 0,
+                "dropped_node": 0,
+            }
         result = {
             "records": filtered,
             "count": count,
             "scan_stats": {
                 "backend": self._backend_label(),
-                "execution_mode": native_mode if native_pushdown else "temporalstore_candidate_cache_fallback",
+                "execution_mode": (
+                    native_mode
+                    if native_pushdown
+                    else ("broad_prefix_scan_fallback" if broad_scan_used else "native_prefilter_no_match_broad_scan_blocked")
+                ),
                 "native_pushdown": native_pushdown,
+                "phase2_native_first": True,
                 "native_placement_nodes": len(selected_nodes),
                 "native_placement_locator_rows": placement_result.get("locator_rows", 0),
                 "native_placement_locations": len(placement_result.get("locations", [])),
@@ -1937,11 +2020,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "native_placement_candidate_cache_entries": int(placement_cache_result.get("cache_entries") or 0),
                 "native_placement_loaded_records": int(placement_cache_result.get("loaded_records") or 0),
                 "native_index_terms": index_result.get("index_terms", []),
+                "native_index_posting_buckets": index_result.get("posting_buckets", []),
                 "native_index_postings_found": index_result.get("postings_found", 0),
                 "native_index_ref_hash_count": len(index_result.get("ref_hashes", set())),
                 "native_locator_rows": location_result.get("locator_rows", 0),
                 "native_locations": len(location_result.get("locations", [])),
                 "fallback_reason": fallback_reason,
+                "broad_scan_fallback_allowed": broad_scan_allowed,
+                "broad_scan_used": broad_scan_used,
+                "broad_scan_blocked": broad_scan_blocked,
+                "broad_scan_policy": "explicit_fallback_or_debug_only",
                 "candidate_cache_hit": False,
                 "candidate_cache_scope": "process_global",
                 "watermark_count": count,

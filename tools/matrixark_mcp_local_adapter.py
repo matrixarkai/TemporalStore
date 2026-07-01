@@ -457,6 +457,7 @@ class MatrixArkLocalAdapter:
         record_types: set[str] | None = None,
         secondary_index_groups: list[set[str]] | None = None,
         selected_node_hashes: set[int] | None = None,
+        allow_broad_scan_fallback: bool | None = None,
     ) -> Json:
         """Return records eligible for retrieval hot-path scan/filter/pack.
 
@@ -501,6 +502,9 @@ class MatrixArkLocalAdapter:
                 "backend": getattr(self, "_backend_label", lambda: "local")(),
                 "execution_mode": "adapter_prefilter",
                 "native_pushdown": False,
+                "broad_scan_fallback_allowed": True if allow_broad_scan_fallback is None else bool(allow_broad_scan_fallback),
+                "broad_scan_used": True,
+                "broad_scan_reason": "local_reference_adapter",
                 "record_types": sorted(allowed_types),
                 "scanned_records": scanned,
                 "returned_records": len(filtered),
@@ -4082,6 +4086,7 @@ class MatrixArkLocalAdapter:
                 scope=scope,
                 secondary_index_groups=secondary_index_filter_groups,
                 selected_node_hashes=selected_node_hashes,
+                allow_broad_scan_fallback=False,
             )
             placement_candidate_records = placement_record_result.get("records", [])
 

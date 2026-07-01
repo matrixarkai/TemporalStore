@@ -220,6 +220,11 @@ def retrieval_phase0_fields(result: Json) -> Json:
         if isinstance(recall_policy.get("secondary_index_filter"), dict)
         else {}
     )
+    backend_pushdown = (
+        recall_policy.get("backend_retrieval_pushdown")
+        if isinstance(recall_policy.get("backend_retrieval_pushdown"), dict)
+        else {}
+    )
 
     def metric_int(*names: str) -> int:
         for name in names:
@@ -280,6 +285,10 @@ def retrieval_phase0_fields(result: Json) -> Json:
         "drop_counters": metric_drop_counters or _drop_counter_summary(pack.get("dropped_refs")),
         "scanned_records": metric_int("scanned_records", "records_scanned"),
         "index_hits": index_hits,
+        "index_postings_touched": metric_int("index_postings_touched", "native_index_postings_found")
+        or int(backend_pushdown.get("native_index_postings_found") or 0),
+        "broad_scan_used": bool(metrics.get("broad_scan_used", False) or backend_pushdown.get("broad_scan_used", False)),
+        "broad_scan_blocked": bool(metrics.get("broad_scan_blocked", False) or backend_pushdown.get("broad_scan_blocked", False)),
         "candidate_count": candidate_count,
         "token_count": token_count,
         "timeout_partial": bool(result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", ""))),
@@ -303,6 +312,9 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "timeout_partial_count": 0,
             "drop_counters_total": {},
             "selected_ref_signatures_by_query": {},
+            "index_postings_touched_avg": 0.0,
+            "broad_scan_used_count": 0,
+            "broad_scan_blocked_count": 0,
             "cache_hit_rate": 0.0,
             "placement_partitions_touched_avg": 0.0,
         }
@@ -314,8 +326,11 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     candidate_counts: list[float] = []
     token_counts: list[float] = []
     placement_partitions: list[float] = []
+    index_postings_touched: list[float] = []
     drop_counters_total: Json = {}
     selected_ref_signatures_by_query: Json = {}
+    broad_scan_used_count = 0
+    broad_scan_blocked_count = 0
     cache_hits = 0
     timeout_partials = 0
     for row in rows:
@@ -362,6 +377,14 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             placement_partitions.append(float(row.get("placement_partitions_touched") or 0.0))
         except (TypeError, ValueError):
             placement_partitions.append(0.0)
+        try:
+            index_postings_touched.append(float(row.get("index_postings_touched") or 0.0))
+        except (TypeError, ValueError):
+            index_postings_touched.append(0.0)
+        if bool(row.get("broad_scan_used")):
+            broad_scan_used_count += 1
+        if bool(row.get("broad_scan_blocked")):
+            broad_scan_blocked_count += 1
         if bool(row.get("cache_hit")):
             cache_hits += 1
         if bool(row.get("timeout_partial")):
@@ -387,6 +410,9 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         "timeout_partial_count": timeout_partials,
         "drop_counters_total": drop_counters_total,
         "selected_ref_signatures_by_query": selected_ref_signatures_by_query,
+        "index_postings_touched_avg": round(statistics.fmean(index_postings_touched), 3) if index_postings_touched else 0.0,
+        "broad_scan_used_count": broad_scan_used_count,
+        "broad_scan_blocked_count": broad_scan_blocked_count,
         "cache_hit_rate": round(cache_hits / len(rows), 6) if rows else 0.0,
         "placement_partitions_touched_avg": round(statistics.fmean(placement_partitions), 3) if placement_partitions else 0.0,
     }
@@ -448,6 +474,9 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                 "timeout_partial_count": 0,
                 "timeouts": 0,
                 "selected_ref_signatures_by_query": {},
+                "index_postings_touched_avg": 0.0,
+                "broad_scan_used_count": 0,
+                "broad_scan_blocked_count": 0,
             }
             continue
         retrieve = result.get("retrieve", {}) if isinstance(result.get("retrieve"), dict) else {}
@@ -466,12 +495,23 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
             "token_count_avg": float(stage.get("token_count_avg") or 0.0),
             "timeout_partial_count": int(stage.get("timeout_partial_count") or retrieve.get("partial_context_packs") or 0),
             "timeouts": int(retrieve.get("timeout_count") or 0),
+            "index_postings_touched_avg": float(stage.get("index_postings_touched_avg") or 0.0),
+            "broad_scan_used_count": int(stage.get("broad_scan_used_count") or 0),
+            "broad_scan_blocked_count": int(stage.get("broad_scan_blocked_count") or 0),
             "selected_ref_signatures_by_query": (
                 stage.get("selected_ref_signatures_by_query")
                 if isinstance(stage.get("selected_ref_signatures_by_query"), dict)
                 else {}
             ),
         }
+        if name in {"cpp", "rust"} and backend_values[name]["broad_scan_used_count"] > 0:
+            failures.append(
+                {
+                    "backend": name,
+                    "reason": "broad_scan_used_in_native_backend",
+                    "broad_scan_used_count": backend_values[name]["broad_scan_used_count"],
+                }
+            )
         if selected_avg < min_selected_refs:
             failures.append(
                 {
@@ -1177,8 +1217,8 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Retrieval Stage Metrics",
             "",
-            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | selected avg | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | cache hit rate | placement partitions avg |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | selected avg | dropped avg | scanned avg | index hits avg | postings avg | candidates avg | tokens avg | broad scan used | broad scan blocked | cache hit rate | placement partitions avg |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for backend in backend_order:
@@ -1192,7 +1232,9 @@ def write_report(path: Path, report: Json) -> None:
             f"{p95.get('score_ms', 0)} ms | {p95.get('pack_ms', 0)} ms | {p95.get('audit_ms', 0)} ms | "
             f"{metrics.get('selected_refs_avg', 0)} | {metrics.get('dropped_refs_avg', 0)} | "
             f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('index_hits_avg', 0)} | "
+            f"{metrics.get('index_postings_touched_avg', 0)} | "
             f"{metrics.get('candidate_count_avg', 0)} | {metrics.get('token_count_avg', 0)} | "
+            f"{metrics.get('broad_scan_used_count', 0)} | {metrics.get('broad_scan_blocked_count', 0)} | "
             f"{metrics.get('cache_hit_rate', 0)} | "
             f"{metrics.get('placement_partitions_touched_avg', 0)} |"
         )
@@ -1216,8 +1258,8 @@ def write_report(path: Path, report: Json) -> None:
             lines.extend(
                 [
                     "",
-                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | timeouts | drop counters |",
-                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | postings avg | candidates avg | tokens avg | broad scan used | timeouts | drop counters |",
+                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
             for backend in backend_values:
@@ -1226,8 +1268,9 @@ def write_report(path: Path, report: Json) -> None:
                 lines.append(
                     f"| {backend} | {values.get('status', '')} | {values.get('selected_refs_avg', 0)} | {values.get('selected_refs_max', 0)} | "
                     f"{values.get('dropped_refs_avg', 0)} | {values.get('scanned_records_avg', 0)} | "
-                    f"{values.get('index_hits_avg', 0)} | {values.get('candidate_count_avg', 0)} | "
-                    f"{values.get('token_count_avg', 0)} | {values.get('timeouts', 0)} | "
+                    f"{values.get('index_hits_avg', 0)} | {values.get('index_postings_touched_avg', 0)} | "
+                    f"{values.get('candidate_count_avg', 0)} | {values.get('token_count_avg', 0)} | "
+                    f"{values.get('broad_scan_used_count', 0)} | {values.get('timeouts', 0)} | "
                     f"`{json.dumps(drop_counters, sort_keys=True)}` |"
                 )
         if phase0.get("failures"):
@@ -1275,8 +1318,8 @@ def write_report(path: Path, report: Json) -> None:
                     f"- max selected-ref drift ratio: `{phase0.get('max_selected_ref_drift_ratio')}`",
                     f"- selected-ref drift ratio: `{phase0.get('selected_ref_drift_ratio')}`",
                     "",
-                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | timeouts | drop counters |",
-                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | postings avg | candidates avg | tokens avg | broad scan used | timeouts | drop counters |",
+                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
             backend_values = phase0.get("backend_values", {}) if isinstance(phase0.get("backend_values"), dict) else {}
@@ -1287,7 +1330,8 @@ def write_report(path: Path, report: Json) -> None:
                     f"| {backend} | {values.get('status', '')} | {values.get('selected_refs_avg', 0)} | "
                     f"{values.get('selected_refs_max', 0)} | {values.get('dropped_refs_avg', 0)} | "
                     f"{values.get('scanned_records_avg', 0)} | {values.get('index_hits_avg', 0)} | "
-                    f"{values.get('candidate_count_avg', 0)} | {values.get('token_count_avg', 0)} | "
+                    f"{values.get('index_postings_touched_avg', 0)} | {values.get('candidate_count_avg', 0)} | "
+                    f"{values.get('token_count_avg', 0)} | {values.get('broad_scan_used_count', 0)} | "
                     f"{values.get('timeouts', 0)} | `{json.dumps(drop_counters, sort_keys=True)}` |"
                 )
             if phase0.get("failures"):
