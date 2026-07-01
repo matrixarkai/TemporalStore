@@ -2,6 +2,13 @@ use super::*;
 use std::collections::HashSet;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RaftReadinessEvidenceBlocker {
+    pub blocker: String,
+    pub evidence_field: String,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftDistributedReadiness {
     pub complete: bool,
     pub production_ready: bool,
@@ -31,6 +38,8 @@ pub struct RaftDistributedReadiness {
     pub metaserver_driven_membership_present: bool,
     pub production_mtls_transport_present: bool,
     pub external_chaos_validation_present: bool,
+    #[serde(default)]
+    pub missing_evidence_fields: Vec<RaftReadinessEvidenceBlocker>,
     pub missing: Vec<String>,
 }
 
@@ -99,6 +108,8 @@ pub struct RaftTemporalRaftRolloutReadiness {
     pub multi_process_log_store_validation_present: bool,
     pub local_rollout_ready: bool,
     pub production_ready: bool,
+    #[serde(default)]
+    pub missing_evidence_fields: Vec<RaftReadinessEvidenceBlocker>,
     pub missing: Vec<String>,
 }
 
@@ -203,11 +214,17 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
         && metaserver_real_process_rollout_validated
         && multi_process_log_store_validation_present;
     let mut missing = Vec::new();
+    let mut missing_evidence_fields = Vec::new();
     if !adapter_present {
         missing.push(
             "enable the TemporalRaft production engine adapter feature for readiness-eligible process rollout"
                 .to_string(),
         );
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "temporal_raft_engine_adapter_missing".to_string(),
+            evidence_field: "cfg(feature = \"temporal-raft-engine\")".to_string(),
+            detail: "Readiness-eligible Raft must be built with the production TemporalRaft/OpenRaft adapter, not the local fixture path.".to_string(),
+        });
     }
     if !data_node_real_process_rollout_validated {
         let operational_missing = data_node_report
@@ -220,6 +237,10 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 .to_string()
                 + &operational_missing,
         );
+        missing_evidence_fields.extend(process_rollout_evidence_blockers(
+            "data_node_report",
+            data_node_report.map(DataNodeRolloutView::from),
+        ));
     }
     if !metaserver_real_process_rollout_validated {
         let operational_missing = metaserver_report
@@ -232,15 +253,29 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
                 .to_string()
                 + &operational_missing,
         );
+        missing_evidence_fields.extend(process_rollout_evidence_blockers(
+            "metaserver_report",
+            metaserver_report.map(MetaRolloutView::from),
+        ));
     }
     if !multi_process_log_store_validation_present {
         missing.push(
             "provide both data-node and metaserver multi-process log-store validation evidence"
                 .to_string(),
         );
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "multi_process_log_store_validation_missing".to_string(),
+            evidence_field:
+                "data_node_report.multi_process_log_store_validated && metaserver_report.multi_process_log_store_validated"
+                    .to_string(),
+            detail:
+                "Both planes must inspect independent per-node WAL/log stores after restart before production Raft readiness can pass."
+                    .to_string(),
+        });
     }
     if production_ready {
         missing.clear();
+        missing_evidence_fields.clear();
     }
 
     RaftTemporalRaftRolloutReadiness {
@@ -253,7 +288,318 @@ pub fn raft_temporal_raft_rollout_readiness_from_reports(
         multi_process_log_store_validation_present,
         local_rollout_ready,
         production_ready,
+        missing_evidence_fields,
         missing,
+    }
+}
+
+trait RolloutEvidenceView {
+    fn ready(&self) -> bool;
+    fn spawned_process_count(&self) -> u64;
+    fn independent_wal_dirs(&self) -> bool;
+    fn independent_snapshot_dirs(&self) -> bool;
+    fn observed_process_requests(&self) -> u64;
+    fn read_index_responses_observed(&self) -> u64;
+    fn restarted_node_count(&self) -> u64;
+    fn per_node_log_store_inspection_count(&self) -> u64;
+    fn node_count(&self) -> usize;
+    fn process_api_observed(&self) -> bool;
+    fn snapshot_install_validated(&self) -> bool;
+    fn restart_recovery_validated(&self) -> bool;
+    fn multi_process_log_store_validated(&self) -> bool;
+    fn failover_validated(&self) -> bool;
+    fn membership_change_validated(&self) -> bool;
+    fn follower_lag_validated(&self) -> bool;
+    fn secondary_read_validated(&self) -> bool;
+    fn nodes_restarted_and_log_checked(&self) -> bool;
+    fn operational_missing(&self) -> Vec<String>;
+}
+
+struct DataNodeRolloutView<'a>(&'a TemporalRaftDataNodeProcessRolloutReport);
+
+impl<'a> From<&'a TemporalRaftDataNodeProcessRolloutReport> for DataNodeRolloutView<'a> {
+    fn from(report: &'a TemporalRaftDataNodeProcessRolloutReport) -> Self {
+        Self(report)
+    }
+}
+
+impl RolloutEvidenceView for DataNodeRolloutView<'_> {
+    fn ready(&self) -> bool {
+        self.0.ready
+    }
+    fn spawned_process_count(&self) -> u64 {
+        self.0.spawned_process_count
+    }
+    fn independent_wal_dirs(&self) -> bool {
+        self.0.independent_wal_dirs
+    }
+    fn independent_snapshot_dirs(&self) -> bool {
+        self.0.independent_snapshot_dirs
+    }
+    fn observed_process_requests(&self) -> u64 {
+        self.0.observed_process_requests
+    }
+    fn read_index_responses_observed(&self) -> u64 {
+        self.0.read_index_responses_observed
+    }
+    fn restarted_node_count(&self) -> u64 {
+        self.0.restarted_node_count
+    }
+    fn per_node_log_store_inspection_count(&self) -> u64 {
+        self.0.per_node_log_store_inspection_count
+    }
+    fn node_count(&self) -> usize {
+        self.0.nodes.len()
+    }
+    fn process_api_observed(&self) -> bool {
+        self.0.write_proposed_through_process_api
+    }
+    fn snapshot_install_validated(&self) -> bool {
+        self.0.snapshot_install_validated
+    }
+    fn restart_recovery_validated(&self) -> bool {
+        self.0.restart_recovery_validated && self.0.recovered_after_restart
+    }
+    fn multi_process_log_store_validated(&self) -> bool {
+        self.0.multi_process_log_store_validated
+    }
+    fn failover_validated(&self) -> bool {
+        self.0.failover_validated
+    }
+    fn membership_change_validated(&self) -> bool {
+        self.0.membership_change_validated
+    }
+    fn follower_lag_validated(&self) -> bool {
+        self.0.follower_lag_validated
+    }
+    fn secondary_read_validated(&self) -> bool {
+        self.0.secondary_read_validated
+    }
+    fn nodes_restarted_and_log_checked(&self) -> bool {
+        self.0.nodes.iter().all(|node| {
+            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
+        })
+    }
+    fn operational_missing(&self) -> Vec<String> {
+        self.0.operational_semantics.missing_requirements()
+    }
+}
+
+struct MetaRolloutView<'a>(&'a TemporalRaftMetaProcessRolloutReport);
+
+impl<'a> From<&'a TemporalRaftMetaProcessRolloutReport> for MetaRolloutView<'a> {
+    fn from(report: &'a TemporalRaftMetaProcessRolloutReport) -> Self {
+        Self(report)
+    }
+}
+
+impl RolloutEvidenceView for MetaRolloutView<'_> {
+    fn ready(&self) -> bool {
+        self.0.ready
+    }
+    fn spawned_process_count(&self) -> u64 {
+        self.0.spawned_process_count
+    }
+    fn independent_wal_dirs(&self) -> bool {
+        self.0.independent_wal_dirs
+    }
+    fn independent_snapshot_dirs(&self) -> bool {
+        self.0.independent_snapshot_dirs
+    }
+    fn observed_process_requests(&self) -> u64 {
+        self.0.observed_process_requests
+    }
+    fn read_index_responses_observed(&self) -> u64 {
+        self.0.read_index_responses_observed
+    }
+    fn restarted_node_count(&self) -> u64 {
+        self.0.restarted_node_count
+    }
+    fn per_node_log_store_inspection_count(&self) -> u64 {
+        self.0.per_node_log_store_inspection_count
+    }
+    fn node_count(&self) -> usize {
+        self.0.nodes.len()
+    }
+    fn process_api_observed(&self) -> bool {
+        self.0.mutation_proposed_through_process_api && self.0.applied_raft_mutations > 0
+    }
+    fn snapshot_install_validated(&self) -> bool {
+        self.0.snapshot_install_validated
+    }
+    fn restart_recovery_validated(&self) -> bool {
+        self.0.recovered_after_restart
+    }
+    fn multi_process_log_store_validated(&self) -> bool {
+        self.0.multi_process_log_store_validated
+    }
+    fn failover_validated(&self) -> bool {
+        self.0.failover_validated
+    }
+    fn membership_change_validated(&self) -> bool {
+        self.0.membership_change_validated
+    }
+    fn follower_lag_validated(&self) -> bool {
+        self.0.follower_lag_validated
+    }
+    fn secondary_read_validated(&self) -> bool {
+        self.0.secondary_read_validated
+    }
+    fn nodes_restarted_and_log_checked(&self) -> bool {
+        self.0.nodes.iter().all(|node| {
+            node.restarted && node.log_store_validated && node.applied_index >= node.commit_index
+        })
+    }
+    fn operational_missing(&self) -> Vec<String> {
+        self.0.operational_semantics.missing_requirements()
+    }
+}
+
+fn process_rollout_evidence_blockers<T: RolloutEvidenceView>(
+    prefix: &str,
+    report: Option<T>,
+) -> Vec<RaftReadinessEvidenceBlocker> {
+    let Some(report) = report else {
+        return vec![RaftReadinessEvidenceBlocker {
+            blocker: format!("{prefix}_missing"),
+            evidence_field: prefix.to_string(),
+            detail: "No process-harness report was supplied; local fixtures cannot satisfy production Raft readiness.".to_string(),
+        }];
+    };
+    let mut blockers = Vec::new();
+    push_if_false(
+        &mut blockers,
+        report.ready(),
+        prefix,
+        "ready",
+        "process rollout report must be ready",
+    );
+    push_if_false(
+        &mut blockers,
+        report.spawned_process_count() >= 3 && report.node_count() >= 3,
+        prefix,
+        "spawned_process_count",
+        "multi-process data-node/metaserver Raft evidence requires at least three spawned nodes",
+    );
+    push_if_false(
+        &mut blockers,
+        report.independent_wal_dirs(),
+        prefix,
+        "independent_wal_dirs",
+        "each process must use an independent WAL directory",
+    );
+    push_if_false(
+        &mut blockers,
+        report.independent_snapshot_dirs(),
+        prefix,
+        "independent_snapshot_dirs",
+        "each process must use an independent snapshot directory",
+    );
+    push_if_false(
+        &mut blockers,
+        report.observed_process_requests() >= report.node_count() as u64,
+        prefix,
+        "observed_process_requests",
+        "harness must observe real process API traffic rather than in-memory fixture calls",
+    );
+    push_if_false(
+        &mut blockers,
+        report.read_index_responses_observed() > 0,
+        prefix,
+        "read_index_responses_observed",
+        "process harness must observe read-index responses",
+    );
+    push_if_false(
+        &mut blockers,
+        report.restart_recovery_validated(),
+        prefix,
+        "restart_recovery_validated",
+        "restart recovery must be validated after persisted WAL/snapshot state",
+    );
+    push_if_false(
+        &mut blockers,
+        report.nodes_restarted_and_log_checked(),
+        prefix,
+        "nodes[*].{restarted,log_store_validated,applied_index,commit_index}",
+        "every node must restart, pass log-store inspection, and converge applied index to commit index",
+    );
+    push_if_false(
+        &mut blockers,
+        report.process_api_observed(),
+        prefix,
+        "process_api_mutations_or_writes",
+        "writes/mutations must be proposed through process APIs",
+    );
+    push_if_false(
+        &mut blockers,
+        report.multi_process_log_store_validated(),
+        prefix,
+        "multi_process_log_store_validated",
+        "independent process log stores must be inspected and validated",
+    );
+    push_if_false(
+        &mut blockers,
+        report.failover_validated(),
+        prefix,
+        "failover_validated",
+        "failover must be validated on this plane",
+    );
+    push_if_false(
+        &mut blockers,
+        report.membership_change_validated(),
+        prefix,
+        "membership_change_validated",
+        "membership add/remove under load must be validated",
+    );
+    push_if_false(
+        &mut blockers,
+        report.follower_lag_validated(),
+        prefix,
+        "follower_lag_validated",
+        "secondary lag and catch-up must be observed",
+    );
+    push_if_false(
+        &mut blockers,
+        report.secondary_read_validated(),
+        prefix,
+        "secondary_read_validated",
+        "secondary read eligibility after catch-up must be validated",
+    );
+    push_if_false(
+        &mut blockers,
+        report.snapshot_install_validated(),
+        prefix,
+        "snapshot_install_validated",
+        "snapshot install/restart after compaction must be validated",
+    );
+    for missing in report.operational_missing() {
+        blockers.push(RaftReadinessEvidenceBlocker {
+            blocker: format!("{prefix}_operational_semantics_missing"),
+            evidence_field: format!("{prefix}.operational_semantics.{missing}"),
+            detail: "RustRaft/ByteRaft-derived operational semantics evidence is incomplete."
+                .to_string(),
+        });
+    }
+    blockers
+}
+
+fn push_if_false(
+    blockers: &mut Vec<RaftReadinessEvidenceBlocker>,
+    ready: bool,
+    prefix: &str,
+    evidence_field: &str,
+    detail: &str,
+) {
+    if !ready {
+        blockers.push(RaftReadinessEvidenceBlocker {
+            blocker: format!(
+                "{}_{}_missing",
+                prefix,
+                evidence_field.replace(['.', '*', '{', '}', '[', ']', ','], "_")
+            ),
+            evidence_field: format!("{prefix}.{evidence_field}"),
+            detail: detail.to_string(),
+        });
     }
 }
 
@@ -495,11 +841,43 @@ fn distributed_raft_readiness_from_rollout(
     let transport_security = raft_transport_security_readiness();
     let external_chaos = raft_external_chaos_readiness();
     let mut missing = Vec::new();
+    let mut missing_evidence_fields = temporal_raft_rollout.missing_evidence_fields.clone();
     missing.extend(temporal_raft_rollout.missing.clone());
     missing.extend(metaserver_membership.missing.clone());
+    for item in &metaserver_membership.missing {
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "metaserver_owned_membership_workflow_missing".to_string(),
+            evidence_field: "raft_metaserver_membership_readiness.{networked_scheduler_transport_present,persisted_scheduler_task_state_present,real_data_node_group_execution_present}".to_string(),
+            detail: item.clone(),
+        });
+    }
     missing.extend(atomic_apply.missing.clone());
+    for item in &atomic_apply.missing {
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "raft_atomic_apply_evidence_missing".to_string(),
+            evidence_field: "raft_atomic_apply_readiness.{storage_apply_fence_present,wal_fence_recovery_validation_present,snapshot_lifecycle_report_present,storage_mutation_atomic_commit_present,snapshot_install_atomic_commit_present,real_data_node_process_integration_present}".to_string(),
+            detail: item.clone(),
+        });
+    }
     missing.extend(transport_security.missing.clone());
+    for item in &transport_security.missing {
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "raft_transport_security_evidence_missing".to_string(),
+            evidence_field: "raft_transport_security_readiness.{auth_token_validation_present,mtls_cert_key_ca_validation_present,authenticated_http_transport_present,plaintext_local_chaos_guard_present,service_process_mtls_enforcement_present}".to_string(),
+            detail: item.clone(),
+        });
+    }
     missing.extend(external_chaos.missing.clone());
+    for item in &external_chaos.missing {
+        missing_evidence_fields.push(RaftReadinessEvidenceBlocker {
+            blocker: "raft_external_chaos_evidence_missing".to_string(),
+            evidence_field: "raft_external_chaos_readiness.{local_os_process_restart_failover_present,stale_read_partition_heal_present,lagging_follower_catchup_present,networked_membership_snapshot_present,storage_replay_gate_present,external_packet_loss_present,external_disk_pressure_present,external_process_chaos_present}".to_string(),
+            detail: item.clone(),
+        });
+    }
+    if missing.is_empty() {
+        missing_evidence_fields.clear();
+    }
     RaftDistributedReadiness {
         complete: missing.is_empty(),
         production_ready: missing.is_empty(),
@@ -531,6 +909,7 @@ fn distributed_raft_readiness_from_rollout(
         metaserver_driven_membership_present: metaserver_membership.production_ready,
         production_mtls_transport_present: transport_security.production_ready,
         external_chaos_validation_present: external_chaos.production_ready,
+        missing_evidence_fields,
         missing,
     }
 }

@@ -2554,6 +2554,12 @@ fn distributed_raft_readiness_reports_remaining_production_blockers() {
         .missing
         .iter()
         .any(|item| item.contains("metaserver multi-process rollout evidence")));
+    assert!(readiness.missing_evidence_fields.iter().any(|item| {
+        item.blocker == "data_node_report_missing" && item.evidence_field == "data_node_report"
+    }));
+    assert!(readiness.missing_evidence_fields.iter().any(|item| {
+        item.blocker == "metaserver_report_missing" && item.evidence_field == "metaserver_report"
+    }));
 }
 
 // shared-corpus: raft_temporal_raft_process_rollout_evidence
@@ -2583,6 +2589,12 @@ fn raft_temporal_raft_rollout_readiness_fails_closed_without_process_rollout_evi
         .missing
         .iter()
         .any(|item| item.contains("metaserver multi-process rollout evidence")));
+    assert!(readiness.missing_evidence_fields.iter().any(|item| {
+        item.blocker == "data_node_report_missing" && item.evidence_field == "data_node_report"
+    }));
+    assert!(readiness.missing_evidence_fields.iter().any(|item| {
+        item.blocker == "metaserver_report_missing" && item.evidence_field == "metaserver_report"
+    }));
     if !cfg!(feature = "temporal-raft-engine") {
         assert!(readiness
             .missing
@@ -2601,6 +2613,10 @@ fn raft_temporal_raft_rollout_readiness_fails_closed_without_process_rollout_evi
         .missing
         .iter()
         .any(|item| item.contains("data-node multi-process rollout evidence")));
+    assert!(distributed
+        .missing_evidence_fields
+        .iter()
+        .any(|item| item.evidence_field == "data_node_report"));
 }
 
 fn ready_temporal_raft_process_node(node_id: RaftNodeId) -> TemporalRaftProcessNodeEvidence {
