@@ -882,6 +882,81 @@ Completed since the last backlog update:
     - Backfill should read raw messages/resources from MatrixKV/S3 in batches,
       rebuild serving context records, and write to TemporalStore through native
       batch append paths with idempotency keys.
+    - Add MatrixKV/S3 to TemporalStore backfill pipeline.
+      - Source of truth:
+        - MatrixKV or SQL-compatible metadata tables store immutable raw agent
+          ingestion envelopes, raw message batches, agent/session/account scope,
+          local-context refs, resource import manifests, parser inputs, model
+          config, and ingestion timestamps.
+        - S3/object storage stores raw file bytes for PDFs, repos, images, and
+          other large resources; MatrixKV rows store `raw_uri`, checksum, content
+          length, media type, and access scope.
+      - Backfill cursoring:
+        - scan MatrixKV by `(account_id, tenant_id, user_id, session_id,
+          ingestion_time, ingestion_id)` or by a compact `scope_key +
+          ingestion_time` key;
+        - keep a durable `backfill_job` cursor with last processed source key,
+          source checksum, batch number, output watermark, status, retry count,
+          and error summary;
+        - support resume, pause, cancel, dry-run, and replay-from-time without
+          duplicating TemporalStore records.
+      - Batching semantics:
+        - batch raw messages by session and time window, not arbitrary global
+          order, so summaries/entities remain stable;
+        - preserve original per-message event timestamps with a finer-grained
+          event key such as `timestamp_ms:sequence:event_hash` so multiple
+          events from one message never overwrite each other;
+        - use deterministic extraction windows, for example 20-message rolling
+          commits, so online ingestion and offline backfill can be compared even
+          when batching changes boundaries;
+        - for resources, batch parsed chunks by resource version and
+          `content_hash`, then write manifest/chunks/indexes/embeddings through
+          native batch append.
+      - Idempotency and versioning:
+        - derive idempotency keys from source row id, raw checksum, parser
+          version, extraction model config, resource version, and destination
+          scope;
+        - record superseded resource chunks by `content_hash` and keep old
+          chunks replayable while excluding them from normal retrieval;
+        - use stable entity keys so re-backfill merges state instead of creating
+          duplicate entities.
+      - Processing stages:
+        - validate scope and API-key/access metadata before writing;
+        - parse resources from S3/object storage, never from TemporalStore raw
+          bytes;
+        - run extraction and embeddings with the configured OSS/OpenAI provider
+          or deterministic CI fallback, and record fallback flags;
+        - write hot serving records to TemporalStore: `ContextEvent`,
+          `ContextEntity`, `ContextSummary`, `ContextEmbedding`,
+          `ContextIndex`, `ResourceChunk`, `SkillSection`, and compact
+          ContextPack telemetry;
+        - mark affected ContextNodes summary-dirty and let async summary refresh
+          rebuild L0/L1 parent summaries from child summaries plus selected
+          entity/operator state.
+      - Native write path:
+        - Python should orchestrate jobs and model calls, then send one
+          `matrixark_batch_append_records` request per bounded batch;
+        - C++/Rust TemporalStore should route by placement key, coalesce writes,
+          enforce async/sync/Raft storage options, update compact secondary
+          index postings, and emit backfill metrics;
+        - avoid local JSONL full-log scans in production backfill.
+      - Correctness gates:
+        - run online-vs-backfill diff reports for the same source corpus:
+          selected refs, event/entity counts, summaries, resource chunks,
+          embeddings, index postings, and retrieval ContextPacks;
+        - tolerate deterministic window-boundary differences only when the
+          logical facts and retrieved evidence remain equivalent;
+        - record `backfill_source`, `backfill_job_id`, `source_watermark`, and
+          model/parser versions in debug/audit-light records, not in hot
+          ContextPack payloads.
+      - Operations and metrics:
+        - expose backfill QPS, source scan lag, output watermark lag, batch
+          latency, parse/extraction/embedding latency, retry counts, skipped
+          duplicate count, write failures, and fallback flags;
+        - throttle by tenant and storage family so backfill does not starve live
+          ingestion/retrieval;
+        - use cold/no-cache scans for old source data and bounded worker pools
+          for parser/model stages.
     - Add MatrixArk production storage lifecycle workers.
       - Important distinction:
         - evicting from cache only frees memory; the durable local/shared store
