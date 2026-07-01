@@ -4726,7 +4726,30 @@
             "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "read_index_lease_bounded_stale_and_secondary_eligibility"
         }
@@ -4756,7 +4779,30 @@
             "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "status_local_status_prometheus_peer_pipeline_state"
         }
@@ -4795,7 +4841,30 @@
             "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_chunk_transport_rejects_stale_term_before_buffering data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "snapshot_trigger_chunk_install_progress_and_rollback"
         }
@@ -4821,7 +4890,30 @@
             "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "oversized_log_inflight_reorder_and_apply_batch_gates"
         }
@@ -4851,7 +4943,30 @@
             "rust_runner": "cargo test -p temporalstore-rust raft_tick_election_waits_for_timeout_and_prevotes_before_promotion raft_prevote_rejects_candidate_without_quorum raft_election_controls_record_prohibition_offline_and_transfer_timeouts raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_read_index_and_transfer_reject_lagging_replica production_raft_runtime_validates_security_timer_and_chaos_contracts --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "prevote_election_prohibition_transfer_and_offline_timeout"
         }
@@ -4882,7 +4997,30 @@
             "rust_runner": "cargo test -p temporalstore-rust partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "packet_loss_partition_heal_majority_progress"
         }
@@ -4913,7 +5051,30 @@
             "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_retries_transport_errors_and_releases_inflight --lib -- --test-threads=1 && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "slow_wal_fsync_backpressure_and_recovery"
         }
@@ -4948,7 +5109,30 @@
             "rust_runner": "cargo test -p temporalstore-rust data_raft_snapshot_trigger_compacts_applied_log_bytes metaserver_raft_snapshot_trigger_compacts_applied_log_bytes --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "snapshot_during_membership_change_keeps_floor_and_generation_consistent"
         }
@@ -4979,7 +5163,30 @@
             "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "leader_transfer_under_high_write_load_has_no_lost_or_duplicate_commits"
         }
@@ -5010,7 +5217,30 @@
             "rust_runner": "cargo test -p temporalstore-rust rustraft_follower_rejoin_after_compaction_installs_snapshot_and_replays_tail raft_snapshot_bootstraps_lagging_data_replica_then_catches_up_logs --lib -- --test-threads=1 && tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "follower_rejoin_after_compaction_installs_snapshot_and_replays_tail"
         }
@@ -5045,7 +5275,30 @@
             "rust_runner": "tools/run_raft_distributed_parity.sh",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1200
+            "timeout_s": 1200,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "rolling_restart_with_pending_joint_consensus_completes_or_rolls_back_safely"
         }
@@ -5075,7 +5328,30 @@
             "rust_runner": "tools/run_raft_distributed_parity.sh && cargo run -p temporalstore-rust --bin external_chaos_gate -- --profile quick",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
             "suite": "cpp_data_raft_parity",
-            "timeout_s": 1800
+            "timeout_s": 1800,
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
           },
           "name": "combined_rustraft_fault_gate_for_data_and_meta_raft"
         }
@@ -8054,7 +8330,29 @@
             "runner": "cmake --build build-ubuntu22/release --target data_raft_replication_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust data_raft_log_codec_round_trips_cxx_style_header data_raft_log_codec_rejects_bad_header_and_sequence data_raft_command_codec_round_trips_batch_request data_raft_command_codec_round_trips_chunked_timestamped_kv_payload cpp_data_raft_replication_rejects_corrupt_log_payload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "wal_log_codec_segment_lifecycle_shared",
           "skip_client": true
@@ -8074,7 +8372,7 @@
               "read_index_validated": true,
               "stale_leader_lease_rejected": true
             },
-            "cpp_runner_contract": "C++ runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility.",
+            "cpp_runner_contract": "C++ runner emits read-index and lease evidence with stale leader/follower rejections, minority partition failures, healed follower catch-up, and secondary-read eligibility; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for ByteRaft-style read safety: read-index, leader lease expiry, lagging follower read/write rejection, minority partition rejection, bounded-stale policy, and healed follower catch-up.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8086,7 +8384,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 FAILOVER_ITERATIONS=1 bash tools/run_data_raft_failover_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_read_index_and_transfer_reject_lagging_replica raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup raft_rejects_write_without_majority raft_follower_catches_up_after_outage partition_chaos_majority_side_continues_and_healed_replica_catches_up --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "read_index_lease_fault_matrix_shared",
           "skip_client": true
@@ -8107,7 +8427,7 @@
               "reorder_timeout_drop_reported": true,
               "stale_term_rejection_reported": true
             },
-            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, stale-term append rejection counters, oversized-log rejection, and apply backpressure counters.",
+            "cpp_runner_contract": "C++ runner emits per-peer inflight counts/bytes, append queue depth, reorder queue depth, timeout/drop counters, stale-term append rejection counters, oversized-log rejection, and apply backpressure counters; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for ByteRaft replication pipeline controls: in-flight append limits, retry release, oversized-log rejection, memory replicate bytes, reorder queue gap recovery, stale-term rejection, timeouts, and dropped package metrics.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8119,7 +8439,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 OPS=500 bash tools/run_raft_stress_suite_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_config_rejects_oversized_log_entries_and_prohibited_elections raft_rpc_runtime_retries_transport_errors_and_releases_inflight append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives append_entries_reorder_window_timeout_and_stale_term_are_reported distributed_propose_does_not_wait_for_failed_followers_after_quorum --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "replication_pipeline_reorder_backpressure_shared",
           "skip_client": true
@@ -8143,7 +8485,7 @@
               "follower_rejoin_after_compacted_logs_reported": true,
               "stale_term_rejected_before_install": true
             },
-            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence.",
+            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8155,7 +8497,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_data_raft_snapshot_restore_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust streaming_snapshot_chunks_install_only_after_all_chunks_arrive rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk raft_snapshot_transport_rejects_stale_term_before_install raft_snapshot_chunk_transport_rejects_stale_term_before_buffering raft_install_snapshot_request_carries_external_snapshot_reference snapshot_transfer_policy_streams_small_snapshots_to_peer snapshot_transfer_policy_requires_external_ref_for_large_snapshot --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "snapshot_chunk_retry_rollback_shared",
           "skip_client": true
@@ -8178,7 +8542,7 @@
               "snapshot_restart_after_compaction": true,
               "stale_membership_rejected": true
             },
-            "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas.",
+            "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8190,8 +8554,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer temporal_raft_metaserver_backend_supports_membership_and_bounded_reads joint_consensus_requires_old_and_new_majorities_before_commit_or_write joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities --lib --features temporal-raft-engine -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "comparator": "tools/compare_temporalstore_unified_reports.py --rust <rust-report.json> --cpp <cpp-report.json> --emit-misses rust-only,cpp-only,shared-failures,latency-deltas",
-            "suite": "cpp_data_raft_parity"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison."
           },
           "name": "membership_roles_joint_consensus_shared",
           "skip_client": true
@@ -8222,10 +8607,303 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_rpc_runtime_attaches_auth_and_deadline_metadata raft_rpc_runtime_retries_transport_errors_and_releases_inflight http_raft_transport_sends_append_vote_and_snapshot_over_tcp raft_hard_state_membership_and_snapshot_transport_are_exposed --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "rpc_auth_deadline_transport_shared",
           "skip_client": true
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_process_rollout_multiplane_report_contract",
+      "shard_id": 96,
+      "steps": [
+        {
+          "name": "process_rollout_multiplane_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Multi-process data-node and metaserver Raft rollout must be proven by spawned processes with independent WAL/snapshot dirs, observed process API writes/mutations, read-index responses, restart recovery, and per-node log-store inspection.",
+            "acceptance": {
+              "data_node_processes_spawned": true,
+              "metaserver_processes_spawned": true,
+              "independent_wal_snapshot_dirs": true,
+              "observed_process_api_requests": true,
+              "read_index_responses": true,
+              "per_node_log_store_inspection": true
+            },
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_runner": "cargo test -p temporalstore-rust raft_temporal_raft_rollout_readiness_accepts_only_multi_process_reports --lib -- --test-threads=1",
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_failover_both_planes_report_contract",
+      "shard_id": 97,
+      "steps": [
+        {
+          "name": "failover_both_planes_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Data-node and metaserver failover must both be observed from process-path reports, including post-failover read-index and log-store recovery evidence.",
+            "acceptance": {
+              "data_node_failover_validated": true,
+              "metaserver_failover_validated": true,
+              "post_failover_read_index": true,
+              "post_failover_restart_recovery": true
+            },
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_runner": "cargo test -p temporalstore-rust rustraft_leader_transfer_under_high_write_load_commits_once metaserver_raft_health_catchup_safe_scale_and_failover_work --lib -- --test-threads=1",
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_membership_add_remove_under_load_report_contract",
+      "shard_id": 98,
+      "steps": [
+        {
+          "name": "membership_add_remove_under_load_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Membership add/remove under load must emit learner add, catch-up, promote, voter remove, leader transfer, exact-once commit IDs, and stale generation rejection evidence.",
+            "acceptance": {
+              "learner_add": true,
+              "learner_catchup": true,
+              "learner_promote": true,
+              "voter_remove": true,
+              "leader_transfer_exact_once_commit_ids": true,
+              "stale_generation_rejected": true
+            },
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus rustraft_leader_transfer_under_high_write_load_commits_once --lib -- --test-threads=1",
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_secondary_lag_catchup_report_contract",
+      "shard_id": 99,
+      "steps": [
+        {
+          "name": "secondary_lag_catchup_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Secondary lag and catch-up must be measured before secondary-read eligibility is granted; stale follower writes and lagging follower reads must be rejected.",
+            "acceptance": {
+              "secondary_lag_observed": true,
+              "catchup_observed": true,
+              "read_eligibility_after_catchup": true,
+              "stale_follower_write_rejected": true,
+              "lagging_follower_read_rejected": true
+            },
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence raft_replica_read_rejects_lagging_follower_and_succeeds_after_catchup --lib -- --test-threads=1",
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+          }
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_snapshot_restart_after_compaction_report_contract",
+      "shard_id": 100,
+      "steps": [
+        {
+          "name": "snapshot_restart_after_compaction_shared",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_data_raft_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Snapshot/restart after compaction must prove snapshot install progress, compacted-log rejoin, rollback reporting, restart recovery, and retained-tail replay.",
+            "acceptance": {
+              "snapshot_install_progress": true,
+              "compacted_log_rejoin": true,
+              "install_rollback_reported": true,
+              "restart_recovery": true,
+              "retained_tail_replayed": true
+            },
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin wal_backed_apply_snapshot_fence_survives_snapshot_restart --lib -- --test-threads=1",
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "required_paths": [
+              "src/partition/storage/data_raft_consensus.cc",
+              "src/partition/storage/data_raft_replication.cc",
+              "src/metaserver_v2/service/raft_control_service.cc"
+            ],
+            "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+          }
         }
       ]
     },
@@ -8252,7 +8930,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "byteraft_metrics_admin_pipeline_status_shared",
           "skip_client": true
@@ -8270,7 +8970,7 @@
               "peer_pipeline_limits_nonzero": true,
               "wal_first_last_log_index_present": true
             },
-            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete.",
+            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared ByteRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence and per-peer pipeline fields are required.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8282,7 +8982,29 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields --lib -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-byteraft-admin-surface.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "byteraft_admin_surface_requires_wal_and_peer_pipeline_shared",
           "skip_client": true
@@ -8300,7 +9022,7 @@
               "report_ready_field_present": true,
               "route_exists": true
             },
-            "cpp_runner_contract": "C++ server/admin runner emits the corresponding ByteRaft local-status/admin report for comparison.",
+            "cpp_runner_contract": "C++ server/admin runner emits the corresponding ByteRaft local-status/admin report for comparison; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
             "description": "Shared data-node API case for the Rust-native /raft/control/byteraft_runtime_admin route and equivalent C++ admin/status surface.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8312,7 +9034,29 @@
             "runner": "cmake --build build-ubuntu22/release --target server_test -j2",
             "rust_runner": "cargo test -p temporalstore-rust raft_control_exposes_byteraft_runtime_admin_report --bin raft_node -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-api-validation --log <raft-node-byteraft-admin.json>",
-            "suite": "cpp_data_raft_parity"
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
           },
           "name": "server_byteraft_runtime_admin_route_shared",
           "skip_client": true
@@ -8741,10 +9485,10 @@
       },
       {
         "blocker": "Some legacy RustRaft/C++ source-surface gates remain static until a native C++ shared-case runner emits temporalstore_unified_case_report_v1 for every Raft case.",
-        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json>",
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
         "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
         "family": "raft",
-        "runner_command": "python3 tools/run_cpp_raft_cases_on_rust.py --cpp-repo {cpp_repo} --artifact-dir <artifact-dir>",
+        "runner_command": "python3 tools/run_cpp_raft_cases_on_rust.py --cpp-repo {cpp_repo} --artifact-dir <artifact-dir> --emit-report temporalstore_unified_case_report_v1",
         "status": "mixed_native_and_static_surface_gate",
         "suites": [
           "cpp_data_raft_parity"
@@ -9155,7 +9899,12 @@
       "raft_rustraft_rpc_auth_deadline_transport_matrix",
       "raft_byteraft_metrics_admin_pipeline_status",
       "server_raft_byteraft_runtime_admin_route",
-      "raft_process_path_log_inspection_shared"
+      "raft_process_path_log_inspection_shared",
+      "raft_byteraft_process_rollout_multiplane_report_contract",
+      "raft_byteraft_failover_both_planes_report_contract",
+      "raft_byteraft_membership_add_remove_under_load_report_contract",
+      "raft_byteraft_secondary_lag_catchup_report_contract",
+      "raft_byteraft_snapshot_restart_after_compaction_report_contract"
     ],
     "required_response_kinds": [
       "empty",
