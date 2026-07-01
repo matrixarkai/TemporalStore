@@ -2091,8 +2091,23 @@ fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_an
     assert!(rollback_peer.snapshot_install_rolled_back > 0);
 
     let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_snapshot_chunk_retry_present"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_snapshot_send_timeout_present"));
+    for metric in [
+        "temporalstore_raft_byteraft_snapshot_chunk_retry_present",
+        "temporalstore_raft_byteraft_snapshot_send_timeout_present",
+        "temporalstore_raft_byteraft_snapshot_rate_limit_present",
+        "temporalstore_raft_byteraft_snapshot_install_progress_present",
+        "temporalstore_raft_byteraft_snapshot_install_rollback_present",
+        "temporalstore_raft_byteraft_snapshot_membership_change_present",
+        "temporalstore_raft_byteraft_snapshot_rejoin_after_compacted_log_present",
+        "temporalstore_raft_byteraft_peer_snapshot_send_timeouts",
+        "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
+        "temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille",
+        "temporalstore_raft_byteraft_peer_snapshot_install_rolled_back",
+        "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
+        "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
+    ] {
+        assert!(metrics.contains(metric), "missing snapshot metric {metric}");
+    }
 }
 
 // shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix
