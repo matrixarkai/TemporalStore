@@ -525,6 +525,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(logical_refs(direct_result["records"]), logical_refs(reference_result["records"]))
         self.assertEqual(logical_refs(direct_result["records"]), {("context_event", 101), ("context_embedding", 101), ("context_index", 101)})
         self.assertTrue(direct_result["scan_stats"]["native_pushdown"])
+        self.assertEqual(direct_result["scan_stats"]["execution_mode"], "native_placement_prefetch")
+        self.assertEqual(direct_result["scan_stats"]["native_placement_nodes"], 1)
+        self.assertGreaterEqual(direct_result["scan_stats"]["native_placement_locator_rows"], 1)
+        self.assertGreaterEqual(direct_result["scan_stats"]["native_placement_locations"], 1)
+        placement_lookups = [
+            entries
+            for entries in client.batch_hget_entries
+            if entries and all("context_placement_lookup" in str(entry["key"]) for entry in entries)
+        ]
+        self.assertTrue(placement_lookups)
+        self.assertEqual({str(entry["field"]) for entry in placement_lookups[0]}, {"44"})
         self.assertEqual(direct_result["scan_stats"]["dropped_scope"], reference_result["scan_stats"]["dropped_by_scope"])
         self.assertEqual(direct_result["scan_stats"]["dropped_node"], reference_result["scan_stats"]["dropped_by_node"])
 

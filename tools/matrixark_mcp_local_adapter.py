@@ -4065,6 +4065,91 @@ class MatrixArkLocalAdapter:
         selected_leaf_paths = traversal["leaf_paths"]
         selected_node_hashes = traversal["selected_node_hashes"]
 
+        placement_record_result: Json = {}
+        placement_candidate_records: list[Json] = []
+        if selected_node_hashes and not traversal.get("fallback_to_flat"):
+            placement_record_result = self.retrieval_records(
+                scope=scope,
+                secondary_index_groups=secondary_index_filter_groups,
+                selected_node_hashes=selected_node_hashes,
+            )
+            placement_candidate_records = placement_record_result.get("records", [])
+
+            def record_identity(record: Json) -> tuple[str, Any]:
+                record_type = str(record.get("record_type") or "")
+                for field in (
+                    "event_id_hash",
+                    "entity_hash",
+                    "segment_hash",
+                    "compression_id_hash",
+                    "summary_hash",
+                    "chunk_hash",
+                    "section_hash",
+                    "skill_hash",
+                    "resource_hash",
+                    "batch_id_hash",
+                ):
+                    if record.get(field) is not None:
+                        return (record_type, record.get(field))
+                if record_type == "context_index":
+                    return (
+                        record_type,
+                        (
+                            record.get("index_name"),
+                            record.get("node_hash"),
+                            tuple(context_index_ref_hashes(record)),
+                            record.get("timestamp_key_ms"),
+                        ),
+                    )
+                return (record_type, stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":"))))
+
+            seen_record_identities = {record_identity(record) for record in records}
+            for record in placement_candidate_records:
+                identity = record_identity(record)
+                if identity in seen_record_identities:
+                    continue
+                records.append(record)
+                seen_record_identities.add(identity)
+
+            for record in placement_candidate_records:
+                record_type = record.get("record_type")
+                if record_type == "context_index" and scope_matches(candidate_access_scope(record), scope):
+                    index_name = str(record.get("index_name", ""))
+                    if index_name:
+                        ref_hashes = context_index_ref_hashes(record)
+                        if record.get("batch_id_hash") is not None:
+                            index_terms_by_batch.setdefault(record.get("batch_id_hash"), []).append(index_name)
+                        node_hash_for_index = record.get("node_hash")
+                        try:
+                            index_terms_by_node_for_prefilter.setdefault(int(node_hash_for_index), []).append(index_name)
+                        except (TypeError, ValueError):
+                            pass
+                        if ref_hashes:
+                            for ref_hash in ref_hashes:
+                                index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                        else:
+                            ref_hash = record.get("ref_hash") or record.get("chunk_hash") or record.get("section_hash") or record.get("skill_hash")
+                            if ref_hash is not None:
+                                index_terms_by_ref.setdefault(ref_hash, []).append(index_name)
+                            else:
+                                index_terms_by_node.setdefault(record.get("node_hash"), []).append(index_name)
+                elif record_type == "context_embedding" and scope_matches(candidate_access_scope(record), scope):
+                    embedding_type = record.get("embedding_type")
+                    if embedding_type == "event_text":
+                        event_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "entity_state":
+                        entity_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "segment_text":
+                        segment_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "compression_summary":
+                        compression_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "resource_chunk":
+                        resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "skill_section":
+                        resource_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+                    elif embedding_type == "skill_summary":
+                        skill_embedding_vectors[record["ref_hash"]] = record.get("vector", [])
+
         def selected_by_tree(record: Json) -> bool:
             if traversal.get("fallback_to_flat"):
                 return True
@@ -4081,8 +4166,18 @@ class MatrixArkLocalAdapter:
             except (TypeError, ValueError):
                 return False
 
-        tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
-        tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
+        if placement_candidate_records and not traversal.get("fallback_to_flat"):
+            tree_candidate_records = [record for record in placement_candidate_records if selected_by_tree(record)]
+            tree_prefilter_dropped_count = max(0, len(placement_candidate_records) - len(tree_candidate_records))
+            retrieval_scan_stats = {
+                **retrieval_scan_stats,
+                "leaf_fetch": placement_record_result.get("scan_stats", {}),
+                "leaf_fetch_record_count": len(placement_candidate_records),
+                "leaf_fetch_strategy": "selected_node_placement",
+            }
+        else:
+            tree_candidate_records = records if traversal.get("fallback_to_flat") else [record for record in records if selected_by_tree(record)]
+            tree_prefilter_dropped_count = 0 if traversal.get("fallback_to_flat") else max(0, len(records) - len(tree_candidate_records))
         raw_event_ids_by_node: dict[Any, set[int]] = {}
         raw_event_time_window_dropped_count = 0
         events_by_node: dict[Any, list[Json]] = {}
