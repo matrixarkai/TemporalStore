@@ -2061,6 +2061,8 @@ fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_an
 
     let admin = cluster.byteraft_runtime_admin_report();
     assert!(admin.snapshot_retry_backpressure_present);
+    assert!(admin.snapshot_chunk_retry_present);
+    assert!(admin.snapshot_send_timeout_present);
     assert!(admin.snapshot_rate_limit_present);
     assert!(admin.snapshot_install_progress_present);
     assert!(admin.snapshot_install_rollback_present);
@@ -2087,6 +2089,10 @@ fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_an
         .find(|peer| peer.peer_id == 2)
         .unwrap();
     assert!(rollback_peer.snapshot_install_rolled_back > 0);
+
+    let metrics = cluster.prometheus_metrics();
+    assert!(metrics.contains("temporalstore_raft_byteraft_snapshot_chunk_retry_present"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_snapshot_send_timeout_present"));
 }
 
 // shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix

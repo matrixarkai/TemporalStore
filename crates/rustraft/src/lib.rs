@@ -178,6 +178,10 @@ pub struct RustRaftPeerPipelineStatus {
     pub snapshot_backpressure_rejections: u64,
     pub snapshot_rate_limit_rejections: u64,
     pub snapshot_install_rolled_back: u64,
+    #[serde(default)]
+    pub snapshot_chunk_retry_count: u64,
+    #[serde(default)]
+    pub snapshot_send_timeouts: u64,
     pub snapshot_during_membership_change: bool,
     pub snapshot_rejoin_after_compacted_log: bool,
     pub transfer_leader_target: bool,
@@ -217,6 +221,8 @@ pub struct RustRaftSnapshotLifecycleEvidence {
     pub sender_lifecycle_present: bool,
     pub downloader_lifecycle_present: bool,
     pub retry_backpressure_present: bool,
+    pub chunk_retry_present: bool,
+    pub send_timeout_present: bool,
     pub rate_limit_present: bool,
     pub install_progress_present: bool,
     pub install_rollback_present: bool,
@@ -1055,6 +1061,16 @@ pub fn rustraft_production_readiness_report(
                 "prove snapshot retry/backpressure behavior",
             ),
             (
+                snapshot.chunk_retry_present,
+                "snapshot:chunk_retry",
+                "prove snapshot chunk retry behavior",
+            ),
+            (
+                snapshot.send_timeout_present,
+                "snapshot:send_timeout",
+                "prove snapshot send timeout behavior",
+            ),
+            (
                 snapshot.rate_limit_present,
                 "snapshot:rate_limit",
                 "prove snapshot rate limiting",
@@ -1412,6 +1428,8 @@ pub fn rustraft_snapshot_lifecycle_evidence(
                 || (max_inflights_replicate > 0
                     && peer.snapshot_send_attempts > max_inflights_replicate)
         }),
+        chunk_retry_present: peers.iter().any(|peer| peer.snapshot_chunk_retry_count > 0),
+        send_timeout_present: peers.iter().any(|peer| peer.snapshot_send_timeouts > 0),
         rate_limit_present: peers
             .iter()
             .any(|peer| peer.snapshot_rate_limit_rejections > 0),
@@ -2306,6 +2324,8 @@ mod tests {
                 sender_lifecycle_present: true,
                 downloader_lifecycle_present: true,
                 retry_backpressure_present: true,
+                chunk_retry_present: true,
+                send_timeout_present: true,
                 rate_limit_present: true,
                 install_progress_present: true,
                 install_rollback_present: true,
