@@ -512,11 +512,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._append_many_materialized(records)
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
+        fallback: Json = {}
         for record in bundle:
             route = record.get("storage_route")
             if isinstance(route, dict) and route:
-                return route
-        return {}
+                if route.get("placement_key"):
+                    return route
+                if not fallback:
+                    fallback = route
+        return fallback
 
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
         return context_event_timestamp_ms(record)
