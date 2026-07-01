@@ -4769,6 +4769,15 @@
         {
           "command": {
             "description": "RustRaft-derived snapshot lifecycle case: trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting.",
+            "acceptance": {
+              "chunk_retry_reported": true,
+              "send_timeout_reported": true,
+              "rate_limit_reported": true,
+              "install_progress_reported": true,
+              "install_rollback_reported": true,
+              "snapshot_during_membership_change_reported": true,
+              "follower_rejoin_after_compacted_logs_reported": true
+            },
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -8127,9 +8136,14 @@
               "chunk_progress_reported": true,
               "external_snapshot_ref_preserved": true,
               "retry_backpressure_reported": true,
+              "send_timeout_reported": true,
+              "rate_limit_reported": true,
+              "install_rollback_reported": true,
+              "snapshot_during_membership_change_reported": true,
+              "follower_rejoin_after_compacted_logs_reported": true,
               "stale_term_rejected_before_install": true
             },
-            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, install progress, stale snapshot rejection, rollback count, external snapshot refs, and restart recovery evidence.",
+            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence.",
             "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",

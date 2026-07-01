@@ -608,6 +608,8 @@ impl ByteRaftPeerPipelineState {
             snapshot_backpressure_rejections: self.snapshot_backpressure_rejections,
             snapshot_rate_limit_rejections: self.snapshot_rate_limit_rejections,
             snapshot_install_rolled_back: self.snapshot_install_rolled_back,
+            snapshot_chunk_retry_count: self.snapshot_chunk_retry_count,
+            snapshot_send_timeouts: self.snapshot_send_timeouts,
             snapshot_during_membership_change: self.snapshot_during_membership_change,
             snapshot_rejoin_after_compacted_log: self.snapshot_rejoin_after_compacted_log,
             transfer_leader_target: self.transfer_leader_target,
@@ -676,6 +678,10 @@ pub struct ByteRaftRuntimeAdminReport {
     pub snapshot_sender_lifecycle_present: bool,
     pub snapshot_downloader_lifecycle_present: bool,
     pub snapshot_retry_backpressure_present: bool,
+    #[serde(default)]
+    pub snapshot_chunk_retry_present: bool,
+    #[serde(default)]
+    pub snapshot_send_timeout_present: bool,
     #[serde(default)]
     pub snapshot_rate_limit_present: bool,
     #[serde(default)]
@@ -8605,6 +8611,8 @@ impl RaftClusterInner {
             rustraft_snapshot_evidence.downloader_lifecycle_present;
         let snapshot_retry_backpressure_present =
             rustraft_snapshot_evidence.retry_backpressure_present;
+        let snapshot_chunk_retry_present = rustraft_snapshot_evidence.chunk_retry_present;
+        let snapshot_send_timeout_present = rustraft_snapshot_evidence.send_timeout_present;
         let snapshot_rate_limit_present = rustraft_snapshot_evidence.rate_limit_present;
         let snapshot_install_progress_present = rustraft_snapshot_evidence.install_progress_present;
         let snapshot_install_rollback_present = rustraft_snapshot_evidence.install_rollback_present;
@@ -8784,14 +8792,16 @@ impl RaftClusterInner {
                 ready: snapshot_sender_lifecycle_present
                     && snapshot_downloader_lifecycle_present
                     && snapshot_retry_backpressure_present
+                    && snapshot_chunk_retry_present
+                    && snapshot_send_timeout_present
                     && snapshot_rate_limit_present
                     && snapshot_install_progress_present
                     && snapshot_install_rollback_present
                     && snapshot_membership_change_present
                     && snapshot_rejoin_after_compacted_log_present,
-                evidence_field: "peer_pipeline_states[*].{snapshot_sending,snapshot_installing,snapshot_progress,snapshot_retry,snapshot_rate_limit,snapshot_rollback,snapshot_membership_change,snapshot_rejoin_after_compacted_log}".to_string(),
+                evidence_field: "peer_pipeline_states[*].{snapshot_sending,snapshot_installing,snapshot_progress,snapshot_retry,snapshot_chunk_retry,snapshot_send_timeout,snapshot_rate_limit,snapshot_rollback,snapshot_membership_change,snapshot_rejoin_after_compacted_log}".to_string(),
                 detail: format!(
-                    "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}; rate_limit={snapshot_rate_limit_present}; progress={snapshot_install_progress_present}; rollback={snapshot_install_rollback_present}; membership={snapshot_membership_change_present}; rejoin_compacted={snapshot_rejoin_after_compacted_log_present}"
+                    "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}; chunk_retry={snapshot_chunk_retry_present}; send_timeout={snapshot_send_timeout_present}; rate_limit={snapshot_rate_limit_present}; progress={snapshot_install_progress_present}; rollback={snapshot_install_rollback_present}; membership={snapshot_membership_change_present}; rejoin_compacted={snapshot_rejoin_after_compacted_log_present}"
                 ),
             },
             ByteRaftCapabilityEvidence {
@@ -8917,6 +8927,12 @@ impl RaftClusterInner {
         if !snapshot_retry_backpressure_present {
             blockers.push("snapshot_retry_backpressure_missing".to_string());
         }
+        if !snapshot_chunk_retry_present {
+            blockers.push("snapshot_chunk_retry_missing".to_string());
+        }
+        if !snapshot_send_timeout_present {
+            blockers.push("snapshot_send_timeout_missing".to_string());
+        }
         if !snapshot_rate_limit_present {
             blockers.push("snapshot_rate_limit_missing".to_string());
         }
@@ -8997,6 +9013,8 @@ impl RaftClusterInner {
             snapshot_sender_lifecycle_present,
             snapshot_downloader_lifecycle_present,
             snapshot_retry_backpressure_present,
+            snapshot_chunk_retry_present,
+            snapshot_send_timeout_present,
             snapshot_rate_limit_present,
             snapshot_install_progress_present,
             snapshot_install_rollback_present,
@@ -10014,6 +10032,22 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_snapshot_retry_backpressure_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_retry_backpressure_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_chunk_retry_present Whether snapshot chunk retry evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_chunk_retry_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_chunk_retry_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_chunk_retry_present),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_send_timeout_present Whether snapshot send timeout evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_send_timeout_present gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_snapshot_send_timeout_present",
+        &[("kind", kind.to_string())],
+        u64::from(report.snapshot_send_timeout_present),
     );
     push_raft_metric(
         out,
