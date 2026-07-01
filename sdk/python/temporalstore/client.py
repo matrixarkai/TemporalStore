@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.util
+import json
 import os
 from dataclasses import dataclass
 from enum import IntEnum
@@ -362,6 +363,17 @@ class _Native:
                 ctypes.POINTER(ctypes.c_void_p),
             ]
             lib.temporalstore_matrixark_batch_append_records.restype = ctypes.c_int
+        self.has_matrixark_retrieve_context_pack = hasattr(
+            lib, "temporalstore_matrixark_retrieve_context_pack"
+        )
+        if self.has_matrixark_retrieve_context_pack:
+            lib.temporalstore_matrixark_retrieve_context_pack.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_char_p,
+                ctypes.POINTER(ctypes.c_void_p),
+                ctypes.POINTER(ctypes.c_void_p),
+            ]
+            lib.temporalstore_matrixark_retrieve_context_pack.restype = ctypes.c_int
         lib.temporalstore_add_feature_points.argtypes = [
             ctypes.c_void_p,
             ctypes.c_char_p,
@@ -628,6 +640,28 @@ class Client:
         count_value: Optional[str] = None,
     ) -> None:
         self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+
+    def matrixark_retrieve_context_pack(self, request: dict | str) -> dict:
+        if not self._native.has_matrixark_retrieve_context_pack:
+            raise NotImplementedError("native matrixark_retrieve_context_pack is not available in this TemporalStore library")
+        request_json = request if isinstance(request, str) else json.dumps(request, sort_keys=True, separators=(",", ":"))
+        value = ctypes.c_void_p()
+        error = ctypes.c_void_p()
+        code = self._native.lib.temporalstore_matrixark_retrieve_context_pack(
+            self._handle,
+            _encode(request_json),
+            ctypes.byref(value),
+            ctypes.byref(error),
+        )
+        self._native.check(code, error)
+        try:
+            payload = ctypes.cast(value, ctypes.c_char_p).value.decode("utf-8", errors="replace")
+            decoded = json.loads(payload)
+            if not isinstance(decoded, dict):
+                raise RuntimeError("native matrixark_retrieve_context_pack returned non-object JSON")
+            return decoded
+        finally:
+            self._native.lib.temporalstore_free_string(value)
 
     def hget(self, key: str, field: str) -> str:
         value = ctypes.c_void_p()
