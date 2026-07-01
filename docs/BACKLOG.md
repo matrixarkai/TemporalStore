@@ -892,9 +892,12 @@ Completed since the last backlog update:
           replay/audit safety, and compaction;
         - deleting raw files belongs in S3/object-storage lifecycle policy, not
           TemporalStore.
-      - Next milestone: implement native C++/Rust
-        `matrixark_gc_expired_context_events` plus resource/audit retention
-        workers.
+      - Next milestone has two layers:
+        - MatrixArk-specific retention workers such as native C++/Rust
+          `matrixark_gc_expired_context_events` plus resource/audit retention
+          workers decide which logical records are eligible for deletion;
+        - a general TemporalStore storage lifecycle worker reclaims old
+          pages/blocks for all data models, not only MatrixArk context records.
       - Recommended production behavior:
         - TemporalStore keeps only hot serving records in the online path;
         - MatrixArk compresses old events into `context_compression_event`
@@ -907,15 +910,22 @@ Completed since the last backlog update:
           replay/audit retention permits deletion, no recall reinforcement
           protects the raw event, and no Raft/shared-store follower cursor still
           needs old pages.
-      - Deletion should write tombstone and audit-light records first, then
-        perform physical page/block deletion or compaction later in bounded
-        batches.
-      - GC workers should use timestamp-keyed context event ranges, compact
-        secondary indexes, no-cache cold scans, bounded batches, tombstone
-        records, retention/audit safety gates, and compaction hooks.
-      - Until scheduled GC, compaction, TTL enforcement, and page/block reclaim
-        scheduling run in production profiles, local/shared store growth is
-        expected as data volume grows, even when hot cache eviction works.
+      - Logical deletion should write tombstone and audit-light records first.
+      - Physical reclaim should be storage-engine generic:
+        - scan reclaimable page/block manifests across all TemporalStore data
+          models;
+        - respect live-record indexes, snapshots, Raft/shared-store follower
+          cursors, delayed-destroy windows, and recovery retention;
+        - compact or delete stale pages/blocks later in bounded batches;
+        - expose reclaimed bytes, stale bytes, delayed-destroy backlog,
+          compaction latency, and reclaim errors as common storage metrics.
+      - MatrixArk GC workers should use timestamp-keyed context event ranges,
+        compact secondary indexes, no-cache cold scans, bounded batches,
+        tombstone records, retention/audit safety gates, and compaction hooks.
+      - Until scheduled logical GC, TTL enforcement, and general TemporalStore
+        page/block reclaim scheduling run in production profiles, local/shared
+        store growth is expected as data volume grows, even when hot cache
+        eviction works.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
