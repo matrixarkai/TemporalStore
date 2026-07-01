@@ -882,6 +882,24 @@ Completed since the last backlog update:
     - Backfill should read raw messages/resources from MatrixKV/S3 in batches,
       rebuild serving context records, and write to TemporalStore through native
       batch append paths with idempotency keys.
+    - Add MatrixArk production storage lifecycle workers.
+      - Important distinction:
+        - evicting from cache only frees memory; the durable local/shared store
+          still grows;
+        - compacting pages/blocks rewrites live records and can reclaim stale
+          page/block space;
+        - deleting context records requires explicit policy, tombstones,
+          replay/audit safety, and compaction;
+        - deleting raw files belongs in S3/object-storage lifecycle policy, not
+          TemporalStore.
+      - Next milestone: implement native C++/Rust
+        `matrixark_gc_expired_context_events` plus resource/audit retention
+        workers.
+      - GC workers should use timestamp-keyed context event ranges, compact
+        secondary indexes, no-cache cold scans, bounded batches, tombstone
+        records, retention/audit safety gates, and compaction hooks.
+      - Until these workers exist and run in production profiles, disk/object
+        storage growth is expected even when hot cache eviction works.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
