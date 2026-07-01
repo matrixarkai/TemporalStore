@@ -9142,7 +9142,7 @@
           "command": {
             "cpp_runner_contract": "C++ cache runner emits eviction/admission/replacement, pinned handle, placement, writeback/backpressure, restart, and latency histogram evidence.",
             "description": "Shared cache parity case for long-running replacement-policy soak under memory/disk pressure, pinned handles, placement semantics, async writeback/backpressure, restart, and latency metrics.",
-            "kind": "existing_test",
+            "kind": "storage_cache_replacement_policy_soak",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cache_replacement_policy_soak --lib -- --test-threads=1",
@@ -9322,7 +9322,7 @@
           "command": {
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
             "description": "Shared data-node cache pressure case for GC plus eviction under cold reads: memory miss, disk/page/shared-store fallback, refill, eviction counters, latency samples, and restart recovery.",
-            "kind": "existing_test",
+            "kind": "storage_byteraft_cache_refill_pressure",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
             "rust_runner": "cargo test -p temporalstore-rust cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory --lib -- --test-threads=1",
@@ -9388,7 +9388,7 @@
         {
           "command": {
             "cpp_contract": "ObjectManager/PageStore cold read reloads by PageAddress after eviction and preserves logical reads",
-            "kind": "existing_test",
+            "kind": "storage_cache_cold_read_after_eviction",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
               "src/partition/storage/test/cold_read_eviction_shared_test.cc"

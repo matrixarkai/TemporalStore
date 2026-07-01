@@ -6,6 +6,7 @@ use std::{fs, path::Path};
 
 use serde::Deserialize;
 use serde_json::Value;
+use temporalstore_rust::cache::CacheKey;
 use temporalstore_rust::client::{
     ClientMetaSyncLoopOptions, ReplicaReadPolicy as ClientReplicaReadPolicy,
 };
@@ -213,6 +214,14 @@ fn rust_client_executes_shared_cpp_rust_temporalstore_corpus() {
 fn rust_executes_storage_raft_gc_parity_shared_cases() {
     verify_storage_wal_index_gc_generation_retention(92);
     verify_storage_gc_dependency_retention_matrix(92);
+}
+
+// shared-corpus: storage_cache_replacement_policy_soak storage_byteraft_cache_refill_pressure storage_cache_cold_read_after_eviction_shared
+#[test]
+fn rust_executes_storage_eviction_parity_shared_cases() {
+    verify_storage_cache_replacement_policy_soak(79);
+    verify_storage_cache_refill_pressure(88);
+    verify_storage_cold_read_after_eviction(1);
 }
 
 fn load_corpus() -> UnifiedCorpus {
@@ -3291,6 +3300,15 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
         "storage_gc_dependency_retention_matrix" => {
             verify_storage_gc_dependency_retention_matrix(case.shard_id)
         }
+        "storage_cache_replacement_policy_soak" => {
+            verify_storage_cache_replacement_policy_soak(case.shard_id)
+        }
+        "storage_byteraft_cache_refill_pressure" => {
+            verify_storage_cache_refill_pressure(case.shard_id)
+        }
+        "storage_cache_cold_read_after_eviction" => {
+            verify_storage_cold_read_after_eviction(case.shard_id)
+        }
         "storage_stream_reopen_scan" => verify_storage_stream_reopen_scan(&command),
         other => panic!(
             "case={} step={} unsupported storage command {other}",
@@ -3694,6 +3712,379 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
             "{matrix:?}"
         );
     }
+}
+
+fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(shard_id);
+
+    let target_value = b"target-value-0123456789".to_vec();
+    for round in 0..4 {
+        for item in 0..8 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringSet {
+                    key: format!("soak-{round}-{item}"),
+                    value: format!("soak-value-{round}-{item}").into_bytes(),
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+    }
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringSet {
+                    key: "soak-target".to_string(),
+                    value: target_value.clone(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    for round in 0..4 {
+        for item in 0..8 {
+            let response = engine.execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: format!("soak-{round}-{item}"),
+                },
+            });
+            assert!(response.status.ok, "{response:?}");
+        }
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "soak-target".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    assert!(
+        engine.cache().stats().memory_evictions > 0,
+        "tiny memory cache should perform replacement under pressure"
+    );
+    assert!(
+        engine.cache().stats().disk_bytes > 0,
+        "cache pressure should leave disk-tier refill evidence"
+    );
+
+    let target_page_key = string_page_cache_key(&engine, shard_id, "soak-target");
+    let evict_report = engine.apply_storage_eviction(shard_id, 1, 4, true, false);
+    assert_eq!(evict_report.mode, "evict_cache");
+    assert!(evict_report.pressure_gate_open, "{evict_report:?}");
+    assert!(
+        !evict_report.selected_victims.is_empty(),
+        "{evict_report:?}"
+    );
+    assert!(
+        !evict_report.dump_manifest_ids.is_empty(),
+        "dump-before-evict should durably dump dirty victims: {evict_report:?}"
+    );
+    assert!(
+        evict_report.cache_entries_removed > 0 || evict_report.cache_disk_bytes_removed > 0,
+        "eviction should remove memory or disk-cache entries: {evict_report:?}"
+    );
+
+    let _ = engine.cache().invalidate(&target_page_key);
+    engine.cache().clear_memory_for_test();
+    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    let block_reads_before = engine.block_store().stats().reads;
+    let disk_hits_before = engine.cache().stats().disk_hits;
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "soak-target".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    assert_eq!(
+        engine.cache().get_memory(&target_page_key),
+        Some(target_value)
+    );
+    assert!(
+        engine.cache().stats().disk_hits > disk_hits_before
+            || engine.block_store().stats().reads > block_reads_before,
+        "cold read should refill from disk cache or persistent block store"
+    );
+
+    engine.cache().set_async_writeback_queue_limit_for_test(1);
+    engine
+        .cache()
+        .enqueue_async_writeback(
+            CacheKey::page_with_slot(shard_id, 50_000, 0, 8, Some(99)),
+            b"writeback".to_vec(),
+        )
+        .unwrap();
+    assert!(engine
+        .cache()
+        .enqueue_async_writeback(
+            CacheKey::page_with_slot(shard_id, 50_001, 0, 8, Some(99)),
+            b"overflow".to_vec(),
+        )
+        .is_err());
+    assert_eq!(engine.cache().drain_async_writeback(8).unwrap().drained, 1);
+    engine.cache().record_compaction_latency_micros(750);
+    let stats = engine.cache().stats();
+    assert!(stats.async_writeback_backpressure_rejections > 0);
+    assert!(stats.async_writeback_max_queue_depth > 0);
+    assert!(stats.async_writeback_max_queue_bytes > 0);
+    assert_cache_latency_histograms_observed(stats);
+
+    let drop_dir = tempfile::tempdir().unwrap();
+    let drop_engine = TemporalEngine::with_local_dirs(
+        64,
+        drop_dir.path().join("cache"),
+        drop_dir.path().join("pages"),
+        drop_dir.path().join("indexes"),
+    );
+    drop_engine.load_shard(shard_id + 1);
+    for item in 0..6 {
+        let key = format!("drop-{item}");
+        assert!(
+            drop_engine
+                .execute(ExecuteRequest {
+                    shard_id: shard_id + 1,
+                    command: Command::StringSet {
+                        key: key.clone(),
+                        value: format!("drop-value-{item}").repeat(10).into_bytes(),
+                    },
+                })
+                .status
+                .ok
+        );
+        assert!(
+            drop_engine
+                .execute(ExecuteRequest {
+                    shard_id: shard_id + 1,
+                    command: Command::StringGet { key },
+                })
+                .status
+                .ok
+        );
+    }
+    let drop_report = drop_engine.apply_storage_eviction(shard_id + 1, 1, 2, true, true);
+    assert_eq!(drop_report.mode, "delete_drop");
+    assert!(drop_report.pressure_gate_open, "{drop_report:?}");
+    assert!(!drop_report.selected_victims.is_empty(), "{drop_report:?}");
+    assert!(
+        drop_report.dropped_object_count > 0,
+        "delete/drop eviction mode should drop selected cold objects: {drop_report:?}"
+    );
+}
+
+fn verify_storage_cache_refill_pressure(shard_id: u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        32,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(shard_id);
+    let target_value = b"target-value-0123456789".to_vec();
+    for (key, value) in [
+        ("target", target_value.clone()),
+        ("evict-a", b"eviction-value-a-0123456789".to_vec()),
+        ("evict-b", b"eviction-value-b-0123456789".to_vec()),
+    ] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringSet {
+                        key: key.to_string(),
+                        value,
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "target".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    for key in ["evict-a", "evict-b"] {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringGet {
+                        key: key.to_string(),
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+    assert!(
+        engine.cache().stats().memory_evictions > 0,
+        "tiny memory cache should evict during pressure reads"
+    );
+    assert!(
+        engine.cache().stats().disk_bytes > 0,
+        "persistent read path should populate disk cache"
+    );
+    let target_page_key = string_page_cache_key(&engine, shard_id, "target");
+    assert_eq!(engine.cache().get_memory(&target_page_key), None);
+    let disk_hits_before = engine.cache().stats().disk_hits;
+    let block_reads_before = engine.block_store().stats().reads;
+    assert_eq!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id,
+                command: Command::StringGet {
+                    key: "target".to_string(),
+                },
+            })
+            .response,
+        CommandResponse::Bytes {
+            value: Some(target_value.clone())
+        }
+    );
+    assert!(
+        engine.cache().stats().disk_hits > disk_hits_before
+            || engine.block_store().stats().reads > block_reads_before,
+        "cold target read should use disk cache or block store"
+    );
+    assert_eq!(
+        engine.cache().get_memory(&target_page_key),
+        Some(target_value)
+    );
+}
+
+fn verify_storage_cold_read_after_eviction(shard_id: u64) {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(shard_id);
+    assert!(
+        engine
+            .execute_durable(ExecuteRequest {
+                shard_id,
+                command: Command::StringSet {
+                    key: "cold-slot-read".to_string(),
+                    value: b"from-disk".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&shard_id).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        shard.strings.clear();
+    }
+    let _ = engine
+        .cache()
+        .invalidate(&CacheKey::string(shard_id, "cold-slot-read"));
+    engine.cache().clear_memory_for_test();
+    let block_reads_before = engine.block_store().stats().reads;
+    let get = engine.execute(ExecuteRequest {
+        shard_id,
+        command: Command::StringGet {
+            key: "cold-slot-read".to_string(),
+        },
+    });
+    assert!(get.status.ok);
+    assert_eq!(
+        get.response,
+        CommandResponse::Bytes {
+            value: Some(b"from-disk".to_vec())
+        }
+    );
+    assert!(engine.block_store().stats().reads > block_reads_before);
+}
+
+fn string_page_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> CacheKey {
+    let shards = engine.shards.read().expect("shards lock poisoned");
+    let address = shards
+        .get(&shard_id)
+        .unwrap_or_else(|| panic!("shard {shard_id} should exist"))
+        .strings
+        .get(key)
+        .unwrap_or_else(|| panic!("key {key} should have a page address"));
+    CacheKey::page_with_slot(
+        shard_id,
+        address.page_segment_id,
+        address.offset,
+        address.length,
+        address.routing_slot,
+    )
+}
+
+fn assert_cache_latency_histograms_observed(stats: temporalstore_rust::cache::CacheStats) {
+    assert!(stats.refill_latency_samples > 0);
+    assert_eq!(
+        stats.refill_latency_samples,
+        stats.refill_latency_le_10us
+            + stats.refill_latency_le_100us
+            + stats.refill_latency_le_1ms
+            + stats.refill_latency_le_10ms
+            + stats.refill_latency_gt_10ms
+    );
+    assert!(stats.writeback_latency_samples > 0);
+    assert_eq!(
+        stats.writeback_latency_samples,
+        stats.writeback_latency_le_10us
+            + stats.writeback_latency_le_100us
+            + stats.writeback_latency_le_1ms
+            + stats.writeback_latency_le_10ms
+            + stats.writeback_latency_gt_10ms
+    );
+    assert!(stats.eviction_latency_samples > 0);
+    assert_eq!(
+        stats.eviction_latency_samples,
+        stats.eviction_latency_le_10us
+            + stats.eviction_latency_le_100us
+            + stats.eviction_latency_le_1ms
+            + stats.eviction_latency_le_10ms
+            + stats.eviction_latency_gt_10ms
+    );
+    assert!(stats.compaction_latency_samples > 0);
+    assert_eq!(
+        stats.compaction_latency_samples,
+        stats.compaction_latency_le_10us
+            + stats.compaction_latency_le_100us
+            + stats.compaction_latency_le_1ms
+            + stats.compaction_latency_le_10ms
+            + stats.compaction_latency_gt_10ms
+    );
 }
 
 fn verify_storage_cache_refill(case: &StorageMigrationCase) {
