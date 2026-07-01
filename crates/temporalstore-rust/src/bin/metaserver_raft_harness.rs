@@ -263,6 +263,10 @@ fn main() {
 
     runtime.cluster().set_alive(10, true).unwrap();
     runtime.cluster().set_alive(13, true).unwrap();
+    runtime
+        .add_node(12, RaftReplicaRole::Voter)
+        .expect("metaserver final readiness should restore voter 12");
+    runtime.cluster().set_alive(12, true).unwrap();
     let temporal_raft_process_rollout = meta_process_rollout_report(
         &runtime,
         &options,
