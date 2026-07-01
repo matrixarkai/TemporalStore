@@ -895,11 +895,27 @@ Completed since the last backlog update:
       - Next milestone: implement native C++/Rust
         `matrixark_gc_expired_context_events` plus resource/audit retention
         workers.
+      - Recommended production behavior:
+        - TemporalStore keeps only hot serving records in the online path;
+        - MatrixArk compresses old events into `context_compression_event`
+          records before raw event deletion is eligible;
+        - raw events receive `evict_after_ms` retention markers after
+          compression;
+        - the native C++/Rust GC worker scans timestamp-keyed raw events in a
+          cold/no-cache mode so compression does not warm old source pages;
+        - before deletion, the worker verifies that compression exists,
+          replay/audit retention permits deletion, no recall reinforcement
+          protects the raw event, and no Raft/shared-store follower cursor still
+          needs old pages.
+      - Deletion should write tombstone and audit-light records first, then
+        perform physical page/block deletion or compaction later in bounded
+        batches.
       - GC workers should use timestamp-keyed context event ranges, compact
         secondary indexes, no-cache cold scans, bounded batches, tombstone
         records, retention/audit safety gates, and compaction hooks.
-      - Until these workers exist and run in production profiles, disk/object
-        storage growth is expected even when hot cache eviction works.
+      - Until scheduled GC, compaction, TTL enforcement, and page/block reclaim
+        scheduling run in production profiles, local/shared store growth is
+        expected as data volume grows, even when hot cache eviction works.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
