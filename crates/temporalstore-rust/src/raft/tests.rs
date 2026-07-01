@@ -1293,6 +1293,33 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
         .unwrap();
     cluster.set_alive(3, true).unwrap();
 
+    let queued = cluster
+        .receive_append_entries(AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 1,
+            leader_id: 1,
+            target_id: 3,
+            prev_log_index: 1,
+            prev_log_term: 1,
+            entries: vec![RaftLogEntry {
+                term: 1,
+                index: 2,
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "timeout-buffered-gap".to_string(),
+                    value: b"queued".to_vec(),
+                },
+            }],
+            leader_commit: 2,
+        })
+        .unwrap();
+    assert!(!queued.success);
+    assert_eq!(
+        queued.reject_reason.as_deref(),
+        Some("out_of_order_append_queued")
+    );
+
     let timed_out = cluster
         .receive_append_entries(AppendEntriesRequest {
             rpc: None,
@@ -1337,6 +1364,13 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
     assert_eq!(stale.reject_reason.as_deref(), Some("stale_term"));
 
     let admin = cluster.byteraft_runtime_admin_report();
+    assert!(admin.out_of_order_append_handling_present);
+    assert!(admin.reorder_timeout_drop_present);
+    assert!(admin.stale_term_rejection_present);
+    assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "reorder_queue_runtime" && item.ready));
     let peer = admin
         .peer_pipeline_states
         .iter()
@@ -1345,9 +1379,11 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
     assert_eq!(peer.reorder_entry_timeouts, 1);
     assert_eq!(peer.reorder_dropped_packages, 1);
     assert!(peer.reorder_entries_rejected >= 2);
+    assert_eq!(peer.stale_term_rejections, 1);
     let metrics = cluster.prometheus_metrics();
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entry_timeouts"));
     assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_dropped_packages"));
+    assert!(metrics.contains("temporalstore_raft_byteraft_peer_stale_term_rejections"));
 }
 
 #[test]
