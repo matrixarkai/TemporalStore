@@ -4956,6 +4956,30 @@ class MatrixArkLocalAdapter:
         )
         pack["operational_visibility_policy"] = visibility_decision
         finish_retrieval_stage("audit", audit_started_perf)
+        placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
+        pack["retrieval_metrics"] = {
+            "query_plan_ms": round(float(stage_latencies_ms.get("query_understanding", 0.0)), 3),
+            "node_traversal_ms": round(float(stage_latencies_ms.get("node_traversal", 0.0)), 3),
+            "index_prefilter_ms": round(float(stage_latencies_ms.get("candidate_fetch", 0.0)), 3),
+            "candidate_fetch_ms": round(float(stage_latencies_ms.get("candidate_fetch", 0.0)), 3),
+            "score_ms": round(float(stage_latencies_ms.get("rerank_score", 0.0)), 3),
+            "pack_ms": round(float(stage_latencies_ms.get("pack", 0.0)), 3),
+            "audit_ms": round(float(stage_latencies_ms.get("audit", 0.0)), 3),
+            "selected_refs": len(selected),
+            "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
+            "cache_hit": bool(
+                isinstance(retrieval_scan_stats, dict)
+                and (
+                    retrieval_scan_stats.get("cache_hit")
+                    or retrieval_scan_stats.get("candidate_cache_hit")
+                    or retrieval_scan_stats.get("native_placement_candidate_cache_hit")
+                )
+            ),
+            "placement_partitions_touched": len(placement.get("locations", []) or []) if isinstance(placement, dict) else 0,
+            "source": "python_reference_pack",
+        }
+        if bool(args.get("include_retrieval_metrics")):
+            pack["include_retrieval_metrics"] = True
         pack["recall_policy"]["stage_latency_budgets"] = stage_budget_snapshot()
         over_budget_stages = pack["recall_policy"]["stage_latency_budgets"].get("over_budget_stages", [])
         if over_budget_stages and not any(str(warning).startswith("stage_budget_exceeded:") for warning in quality_warnings):

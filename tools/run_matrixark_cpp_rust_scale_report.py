@@ -95,6 +95,76 @@ def selected_ref_count(result: Json) -> int:
     return 0
 
 
+RETRIEVAL_STAGE_METRICS = [
+    "query_plan_ms",
+    "node_traversal_ms",
+    "index_prefilter_ms",
+    "candidate_fetch_ms",
+    "score_ms",
+    "pack_ms",
+    "audit_ms",
+]
+
+
+def retrieval_metrics_from_result(result: Json) -> Json:
+    pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
+    metrics = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def summarize_retrieval_metrics(rows: list[Json]) -> Json:
+    if not rows:
+        return {
+            "samples": 0,
+            "stage_avg_ms": {name: 0.0 for name in RETRIEVAL_STAGE_METRICS},
+            "stage_p95_ms": {name: 0.0 for name in RETRIEVAL_STAGE_METRICS},
+            "selected_refs_avg": 0.0,
+            "scanned_records_avg": 0.0,
+            "cache_hit_rate": 0.0,
+            "placement_partitions_touched_avg": 0.0,
+        }
+    stage_values: dict[str, list[float]] = {name: [] for name in RETRIEVAL_STAGE_METRICS}
+    selected_refs: list[float] = []
+    scanned_records: list[float] = []
+    placement_partitions: list[float] = []
+    cache_hits = 0
+    for row in rows:
+        for name in RETRIEVAL_STAGE_METRICS:
+            try:
+                stage_values[name].append(float(row.get(name) or 0.0))
+            except (TypeError, ValueError):
+                stage_values[name].append(0.0)
+        try:
+            selected_refs.append(float(row.get("selected_refs") or 0.0))
+        except (TypeError, ValueError):
+            selected_refs.append(0.0)
+        try:
+            scanned_records.append(float(row.get("scanned_records") or 0.0))
+        except (TypeError, ValueError):
+            scanned_records.append(0.0)
+        try:
+            placement_partitions.append(float(row.get("placement_partitions_touched") or 0.0))
+        except (TypeError, ValueError):
+            placement_partitions.append(0.0)
+        if bool(row.get("cache_hit")):
+            cache_hits += 1
+    return {
+        "samples": len(rows),
+        "stage_avg_ms": {
+            name: round(statistics.fmean(values), 3) if values else 0.0
+            for name, values in stage_values.items()
+        },
+        "stage_p95_ms": {
+            name: percentile(values, 95) if values else 0.0
+            for name, values in stage_values.items()
+        },
+        "selected_refs_avg": round(statistics.fmean(selected_refs), 3) if selected_refs else 0.0,
+        "scanned_records_avg": round(statistics.fmean(scanned_records), 3) if scanned_records else 0.0,
+        "cache_hit_rate": round(cache_hits / len(rows), 6) if rows else 0.0,
+        "placement_partitions_touched_avg": round(statistics.fmean(placement_partitions), 3) if placement_partitions else 0.0,
+    }
+
+
 def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
     common = {
         "metaserver": args.metaserver,
@@ -338,6 +408,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     "scope": scope,
                     "max_context_tokens": args.max_context_tokens,
                     "deadline_ms": args.retrieve_deadline_ms,
+                    "include_retrieval_metrics": True,
                     "storage_options": args.storage_options,
                     "ranking": {
                         "weights": {"time": 0.18, "business": 0.22},
@@ -349,6 +420,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         retrieve_latencies: list[float] = []
         retrieve_errors: list[str] = []
         selected_counts: list[int] = []
+        retrieval_metric_rows: list[Json] = []
         partial_count = 0
         retrieve_started = time.perf_counter()
         with ThreadPoolExecutor(max_workers=args.retrieve_workers) as pool:
@@ -361,6 +433,9 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     continue
                 assert result is not None
                 selected_counts.append(selected_ref_count(result))
+                metrics = retrieval_metrics_from_result(result)
+                if metrics:
+                    retrieval_metric_rows.append(metrics)
                 if result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", "")):
                     partial_count += 1
         retrieve_elapsed = time.perf_counter() - retrieve_started
@@ -395,6 +470,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "partial_context_packs": partial_count,
                 "selected_refs_avg": round(statistics.fmean(selected_counts), 3) if selected_counts else 0.0,
                 "selected_refs_max": max(selected_counts) if selected_counts else 0,
+                "stage_metrics": summarize_retrieval_metrics(retrieval_metric_rows),
             },
             "summary_refresh": {
                 "latency_ms": round(refresh_latency_ms, 3),
@@ -435,6 +511,16 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("retrieve_p95_ms", ("retrieve", "p95_ms"), "lower"),
         ("retrieve_p99_ms", ("retrieve", "p99_ms"), "lower"),
         ("selected_refs_avg", ("retrieve", "selected_refs_avg"), "approx"),
+        ("query_plan_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "query_plan_ms"), "lower"),
+        ("node_traversal_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "node_traversal_ms"), "lower"),
+        ("index_prefilter_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "index_prefilter_ms"), "lower"),
+        ("candidate_fetch_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "candidate_fetch_ms"), "lower"),
+        ("score_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "score_ms"), "lower"),
+        ("pack_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "pack_ms"), "lower"),
+        ("audit_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "audit_ms"), "lower"),
+        ("scanned_records_avg", ("retrieve", "stage_metrics", "scanned_records_avg"), "lower"),
+        ("cache_hit_rate", ("retrieve", "stage_metrics", "cache_hit_rate"), "higher"),
+        ("placement_partitions_touched_avg", ("retrieve", "stage_metrics", "placement_partitions_touched_avg"), "approx"),
     ]
     for name, path, direction in metrics:
         cpp_value: Any = cpp
@@ -528,6 +614,27 @@ def write_report(path: Path, report: Json) -> None:
             f"| {backend} | {write.get('record_qps', 0)} | {write.get('p95_ms', 0)} ms | "
             f"{read.get('qps', 0)} | {read.get('p95_ms', 0)} ms | "
             f"{len(errors.get('write', [])) if isinstance(errors, dict) else 0} | {len(errors.get('read', [])) if isinstance(errors, dict) else 0} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Retrieval Stage Metrics",
+            "",
+            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | scanned records avg | cache hit rate | placement partitions avg |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    for backend in ("cpp", "rust"):
+        retrieve = report["backends"].get(backend, {}).get("retrieve", {})
+        metrics = retrieve.get("stage_metrics", {})
+        p95 = metrics.get("stage_p95_ms", {})
+        lines.append(
+            f"| {backend} | {metrics.get('samples', 0)} | "
+            f"{p95.get('query_plan_ms', 0)} ms | {p95.get('node_traversal_ms', 0)} ms | "
+            f"{p95.get('index_prefilter_ms', 0)} ms | {p95.get('candidate_fetch_ms', 0)} ms | "
+            f"{p95.get('score_ms', 0)} ms | {p95.get('pack_ms', 0)} ms | {p95.get('audit_ms', 0)} ms | "
+            f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('cache_hit_rate', 0)} | "
+            f"{metrics.get('placement_partitions_touched_avg', 0)} |"
         )
     comp = report.get("comparison", {})
     if comp.get("status") in {"passed", "failed"}:
@@ -628,7 +735,22 @@ def main() -> int:
         "backends": {},
     }
     for backend in parsed.backends:
-        report["backends"][backend] = run_backend(backend, parsed, run_id)
+        try:
+            report["backends"][backend] = run_backend(backend, parsed, run_id)
+        except Exception as exc:
+            report["backends"][backend] = {
+                "backend": backend,
+                "status": "backend_startup_failed",
+                "error": str(exc),
+                "config": {
+                    "metaserver": parsed.metaserver,
+                    "namespace": parsed.namespace,
+                    "table": parsed.table,
+                    "cpp_lib": parsed.cpp_lib if backend == "cpp" else "",
+                    "rust_cli": parsed.rust_cli if backend == "rust" else "",
+                },
+                "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+            }
         (artifact_dir / f"{backend}.json").write_text(json.dumps(report["backends"][backend], indent=2, sort_keys=True), encoding="utf-8")
     report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"), parsed)
     (artifact_dir / "comparison.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

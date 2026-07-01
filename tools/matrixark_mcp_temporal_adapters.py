@@ -1613,18 +1613,20 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "scope_key": canonical_scope_key(scope),
             "ranking": ranking,
             "storage_options": optional_object(args, "storage_options"),
-            "max_context_tokens": int(args.get("max_context_tokens") or DEFAULT_MAX_CONTEXT_TOKENS),
+            "max_context_tokens": int(args.get("max_context_tokens") or 2048),
             "local_context": local_context,
             "local_context_tokens": int(args.get("local_context_tokens") or 0),
             "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),
             "reference_time_ms": args.get("reference_time_ms", now_ms()),
             "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "debug_context_pack": bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
+            "include_retrieval_metrics": bool(args.get("include_retrieval_metrics")),
             "required_output": {
                 "context_pack": True,
                 "selected_refs": True,
                 "dropped_summary": True,
                 "telemetry": True,
+                "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
             },
         }
         started_perf = time.perf_counter()
@@ -1652,11 +1654,36 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         pack.setdefault("query_embedding_model", embedding_model_name())
         pack.setdefault("embedding_execution_mode", embedding_execution_mode_name())
         pack.setdefault("embedding_fallback_used", embedding_fallback_used())
+        if bool(args.get("include_retrieval_metrics")):
+            pack["include_retrieval_metrics"] = True
         if selected_refs and "remote_context_refs" not in pack:
             pack["remote_context_refs"] = selected_refs
         if "recall_policy" not in pack:
             pack["recall_policy"] = {}
         if isinstance(pack["recall_policy"], dict):
+            native_telemetry = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
+            native_stage_metrics = native_telemetry.get("stages") if isinstance(native_telemetry.get("stages"), dict) else {}
+            total_native_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
+            selected_count = len(selected_refs) if isinstance(selected_refs, list) else 0
+            pack_ms = float(native_telemetry.get("pack_ms") or native_stage_metrics.get("pack_ms") or 0.0)
+            if not pack_ms:
+                pack_ms = total_native_ms
+            retrieval_metrics = {
+                "query_plan_ms": round(float(native_telemetry.get("query_plan_ms") or native_stage_metrics.get("query_plan_ms") or 0.0), 3),
+                "node_traversal_ms": round(float(native_telemetry.get("node_traversal_ms") or native_stage_metrics.get("node_traversal_ms") or 0.0), 3),
+                "index_prefilter_ms": round(float(native_telemetry.get("index_prefilter_ms") or native_stage_metrics.get("index_prefilter_ms") or 0.0), 3),
+                "candidate_fetch_ms": round(float(native_telemetry.get("candidate_fetch_ms") or native_stage_metrics.get("candidate_fetch_ms") or 0.0), 3),
+                "score_ms": round(float(native_telemetry.get("score_ms") or native_stage_metrics.get("score_ms") or 0.0), 3),
+                "pack_ms": round(pack_ms, 3),
+                "audit_ms": round(float(native_telemetry.get("audit_ms") or native_stage_metrics.get("audit_ms") or 0.0), 3),
+                "selected_refs": int(native_telemetry.get("selected_refs") or selected_count),
+                "scanned_records": int(native_telemetry.get("scanned_records") or 0),
+                "cache_hit": bool(native_telemetry.get("cache_hit", False)),
+                "placement_partitions_touched": int(native_telemetry.get("placement_partitions_touched") or 0),
+                "native_context_pack_ms": total_native_ms,
+                "source": "native_context_pack",
+            }
+            pack["retrieval_metrics"] = retrieval_metrics
             pack["recall_policy"].setdefault(
                 "backend_retrieval_pushdown",
                 {
@@ -1670,7 +1697,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             pack["recall_policy"].setdefault(
                 "stage_latency_budgets",
                 {
-                    "native_context_pack_ms": round((time.perf_counter() - started_perf) * 1000.0, 3),
+                    "native_context_pack_ms": total_native_ms,
+                    "metrics": retrieval_metrics,
                 },
             )
         dropped_refs = pack.get("dropped_refs")
