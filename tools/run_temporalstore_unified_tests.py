@@ -261,7 +261,7 @@ def validate_corpus(path: Path) -> dict:
             if step["command"].get("suite") == CPP_RAFT_PARITY_SUITE:
                 validate_cpp_raft_step(path, case, step)
                 validate_rustraft_fault_acceptance(path, case, step)
-                validate_rustraft_report_contract(path, case, step)
+                validate_byteraft_report_contract(path, case, step)
             if step["command"].get("suite") == "cpp_context_benchmark_parity":
                 validate_context_benchmark_step(path, case, step)
             if step["command"].get("kind") == "existing_test":
@@ -437,14 +437,14 @@ def validate_cpp_raft_step(path: Path, case: dict, step: dict) -> None:
         )
 
 
-def validate_rustraft_report_contract(path: Path, case: dict, step: dict) -> None:
-    if "rustraft" not in case["name"].lower() and "rustraft" not in case["name"].lower():
+def validate_byteraft_report_contract(path: Path, case: dict, step: dict) -> None:
+    if "byteraft" not in case["name"].lower() and "rustraft" not in case["name"].lower():
         return
     location = f"{path}: case {case['name']} step {step['name']}"
     command = step["command"]
     contract = command.get("report_contract")
     if not isinstance(contract, dict):
-        raise SystemExit(f"{location}: RustRaft shared case must declare report_contract")
+        raise SystemExit(f"{location}: ByteRaft shared case must declare report_contract")
     if contract.get("schema") != "temporalstore_unified_case_report_v1":
         raise SystemExit(
             f"{location}: report_contract.schema must be temporalstore_unified_case_report_v1"
@@ -456,14 +456,32 @@ def validate_rustraft_report_contract(path: Path, case: dict, step: dict) -> Non
             f"{location}: report_contract.required_fields must include "
             + ", ".join(sorted(expected))
         )
+    case_fields = set(contract.get("case_fields") or [])
+    if not {"name", "status", "steps"}.issubset(case_fields):
+        raise SystemExit(f"{location}: report_contract.case_fields must include name, status, steps")
+    step_fields = set(contract.get("step_fields") or [])
+    if not {"name", "status", "output", "latency_ms"}.issubset(step_fields):
+        raise SystemExit(
+            f"{location}: report_contract.step_fields must include name, status, output, latency_ms"
+        )
+    if command.get("cpp_report_adapter") != "compat/cpp_unified_case_report_adapter.h":
+        raise SystemExit(
+            f"{location}: ByteRaft shared case must declare "
+            "cpp_report_adapter=compat/cpp_unified_case_report_adapter.h"
+        )
     for field_name in ("rust_report_contract", "cpp_runner_contract", "comparator"):
         if not isinstance(command.get(field_name), str) or not command[field_name]:
-            raise SystemExit(f"{location}: RustRaft shared case must declare {field_name}")
+            raise SystemExit(f"{location}: ByteRaft shared case must declare {field_name}")
+    for required in ("temporalstore_unified_case_report_v1", "latency_ms"):
+        if required not in command["cpp_runner_contract"]:
+            raise SystemExit(f"{location}: cpp_runner_contract must include {required!r}")
     comparator = command["comparator"]
     for required in (
         "tools/compare_unified_cpp_rust_case_reports.py",
         "--require-schema temporalstore_unified_case_report_v1",
         "--require-field cases",
+        "--require-field producer",
+        "--require-field generated_at_ms",
     ):
         if required not in comparator:
             raise SystemExit(f"{location}: comparator must include {required!r}")
