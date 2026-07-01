@@ -133,6 +133,14 @@ class _NativeContextPackClient:
                 "scanned_records": 7,
                 "cache_hit": True,
                 "placement_partitions_touched": 2,
+                "drop_counters": {
+                    "scope": 1,
+                    "placement": 2,
+                    "index_filter": 3,
+                    "stale": 4,
+                    "token_budget": 5,
+                    "score_threshold": 6,
+                },
             },
             "quality_warnings": [],
         }
@@ -265,17 +273,54 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
             "ingest_messages": {"message_qps": 100},
             "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
-            "retrieve": {"qps": 100, "p50_ms": 1, "p95_ms": 1, "p99_ms": 1, "selected_refs_avg": 4},
+            "retrieve": {
+                "qps": 100,
+                "p50_ms": 1,
+                "p95_ms": 1,
+                "p99_ms": 1,
+                "selected_refs_avg": 4,
+                "stage_metrics": {
+                    "selected_refs_avg": 4,
+                    "selected_refs_max": 4,
+                    "selected_ref_signatures_by_query": {"0": ["event:1", "resource_chunk:2"]},
+                },
+            },
         }
         rust = json.loads(json.dumps(base))
-        rust["retrieve"]["selected_refs_avg"] = 0
+        rust["retrieve"]["stage_metrics"]["selected_ref_signatures_by_query"] = {"0": ["event:1"]}
 
         result = comparison(base, rust)
 
         self.assertEqual(result["status"], "failed")
         self.assertTrue(
-            any(row["metric"] == "selected_refs_avg" and not row["parity_passed"] for row in result["rows"])
+            any(failure["reason"] == "selected_ref_set_mismatch" for failure in result["phase0_correctness"]["failures"])
         )
+
+    def test_scale_report_allows_selected_ref_ordering_drift_for_same_refs(self) -> None:
+        base = {
+            "status": "passed",
+            "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
+            "ingest_messages": {"message_qps": 100},
+            "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
+            "retrieve": {
+                "qps": 100,
+                "p50_ms": 1,
+                "p95_ms": 1,
+                "p99_ms": 1,
+                "selected_refs_avg": 2,
+                "stage_metrics": {
+                    "selected_refs_avg": 2,
+                    "selected_refs_max": 2,
+                    "selected_ref_signatures_by_query": {"0": ["entity:7", "event:1"]},
+                },
+            },
+        }
+        rust = json.loads(json.dumps(base))
+        rust["retrieve"]["stage_metrics"]["selected_ref_signatures_by_query"] = {"0": ["event:1", "entity:7"]}
+
+        result = comparison(base, rust)
+
+        self.assertEqual(result["phase0_correctness"]["status"], "passed")
 
     def test_scale_report_compares_retrieval_stage_metrics(self) -> None:
         stage_metrics = summarize_retrieval_metrics(
@@ -773,11 +818,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack")
         self.assertEqual(request["watermark_count"], 7)
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
+        self.assertEqual(request["normalization_requirements"]["scope_key"], "canonical")
+        self.assertEqual(request["normalization_requirements"]["placement_key"], "context:{scope_key}:node={node_hash}")
+        self.assertIn("scope", request["required_output"]["drop_counters"])
+        self.assertIn("score_threshold", request["required_output"]["drop_counters"])
         self.assertTrue(request["required_output"]["selected_refs"])
         self.assertTrue(request["required_output"]["dropped_summary"])
         self.assertTrue(request["required_output"]["retrieval_metrics"])
         self.assertEqual(result["retrieval_metrics"]["query_plan_ms"], 1.5)
         self.assertEqual(result["retrieval_metrics"]["placement_partitions_touched"], 2)
+        self.assertEqual(result["retrieval_metrics"]["drop_counters"]["scope"], 1)
+        self.assertEqual(result["retrieval_metrics"]["drop_counters"]["score_threshold"], 6)
         self.assertEqual(
             result["recall_policy"]["backend_retrieval_pushdown"]["execution_mode"],
             "native_context_pack",
