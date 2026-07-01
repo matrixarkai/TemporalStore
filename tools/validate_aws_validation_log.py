@@ -380,7 +380,7 @@ def validate_raft_secondary(job, summary):
     for read in summary["reads_after_leader_crash"]:
         require(read["status"]["ok"], f"{job}: post-leader-crash read failed: {read}")
         require(read["value"] == "v5", f"{job}: post-leader-crash read mismatch: {read}")
-    validate_byteraft_process_semantics(
+    validate_rustraft_process_semantics(
         job,
         summary["openraft_process_rollout"],
         "data-node",
@@ -529,7 +529,7 @@ def validate_raft_distributed_parity(job, summary):
         f"{job}: post-leader-crash reads diverged: {data_node['post_leader_crash_values']}",
     )
     data_rollout = data_node["openraft_process_rollout"]
-    validate_byteraft_process_semantics(
+    validate_rustraft_process_semantics(
         job,
         data_rollout,
         "data-node",
@@ -623,7 +623,7 @@ def validate_raft_distributed_parity(job, summary):
         "data_node_raft_group_results_observed",
     ]:
         require(rollout[field], f"{job}: metaserver rollout field {field} is false")
-    validate_byteraft_process_semantics(
+    validate_rustraft_process_semantics(
         job,
         rollout,
         "metaserver",
@@ -688,7 +688,7 @@ def validate_raft_distributed_parity(job, summary):
     )
 
 
-def validate_byteraft_process_semantics(
+def validate_rustraft_process_semantics(
     job,
     rollout,
     label,
@@ -726,9 +726,9 @@ def validate_byteraft_process_semantics(
         >= rollout.get("spawned_process_count", 0),
         f"{job}: {label} per-node log-store inspection did not cover every process",
     )
-    semantics = rollout.get("byteraft_process_semantics")
-    require(isinstance(semantics, dict), f"{job}: {label} ByteRaft process semantics missing")
-    require(semantics.get("ready") is True, f"{job}: {label} ByteRaft process semantics not ready")
+    semantics = rollout.get("rustraft_process_semantics")
+    require(isinstance(semantics, dict), f"{job}: {label} RustRaft process semantics missing")
+    require(semantics.get("ready") is True, f"{job}: {label} RustRaft process semantics not ready")
     require(
         semantics.get("observed_process_requests", 0) >= rollout.get("spawned_process_count", 0),
         f"{job}: {label} process requests were not observed for every process",

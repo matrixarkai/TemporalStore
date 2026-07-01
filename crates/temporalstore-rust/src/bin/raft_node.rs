@@ -184,13 +184,13 @@ fn handle(
         ("GET", "/health") => json_response(200, &Status::ok()),
         ("GET", "/metrics") => (200, runtime.cluster().prometheus_metrics().into_bytes()),
         ("GET", "/raft/status") => json_response(200, &runtime.status()),
-        ("GET", "/raft/control/byteraft_runtime_admin")
-        | ("POST", "/raft/control/byteraft_runtime_admin") => {
-            json_response(200, &runtime.cluster().byteraft_runtime_admin_report())
+        ("GET", "/raft/control/rustraft_runtime_admin")
+        | ("POST", "/raft/control/rustraft_runtime_admin") => {
+            json_response(200, &runtime.cluster().rustraft_runtime_admin_report())
         }
-        ("GET", "/raft/control/byteraft_local_status")
-        | ("POST", "/raft/control/byteraft_local_status") => {
-            json_response(200, &runtime.cluster().byteraft_local_status_report())
+        ("GET", "/raft/control/rustraft_local_status")
+        | ("POST", "/raft/control/rustraft_local_status") => {
+            json_response(200, &runtime.cluster().rustraft_local_status_report())
         }
         ("POST", "/raft/apply_health") => {
             match parse_json::<RaftApplyHealthRequest>(&request.body) {
@@ -942,14 +942,14 @@ mod tests {
         assert_eq!(runtime.cluster().leader_id(), 2);
     }
 
-    // shared-corpus: raft_byteraft_metrics_admin_pipeline_status server_raft_byteraft_runtime_admin_route
+    // shared-corpus: raft_rustraft_metrics_admin_pipeline_status server_raft_rustraft_runtime_admin_route
     #[test]
-    fn raft_control_exposes_byteraft_runtime_admin_report() {
+    fn raft_control_exposes_rustraft_runtime_admin_report() {
         let runtime = test_runtime();
         runtime
             .cluster()
             .propose(Command::StringSet {
-                key: "raft-node-byteraft-admin-snapshot".to_string(),
+                key: "raft-node-rustraft-admin-snapshot".to_string(),
                 value: b"seed".to_vec(),
             })
             .unwrap();
@@ -963,18 +963,18 @@ mod tests {
         runtime
             .cluster()
             .propose(Command::StringSet {
-                key: "raft-node-byteraft-admin-lag".to_string(),
+                key: "raft-node-rustraft-admin-lag".to_string(),
                 value: b"lag".to_vec(),
             })
             .unwrap();
         runtime.cluster().set_alive(3, true).unwrap();
         let _ = runtime.cluster().check_write_authority(3);
 
-        let report: temporalstore_rust::raft::ByteRaftRuntimeAdminReport =
+        let report: temporalstore_rust::raft::RustRaftRuntimeAdminReport =
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
-                "/raft/control/byteraft_runtime_admin",
+                "/raft/control/rustraft_runtime_admin",
                 Vec::new(),
             ))
             .unwrap();
@@ -1006,11 +1006,11 @@ mod tests {
             .peer_pipeline_states
             .iter()
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
-        let local: temporalstore_rust::raft::ByteRaftLocalStatusReport =
+        let local: temporalstore_rust::raft::RustRaftLocalStatusReport =
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
-                "/raft/control/byteraft_local_status",
+                "/raft/control/rustraft_local_status",
                 Vec::new(),
             ))
             .unwrap();
@@ -1022,14 +1022,14 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
-        assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
-        assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_ready"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
-        assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_peer_append_queue_depth"));
         assert!(metrics.contains("replica_role=\"voter\""));
-        assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
-        assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
-        assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_peer_reorder_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_peer_snapshot_installed_index"));
+        assert!(metrics.contains("temporalstore_raft_rustraft_wal_segment_count"));
     }
 
     #[test]
