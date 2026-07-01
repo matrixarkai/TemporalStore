@@ -434,7 +434,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("retrieve_p50_ms", ("retrieve", "p50_ms"), "lower"),
         ("retrieve_p95_ms", ("retrieve", "p95_ms"), "lower"),
         ("retrieve_p99_ms", ("retrieve", "p99_ms"), "lower"),
-        ("selected_refs_avg", ("retrieve", "selected_refs_avg"), "same"),
+        ("selected_refs_avg", ("retrieve", "selected_refs_avg"), "approx"),
     ]
     for name, path, direction in metrics:
         cpp_value: Any = cpp
@@ -455,6 +455,10 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
             passed = cpp_float == 0 or rust_float <= cpp_float * max_latency_ratio
             threshold = round(cpp_float * max_latency_ratio, 6)
             threshold_label = f"<= {threshold}"
+        elif direction == "approx":
+            allowed_delta = max(1.0, abs(cpp_float) * 0.25)
+            passed = abs(delta) <= allowed_delta
+            threshold_label = f"abs(delta) <= {round(allowed_delta, 6)}"
         else:
             passed = True
             threshold_label = "informational"
@@ -471,12 +475,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
                 "parity_passed": passed,
             }
         )
-    blockers = [
-        row
-        for row in rows
-        if not row.get("parity_passed")
-        and row.get("metric") != "selected_refs_avg"
-    ]
+    blockers = [row for row in rows if not row.get("parity_passed")]
     return {
         "status": "passed" if not blockers else "failed",
         "rows": rows,

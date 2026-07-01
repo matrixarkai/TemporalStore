@@ -3,17 +3,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import tempfile
 import threading
 import unittest
+from pathlib import Path
 
 import matrixark_mcp_server as mcp
 
 try:
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import selected_ref_count
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import selected_ref_count
+    from run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
 
 
 
@@ -137,6 +139,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 }
             ),
             3,
+        )
+
+    def test_scale_report_blocks_selected_ref_drift(self) -> None:
+        base = {
+            "status": "passed",
+            "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
+            "ingest_messages": {"message_qps": 100},
+            "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
+            "retrieve": {"qps": 100, "p50_ms": 1, "p95_ms": 1, "p99_ms": 1, "selected_refs_avg": 4},
+        }
+        rust = json.loads(json.dumps(base))
+        rust["retrieve"]["selected_refs_avg"] = 0
+
+        result = comparison(base, rust)
+
+        self.assertEqual(result["status"], "failed")
+        self.assertTrue(
+            any(row["metric"] == "selected_refs_avg" and not row["parity_passed"] for row in result["rows"])
         )
 
     def _args(self, backend: str) -> argparse.Namespace:
@@ -382,6 +402,131 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         ]
         self.assertTrue(broad_record_loads)
         self.assertTrue(all(len(entries) < adapter._shard_size for entries in broad_record_loads))
+
+    def test_direct_native_retrieve_matches_reference_logical_refs(self) -> None:
+        scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
+        other_scope = {"tenant_hash": 11, "user_hash": 99, "session_hash": 33}
+        records = [
+            {
+                "record_type": "context_event",
+                "event_id_hash": 101,
+                "scope": scope,
+                "scope_key": mcp_core.canonical_scope_key(scope),
+                "node_hash": 44,
+                "updated_at_ms": 1780000000000,
+                "text": "Alice approved the GPU budget.",
+            },
+            {
+                "record_type": "context_embedding",
+                "embedding_type": "event_text",
+                "ref_type": "event",
+                "ref_hash": 101,
+                "scope": scope,
+                "scope_key": mcp_core.canonical_scope_key(scope),
+                "node_hash": 44,
+                "vector": [0.1, 0.2],
+            },
+            {
+                "record_type": "context_index",
+                "index_name": "source_type:message",
+                "ref_type": "event",
+                "ref_hash": 101,
+                "scope": scope,
+                "scope_key": mcp_core.canonical_scope_key(scope),
+                "node_hash": 44,
+                "updated_at_ms": 1780000000000,
+            },
+            {
+                "record_type": "context_event",
+                "event_id_hash": 202,
+                "scope": scope,
+                "scope_key": mcp_core.canonical_scope_key(scope),
+                "node_hash": 55,
+                "updated_at_ms": 1780000000001,
+                "text": "Same scope but wrong node.",
+            },
+            {
+                "record_type": "context_index",
+                "index_name": "source_type:message",
+                "ref_type": "event",
+                "ref_hash": 202,
+                "scope": scope,
+                "scope_key": mcp_core.canonical_scope_key(scope),
+                "node_hash": 55,
+                "updated_at_ms": 1780000000001,
+            },
+            {
+                "record_type": "context_event",
+                "event_id_hash": 303,
+                "scope": other_scope,
+                "scope_key": mcp_core.canonical_scope_key(other_scope),
+                "node_hash": 44,
+                "updated_at_ms": 1780000000002,
+                "text": "Wrong scope should be filtered.",
+            },
+            {
+                "record_type": "context_index",
+                "index_name": "source_type:message",
+                "ref_type": "event",
+                "ref_hash": 303,
+                "scope": other_scope,
+                "scope_key": mcp_core.canonical_scope_key(other_scope),
+                "node_hash": 44,
+                "updated_at_ms": 1780000000002,
+            },
+        ]
+
+        client = _NativeIndexClient()
+        direct = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        direct._client = client
+        direct._storage_prefix = "matrixark:test:native-reference-parity"
+        direct._record_hash_key = f"{direct._storage_prefix}:records"
+        direct._index_key = f"{direct._storage_prefix}:record_index"
+        direct._count_key = f"{direct._storage_prefix}:record_count"
+        direct._shard_size = 1024
+        direct._index_cache = None
+        direct._records_cache = None
+        direct._retrieval_candidate_cache = {}
+        direct._retrieval_candidate_cache_lock = threading.RLock()
+        direct._entry_count_cache = None
+        direct._legacy_index_mode = False
+        direct._records_lock = threading.RLock()
+        direct._metrics_lock = threading.RLock()
+        direct._write_retries = 0
+        direct._write_backoff_s = 0.0
+        direct._write_throttle_s = 0.0
+        direct.append_many(records)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            reference = mcp.MatrixArkLocalAdapter(Path(tmpdir) / "reference.jsonl")
+            reference.append_many(records)
+            kwargs = {
+                "scope": scope,
+                "record_types": {"context_event", "context_embedding", "context_index"},
+                "secondary_index_groups": [{"source_type:message"}],
+                "selected_node_hashes": {44},
+            }
+            direct_result = direct.retrieval_records(**kwargs)
+            reference_result = reference.retrieval_records(**kwargs)
+
+        def logical_refs(rows: list[dict]) -> set[tuple[str, int]]:
+            refs: set[tuple[str, int]] = set()
+            for row in rows:
+                record_type = str(row.get("record_type") or "")
+                if isinstance(row.get("ref_hashes"), list):
+                    for ref_hash in row["ref_hashes"]:
+                        refs.add((record_type, int(ref_hash)))
+                    continue
+                ref_hash = row.get("event_id_hash") or row.get("ref_hash") or row.get("chunk_hash") or row.get("section_hash")
+                if ref_hash is not None:
+                    refs.add((record_type, int(ref_hash)))
+            return refs
+
+        self.assertEqual(logical_refs(direct_result["records"]), logical_refs(reference_result["records"]))
+        self.assertEqual(logical_refs(direct_result["records"]), {("context_event", 101), ("context_embedding", 101), ("context_index", 101)})
+        self.assertTrue(direct_result["scan_stats"]["native_pushdown"])
+        self.assertEqual(direct_result["scan_stats"]["dropped_scope"], reference_result["scan_stats"]["dropped_by_scope"])
+        self.assertEqual(direct_result["scan_stats"]["dropped_node"], reference_result["scan_stats"]["dropped_by_node"])
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [
