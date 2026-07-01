@@ -65,6 +65,24 @@ python3 tools/validate_rust_product_test_guard.py
 python3 tools/validate_no_duplicate_tests.py
 ```
 
+## Storage Tuning Parity
+
+Rust exposes the same public production tuning surface used by C++ benchmark and
+deployment profiles. `StorageTuningConfig::from_env()` reads:
+
+- `TS_CONTEXT_PAGE_TARGET_BYTES`: target bytes for packed context timestamp pages.
+- `TS_BLOCK_SEGMENT_TARGET_BYTES`: target local block segment size before rolling.
+- `TS_STORAGE_ZONE_SIZE`: storage zone target used by deployment/lifecycle wiring.
+- `TS_STREAM_MAX_BLOB_SIZE`: stream blob cap; the block store rolls at the lower
+  of this value and `TS_BLOCK_SEGMENT_TARGET_BYTES`.
+- `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
+- `TS_COLD_SCAN_NO_CACHE_FILL`: default cold-scan behavior for lifecycle work.
+
+The block store consumes the segment/blob knobs directly for append rolling, and
+context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs
+are part of the shared lifecycle/cold-scan config surface so C++ and Rust
+benchmarks can run with the same named production profile.
+
 For process-path Raft evidence, use the harnesses:
 
 ```bash

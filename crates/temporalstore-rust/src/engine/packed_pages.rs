@@ -4,9 +4,10 @@ use crate::block_store::{BlockAddress, BlockStoreError, LocalBlockStore};
 use crate::cache::MultiLayerCache;
 use crate::types::{FeaturePoint, ShardId};
 
-use super::constants::{FEATURE_PAGE_MAGIC, TIMESTAMPED_KV_PAGE_TARGET_BYTES};
+use super::constants::FEATURE_PAGE_MAGIC;
 use super::state::{PackedFeaturePage, PackedFeaturePageDecode};
 use super::{append_value, read_page_bytes, stable_page_object_id};
+use crate::storage_config::context_page_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
     if points
         .windows(2)
@@ -86,13 +87,14 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     let mut current = Vec::new();
     let empty_page_len = empty_feature_page_encoded_len();
     let mut current_encoded_len = empty_page_len;
+    let page_target_bytes = context_page_target_bytes();
 
     for point in points {
         let point_encoded_len = feature_point_encoded_len(&point);
         let next_encoded_len = current_encoded_len
             .saturating_add(point_encoded_len)
             .saturating_add(if current.is_empty() { 0 } else { 1 });
-        if next_encoded_len > TIMESTAMPED_KV_PAGE_TARGET_BYTES && !current.is_empty() {
+        if next_encoded_len > page_target_bytes && !current.is_empty() {
             chunks.push(current);
             current = Vec::new();
             current_encoded_len = empty_page_len;

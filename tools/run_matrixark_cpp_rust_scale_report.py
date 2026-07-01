@@ -767,6 +767,8 @@ def main() -> int:
     run_id = str(int(time.time() * 1000))
     artifact_dir = Path(parsed.artifact_dir) if parsed.artifact_dir else ROOT / "docs" / "benchmarks" / f"cpp_rust_scale_{run_id}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    if "rust" in parsed.backends and not os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT"):
+        os.environ["MATRIXARK_TEMPORALSTORE_RUST_ROOT"] = str(artifact_dir / "rust_record_log_root")
     report: Json = {
         "run_id": run_id,
         "generated_at_ms": int(time.time() * 1000),
@@ -786,6 +788,7 @@ def main() -> int:
             "namespace": parsed.namespace,
             "table": parsed.table,
             "storage_options": parsed.storage_options,
+            "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "skip_context_pipeline": parsed.skip_context_pipeline,
             "perf_min_qps_ratio": parsed.perf_min_qps_ratio,
             "perf_max_latency_ratio": parsed.perf_max_latency_ratio,
