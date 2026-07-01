@@ -482,7 +482,7 @@ pub struct RaftClusterStatus {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftPeerPipelineState {
+pub struct RustRaftPeerPipelineState {
     pub peer_id: RaftNodeId,
     pub role: RaftRole,
     pub replica_role: RaftReplicaRole,
@@ -570,7 +570,7 @@ pub struct ByteRaftPeerPipelineState {
     pub auto_promoted_from_learner: bool,
 }
 
-impl ByteRaftPeerPipelineState {
+impl RustRaftPeerPipelineState {
     fn to_rustraft_peer_pipeline_status(&self) -> RustRaftPeerPipelineStatus {
         RustRaftPeerPipelineStatus {
             peer_id: self.peer_id,
@@ -623,7 +623,7 @@ impl ByteRaftPeerPipelineState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftCapabilityEvidence {
+pub struct RustRaftCapabilityEvidence {
     pub capability: String,
     pub ready: bool,
     pub evidence_field: String,
@@ -631,7 +631,7 @@ pub struct ByteRaftCapabilityEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftRuntimeAdminReport {
+pub struct RustRaftRuntimeAdminReport {
     pub shard_id: ShardId,
     pub leader_id: RaftNodeId,
     pub commit_index: u64,
@@ -674,7 +674,7 @@ pub struct ByteRaftRuntimeAdminReport {
     pub pending_joint_consensus_restart_present: bool,
     #[serde(default)]
     pub membership_evidence: RaftMembershipRuntimeEvidence,
-    pub peer_pipeline_states: Vec<ByteRaftPeerPipelineState>,
+    pub peer_pipeline_states: Vec<RustRaftPeerPipelineState>,
     pub append_backpressure_enforced: bool,
     #[serde(default)]
     pub apply_backpressure_enforced: bool,
@@ -763,22 +763,22 @@ pub struct ByteRaftRuntimeAdminReport {
     pub pre_vote_rejected: u64,
     pub admin_status_surface_complete: bool,
     #[serde(default)]
-    pub capability_matrix: Vec<ByteRaftCapabilityEvidence>,
+    pub capability_matrix: Vec<RustRaftCapabilityEvidence>,
     pub ready: bool,
     pub blockers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftLocalPeerStatus {
+pub struct RustRaftLocalPeerStatus {
     pub status: RaftNodeStatus,
-    pub pipeline_state: ByteRaftPeerPipelineState,
+    pub pipeline_state: RustRaftPeerPipelineState,
     pub participates_in_quorum: bool,
     pub can_serve_data: bool,
     pub can_be_leader: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ByteRaftLocalStatusReport {
+pub struct RustRaftLocalStatusReport {
     pub shard_id: ShardId,
     pub leader_id: RaftNodeId,
     pub current_term: u64,
@@ -793,7 +793,7 @@ pub struct ByteRaftLocalStatusReport {
     pub witness_membership_present: bool,
     pub learner_membership_present: bool,
     pub learner_auto_promote_present: bool,
-    pub peers: Vec<ByteRaftLocalPeerStatus>,
+    pub peers: Vec<RustRaftLocalPeerStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -7795,14 +7795,14 @@ impl RaftCluster {
         }
     }
 
-    pub fn byteraft_runtime_admin_report(&self) -> ByteRaftRuntimeAdminReport {
+    pub fn rustraft_runtime_admin_report(&self) -> RustRaftRuntimeAdminReport {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
-        inner.byteraft_runtime_admin_report()
+        inner.rustraft_runtime_admin_report()
     }
 
-    pub fn byteraft_local_status_report(&self) -> ByteRaftLocalStatusReport {
+    pub fn rustraft_local_status_report(&self) -> RustRaftLocalStatusReport {
         let status = self.status();
-        let admin = self.byteraft_runtime_admin_report();
+        let admin = self.rustraft_runtime_admin_report();
         let pipeline_by_peer = admin
             .peer_pipeline_states
             .iter()
@@ -7816,7 +7816,7 @@ impl RaftCluster {
                 pipeline_by_peer
                     .get(&node.node_id)
                     .cloned()
-                    .map(|pipeline_state| ByteRaftLocalPeerStatus {
+                    .map(|pipeline_state| RustRaftLocalPeerStatus {
                         status: node.clone(),
                         pipeline_state,
                         participates_in_quorum: node.replica_role.participates_in_quorum(),
@@ -7825,7 +7825,7 @@ impl RaftCluster {
                     })
             })
             .collect::<Vec<_>>();
-        ByteRaftLocalStatusReport {
+        RustRaftLocalStatusReport {
             shard_id: self.shard_id(),
             leader_id: status.leader_id,
             current_term: status.current_term,
@@ -7847,15 +7847,15 @@ impl RaftCluster {
 
     pub fn prometheus_metrics(&self) -> String {
         let mut out = raft_status_prometheus("data", self.status());
-        append_byteraft_runtime_admin_prometheus(
+        append_rustraft_runtime_admin_prometheus(
             &mut out,
             "data",
-            self.byteraft_runtime_admin_report(),
+            self.rustraft_runtime_admin_report(),
         );
-        append_byteraft_local_status_prometheus(
+        append_rustraft_local_status_prometheus(
             &mut out,
             "data",
-            self.byteraft_local_status_report(),
+            self.rustraft_local_status_report(),
         );
         out
     }
@@ -8538,7 +8538,7 @@ impl RaftClusterInner {
         }
     }
 
-    fn byteraft_runtime_admin_report(&self) -> ByteRaftRuntimeAdminReport {
+    fn rustraft_runtime_admin_report(&self) -> RustRaftRuntimeAdminReport {
         let status = self.status();
         let leader_log = self
             .nodes
@@ -8587,7 +8587,7 @@ impl RaftClusterInner {
                 } else {
                     pipeline.transfer_leader_elapsed_ms = 0;
                 }
-                ByteRaftPeerPipelineState {
+                RustRaftPeerPipelineState {
                     peer_id: node.id,
                     role: node.role,
                     replica_role: node.replica_role,
@@ -8716,7 +8716,7 @@ impl RaftClusterInner {
             self.config.lease_duration_ms > 0 || self.config.assume_lease_when_start;
         let rustraft_peer_pipeline_states = peer_pipeline_states
             .iter()
-            .map(ByteRaftPeerPipelineState::to_rustraft_peer_pipeline_status)
+            .map(RustRaftPeerPipelineState::to_rustraft_peer_pipeline_status)
             .collect::<Vec<_>>();
         let rustraft_pipeline_evidence = rustraft_pipeline_evidence(
             &rustraft_peer_pipeline_states,
@@ -8897,7 +8897,7 @@ impl RaftClusterInner {
         let per_peer_pipeline_state_present =
             rustraft_pipeline_evidence.per_peer_pipeline_state_present;
         let capability_matrix = vec![
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "per_peer_replication_pipeline_state".to_string(),
                 ready: per_peer_pipeline_state_present
                     && append_backpressure_enforced
@@ -8910,7 +8910,7 @@ impl RaftClusterInner {
                     peer_pipeline_states.len()
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "reorder_queue_runtime".to_string(),
                 ready: reorder_queue_enabled
                     && out_of_order_append_handling_present
@@ -8927,7 +8927,7 @@ impl RaftClusterInner {
                     self.config.reorder_timeout_us
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "snapshot_sender_downloader_lifecycle".to_string(),
                 ready: snapshot_sender_lifecycle_present
                     && snapshot_downloader_lifecycle_present
@@ -8944,7 +8944,7 @@ impl RaftClusterInner {
                     "sender={snapshot_sender_lifecycle_present}; downloader={snapshot_downloader_lifecycle_present}; retry_backpressure={snapshot_retry_backpressure_present}; chunk_retry={snapshot_chunk_retry_present}; send_timeout={snapshot_send_timeout_present}; rate_limit={snapshot_rate_limit_present}; progress={snapshot_install_progress_present}; rollback={snapshot_install_rollback_present}; membership={snapshot_membership_change_present}; rejoin_compacted={snapshot_rejoin_after_compacted_log_present}"
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "lease_read_index_pre_vote_semantics".to_string(),
                 ready: read_index_validated
                     && lease_read_validated
@@ -8961,7 +8961,7 @@ impl RaftClusterInner {
                     "read_index={read_index_validated}; lease={lease_read_validated}; stale_lease={stale_leader_lease_rejected}; lagging_read={lagging_follower_read_rejected}; bounded_accept={bounded_stale_read_accepted}; bounded_reject={bounded_stale_read_rejected}; stale_read_rejected={stale_follower_read_rejected}; pre_vote={pre_vote_enforced}; pre_vote_observed={pre_vote_process_evidence_observed}"
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "pre_vote_election_transfer_controls".to_string(),
                 ready: election_controls_enforced,
                 evidence_field: "pre_vote_process_evidence_observed; election_prohibition_observed; offline_timeout_observed; transfer_timeout_observed; peer_pipeline_states[*].{pre_vote_rejections,election_rejections,offline_timeout_*,transfer_leader_timeouts}".to_string(),
@@ -8969,7 +8969,7 @@ impl RaftClusterInner {
                     "pre_vote_observed={pre_vote_process_evidence_observed}; election_prohibited={election_prohibition_observed}; offline_timeout={offline_timeout_observed}; transfer_timeout={transfer_timeout_observed}"
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "wal_segment_lifecycle".to_string(),
                 ready: wal_segment_lifecycle_present,
                 evidence_field: "wal_{segment_count,active_segment_id,first_retained_segment_id,last_retained_segment_id,total_bytes,total_records,first_sequence,last_sequence,first_log_index,last_log_index,released_segment_count,slow_fsync_backpressure_observed}".to_string(),
@@ -8977,10 +8977,10 @@ impl RaftClusterInner {
                     "segments={wal_segment_count}; bytes={wal_total_bytes}; records={wal_total_records}; seq={wal_first_sequence}..{wal_last_sequence}; log_index={wal_first_log_index}..{wal_last_log_index}; released={wal_released_segment_count}; slow_fsync={wal_slow_fsync_backpressure_observed}"
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "admin_status_surface".to_string(),
                 ready: admin_status_surface_complete,
-                evidence_field: "admin_status_surface_complete; /raft/control/byteraft_runtime_admin; prometheus byteraft metrics".to_string(),
+                evidence_field: "admin_status_surface_complete; /raft/control/rustraft_runtime_admin; prometheus rustraft metrics".to_string(),
                 detail: format!(
                     "majority={}; commit_index={}; peer_rows={}",
                     status.majority,
@@ -8988,7 +8988,7 @@ impl RaftClusterInner {
                     peer_pipeline_states.len()
                 ),
             },
-            ByteRaftCapabilityEvidence {
+            RustRaftCapabilityEvidence {
                 capability: "membership_role_semantics".to_string(),
                 ready: witness_membership_present
                     && learner_add_present
@@ -9146,7 +9146,7 @@ impl RaftClusterInner {
             blockers.push("admin_status_surface_incomplete".to_string());
         }
 
-        ByteRaftRuntimeAdminReport {
+        RustRaftRuntimeAdminReport {
             shard_id: self.shard_id,
             leader_id: self.leader_id,
             commit_index: status.commit_index,
@@ -10096,25 +10096,25 @@ fn raft_status_prometheus(kind: &str, status: RaftClusterStatus) -> String {
     out
 }
 
-fn append_byteraft_runtime_admin_prometheus(
+fn append_rustraft_runtime_admin_prometheus(
     out: &mut String,
     kind: &str,
-    report: ByteRaftRuntimeAdminReport,
+    report: RustRaftRuntimeAdminReport,
 ) {
-    out.push_str("# HELP temporalstore_raft_byteraft_ready Whether ByteRaft-style production runtime evidence is complete.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_ready gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_ready Whether RustRaft-style production runtime evidence is complete.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_ready gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_ready",
+        "temporalstore_raft_rustraft_ready",
         &[("kind", kind.to_string())],
         u64::from(report.ready),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_capability_ready ByteRaft-style capability readiness matrix.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_capability_ready gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_capability_ready RustRaft-style capability readiness matrix.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_capability_ready gauge\n");
     for capability in &report.capability_matrix {
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_capability_ready",
+            "temporalstore_raft_rustraft_capability_ready",
             &[
                 ("kind", kind.to_string()),
                 ("capability", capability.capability.clone()),
@@ -10123,67 +10123,67 @@ fn append_byteraft_runtime_admin_prometheus(
             u64::from(capability.ready),
         );
     }
-    out.push_str("# HELP temporalstore_raft_byteraft_read_index_validated Whether read-index evidence was validated.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_validated gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_read_index_validated Whether read-index evidence was validated.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_read_index_validated gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_read_index_validated",
+        "temporalstore_raft_rustraft_read_index_validated",
         &[("kind", kind.to_string())],
         u64::from(report.read_index_validated),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_validated Whether lease-read evidence was validated.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_validated gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_lease_read_validated Whether lease-read evidence was validated.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_lease_read_validated gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_lease_read_validated",
+        "temporalstore_raft_rustraft_lease_read_validated",
         &[("kind", kind.to_string())],
         u64::from(report.lease_read_validated),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_stale_follower_read_rejected Whether stale follower reads are rejected.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_stale_follower_read_rejected gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_stale_follower_read_rejected Whether stale follower reads are rejected.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_stale_follower_read_rejected gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_stale_follower_read_rejected",
+        "temporalstore_raft_rustraft_stale_follower_read_rejected",
         &[("kind", kind.to_string())],
         u64::from(report.stale_follower_read_rejected),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_stale_follower_write_rejected Whether stale follower writes are rejected.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_stale_follower_write_rejected gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_stale_follower_write_rejected Whether stale follower writes are rejected.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_stale_follower_write_rejected gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_stale_follower_write_rejected",
+        "temporalstore_raft_rustraft_stale_follower_write_rejected",
         &[("kind", kind.to_string())],
         u64::from(report.stale_follower_write_rejected),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_witness_membership_present",
+        "temporalstore_raft_rustraft_witness_membership_present",
         &[("kind", kind.to_string())],
         u64::from(report.witness_membership_present),
     );
     for (name, value) in [
         (
-            "temporalstore_raft_byteraft_learner_add_present",
+            "temporalstore_raft_rustraft_learner_add_present",
             report.learner_add_present,
         ),
         (
-            "temporalstore_raft_byteraft_learner_catchup_present",
+            "temporalstore_raft_rustraft_learner_catchup_present",
             report.learner_catchup_present,
         ),
         (
-            "temporalstore_raft_byteraft_learner_promote_present",
+            "temporalstore_raft_rustraft_learner_promote_present",
             report.learner_promote_present,
         ),
         (
-            "temporalstore_raft_byteraft_voter_remove_present",
+            "temporalstore_raft_rustraft_voter_remove_present",
             report.voter_remove_present,
         ),
         (
-            "temporalstore_raft_byteraft_leader_transfer_exact_once_present",
+            "temporalstore_raft_rustraft_leader_transfer_exact_once_present",
             report.leader_transfer_exact_once_present,
         ),
         (
-            "temporalstore_raft_byteraft_pending_joint_consensus_restart_present",
+            "temporalstore_raft_rustraft_pending_joint_consensus_restart_present",
             report.pending_joint_consensus_restart_present,
         ),
     ] {
@@ -10191,40 +10191,40 @@ fn append_byteraft_runtime_admin_prometheus(
     }
     for (name, value) in [
         (
-            "temporalstore_raft_byteraft_membership_learner_add_count",
+            "temporalstore_raft_rustraft_membership_learner_add_count",
             report.membership_evidence.learner_add_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_learner_catchup_count",
+            "temporalstore_raft_rustraft_membership_learner_catchup_count",
             report.membership_evidence.learner_catchup_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_learner_promote_count",
+            "temporalstore_raft_rustraft_membership_learner_promote_count",
             report.membership_evidence.learner_promote_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_voter_remove_count",
+            "temporalstore_raft_rustraft_membership_voter_remove_count",
             report.membership_evidence.voter_remove_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_leader_transfer_write_count",
+            "temporalstore_raft_rustraft_membership_leader_transfer_write_count",
             report.membership_evidence.leader_transfer_write_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_count",
+            "temporalstore_raft_rustraft_membership_leader_transfer_exact_once_commit_count",
             report
                 .membership_evidence
                 .leader_transfer_exact_once_commit_count,
         ),
         (
-            "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_id_count",
+            "temporalstore_raft_rustraft_membership_leader_transfer_exact_once_commit_id_count",
             report
                 .membership_evidence
                 .leader_transfer_exact_once_commit_ids
                 .len() as u64,
         ),
         (
-            "temporalstore_raft_byteraft_membership_pending_joint_consensus_restore_count",
+            "temporalstore_raft_rustraft_membership_pending_joint_consensus_restore_count",
             report
                 .membership_evidence
                 .pending_joint_consensus_restore_count,
@@ -10234,458 +10234,458 @@ fn append_byteraft_runtime_admin_prometheus(
     }
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_learner_auto_promote_present",
+        "temporalstore_raft_rustraft_learner_auto_promote_present",
         &[("kind", kind.to_string())],
         u64::from(report.learner_auto_promote_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_pending_joint_consensus_present",
+        "temporalstore_raft_rustraft_pending_joint_consensus_present",
         &[("kind", kind.to_string())],
         u64::from(report.pending_joint_consensus_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_append_backpressure_enforced Whether append pipeline backpressure evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_append_backpressure_enforced gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_append_backpressure_enforced Whether append pipeline backpressure evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_append_backpressure_enforced gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_append_backpressure_enforced",
+        "temporalstore_raft_rustraft_append_backpressure_enforced",
         &[("kind", kind.to_string())],
         u64::from(report.append_backpressure_enforced),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_apply_backpressure_enforced",
+        "temporalstore_raft_rustraft_apply_backpressure_enforced",
         &[("kind", kind.to_string())],
         u64::from(report.apply_backpressure_enforced),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_memory_replicate_bytes_enforced",
+        "temporalstore_raft_rustraft_memory_replicate_bytes_enforced",
         &[("kind", kind.to_string())],
         u64::from(report.memory_replicate_bytes_enforced),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_oversized_log_rejection_present",
+        "temporalstore_raft_rustraft_oversized_log_rejection_present",
         &[("kind", kind.to_string())],
         u64::from(report.oversized_log_rejection_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_out_of_order_append_handling_present",
+        "temporalstore_raft_rustraft_out_of_order_append_handling_present",
         &[("kind", kind.to_string())],
         u64::from(report.out_of_order_append_handling_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_reorder_queue_enabled Whether per-peer reorder queue evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_reorder_queue_enabled gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_reorder_queue_enabled Whether per-peer reorder queue evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_reorder_queue_enabled gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_reorder_queue_enabled",
+        "temporalstore_raft_rustraft_reorder_queue_enabled",
         &[("kind", kind.to_string())],
         u64::from(report.reorder_queue_enabled),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_sender_lifecycle_present Whether snapshot sender lifecycle evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_sender_lifecycle_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_snapshot_sender_lifecycle_present Whether snapshot sender lifecycle evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_snapshot_sender_lifecycle_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_sender_lifecycle_present",
+        "temporalstore_raft_rustraft_snapshot_sender_lifecycle_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_sender_lifecycle_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present Whether snapshot downloader lifecycle evidence is present.\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_snapshot_downloader_lifecycle_present Whether snapshot downloader lifecycle evidence is present.\n");
     out.push_str(
-        "# TYPE temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present gauge\n",
+        "# TYPE temporalstore_raft_rustraft_snapshot_downloader_lifecycle_present gauge\n",
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_downloader_lifecycle_present",
+        "temporalstore_raft_rustraft_snapshot_downloader_lifecycle_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_downloader_lifecycle_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_retry_backpressure_present Whether snapshot retry/backpressure evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_retry_backpressure_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_snapshot_retry_backpressure_present Whether snapshot retry/backpressure evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_snapshot_retry_backpressure_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_retry_backpressure_present",
+        "temporalstore_raft_rustraft_snapshot_retry_backpressure_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_retry_backpressure_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_chunk_retry_present Whether snapshot chunk retry evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_chunk_retry_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_snapshot_chunk_retry_present Whether snapshot chunk retry evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_snapshot_chunk_retry_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_chunk_retry_present",
+        "temporalstore_raft_rustraft_snapshot_chunk_retry_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_chunk_retry_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_snapshot_send_timeout_present Whether snapshot send timeout evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_snapshot_send_timeout_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_snapshot_send_timeout_present Whether snapshot send timeout evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_snapshot_send_timeout_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_send_timeout_present",
+        "temporalstore_raft_rustraft_snapshot_send_timeout_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_send_timeout_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_rate_limit_present",
+        "temporalstore_raft_rustraft_snapshot_rate_limit_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_rate_limit_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_install_progress_present",
+        "temporalstore_raft_rustraft_snapshot_install_progress_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_install_progress_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_install_rollback_present",
+        "temporalstore_raft_rustraft_snapshot_install_rollback_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_install_rollback_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_membership_change_present",
+        "temporalstore_raft_rustraft_snapshot_membership_change_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_membership_change_present),
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_snapshot_rejoin_after_compacted_log_present",
+        "temporalstore_raft_rustraft_snapshot_rejoin_after_compacted_log_present",
         &[("kind", kind.to_string())],
         u64::from(report.snapshot_rejoin_after_compacted_log_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_segment_lifecycle_present Whether WAL segment lifecycle evidence is present.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_segment_lifecycle_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_segment_lifecycle_present Whether WAL segment lifecycle evidence is present.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_segment_lifecycle_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_segment_lifecycle_present",
+        "temporalstore_raft_rustraft_wal_segment_lifecycle_present",
         &[("kind", kind.to_string())],
         u64::from(report.wal_segment_lifecycle_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_segment_count WAL segments retained by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_segment_count gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_segment_count WAL segments retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_segment_count gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_segment_count",
+        "temporalstore_raft_rustraft_wal_segment_count",
         &[("kind", kind.to_string())],
         report.wal_segment_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_total_bytes WAL bytes retained by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_total_bytes gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_total_bytes WAL bytes retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_total_bytes gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_total_bytes",
+        "temporalstore_raft_rustraft_wal_total_bytes",
         &[("kind", kind.to_string())],
         report.wal_total_bytes,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_active_segment_bytes Active WAL segment bytes retained by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_active_segment_bytes gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_active_segment_bytes Active WAL segment bytes retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_active_segment_bytes gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_active_segment_bytes",
+        "temporalstore_raft_rustraft_wal_active_segment_bytes",
         &[("kind", kind.to_string())],
         report.wal_active_segment_bytes,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_total_records WAL records retained by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_total_records gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_total_records WAL records retained by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_total_records gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_total_records",
+        "temporalstore_raft_rustraft_wal_total_records",
         &[("kind", kind.to_string())],
         report.wal_total_records,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_first_sequence First retained WAL record sequence.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_first_sequence gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_first_sequence First retained WAL record sequence.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_first_sequence gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_first_sequence",
+        "temporalstore_raft_rustraft_wal_first_sequence",
         &[("kind", kind.to_string())],
         report.wal_first_sequence,
     );
     out.push_str(
-        "# HELP temporalstore_raft_byteraft_wal_last_sequence Last retained WAL record sequence.\n",
+        "# HELP temporalstore_raft_rustraft_wal_last_sequence Last retained WAL record sequence.\n",
     );
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_last_sequence gauge\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_last_sequence gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_last_sequence",
+        "temporalstore_raft_rustraft_wal_last_sequence",
         &[("kind", kind.to_string())],
         report.wal_last_sequence,
     );
     out.push_str(
-        "# HELP temporalstore_raft_byteraft_wal_first_log_index First retained WAL log index.\n",
+        "# HELP temporalstore_raft_rustraft_wal_first_log_index First retained WAL log index.\n",
     );
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_first_log_index gauge\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_first_log_index gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_first_log_index",
+        "temporalstore_raft_rustraft_wal_first_log_index",
         &[("kind", kind.to_string())],
         report.wal_first_log_index,
     );
     out.push_str(
-        "# HELP temporalstore_raft_byteraft_wal_last_log_index Last retained WAL log index.\n",
+        "# HELP temporalstore_raft_rustraft_wal_last_log_index Last retained WAL log index.\n",
     );
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_last_log_index gauge\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_last_log_index gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_last_log_index",
+        "temporalstore_raft_rustraft_wal_last_log_index",
         &[("kind", kind.to_string())],
         report.wal_last_log_index,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_released_segment_count WAL segments released by the last segmented append.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_released_segment_count gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_released_segment_count WAL segments released by the last segmented append.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_released_segment_count gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_released_segment_count",
+        "temporalstore_raft_rustraft_wal_released_segment_count",
         &[("kind", kind.to_string())],
         report.wal_released_segment_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed Whether slow fsync backpressure evidence was observed.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_wal_slow_fsync_backpressure_observed Whether slow fsync backpressure evidence was observed.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_wal_slow_fsync_backpressure_observed gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_wal_slow_fsync_backpressure_observed",
+        "temporalstore_raft_rustraft_wal_slow_fsync_backpressure_observed",
         &[("kind", kind.to_string())],
         u64::from(report.wal_slow_fsync_backpressure_observed),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_read_index_requests Read-index requests observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_read_index_requests Read-index requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_read_index_requests counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_read_index_requests",
+        "temporalstore_raft_rustraft_read_index_requests",
         &[("kind", kind.to_string())],
         report.read_index_requests,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_read_index_accepted Read-index requests accepted by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_read_index_accepted Read-index requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_read_index_accepted counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_read_index_accepted",
+        "temporalstore_raft_rustraft_read_index_accepted",
         &[("kind", kind.to_string())],
         report.read_index_accepted,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_read_index_rejected Read-index requests rejected by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_read_index_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_read_index_rejected Read-index requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_read_index_rejected counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_read_index_rejected",
+        "temporalstore_raft_rustraft_read_index_rejected",
         &[("kind", kind.to_string())],
         report.read_index_rejected,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_requests Lease-read requests observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_lease_read_requests Lease-read requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_lease_read_requests counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_lease_read_requests",
+        "temporalstore_raft_rustraft_lease_read_requests",
         &[("kind", kind.to_string())],
         report.lease_read_requests,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_accepted Lease-read requests accepted by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_lease_read_accepted Lease-read requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_lease_read_accepted counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_lease_read_accepted",
+        "temporalstore_raft_rustraft_lease_read_accepted",
         &[("kind", kind.to_string())],
         report.lease_read_accepted,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_lease_read_rejected Lease-read requests rejected by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_lease_read_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_lease_read_rejected Lease-read requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_lease_read_rejected counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_lease_read_rejected",
+        "temporalstore_raft_rustraft_lease_read_rejected",
         &[("kind", kind.to_string())],
         report.lease_read_rejected,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_stale_leader_lease_rejections Stale leader lease read rejections observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_stale_leader_lease_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_stale_leader_lease_rejections Stale leader lease read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_stale_leader_lease_rejections counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_stale_leader_lease_rejections",
+        "temporalstore_raft_rustraft_stale_leader_lease_rejections",
         &[("kind", kind.to_string())],
         report.stale_leader_lease_rejection_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_lagging_follower_read_rejections Lagging follower read rejections observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_lagging_follower_read_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_lagging_follower_read_rejections Lagging follower read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_lagging_follower_read_rejections counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_lagging_follower_read_rejections",
+        "temporalstore_raft_rustraft_lagging_follower_read_rejections",
         &[("kind", kind.to_string())],
         report.lagging_follower_read_rejection_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_requests Bounded-stale read requests observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_bounded_stale_read_requests Bounded-stale read requests observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_bounded_stale_read_requests counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_bounded_stale_read_requests",
+        "temporalstore_raft_rustraft_bounded_stale_read_requests",
         &[("kind", kind.to_string())],
         report.bounded_stale_read_requests,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_accepted Bounded-stale read requests accepted by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_bounded_stale_read_accepted Bounded-stale read requests accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_bounded_stale_read_accepted counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_bounded_stale_read_accepted",
+        "temporalstore_raft_rustraft_bounded_stale_read_accepted",
         &[("kind", kind.to_string())],
         report.bounded_stale_read_accepted_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_bounded_stale_read_rejected Bounded-stale read requests rejected by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_bounded_stale_read_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_bounded_stale_read_rejected Bounded-stale read requests rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_bounded_stale_read_rejected counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_bounded_stale_read_rejected",
+        "temporalstore_raft_rustraft_bounded_stale_read_rejected",
         &[("kind", kind.to_string())],
         report.bounded_stale_read_rejected_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_minority_partition_read_rejections Minority-partition read rejections observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_minority_partition_read_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_minority_partition_read_rejections Minority-partition read rejections observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_minority_partition_read_rejections counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_minority_partition_read_rejections",
+        "temporalstore_raft_rustraft_minority_partition_read_rejections",
         &[("kind", kind.to_string())],
         report.minority_partition_read_rejection_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_minority_partition_write_rejections Minority-partition write rejections observed by the raft runtime.\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_minority_partition_write_rejections Minority-partition write rejections observed by the raft runtime.\n");
     out.push_str(
-        "# TYPE temporalstore_raft_byteraft_minority_partition_write_rejections counter\n",
+        "# TYPE temporalstore_raft_rustraft_minority_partition_write_rejections counter\n",
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_minority_partition_write_rejections",
+        "temporalstore_raft_rustraft_minority_partition_write_rejections",
         &[("kind", kind.to_string())],
         report.minority_partition_write_rejection_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_healed_follower_catchup Healed follower catch-up observations by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_healed_follower_catchup counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_healed_follower_catchup Healed follower catch-up observations by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_healed_follower_catchup counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_healed_follower_catchup",
+        "temporalstore_raft_rustraft_healed_follower_catchup",
         &[("kind", kind.to_string())],
         report.healed_follower_catchup_count,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_requests Pre-vote attempts observed by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_pre_vote_requests Pre-vote attempts observed by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_pre_vote_requests counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_pre_vote_requests",
+        "temporalstore_raft_rustraft_pre_vote_requests",
         &[("kind", kind.to_string())],
         report.pre_vote_requests,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_accepted Pre-vote attempts accepted by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_pre_vote_accepted Pre-vote attempts accepted by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_pre_vote_accepted counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_pre_vote_accepted",
+        "temporalstore_raft_rustraft_pre_vote_accepted",
         &[("kind", kind.to_string())],
         report.pre_vote_accepted,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_pre_vote_rejected Pre-vote attempts rejected by the raft runtime.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_pre_vote_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_pre_vote_rejected Pre-vote attempts rejected by the raft runtime.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_pre_vote_rejected counter\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_pre_vote_rejected",
+        "temporalstore_raft_rustraft_pre_vote_rejected",
         &[("kind", kind.to_string())],
         report.pre_vote_rejected,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_match_index ByteRaft-style per-peer match index.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_match_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_match_index RustRaft-style per-peer match index.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_match_index gauge\n");
     out.push_str(
-        "# HELP temporalstore_raft_byteraft_peer_next_index ByteRaft-style per-peer next index.\n",
+        "# HELP temporalstore_raft_rustraft_peer_next_index RustRaft-style per-peer next index.\n",
     );
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_next_index gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_requests ByteRaft-style per-peer append requests.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_requests counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_accepted ByteRaft-style per-peer append requests accepted.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_accepted counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_rejected ByteRaft-style per-peer append requests rejected by pipeline backpressure.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_rejected counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_entries ByteRaft-style per-peer inflight entries.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_entries gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_bytes ByteRaft-style per-peer inflight bytes.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_bytes gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_queue_depth ByteRaft-style per-peer append queue depth.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_queue_depth gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_append_queue_limit ByteRaft-style per-peer append queue limit.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_append_queue_limit gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_inflight_bytes_limit ByteRaft-style per-peer inflight byte limit.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_inflight_bytes_limit gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_inflight_limit ByteRaft-style per-peer apply inflight task limit.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_inflight_limit gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_queue_depth ByteRaft-style per-peer apply queue depth.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_queue_depth gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_queue_max_depth ByteRaft-style per-peer max observed apply queue depth.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_queue_max_depth gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_apply_batch_bytes_limit ByteRaft-style per-peer apply batch byte limit.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_apply_batch_bytes_limit gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_queue_depth ByteRaft-style per-peer reorder queue depth.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_queue_depth gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_accepted ByteRaft-style per-peer reorder entries accepted.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_accepted counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_released ByteRaft-style per-peer reorder entries released to apply.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_released counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entries_rejected ByteRaft-style per-peer reorder entries rejected by window overflow.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entries_rejected counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_entry_timeouts ByteRaft-style per-peer reorder entry timeout count.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_entry_timeouts counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_reorder_dropped_packages ByteRaft-style per-peer dropped reordered append packages.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_reorder_dropped_packages counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_stale_term_rejections ByteRaft-style per-peer stale-term append rejections.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_stale_term_rejections counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_sending Whether a peer is sending a snapshot.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_sending gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installing Whether a peer is installing a snapshot.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installing gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_installed_index Last installed snapshot index per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_installed_index gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_attempts Snapshot send attempts per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_attempts counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_completed Snapshot sends completed per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_completed counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_failed Snapshot sends failed per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_failed counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_started Snapshot installs started per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_started counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_completed Snapshot installs completed per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_completed counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_rejected Snapshot installs rejected per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_rejected counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_rolled_back Snapshot install rollbacks per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_rolled_back counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_received_chunks Snapshot chunks received per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_next_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_append_requests RustRaft-style per-peer append requests.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_append_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_append_accepted RustRaft-style per-peer append requests accepted.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_append_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_append_rejected RustRaft-style per-peer append requests rejected by pipeline backpressure.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_append_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_inflight_entries RustRaft-style per-peer inflight entries.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_inflight_entries gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_inflight_bytes RustRaft-style per-peer inflight bytes.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_inflight_bytes gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_append_queue_depth RustRaft-style per-peer append queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_append_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_append_queue_limit RustRaft-style per-peer append queue limit.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_append_queue_limit gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_inflight_bytes_limit RustRaft-style per-peer inflight byte limit.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_inflight_bytes_limit gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_apply_inflight_limit RustRaft-style per-peer apply inflight task limit.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_apply_inflight_limit gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_apply_queue_depth RustRaft-style per-peer apply queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_apply_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_apply_queue_max_depth RustRaft-style per-peer max observed apply queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_apply_queue_max_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_apply_batch_bytes_limit RustRaft-style per-peer apply batch byte limit.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_apply_batch_bytes_limit gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_queue_depth RustRaft-style per-peer reorder queue depth.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_queue_depth gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_entries_accepted RustRaft-style per-peer reorder entries accepted.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_entries_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_entries_released RustRaft-style per-peer reorder entries released to apply.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_entries_released counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_entries_rejected RustRaft-style per-peer reorder entries rejected by window overflow.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_entries_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_entry_timeouts RustRaft-style per-peer reorder entry timeout count.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_entry_timeouts counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_reorder_dropped_packages RustRaft-style per-peer dropped reordered append packages.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_reorder_dropped_packages counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_stale_term_rejections RustRaft-style per-peer stale-term append rejections.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_stale_term_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_sending Whether a peer is sending a snapshot.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_sending gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_installing Whether a peer is installing a snapshot.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_installing gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_installed_index Last installed snapshot index per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_installed_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_send_attempts Snapshot send attempts per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_send_attempts counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_send_completed Snapshot sends completed per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_send_completed counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_send_failed Snapshot sends failed per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_send_failed counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_started Snapshot installs started per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_install_started counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_completed Snapshot installs completed per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_install_completed counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_rejected Snapshot installs rejected per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_install_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_rolled_back Snapshot install rollbacks per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_install_rolled_back counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_received_chunks Snapshot chunks received per peer.\n");
     out.push_str(
-        "# TYPE temporalstore_raft_byteraft_peer_snapshot_install_received_chunks gauge\n",
+        "# TYPE temporalstore_raft_rustraft_peer_snapshot_install_received_chunks gauge\n",
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_install_total_chunks Snapshot chunks expected per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_install_total_chunks gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_retry_count Snapshot retry/rejection count per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_retry_count counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections Snapshot backpressure rejection count per peer.\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_install_total_chunks Snapshot chunks expected per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_install_total_chunks gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_retry_count Snapshot retry/rejection count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_retry_count counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_backpressure_rejections Snapshot backpressure rejection count per peer.\n");
     out.push_str(
-        "# TYPE temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections counter\n",
+        "# TYPE temporalstore_raft_rustraft_peer_snapshot_backpressure_rejections counter\n",
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms Snapshot sender elapsed time per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_snapshot_send_timeouts Snapshot sender timeout count per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_snapshot_send_timeouts counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_requests Leader-transfer requests per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_requests counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_accepted Leader-transfer requests accepted per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_accepted counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_rejected Leader-transfer requests rejected per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_rejected counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_completed Leader-transfer completions per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_completed counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms Pending leader-transfer elapsed time per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_transfer_leader_timeouts Leader-transfer timeout count per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_transfer_leader_timeouts counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_elapsed_ms ByteRaft-style offline elapsed time per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_elapsed_ms gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_timeout_reached Whether a peer has crossed the configured offline timeout.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_timeout_reached gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_peer_offline_timeout_rejections Offline timeout transitions per peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_peer_offline_timeout_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_send_elapsed_ms Snapshot sender elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_send_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_snapshot_send_timeouts Snapshot sender timeout count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_snapshot_send_timeouts counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_requests Leader-transfer requests per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_requests counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_accepted Leader-transfer requests accepted per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_accepted counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_rejected Leader-transfer requests rejected per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_rejected counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_completed Leader-transfer completions per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_completed counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_elapsed_ms Pending leader-transfer elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_transfer_leader_timeouts Leader-transfer timeout count per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_transfer_leader_timeouts counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_offline_elapsed_ms RustRaft-style offline elapsed time per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_offline_elapsed_ms gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_offline_timeout_reached Whether a peer has crossed the configured offline timeout.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_offline_timeout_reached gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_peer_offline_timeout_rejections Offline timeout transitions per peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_peer_offline_timeout_rejections counter\n");
     for peer in report.peer_pipeline_states {
         let labels = &[
             ("kind", kind.to_string()),
@@ -10698,434 +10698,434 @@ fn append_byteraft_runtime_admin_prometheus(
         ];
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_match_index",
+            "temporalstore_raft_rustraft_peer_match_index",
             labels,
             peer.match_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_next_index",
+            "temporalstore_raft_rustraft_peer_next_index",
             labels,
             peer.next_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_requests",
+            "temporalstore_raft_rustraft_peer_append_requests",
             labels,
             peer.append_requests,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_accepted",
+            "temporalstore_raft_rustraft_peer_append_accepted",
             labels,
             peer.append_accepted,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_rejected",
+            "temporalstore_raft_rustraft_peer_append_rejected",
             labels,
             peer.append_rejected,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_inflight_entries",
+            "temporalstore_raft_rustraft_peer_inflight_entries",
             labels,
             peer.inflight_entries,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_inflight_bytes",
+            "temporalstore_raft_rustraft_peer_inflight_bytes",
             labels,
             peer.inflight_bytes,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_queue_depth",
+            "temporalstore_raft_rustraft_peer_append_queue_depth",
             labels,
             peer.append_queue_depth,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_queue_limit",
+            "temporalstore_raft_rustraft_peer_append_queue_limit",
             labels,
             peer.append_queue_limit,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_inflight_bytes_limit",
+            "temporalstore_raft_rustraft_peer_inflight_bytes_limit",
             labels,
             peer.inflight_bytes_limit,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_append_queue_max_depth",
+            "temporalstore_raft_rustraft_peer_append_queue_max_depth",
             labels,
             peer.append_queue_max_depth,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_inflight_tasks",
+            "temporalstore_raft_rustraft_peer_apply_inflight_tasks",
             labels,
             peer.apply_inflight_tasks,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_inflight_limit",
+            "temporalstore_raft_rustraft_peer_apply_inflight_limit",
             labels,
             peer.apply_inflight_limit,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_queue_depth",
+            "temporalstore_raft_rustraft_peer_apply_queue_depth",
             labels,
             peer.apply_queue_depth,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_queue_max_depth",
+            "temporalstore_raft_rustraft_peer_apply_queue_max_depth",
             labels,
             peer.apply_queue_max_depth,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_batch_bytes_limit",
+            "temporalstore_raft_rustraft_peer_apply_batch_bytes_limit",
             labels,
             peer.apply_batch_bytes_limit,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_apply_backpressure_rejections",
+            "temporalstore_raft_rustraft_peer_apply_backpressure_rejections",
             labels,
             peer.apply_backpressure_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_memory_backpressure_rejections",
+            "temporalstore_raft_rustraft_peer_memory_backpressure_rejections",
             labels,
             peer.memory_backpressure_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_oversized_log_rejections",
+            "temporalstore_raft_rustraft_peer_oversized_log_rejections",
             labels,
             peer.oversized_log_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_queue_depth",
+            "temporalstore_raft_rustraft_peer_reorder_queue_depth",
             labels,
             peer.reorder_queue_depth,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_out_of_order_append_rejections",
+            "temporalstore_raft_rustraft_peer_out_of_order_append_rejections",
             labels,
             peer.out_of_order_append_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_entries_accepted",
+            "temporalstore_raft_rustraft_peer_reorder_entries_accepted",
             labels,
             peer.reorder_entries_accepted,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_entries_released",
+            "temporalstore_raft_rustraft_peer_reorder_entries_released",
             labels,
             peer.reorder_entries_released,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_entries_rejected",
+            "temporalstore_raft_rustraft_peer_reorder_entries_rejected",
             labels,
             peer.reorder_entries_rejected,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_entry_timeouts",
+            "temporalstore_raft_rustraft_peer_reorder_entry_timeouts",
             labels,
             peer.reorder_entry_timeouts,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_reorder_dropped_packages",
+            "temporalstore_raft_rustraft_peer_reorder_dropped_packages",
             labels,
             peer.reorder_dropped_packages,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_stale_term_rejections",
+            "temporalstore_raft_rustraft_peer_stale_term_rejections",
             labels,
             peer.stale_term_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_sending",
+            "temporalstore_raft_rustraft_peer_snapshot_sending",
             labels,
             u64::from(peer.snapshot_sending),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_installing",
+            "temporalstore_raft_rustraft_peer_snapshot_installing",
             labels,
             u64::from(peer.snapshot_installing),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_installed_index",
+            "temporalstore_raft_rustraft_peer_snapshot_installed_index",
             labels,
             peer.snapshot_installed_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_send_attempts",
+            "temporalstore_raft_rustraft_peer_snapshot_send_attempts",
             labels,
             peer.snapshot_send_attempts,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_send_completed",
+            "temporalstore_raft_rustraft_peer_snapshot_send_completed",
             labels,
             peer.snapshot_send_completed,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_send_failed",
+            "temporalstore_raft_rustraft_peer_snapshot_send_failed",
             labels,
             peer.snapshot_send_failed,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_started",
+            "temporalstore_raft_rustraft_peer_snapshot_install_started",
             labels,
             peer.snapshot_install_started,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_completed",
+            "temporalstore_raft_rustraft_peer_snapshot_install_completed",
             labels,
             peer.snapshot_install_completed,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_rejected",
+            "temporalstore_raft_rustraft_peer_snapshot_install_rejected",
             labels,
             peer.snapshot_install_rejected,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_rolled_back",
+            "temporalstore_raft_rustraft_peer_snapshot_install_rolled_back",
             labels,
             peer.snapshot_install_rolled_back,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_received_chunks",
+            "temporalstore_raft_rustraft_peer_snapshot_install_received_chunks",
             labels,
             peer.snapshot_install_received_chunks,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_total_chunks",
+            "temporalstore_raft_rustraft_peer_snapshot_install_total_chunks",
             labels,
             peer.snapshot_install_total_chunks,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille",
+            "temporalstore_raft_rustraft_peer_snapshot_install_progress_per_mille",
             labels,
             peer.snapshot_install_progress_per_mille,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_retry_count",
+            "temporalstore_raft_rustraft_peer_snapshot_retry_count",
             labels,
             peer.snapshot_retry_count,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_chunk_retry_count",
+            "temporalstore_raft_rustraft_peer_snapshot_chunk_retry_count",
             labels,
             peer.snapshot_chunk_retry_count,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_backpressure_rejections",
+            "temporalstore_raft_rustraft_peer_snapshot_backpressure_rejections",
             labels,
             peer.snapshot_backpressure_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
+            "temporalstore_raft_rustraft_peer_snapshot_rate_limit_rejections",
             labels,
             peer.snapshot_rate_limit_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
+            "temporalstore_raft_rustraft_peer_snapshot_during_membership_change",
             labels,
             u64::from(peer.snapshot_during_membership_change),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
+            "temporalstore_raft_rustraft_peer_snapshot_rejoin_after_compacted_log",
             labels,
             u64::from(peer.snapshot_rejoin_after_compacted_log),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_auto_promoted_from_learner",
+            "temporalstore_raft_rustraft_peer_auto_promoted_from_learner",
             labels,
             u64::from(peer.auto_promoted_from_learner),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_send_elapsed_ms",
+            "temporalstore_raft_rustraft_peer_snapshot_send_elapsed_ms",
             labels,
             peer.snapshot_send_elapsed_ms,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_snapshot_send_timeouts",
+            "temporalstore_raft_rustraft_peer_snapshot_send_timeouts",
             labels,
             peer.snapshot_send_timeouts,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_requests",
+            "temporalstore_raft_rustraft_peer_transfer_leader_requests",
             labels,
             peer.transfer_leader_requests,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_accepted",
+            "temporalstore_raft_rustraft_peer_transfer_leader_accepted",
             labels,
             peer.transfer_leader_accepted,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_rejected",
+            "temporalstore_raft_rustraft_peer_transfer_leader_rejected",
             labels,
             peer.transfer_leader_rejected,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_completed",
+            "temporalstore_raft_rustraft_peer_transfer_leader_completed",
             labels,
             peer.transfer_leader_completed,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_elapsed_ms",
+            "temporalstore_raft_rustraft_peer_transfer_leader_elapsed_ms",
             labels,
             peer.transfer_leader_elapsed_ms,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_transfer_leader_timeouts",
+            "temporalstore_raft_rustraft_peer_transfer_leader_timeouts",
             labels,
             peer.transfer_leader_timeouts,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_offline_elapsed_ms",
+            "temporalstore_raft_rustraft_peer_offline_elapsed_ms",
             labels,
             peer.offline_elapsed_ms,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_offline_timeout_reached",
+            "temporalstore_raft_rustraft_peer_offline_timeout_reached",
             labels,
             u64::from(peer.offline_timeout_reached),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_peer_offline_timeout_rejections",
+            "temporalstore_raft_rustraft_peer_offline_timeout_rejections",
             labels,
             peer.offline_timeout_rejections,
         );
     }
 }
 
-fn append_byteraft_local_status_prometheus(
+fn append_rustraft_local_status_prometheus(
     out: &mut String,
     kind: &str,
-    report: ByteRaftLocalStatusReport,
+    report: RustRaftLocalStatusReport,
 ) {
-    out.push_str("# HELP temporalstore_raft_byteraft_local_pending_joint_consensus_present Whether local status has pending joint-consensus membership.\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_pending_joint_consensus_present Whether local status has pending joint-consensus membership.\n");
     out.push_str(
-        "# TYPE temporalstore_raft_byteraft_local_pending_joint_consensus_present gauge\n",
+        "# TYPE temporalstore_raft_rustraft_local_pending_joint_consensus_present gauge\n",
     );
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_pending_joint_consensus_present",
+        "temporalstore_raft_rustraft_local_pending_joint_consensus_present",
         &[("kind", kind.to_string())],
         u64::from(report.pending_joint_consensus.is_some()),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_witness_membership_present Whether local status has a witness member.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_witness_membership_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_witness_membership_present Whether local status has a witness member.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_witness_membership_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_witness_membership_present",
+        "temporalstore_raft_rustraft_local_witness_membership_present",
         &[("kind", kind.to_string())],
         u64::from(report.witness_membership_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_learner_membership_present Whether local status has a learner member.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_learner_membership_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_learner_membership_present Whether local status has a learner member.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_learner_membership_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_learner_membership_present",
+        "temporalstore_raft_rustraft_local_learner_membership_present",
         &[("kind", kind.to_string())],
         u64::from(report.learner_membership_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_learner_auto_promote_present Whether local status observed learner auto-promotion evidence.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_learner_auto_promote_present gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_learner_auto_promote_present Whether local status observed learner auto-promotion evidence.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_learner_auto_promote_present gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_learner_auto_promote_present",
+        "temporalstore_raft_rustraft_local_learner_auto_promote_present",
         &[("kind", kind.to_string())],
         u64::from(report.learner_auto_promote_present),
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_wal_first_log_index First retained WAL log index visible in local status.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_wal_first_log_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_wal_first_log_index First retained WAL log index visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_wal_first_log_index gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_wal_first_log_index",
+        "temporalstore_raft_rustraft_local_wal_first_log_index",
         &[("kind", kind.to_string())],
         report.wal_first_log_index,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_wal_last_log_index Last retained WAL log index visible in local status.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_wal_last_log_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_wal_last_log_index Last retained WAL log index visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_wal_last_log_index gauge\n");
     push_raft_metric(
         out,
-        "temporalstore_raft_byteraft_local_wal_last_log_index",
+        "temporalstore_raft_rustraft_local_wal_last_log_index",
         &[("kind", kind.to_string())],
         report.wal_last_log_index,
     );
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_role ByteRaft-style local-status peer role as a labeled gauge.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_role gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_participates_in_quorum Whether a peer participates in quorum.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_participates_in_quorum gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_can_serve_data Whether a peer can serve data reads.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_serve_data gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_can_be_leader Whether a peer can become leader.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_can_be_leader gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_match_index ByteRaft-style local peer match index.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_match_index gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_next_index ByteRaft-style local peer next index.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_next_index gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_sending Whether local status sees a snapshot sender active for the peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_sending gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_installing Whether local status sees a snapshot install active for the peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_installing gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_snapshot_installed_index Last installed snapshot index for the peer.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_snapshot_installed_index gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_transfer_leader_target Whether the peer is the active leader-transfer target.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_transfer_leader_target gauge\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_pre_vote_rejections Pre-vote rejections visible in local status.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_pre_vote_rejections counter\n");
-    out.push_str("# HELP temporalstore_raft_byteraft_local_peer_election_rejections Election rejections visible in local status.\n");
-    out.push_str("# TYPE temporalstore_raft_byteraft_local_peer_election_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_role RustRaft-style local-status peer role as a labeled gauge.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_role gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_participates_in_quorum Whether a peer participates in quorum.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_participates_in_quorum gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_can_serve_data Whether a peer can serve data reads.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_can_serve_data gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_can_be_leader Whether a peer can become leader.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_can_be_leader gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_match_index RustRaft-style local peer match index.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_match_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_next_index RustRaft-style local peer next index.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_next_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_snapshot_sending Whether local status sees a snapshot sender active for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_snapshot_sending gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_snapshot_installing Whether local status sees a snapshot install active for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_snapshot_installing gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_snapshot_installed_index Last installed snapshot index for the peer.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_snapshot_installed_index gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_transfer_leader_target Whether the peer is the active leader-transfer target.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_transfer_leader_target gauge\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_pre_vote_rejections Pre-vote rejections visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_pre_vote_rejections counter\n");
+    out.push_str("# HELP temporalstore_raft_rustraft_local_peer_election_rejections Election rejections visible in local status.\n");
+    out.push_str("# TYPE temporalstore_raft_rustraft_local_peer_election_rejections counter\n");
     for peer in report.peers {
         let labels = &[
             ("kind", kind.to_string()),
@@ -11141,73 +11141,73 @@ fn append_byteraft_local_status_prometheus(
         ];
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_role",
+            "temporalstore_raft_rustraft_local_peer_role",
             labels,
             1,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_participates_in_quorum",
+            "temporalstore_raft_rustraft_local_peer_participates_in_quorum",
             labels,
             u64::from(peer.participates_in_quorum),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_can_serve_data",
+            "temporalstore_raft_rustraft_local_peer_can_serve_data",
             labels,
             u64::from(peer.can_serve_data),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_can_be_leader",
+            "temporalstore_raft_rustraft_local_peer_can_be_leader",
             labels,
             u64::from(peer.can_be_leader),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_match_index",
+            "temporalstore_raft_rustraft_local_peer_match_index",
             labels,
             peer.pipeline_state.match_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_next_index",
+            "temporalstore_raft_rustraft_local_peer_next_index",
             labels,
             peer.pipeline_state.next_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_snapshot_sending",
+            "temporalstore_raft_rustraft_local_peer_snapshot_sending",
             labels,
             u64::from(peer.pipeline_state.snapshot_sending),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_snapshot_installing",
+            "temporalstore_raft_rustraft_local_peer_snapshot_installing",
             labels,
             u64::from(peer.pipeline_state.snapshot_installing),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_snapshot_installed_index",
+            "temporalstore_raft_rustraft_local_peer_snapshot_installed_index",
             labels,
             peer.pipeline_state.snapshot_installed_index,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_transfer_leader_target",
+            "temporalstore_raft_rustraft_local_peer_transfer_leader_target",
             labels,
             u64::from(peer.pipeline_state.transfer_leader_target),
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_pre_vote_rejections",
+            "temporalstore_raft_rustraft_local_peer_pre_vote_rejections",
             labels,
             peer.pipeline_state.pre_vote_rejections,
         );
         push_raft_metric(
             out,
-            "temporalstore_raft_byteraft_local_peer_election_rejections",
+            "temporalstore_raft_rustraft_local_peer_election_rejections",
             labels,
             peer.pipeline_state.election_rejections,
         );

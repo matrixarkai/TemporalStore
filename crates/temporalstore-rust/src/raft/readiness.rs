@@ -576,7 +576,7 @@ fn process_rollout_evidence_blockers<T: RolloutEvidenceView>(
         blockers.push(RaftReadinessEvidenceBlocker {
             blocker: format!("{prefix}_operational_semantics_missing"),
             evidence_field: format!("{prefix}.operational_semantics.{missing}"),
-            detail: "RustRaft/ByteRaft-derived operational semantics evidence is incomplete."
+            detail: "RustRaft/RustRaft-derived operational semantics evidence is incomplete."
                 .to_string(),
         });
     }

@@ -586,12 +586,12 @@ fn run_membership_role_process_evidence(
         .first()
         .expect("distributed harness requires at least one runtime")
         .cluster()
-        .byteraft_runtime_admin_report();
+        .rustraft_runtime_admin_report();
     let local = runtimes
         .first()
         .expect("distributed harness requires at least one runtime")
         .cluster()
-        .byteraft_local_status_report();
+        .rustraft_local_status_report();
 
     let witness_role_observed = admin.witness_membership_present
         && local.peers.iter().any(|peer| {

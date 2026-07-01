@@ -1226,7 +1226,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
                 });
             assert_eq!(
                 command.scenario.as_deref(),
-                Some("production_openraft_byteraft_process_path_semantics"),
+                Some("production_openraft_rustraft_process_path_semantics"),
                 "case={} step={} unsupported Raft process-path scenario",
                 case.name,
                 step.name
@@ -1239,7 +1239,7 @@ fn maybe_run_shared_harness_command(case: &UnifiedCase, step: &UnifiedStep) -> b
             true
         }
         "raft_membership_op" => {
-            if case.name == "raft_byteraft_membership_roles"
+            if case.name == "raft_rustraft_membership_roles"
                 && step.name == "setup_three_voter_cluster"
             {
                 execute_raft_membership_shared_case(case);
@@ -2915,7 +2915,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
                 let node_id = json_u64(&step.command, "node_id");
                 let local = cluster.local_status(node_id).unwrap();
                 assert_eq!(local.replica_role, json_raft_role(&step.command));
-                let report = cluster.byteraft_local_status_report();
+                let report = cluster.rustraft_local_status_report();
                 let peer = report
                     .peers
                     .iter()
@@ -2942,7 +2942,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_local_status_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_local_status_report();
+                let report = cluster.rustraft_local_status_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -2973,7 +2973,7 @@ fn execute_raft_membership_shared_case(case: &UnifiedCase) {
             }
             "assert_runtime_admin_report" => {
                 let cluster = cluster.as_ref().unwrap();
-                let report = cluster.byteraft_runtime_admin_report();
+                let report = cluster.rustraft_runtime_admin_report();
                 if step.command.get("expect_witness").is_some() {
                     assert_eq!(
                         report.witness_membership_present,
@@ -3053,12 +3053,12 @@ fn verify_raft_openraft_process_path_default_gate() {
     assert!(readiness.durable_apply_index_snapshot_integrated);
     assert!(readiness.metaserver_membership_workflow_present);
     assert!(readiness.metaserver_driven_membership_present);
-    assert!(readiness.byteraft_per_peer_pipeline_state_present);
-    assert!(readiness.byteraft_reorder_queue_state_present);
-    assert!(readiness.byteraft_snapshot_sender_downloader_lifecycle_present);
-    assert!(readiness.byteraft_wal_segment_lifecycle_present);
-    assert!(readiness.byteraft_read_index_lease_semantics_present);
-    assert!(readiness.byteraft_admin_status_surface_present);
+    assert!(readiness.rustraft_per_peer_pipeline_state_present);
+    assert!(readiness.rustraft_reorder_queue_state_present);
+    assert!(readiness.rustraft_snapshot_sender_downloader_lifecycle_present);
+    assert!(readiness.rustraft_wal_segment_lifecycle_present);
+    assert!(readiness.rustraft_read_index_lease_semantics_present);
+    assert!(readiness.rustraft_admin_status_surface_present);
     assert!(
         !readiness.complete,
         "distributed Raft readiness must not pass without multi-process evidence"
@@ -3080,22 +3080,22 @@ fn verify_raft_openraft_process_path_default_gate() {
         .message
         .contains("local Raft deployment mode is disabled"));
 
-    let byteraft = temporalstore_rust::raft::raft_byteraft_runtime_readiness();
-    assert!(byteraft.runtime_report_present);
-    assert!(byteraft.per_peer_pipeline_state_present);
-    assert!(byteraft.reorder_queue_state_present);
-    assert!(byteraft.snapshot_sender_downloader_lifecycle_present);
-    assert!(byteraft.wal_segment_lifecycle_present);
-    assert!(byteraft.read_index_lease_semantics_present);
-    assert!(byteraft.stale_follower_write_rejection_present);
-    assert!(byteraft.admin_status_surface_present);
+    let rustraft = temporalstore_rust::raft::raft_rustraft_runtime_readiness();
+    assert!(rustraft.runtime_report_present);
+    assert!(rustraft.per_peer_pipeline_state_present);
+    assert!(rustraft.reorder_queue_state_present);
+    assert!(rustraft.snapshot_sender_downloader_lifecycle_present);
+    assert!(rustraft.wal_segment_lifecycle_present);
+    assert!(rustraft.read_index_lease_semantics_present);
+    assert!(rustraft.stale_follower_write_rejection_present);
+    assert!(rustraft.admin_status_surface_present);
     assert!(
-        byteraft.process_path_operational_semantics_ready,
+        rustraft.process_path_operational_semantics_ready,
         "{:?}",
-        byteraft.missing
+        rustraft.missing
     );
 
-    let report = byteraft.report;
+    let report = rustraft.report;
     assert!(report.read_index_validated);
     assert!(report.lease_read_validated);
     assert!(report.stale_leader_lease_rejected);

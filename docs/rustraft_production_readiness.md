@@ -61,8 +61,8 @@ TemporalStore consumes the separate RustRaft library and validates:
 - The production gate requires peer pipeline, snapshot lifecycle, WAL lifecycle,
   data-node rollout, and metaserver rollout evidence.
 - Current data-node/metaserver readiness reports `production_ready`.
-- C++ ByteRaft/DataRaft-style semantics execute in Rust through the shared
-  corpus case `raft_cpp_byteraft_data_raft_semantics_in_rust`.
+- C++ RustRaft/DataRaft-style semantics execute in Rust through the shared
+  corpus case `raft_cpp_rustraft_data_raft_semantics_in_rust`.
 
 The intended production rule is:
 

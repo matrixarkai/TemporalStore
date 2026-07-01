@@ -59,7 +59,7 @@ From the repository root:
 ```bash
 cargo fmt --all -- --check
 cargo check -p temporalstore-rust --lib --bins
-cargo test -p temporalstore-rust byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus --lib -- --test-threads=1
+cargo test -p temporalstore-rust rustraft_admin_reports_witness_auto_promote_and_pending_joint_consensus --lib -- --test-threads=1
 python3 tools/run_temporalstore_unified_tests.py --validate-only
 python3 tools/validate_rust_product_test_guard.py
 python3 tools/validate_no_duplicate_tests.py

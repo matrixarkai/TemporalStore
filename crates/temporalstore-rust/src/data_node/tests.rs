@@ -2203,7 +2203,7 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
     assert_eq!(runtime.stats().background_queue_depth, 1);
 }
 
-// shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+// shared-corpus: storage_rustraft_dump_load_atomicity storage_rustraft_cache_refill_pressure
 #[test]
 fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     let dir = tempdir().unwrap();
@@ -2294,7 +2294,7 @@ fn storage_manager_cycle_runs_as_bounded_background_data_node_task() {
     assert_eq!(runtime.stats().background_queue_depth, 0);
 }
 
-// shared-corpus: storage_byteraft_dump_load_atomicity storage_byteraft_cache_refill_pressure
+// shared-corpus: storage_rustraft_dump_load_atomicity storage_rustraft_cache_refill_pressure
 #[test]
 fn storage_manager_scheduler_submits_deduplicated_background_cycles() {
     let dir = tempdir().unwrap();

@@ -1115,7 +1115,7 @@ fn append_entries_reorder_queue_records_gap_and_recovers_after_prefix_arrives() 
         Some("out_of_order_append_queued")
     );
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     let peer = admin
         .peer_pipeline_states
         .iter()
@@ -1232,7 +1232,7 @@ fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
         .unwrap_err();
     assert!(matches!(oversized, RaftError::LogEntryTooLarge { .. }));
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert!(admin.append_backpressure_enforced);
     assert!(admin.apply_backpressure_enforced);
     assert!(admin.memory_replicate_bytes_enforced);
@@ -1261,12 +1261,12 @@ fn replication_pipeline_enforces_inflight_apply_memory_and_oversized_limits() {
     assert!(apply_peer.apply_backpressure_rejections > 0);
 
     let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_limit"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_inflight_bytes_limit"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_inflight_limit"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_queue_depth"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_queue_max_depth"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_apply_batch_bytes_limit"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_append_queue_limit"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_inflight_bytes_limit"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_apply_inflight_limit"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_apply_queue_depth"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_apply_queue_max_depth"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_apply_batch_bytes_limit"));
 }
 
 // shared-corpus: raft_rustraft_replication_backpressure
@@ -1363,7 +1363,7 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
     assert!(!stale.success);
     assert_eq!(stale.reject_reason.as_deref(), Some("stale_term"));
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert!(admin.out_of_order_append_handling_present);
     assert!(admin.reorder_timeout_drop_present);
     assert!(admin.stale_term_rejection_present);
@@ -1381,9 +1381,9 @@ fn append_entries_reorder_window_timeout_and_stale_term_are_reported() {
     assert!(peer.reorder_entries_rejected >= 2);
     assert_eq!(peer.stale_term_rejections, 1);
     let metrics = cluster.prometheus_metrics();
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_entry_timeouts"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_dropped_packages"));
-    assert!(metrics.contains("temporalstore_raft_byteraft_peer_stale_term_rejections"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_reorder_entry_timeouts"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_reorder_dropped_packages"));
+    assert!(metrics.contains("temporalstore_raft_rustraft_peer_stale_term_rejections"));
 }
 
 #[test]
@@ -2002,7 +2002,7 @@ fn rustraft_snapshot_chunk_retry_releases_backpressure_and_installs_chunk() {
 
 // shared-corpus: raft_rustraft_snapshot_chunk_retry_rollback_matrix raft_rustraft_snapshot_lifecycle_depth
 #[test]
-fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
+fn rustraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin() {
     let cluster = RaftCluster::new_single_shard_with_config(
         214,
         [1, 2, 3],
@@ -2059,7 +2059,7 @@ fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_an
         RaftError::InvalidSnapshotChunk(message) if message.contains("metadata changed")
     ));
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert!(admin.snapshot_retry_backpressure_present);
     assert!(admin.snapshot_chunk_retry_present);
     assert!(admin.snapshot_send_timeout_present);
@@ -2092,19 +2092,19 @@ fn byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_an
 
     let metrics = cluster.prometheus_metrics();
     for metric in [
-        "temporalstore_raft_byteraft_snapshot_chunk_retry_present",
-        "temporalstore_raft_byteraft_snapshot_send_timeout_present",
-        "temporalstore_raft_byteraft_snapshot_rate_limit_present",
-        "temporalstore_raft_byteraft_snapshot_install_progress_present",
-        "temporalstore_raft_byteraft_snapshot_install_rollback_present",
-        "temporalstore_raft_byteraft_snapshot_membership_change_present",
-        "temporalstore_raft_byteraft_snapshot_rejoin_after_compacted_log_present",
-        "temporalstore_raft_byteraft_peer_snapshot_send_timeouts",
-        "temporalstore_raft_byteraft_peer_snapshot_rate_limit_rejections",
-        "temporalstore_raft_byteraft_peer_snapshot_install_progress_per_mille",
-        "temporalstore_raft_byteraft_peer_snapshot_install_rolled_back",
-        "temporalstore_raft_byteraft_peer_snapshot_during_membership_change",
-        "temporalstore_raft_byteraft_peer_snapshot_rejoin_after_compacted_log",
+        "temporalstore_raft_rustraft_snapshot_chunk_retry_present",
+        "temporalstore_raft_rustraft_snapshot_send_timeout_present",
+        "temporalstore_raft_rustraft_snapshot_rate_limit_present",
+        "temporalstore_raft_rustraft_snapshot_install_progress_present",
+        "temporalstore_raft_rustraft_snapshot_install_rollback_present",
+        "temporalstore_raft_rustraft_snapshot_membership_change_present",
+        "temporalstore_raft_rustraft_snapshot_rejoin_after_compacted_log_present",
+        "temporalstore_raft_rustraft_peer_snapshot_send_timeouts",
+        "temporalstore_raft_rustraft_peer_snapshot_rate_limit_rejections",
+        "temporalstore_raft_rustraft_peer_snapshot_install_progress_per_mille",
+        "temporalstore_raft_rustraft_peer_snapshot_install_rolled_back",
+        "temporalstore_raft_rustraft_peer_snapshot_during_membership_change",
+        "temporalstore_raft_rustraft_peer_snapshot_rejoin_after_compacted_log",
     ] {
         assert!(metrics.contains(metric), "missing snapshot metric {metric}");
     }
@@ -3783,7 +3783,7 @@ fn raft_prevote_rejects_candidate_without_quorum() {
         RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
     );
     assert_eq!(cluster.leader_id(), 1);
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert_eq!(admin.pre_vote_requests, 1);
     assert_eq!(admin.pre_vote_rejected, 1);
     assert!(admin.pre_vote_process_evidence_observed);
@@ -3832,7 +3832,7 @@ fn raft_election_controls_record_prohibition_offline_and_transfer_timeouts() {
         .unwrap();
     cluster.advance_time_ms(6);
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert!(admin.pre_vote_enforced);
     assert!(admin.election_prohibition_observed);
     assert!(admin.offline_timeout_observed);
@@ -3964,7 +3964,7 @@ fn raft_leader_lease_expiry_blocks_linearizable_reads_and_writes_until_heartbeat
 // shared-corpus: raft_rustraft_read_lease_fault_matrix
 // shared-corpus: raft_rustraft_packet_loss_fault_harness
 #[test]
-fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
+fn rustraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
     let cluster = RaftCluster::new_single_shard_with_config(
         1,
         [1, 2, 3],
@@ -4081,7 +4081,7 @@ fn byteraft_read_safety_fault_matrix_records_partition_and_catchup_evidence() {
         }
     );
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     let state = cluster.read_safety_runtime_state();
     assert!(state.stale_leader_lease_rejected > 0);
     assert!(state.lagging_follower_read_rejected > 0);
@@ -4679,7 +4679,7 @@ fn replica_roles_survive_wal_restore() {
 
 // shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
-fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
+fn rustraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
     let dir = tempfile::tempdir().unwrap();
     let cluster = RaftCluster::new_single_shard_with_wal(
         dir.path(),
@@ -4716,7 +4716,7 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
     )
     .unwrap();
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     assert!(admin.witness_membership_present);
     assert!(admin.learner_add_present);
     assert!(admin.learner_catchup_present);
@@ -4757,7 +4757,7 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         .capability_matrix
         .iter()
         .any(|item| item.capability == "membership_role_semantics" && item.ready));
-    let local = cluster.byteraft_local_status_report();
+    let local = cluster.rustraft_local_status_report();
     assert_eq!(local.wal_first_log_index, admin.wal_first_log_index);
     assert_eq!(local.wal_last_log_index, admin.wal_last_log_index);
     assert!(local.witness_membership_present);
@@ -4770,26 +4770,26 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         && !peer.can_be_leader));
     let metrics = cluster.prometheus_metrics();
     for metric in [
-        "temporalstore_raft_byteraft_local_wal_first_log_index",
-        "temporalstore_raft_byteraft_local_wal_last_log_index",
-        "temporalstore_raft_byteraft_local_peer_match_index",
-        "temporalstore_raft_byteraft_local_peer_next_index",
-        "temporalstore_raft_byteraft_local_peer_snapshot_sending",
-        "temporalstore_raft_byteraft_local_peer_snapshot_installing",
-        "temporalstore_raft_byteraft_local_peer_snapshot_installed_index",
-        "temporalstore_raft_byteraft_local_peer_transfer_leader_target",
-        "temporalstore_raft_byteraft_local_peer_pre_vote_rejections",
-        "temporalstore_raft_byteraft_local_peer_election_rejections",
-        "temporalstore_raft_byteraft_learner_add_present",
-        "temporalstore_raft_byteraft_learner_catchup_present",
-        "temporalstore_raft_byteraft_learner_promote_present",
-        "temporalstore_raft_byteraft_voter_remove_present",
-        "temporalstore_raft_byteraft_leader_transfer_exact_once_present",
-        "temporalstore_raft_byteraft_pending_joint_consensus_restart_present",
-        "temporalstore_raft_byteraft_membership_learner_add_count",
-        "temporalstore_raft_byteraft_membership_voter_remove_count",
-        "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_count",
-        "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_id_count",
+        "temporalstore_raft_rustraft_local_wal_first_log_index",
+        "temporalstore_raft_rustraft_local_wal_last_log_index",
+        "temporalstore_raft_rustraft_local_peer_match_index",
+        "temporalstore_raft_rustraft_local_peer_next_index",
+        "temporalstore_raft_rustraft_local_peer_snapshot_sending",
+        "temporalstore_raft_rustraft_local_peer_snapshot_installing",
+        "temporalstore_raft_rustraft_local_peer_snapshot_installed_index",
+        "temporalstore_raft_rustraft_local_peer_transfer_leader_target",
+        "temporalstore_raft_rustraft_local_peer_pre_vote_rejections",
+        "temporalstore_raft_rustraft_local_peer_election_rejections",
+        "temporalstore_raft_rustraft_learner_add_present",
+        "temporalstore_raft_rustraft_learner_catchup_present",
+        "temporalstore_raft_rustraft_learner_promote_present",
+        "temporalstore_raft_rustraft_voter_remove_present",
+        "temporalstore_raft_rustraft_leader_transfer_exact_once_present",
+        "temporalstore_raft_rustraft_pending_joint_consensus_restart_present",
+        "temporalstore_raft_rustraft_membership_learner_add_count",
+        "temporalstore_raft_rustraft_membership_voter_remove_count",
+        "temporalstore_raft_rustraft_membership_leader_transfer_exact_once_commit_count",
+        "temporalstore_raft_rustraft_membership_leader_transfer_exact_once_commit_id_count",
     ] {
         assert!(
             metrics.contains(metric),
@@ -5678,7 +5678,7 @@ fn rustraft_leader_transfer_under_high_write_load_commits_once() {
         }
     }
 
-    let admin = cluster.byteraft_runtime_admin_report();
+    let admin = cluster.rustraft_runtime_admin_report();
     let transferred_peer = admin
         .peer_pipeline_states
         .iter()
@@ -5698,9 +5698,9 @@ fn rustraft_leader_transfer_under_high_write_load_commits_once() {
         .any(|item| item.capability == "admin_status_surface" && item.ready));
 }
 
-// shared-corpus: raft_byteraft_admin_status_surface
+// shared-corpus: raft_rustraft_admin_status_surface
 #[test]
-fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
+fn rustraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
     let local_fixture = RaftCluster::new_single_shard(1, [1, 2, 3]);
     local_fixture
         .propose(Command::StringSet {
@@ -5708,7 +5708,7 @@ fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
             value: b"value".to_vec(),
         })
         .unwrap();
-    let local_admin = local_fixture.byteraft_runtime_admin_report();
+    let local_admin = local_fixture.rustraft_runtime_admin_report();
     assert!(!local_admin.admin_status_surface_complete);
     assert!(!local_admin.wal_segment_lifecycle_present);
     assert!(local_admin
@@ -5725,7 +5725,7 @@ fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
             value: b"value".to_vec(),
         })
         .unwrap();
-    let durable_admin = durable.byteraft_runtime_admin_report();
+    let durable_admin = durable.rustraft_runtime_admin_report();
     assert!(durable_admin.admin_status_surface_complete);
     assert!(durable_admin.wal_segment_lifecycle_present);
     assert!(durable_admin.wal_first_log_index > 0);
@@ -7334,7 +7334,7 @@ fn wal_backed_raft_cluster_compacts_wal_tail_but_recovers_latest_state() {
             value: Some(b"v7".to_vec())
         })
     );
-    let admin = restored.byteraft_runtime_admin_report();
+    let admin = restored.rustraft_runtime_admin_report();
     assert!(admin.wal_segment_lifecycle_present);
     assert_eq!(admin.wal_segment_count, 2);
     assert!(admin.wal_active_segment_id >= admin.wal_first_retained_segment_id);
