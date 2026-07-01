@@ -609,8 +609,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         lookup_updates: dict[tuple[str, str], list[int]] = {}
         locator_updates: dict[int, list[Json]] = {}
         placement_updates: dict[tuple[str, str], list[Json]] = {}
+        route_by_hash_field: dict[tuple[str, str], Json] = {}
         for bundle, record_key, record_id in bundles:
             location = {"key": record_key, "field": record_id}
+            route = self._storage_route_for_bundle(bundle)
             for record in bundle:
                 node_hash = record.get("node_hash")
                 scope_key_for_placement = str(record.get("scope_key") or "")
@@ -623,12 +625,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     except (TypeError, ValueError):
                         placement_node_hash = 0
                     if placement_node_hash:
-                        placement_updates.setdefault(
-                            (self._context_placement_lookup_key(scope_key_for_placement), str(placement_node_hash)),
-                            [],
-                        ).append(location)
+                        placement_key = (self._context_placement_lookup_key(scope_key_for_placement), str(placement_node_hash))
+                        placement_updates.setdefault(placement_key, []).append(location)
+                        if route:
+                            route_by_hash_field.setdefault(placement_key, route)
                 for ref_hash in context_index_ref_hashes(record):
                     locator_updates.setdefault(ref_hash, []).append(location)
+                    if route:
+                        route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
                 if record.get("record_type") != "context_index":
                     continue
                 index_name = str(record.get("index_name") or "").strip()
@@ -640,7 +644,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     scope_key = canonical_scope_key(scope) if scope else ""
                 ref_hashes = context_index_ref_hashes(record)
                 if scope_key and ref_hashes:
-                    lookup_updates.setdefault((self._context_index_lookup_key(scope_key), index_name), []).extend(ref_hashes)
+                    lookup_key = (self._context_index_lookup_key(scope_key), index_name)
+                    lookup_updates.setdefault(lookup_key, []).extend(ref_hashes)
+                    if route:
+                        route_by_hash_field.setdefault(lookup_key, route)
 
         entries: list[Json] = []
         for (key, field), new_refs in lookup_updates.items():
@@ -650,6 +657,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "key": key,
                     "field": field,
                     "value": json.dumps({"ref_hashes": merged_refs}, separators=(",", ":")),
+                    "storage_route": route_by_hash_field.get((key, field), {}),
                 }
             )
         locator_key = self._context_ref_locator_key()
@@ -661,6 +669,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "key": locator_key,
                     "field": field,
                     "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
+                    "storage_route": route_by_hash_field.get((locator_key, field), {}),
                 }
             )
         for (key, field), new_locations in placement_updates.items():
@@ -670,6 +679,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "key": key,
                     "field": field,
                     "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
+                    "storage_route": route_by_hash_field.get((key, field), {}),
                 }
             )
         return entries

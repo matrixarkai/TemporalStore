@@ -281,13 +281,15 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         adapter._write_backoff_s = 0.0
         adapter._write_throttle_s = 0.0
 
-        adapter._append_many_materialized(
+        adapter.append_many(
             [
                 {
                     "record_type": "context_event",
                     "event_id_hash": 123,
                     "tenant_hash": 1,
                     "scope_key": "scope",
+                    "node_hash": 44,
+                    "storage_options": {"storage_family": "shared_store", "write_mode": "async"},
                     "updated_at_ms": 1780000000000,
                     "text": "native batch append works",
                 },
@@ -296,6 +298,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "event_id_hash": 123 + mcp_core.CONTEXT_TIMELINE_FANOUT,
                     "tenant_hash": 1,
                     "scope_key": "scope",
+                    "node_hash": 44,
+                    "storage_options": {"storage_family": "shared_store", "write_mode": "async"},
                     "updated_at_ms": 1780000000000,
                     "text": "same millisecond collision slot",
                 },
@@ -308,6 +312,14 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(call["count_value"], "1")
         keys = {entry["key"] for entry in call["entries"]}
         self.assertIn("matrixark:test:native-append:records:000000", keys)
+        routed_entries = [entry for entry in call["entries"] if entry.get("storage_route", {}).get("placement_key")]
+        self.assertTrue(routed_entries)
+        for entry in routed_entries:
+            route = entry["storage_route"]
+            self.assertEqual(route["placement_key"], "context:scope:node=44")
+            self.assertEqual(route["routing_key"], "context:scope:node=44")
+            self.assertEqual(route["write_mode"], "async")
+            self.assertTrue(route["background_write"])
         self.assertTrue(any("context_event_by_ingestion_time" in key for key in keys))
         time_index_entries = [entry for entry in call["entries"] if "context_event_by_ingestion_time" in entry["key"]]
         self.assertEqual(len(time_index_entries), 2)

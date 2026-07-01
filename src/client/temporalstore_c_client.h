@@ -62,6 +62,7 @@ typedef struct temporalstore_hash_entry {
     const char* key;
     const char* field;
     const char* value;
+    const char* route_json;
 } temporalstore_hash_entry_t;
 
 typedef struct temporalstore_string_array {

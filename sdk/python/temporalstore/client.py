@@ -134,6 +134,7 @@ class _CHashEntry(ctypes.Structure):
         ("key", ctypes.c_char_p),
         ("field", ctypes.c_char_p),
         ("value", ctypes.c_char_p),
+        ("route_json", ctypes.c_char_p),
     ]
 
 
@@ -612,10 +613,14 @@ class Client:
         key_bytes = [_encode(str(entry["key"])) for entry in values]
         field_bytes = [_encode(str(entry["field"])) for entry in values]
         value_bytes = [_encode(str(entry.get("value", ""))) for entry in values]
+        route_bytes = [
+            _encode(json.dumps(entry.get("storage_route", {}), sort_keys=True, separators=(",", ":")))
+            for entry in values
+        ]
         array_type = _CHashEntry * len(values)
         c_entries = array_type(
             *[
-                _CHashEntry(key_bytes[i], field_bytes[i], value_bytes[i])
+                _CHashEntry(key_bytes[i], field_bytes[i], value_bytes[i], route_bytes[i])
                 for i in range(len(values))
             ]
         )
