@@ -12,6 +12,9 @@ try:
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
@@ -24,6 +27,9 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
+        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
@@ -1344,6 +1350,130 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 overflow = len(_DIRECT_RETRIEVAL_CANDIDATE_CACHE) - _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES
                 for key in list(_DIRECT_RETRIEVAL_CANDIDATE_CACHE)[:overflow]:
                     _DIRECT_RETRIEVAL_CANDIDATE_CACHE.pop(key, None)
+        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
+            stale_keys = [
+                key
+                for key in _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE
+                if key.startswith(f"{self._storage_prefix}|")
+                and f"|wm={int(current_count)}|" not in key
+            ]
+            for key in stale_keys:
+                _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
+            if len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) > _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES:
+                overflow = len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) - _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES
+                for key in list(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE)[:overflow]:
+                    _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
+
+    def _placement_candidate_table_cache_key(
+        self,
+        *,
+        count: int,
+        scope_key: str,
+        node_hash: int,
+        record_type: str,
+    ) -> str:
+        return (
+            f"{self._storage_prefix}|wm={int(count)}|scope={stable_hash(scope_key)}|"
+            f"node={int(node_hash)}|type={record_type}"
+        )
+
+    def _record_primary_hash(self, record: Json) -> int:
+        for field in (
+            "event_id_hash",
+            "entity_hash",
+            "segment_hash",
+            "compression_id_hash",
+            "summary_hash",
+            "chunk_hash",
+            "section_hash",
+            "skill_hash",
+            "resource_hash",
+            "batch_id_hash",
+            "ref_hash",
+        ):
+            value = record.get(field)
+            if value is not None:
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    break
+        return stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
+
+    def _placement_candidate_records_from_cache_or_load(
+        self,
+        *,
+        count: int,
+        scope: Json,
+        allowed_types: set[str],
+        selected_nodes: set[int],
+        locations: list[Json],
+    ) -> Json:
+        scope_key = canonical_scope_key(scope)
+        if not scope_key or not selected_nodes or not allowed_types:
+            return {"records": [], "cache_hit": False, "cache_entries": 0, "loaded_records": 0}
+
+        keys = [
+            self._placement_candidate_table_cache_key(
+                count=count,
+                scope_key=scope_key,
+                node_hash=node_hash,
+                record_type=record_type,
+            )
+            for node_hash in sorted(selected_nodes)
+            for record_type in sorted(allowed_types)
+        ]
+        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
+            cached_tables = [_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.get(key) for key in keys]
+            if keys and all(table is not None for table in cached_tables):
+                compact_rows = [
+                    row
+                    for table in cached_tables
+                    for row in (table or [])
+                ]
+                return {
+                    "records": [dict(row[3]) for row in compact_rows],
+                    "cache_hit": True,
+                    "cache_entries": len(compact_rows),
+                    "loaded_records": 0,
+                }
+
+        loaded_records = self._load_records_from_locations(locations)
+        grouped: dict[str, list[tuple[str, int, int, Json]]] = {key: [] for key in keys}
+        for record in loaded_records:
+            record_type = str(record.get("record_type") or "")
+            if record_type not in allowed_types:
+                continue
+            try:
+                node_hash = int(record.get("node_hash"))
+            except (TypeError, ValueError):
+                continue
+            if node_hash not in selected_nodes:
+                continue
+            key = self._placement_candidate_table_cache_key(
+                count=count,
+                scope_key=scope_key,
+                node_hash=node_hash,
+                record_type=record_type,
+            )
+            if key not in grouped:
+                continue
+            grouped[key].append((record_type, self._record_primary_hash(record), node_hash, dict(record)))
+
+        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
+            for key, compact_rows in grouped.items():
+                _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE[key] = compact_rows
+            if len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) > _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES:
+                overflow = len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) - _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES
+                for key in list(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE)[:overflow]:
+                    _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
+
+        compact_rows = [row for table in grouped.values() for row in table]
+        return {
+            "records": [dict(row[3]) for row in compact_rows],
+            "cache_hit": False,
+            "cache_entries": len(compact_rows),
+            "loaded_records": len(loaded_records),
+        }
 
     def _native_index_ref_hashes(self, *, scope: Json, secondary_index_groups: list[set[str]] | None) -> Json:
         scope_key = canonical_scope_key(scope)
@@ -1577,8 +1707,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         raw_records: list[Json] = []
         native_pushdown = False
         native_mode = ""
+        placement_cache_result: Json = {"cache_hit": False, "cache_entries": 0, "loaded_records": 0}
         if bool(placement_result.get("eligible")):
-            raw_records = self._load_records_from_locations(placement_result.get("locations", []))
+            placement_cache_result = self._placement_candidate_records_from_cache_or_load(
+                count=count,
+                scope=scope,
+                allowed_types=allowed_types,
+                selected_nodes=selected_nodes,
+                locations=placement_result.get("locations", []),
+            )
+            raw_records = placement_cache_result.get("records", [])
             native_pushdown = bool(raw_records)
             native_mode = "native_placement_prefetch"
             if not raw_records:
@@ -1626,6 +1764,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "native_placement_nodes": len(selected_nodes),
                 "native_placement_locator_rows": placement_result.get("locator_rows", 0),
                 "native_placement_locations": len(placement_result.get("locations", [])),
+                "native_placement_candidate_cache_hit": bool(placement_cache_result.get("cache_hit")),
+                "native_placement_candidate_cache_entries": int(placement_cache_result.get("cache_entries") or 0),
+                "native_placement_loaded_records": int(placement_cache_result.get("loaded_records") or 0),
                 "native_index_terms": index_result.get("index_terms", []),
                 "native_index_postings_found": index_result.get("postings_found", 0),
                 "native_index_ref_hash_count": len(index_result.get("ref_hashes", set())),

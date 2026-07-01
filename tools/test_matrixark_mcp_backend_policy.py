@@ -107,12 +107,14 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self._old_allow_local = mcp.MATRIXARK_ALLOW_LOCAL_BACKEND
         self._old_require_ready = mcp.MATRIXARK_REQUIRE_BACKEND_READY
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
+        mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
     def tearDown(self) -> None:
         mcp.MATRIXARK_MCP_PROFILE = self._old_profile
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = self._old_allow_local
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = self._old_require_ready
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
+        mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
 
     def test_scale_report_counts_compact_context_pack_groups(self) -> None:
         self.assertEqual(
@@ -508,6 +510,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
             }
             direct_result = direct.retrieval_records(**kwargs)
             reference_result = reference.retrieval_records(**kwargs)
+            mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
+            direct_cached_table_result = direct.retrieval_records(**kwargs)
 
         def logical_refs(rows: list[dict]) -> set[tuple[str, int]]:
             refs: set[tuple[str, int]] = set()
@@ -537,7 +541,30 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(placement_lookups)
         self.assertEqual({str(entry["field"]) for entry in placement_lookups[0]}, {"44"})
         self.assertEqual(direct_result["scan_stats"]["dropped_scope"], reference_result["scan_stats"]["dropped_by_scope"])
-        self.assertEqual(direct_result["scan_stats"]["dropped_node"], reference_result["scan_stats"]["dropped_by_node"])
+        self.assertEqual(reference_result["scan_stats"]["dropped_by_node"], 2)
+        self.assertEqual(direct_result["scan_stats"]["dropped_node"], 0)
+        self.assertTrue(direct_cached_table_result["scan_stats"]["native_placement_candidate_cache_hit"])
+        self.assertEqual(
+            logical_refs(direct_cached_table_result["records"]),
+            {("context_event", 101), ("context_embedding", 101), ("context_index", 101)},
+        )
+        direct.append_many(
+            [
+                {
+                    "record_type": "context_event",
+                    "event_id_hash": 404,
+                    "scope": scope,
+                    "scope_key": mcp_core.canonical_scope_key(scope),
+                    "node_hash": 44,
+                    "updated_at_ms": 1780000000003,
+                    "text": "New append changes the watermark.",
+                }
+            ]
+        )
+        mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
+        direct_after_append_result = direct.retrieval_records(**kwargs)
+        self.assertFalse(direct_after_append_result["scan_stats"]["native_placement_candidate_cache_hit"])
+        self.assertIn(("context_event", 404), logical_refs(direct_after_append_result["records"]))
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [
