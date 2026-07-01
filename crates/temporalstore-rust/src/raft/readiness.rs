@@ -277,6 +277,7 @@ fn process_path_proof_is_complete(
         && read_index_responses_observed > 0
         && restarted_node_count >= expected
         && per_node_log_store_inspection_count >= expected
+        && unique_non_empty_dirs(nodes.iter().map(|node| node.addr.as_str()))
         && unique_non_empty_dirs(nodes.iter().map(|node| node.wal_dir.as_str()))
         && unique_non_empty_dirs(nodes.iter().map(|node| node.snapshot_dir.as_str()))
 }
