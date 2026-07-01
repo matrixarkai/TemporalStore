@@ -849,6 +849,163 @@ Completed since the last backlog update:
   - Test model in sandbox.
   - Deploy model version.
 
+## P0 C++ And Rust TemporalStore Parity
+
+- Make C++ and Rust parity a release gate, not a documentation claim.
+  - Feature parity means the same shared corpus cases pass on both backends.
+  - Production readiness means the same live topology gates, failover tests,
+    observability, and storage lifecycle policies pass on both backends.
+  - Performance parity means Rust and C++ run the same live benchmark profile
+    with comparable p50/p95/p99, QPS, errors, timeout rate, fallback flags,
+    and selected-ref quality.
+
+- Lock the shared contract first.
+  - All cross-language behavior should live in TemporalStoreTestCorpus or an
+    equivalent shared contract runner, not in separate "almost same" C++ and
+    Rust tests.
+  - Required shared cases:
+    - append/read/scan/delete;
+    - native batch append;
+    - prefix scan;
+    - compact secondary-index postings;
+    - cache hot/cold residency;
+    - eviction and rehydrate from persistence;
+    - TTL/GC/compaction;
+    - async oplog and sync oplog;
+    - no-metaserver single-node mode;
+    - metaserver namespace/table/topology;
+    - proxy/client routing;
+    - Redis command compatibility;
+    - multi-node shared-store mode;
+    - Raft write/read/failover/snapshot/membership/scale-up/scale-down;
+    - MatrixArk ContextMemory ingestion, extraction, retrieval, audit-light
+      telemetry, replay/debug, resources, skills, cross-session, and shared
+      resource paths.
+
+- Close C++ native context retrieval correctness first.
+  - C++ native retrieve must return the same logical selected refs as Rust and
+    the Python reference packer for the same corpus.
+  - Validate:
+    - scope filtering;
+    - placement-key filtering;
+    - compact secondary-index prefiltering;
+    - stale/superseded filtering;
+    - shared resource/skill quota;
+    - cross-session quota and rerank;
+    - event/entity/resource/skill candidate packing.
+  - Do not tune C++ latency until selected refs are correct.
+
+- Push serving-critical work into both engines.
+  - Python MCP should remain API/auth/model orchestration only.
+  - C++ and Rust should own:
+    - placement-key routing;
+    - append queue and batch append;
+    - sync/async/shared-store/Raft durability routing;
+    - prefix scan;
+    - compact secondary-index lookup;
+    - parsed candidate cache;
+    - candidate fetch;
+    - score/rerank;
+    - token-budget pack assembly;
+    - telemetry counters.
+  - Python should receive a mostly finished ContextPack and compact telemetry,
+    not thousands of raw records or JSONL logs.
+
+- Make storage and lifecycle knobs symmetric.
+  - C++ and Rust must accept the same public tuning names:
+    - `TS_CONTEXT_PAGE_TARGET_BYTES`;
+    - `TS_BLOCK_SEGMENT_TARGET_BYTES`;
+    - `TS_STORAGE_ZONE_SIZE`;
+    - `TS_STREAM_MAX_BLOB_SIZE`;
+    - `TS_COMPACTION_WATERMARK_BYTES`;
+    - `TS_COLD_SCAN_NO_CACHE_FILL`.
+  - C++ may map the storage-facing subset into existing gflags; Rust should
+    consume the same names through a typed config surface.
+  - Add parity validation to CI so one side cannot add a production knob without
+    the other side seeing it.
+
+- Production readiness gates.
+  - Before MatrixArk or benchmark runs:
+    - start C++ and Rust backends;
+    - verify metaserver reachability;
+    - verify namespace/table/topology;
+    - verify slot coverage and primary assignment;
+    - run a same-backend warmup write/read/delete;
+    - fail closed with `topology_not_ready` rather than letting parsing or
+      retrieval fail later.
+  - For Raft:
+    - prove metaserver failover;
+    - prove data-node replication failover;
+    - prove membership add/remove;
+    - prove learner catch-up and promotion;
+    - prove snapshot restore;
+    - prove scale-up/scale-down.
+  - For storage lifecycle:
+    - prove cache eviction is memory-only;
+    - prove durable page/block reclaim through compaction/GC;
+    - prove raw context/resource retention policy is separated from physical
+      store reclaim.
+
+- Performance parity gates.
+  - Run C++ and Rust under the same:
+    - dataset/corpus;
+    - backend mode;
+    - storage family;
+    - write mode;
+    - Raft/shared-store topology;
+    - token budget;
+    - batch size;
+    - embedding/reader/judge model config for MatrixArk benchmarks.
+  - Required measurements:
+    - ingest QPS;
+    - retrieve QPS;
+    - p50/p95/p99 ingest latency;
+    - p50/p95/p99 retrieve latency;
+    - timeout count;
+    - error count;
+    - backend fallback flags;
+    - memory/hash/model fallback flags;
+    - selected-ref count and selected-ref parity;
+    - scanned records, index hits, candidate-cache hits, placement partitions
+      touched, pack tokens, and audit/debug queue depth.
+  - Required scale points:
+    - 1K, 10K, and 100K event ingestion;
+    - retrieve workers 4, 8, 16, and 32;
+    - large PDF/CSV/repo resource import;
+    - full ContextMemory pipeline with retrieval and audit-light telemetry
+      enabled;
+    - full LOCOMO and LongMemEval_s only when official dataset paths and model
+      endpoints are available.
+
+- C++ performance focus.
+  - Fix native context retrieve correctness before latency work.
+  - Replace broad scan/score with placement-key plus compact index postings.
+  - Add parsed candidate cache keyed by `scope_key + node_hash + record_type +
+    watermark`.
+  - Move final pack assembly native so Python does not materialize candidates.
+  - Move MatrixArk batch writes below HSet into the native append queue and
+    coalesced write path.
+  - Separate audit/debug writes from the serving path by default.
+
+- Rust performance focus.
+  - Keep Rust on proxy/direct-SDK paths, not the old record-log concept for
+    production.
+  - Add Rust direct SDK parity with C++ direct SDK where embedded/local mode
+    matters.
+  - Reduce Rust write-path tail by batching below proxy serialization, pooling
+    clients, and coalescing append batches.
+  - Keep Rust native retrieve/pack behavior byte/logically symmetric with C++.
+  - Expose the same Prometheus/Grafana metrics as C++.
+
+- Reporting and status labels.
+  - `feature_correct`: shared contract cases pass for C++ and Rust.
+  - `performance_candidate`: live C++ and Rust runs complete under the same
+    config with no silent fallbacks.
+  - `production_performance_parity`: full benchmark metrics are within agreed
+    thresholds and selected-ref quality is equivalent.
+  - Reports must include C++ pass/fail, Rust pass/fail, unsupported cases,
+    output diffs, latency deltas, QPS deltas, fallback flags, and open blockers.
+
 ## P2 Future Areas
 
 - Multi-tenancy.
