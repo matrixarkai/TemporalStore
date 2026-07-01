@@ -165,6 +165,33 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     }
 
 
+def timeout_count(errors: list[str]) -> int:
+    return sum(1 for error in errors if "timeout" in str(error).lower() or "timed out" in str(error).lower())
+
+
+def fallback_flags_from_backend(result: Json) -> Json:
+    status = str(result.get("status") or "")
+    retrieve = result.get("retrieve", {}) if isinstance(result.get("retrieve"), dict) else {}
+    metrics = retrieve.get("stage_metrics", {}) if isinstance(retrieve.get("stage_metrics"), dict) else {}
+    readiness = result.get("readiness", {}) if isinstance(result.get("readiness"), dict) else {}
+    backend_metrics = result.get("backend_metrics", {}) if isinstance(result.get("backend_metrics"), dict) else {}
+    backend_metrics_result = backend_metrics.get("result", {}) if isinstance(backend_metrics.get("result"), dict) else {}
+    errors = result.get("errors", {}) if isinstance(result.get("errors"), dict) else {}
+    error_text = " ".join(
+        str(item)
+        for bucket in errors.values()
+        for item in (bucket if isinstance(bucket, list) else [bucket])
+    ).lower()
+    return {
+        "backend_startup_failed": status == "backend_startup_failed",
+        "topology_not_ready": status == "topology_not_ready" or readiness.get("status") == "topology_not_ready",
+        "memory_fallback": "memory fallback" in error_text or bool(result.get("memory_fallback")),
+        "hash_embedding_fallback": bool(result.get("embedding_fallback_used") or backend_metrics_result.get("embedding_fallback_used")),
+        "partial_context_pack": int(retrieve.get("partial_context_packs") or 0) > 0,
+        "native_metrics_missing": int(metrics.get("samples") or 0) == 0,
+    }
+
+
 def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
     common = {
         "metaserver": args.metaserver,
@@ -326,32 +353,47 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     try:
         readiness = server.call_tool("matrixark_backend_ready", {"probe": True, "timeout_ms": args.readiness_timeout_ms})
         if readiness.get("status") != "ready":
-            return {
+            result = {
                 "backend": backend,
                 "status": "topology_not_ready",
                 "storage_prefix": prefix,
                 "readiness": readiness,
+                "ingest": {**summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0), "timeout_count": 0},
+                "retrieve": {
+                    **summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0),
+                    "timeout_count": 0,
+                    "partial_context_packs": 0,
+                    "selected_refs_avg": 0.0,
+                    "selected_refs_max": 0,
+                    "stage_metrics": summarize_retrieval_metrics([]),
+                },
             }
+            result["fallback_flags"] = fallback_flags_from_backend(result)
+            return result
         raw_storage = run_raw_storage(backend, args, run_id, client=getattr(adapter, "_client", None))
         if args.skip_context_pipeline:
-            return {
+            result = {
                 "backend": backend,
                 "status": "passed" if not raw_storage.get("errors", {}).get("write") and not raw_storage.get("errors", {}).get("read") else "failed",
                 "storage_prefix": prefix,
                 "readiness": readiness,
                 "raw_storage": raw_storage,
-                "ingest": summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0),
+                "ingest": {**summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0), "timeout_count": 0},
                 "ingest_messages": {"messages": 0, "messages_per_ingest": 0, "message_qps": 0.0},
                 "retrieve": {
                     **summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0),
+                    "timeout_count": 0,
                     "partial_context_packs": 0,
                     "selected_refs_avg": 0.0,
                     "selected_refs_max": 0,
+                    "stage_metrics": summarize_retrieval_metrics([]),
                 },
                 "summary_refresh": {"skipped": True},
                 "backend_metrics": {"skipped": True},
                 "errors": raw_storage.get("errors", {}),
             }
+            result["fallback_flags"] = fallback_flags_from_backend(result)
+            return result
 
         ingest_payloads: list[Json] = []
         for batch_start in range(0, args.events, args.messages_per_ingest):
@@ -441,18 +483,21 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         retrieve_elapsed = time.perf_counter() - retrieve_started
 
         metrics_latency_ms, metrics_result, metrics_error = call_with_latency(server, "matrixark_backend_metrics", {})
-        return {
+        result = {
             "backend": backend,
             "status": "passed" if not ingest_errors and not retrieve_errors else "failed",
             "storage_prefix": prefix,
             "readiness": readiness,
             "raw_storage": raw_storage,
-            "ingest": summarize_latencies(
-                ingest_latencies,
-                total_ops=len(ingest_payloads),
-                elapsed_s=ingest_elapsed,
-                errors=len(ingest_errors),
-            ),
+            "ingest": {
+                **summarize_latencies(
+                    ingest_latencies,
+                    total_ops=len(ingest_payloads),
+                    elapsed_s=ingest_elapsed,
+                    errors=len(ingest_errors),
+                ),
+                "timeout_count": timeout_count(ingest_errors),
+            },
             "ingest_messages": {
                 "messages": args.events,
                 "messages_per_ingest": args.messages_per_ingest,
@@ -467,6 +512,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                     elapsed_s=retrieve_elapsed,
                     errors=len(retrieve_errors),
                 ),
+                "timeout_count": timeout_count(retrieve_errors),
                 "partial_context_packs": partial_count,
                 "selected_refs_avg": round(statistics.fmean(selected_counts), 3) if selected_counts else 0.0,
                 "selected_refs_max": max(selected_counts) if selected_counts else 0,
@@ -487,6 +533,8 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "retrieve": retrieve_errors[:10],
             },
         }
+        result["fallback_flags"] = fallback_flags_from_backend(result)
+        return result
     finally:
         server.close()
 
@@ -506,10 +554,13 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("ingest_p50_ms", ("ingest", "p50_ms"), "lower"),
         ("ingest_p95_ms", ("ingest", "p95_ms"), "lower"),
         ("ingest_p99_ms", ("ingest", "p99_ms"), "lower"),
+        ("ingest_timeout_count", ("ingest", "timeout_count"), "lower"),
         ("retrieve_qps", ("retrieve", "qps"), "higher"),
         ("retrieve_p50_ms", ("retrieve", "p50_ms"), "lower"),
         ("retrieve_p95_ms", ("retrieve", "p95_ms"), "lower"),
         ("retrieve_p99_ms", ("retrieve", "p99_ms"), "lower"),
+        ("retrieve_timeout_count", ("retrieve", "timeout_count"), "lower"),
+        ("partial_context_packs", ("retrieve", "partial_context_packs"), "lower"),
         ("selected_refs_avg", ("retrieve", "selected_refs_avg"), "approx"),
         ("query_plan_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "query_plan_ms"), "lower"),
         ("node_traversal_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "node_traversal_ms"), "lower"),
@@ -521,6 +572,10 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("scanned_records_avg", ("retrieve", "stage_metrics", "scanned_records_avg"), "lower"),
         ("cache_hit_rate", ("retrieve", "stage_metrics", "cache_hit_rate"), "higher"),
         ("placement_partitions_touched_avg", ("retrieve", "stage_metrics", "placement_partitions_touched_avg"), "approx"),
+        ("memory_fallback", ("fallback_flags", "memory_fallback"), "lower"),
+        ("hash_embedding_fallback", ("fallback_flags", "hash_embedding_fallback"), "lower"),
+        ("partial_pack_fallback", ("fallback_flags", "partial_context_pack"), "lower"),
+        ("native_metrics_missing", ("fallback_flags", "native_metrics_missing"), "lower"),
     ]
     for name, path, direction in metrics:
         cpp_value: Any = cpp
@@ -528,6 +583,10 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         for key in path:
             cpp_value = cpp_value.get(key, 0) if isinstance(cpp_value, dict) else 0
             rust_value = rust_value.get(key, 0) if isinstance(rust_value, dict) else 0
+        if isinstance(cpp_value, bool):
+            cpp_value = int(cpp_value)
+        if isinstance(rust_value, bool):
+            rust_value = int(rust_value)
         delta = float(rust_value or 0) - float(cpp_value or 0)
         percent_delta = (delta / float(cpp_value) * 100.0) if cpp_value else 0.0
         rust_float = float(rust_value or 0)
