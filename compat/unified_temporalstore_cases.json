@@ -4749,7 +4749,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "read_index_lease_bounded_stale_and_secondary_eligibility"
         }
@@ -4802,7 +4803,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "status_local_status_prometheus_peer_pipeline_state"
         }
@@ -4864,7 +4866,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "snapshot_trigger_chunk_install_progress_and_rollback"
         }
@@ -4913,7 +4916,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "oversized_log_inflight_reorder_and_apply_batch_gates"
         }
@@ -4966,7 +4970,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "prevote_election_prohibition_transfer_and_offline_timeout"
         }
@@ -5020,7 +5025,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "packet_loss_partition_heal_majority_progress"
         }
@@ -5074,7 +5080,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "slow_wal_fsync_backpressure_and_recovery"
         }
@@ -5132,7 +5139,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "snapshot_during_membership_change_keeps_floor_and_generation_consistent"
         }
@@ -5186,7 +5194,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "leader_transfer_under_high_write_load_has_no_lost_or_duplicate_commits"
         }
@@ -5240,7 +5249,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "follower_rejoin_after_compaction_installs_snapshot_and_replays_tail"
         }
@@ -5298,7 +5308,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "rolling_restart_with_pending_joint_consensus_completes_or_rolls_back_safely"
         }
@@ -5351,7 +5362,8 @@
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
-            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms."
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "combined_rustraft_fault_gate_for_data_and_meta_raft"
         }
@@ -8318,7 +8330,7 @@
               "snapshot_retention_floor_reported": true,
               "wal_magic_version_checked": true
             },
-            "cpp_runner_contract": "C++ runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection.",
+            "cpp_runner_contract": "C++ runner emits temporalstore_unified_case_report_v1 for WAL magic/version, partition id, raft index, log id, op/WAL sequence, first/last retained index, segment release floor, and corrupt payload rejection, including latency_ms.",
             "description": "Shared Raft library case for C++ ByteRaft WAL/log record compatibility: C++-style data-Raft log headers, command batch payloads, corrupt header rejection, WAL segment first/last index evidence, and snapshot/retention floor accounting.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8352,7 +8364,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "wal_log_codec_segment_lifecycle_shared",
           "skip_client": true
@@ -8406,7 +8419,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "read_index_lease_fault_matrix_shared",
           "skip_client": true
@@ -8461,7 +8475,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "replication_pipeline_reorder_backpressure_shared",
           "skip_client": true
@@ -8526,7 +8541,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "snapshot_chunk_retry_rollback_shared",
           "skip_client": true
@@ -8586,7 +8602,8 @@
                 "latency_ms"
               ]
             },
-            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison."
+            "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "membership_roles_joint_consensus_shared",
           "skip_client": true
@@ -8605,7 +8622,7 @@
               "http_append_vote_snapshot_validated": true,
               "retry_metrics_reported": true
             },
-            "cpp_runner_contract": "C++ runner emits transport auth, deadline, retry, inflight, append/vote/snapshot route, and local status evidence using the same temporalstore_unified_case_report_v1 shape.",
+            "cpp_runner_contract": "C++ runner emits transport auth, deadline, retry, inflight, append/vote/snapshot route, and local status evidence using the same temporalstore_unified_case_report_v1 shape, including latency_ms.",
             "description": "Shared Raft library case for production transport contracts: auth token enforcement, deadlines, retry counters, append/vote/snapshot HTTP transport, and inflight release after transport errors.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8639,7 +8656,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "rpc_auth_deadline_transport_shared",
           "skip_client": true
@@ -8696,7 +8714,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           }
         }
       ]
@@ -8749,7 +8768,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           }
         }
       ]
@@ -8806,7 +8826,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           }
         }
       ]
@@ -8860,7 +8881,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           }
         }
       ]
@@ -8925,7 +8947,8 @@
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-raft-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
-            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>"
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-process-report.json>",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           }
         }
       ]
@@ -8941,7 +8964,7 @@
               "peer_pipeline_state_present": true,
               "prometheus_byteraft_metrics_present": true
             },
-            "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1.",
+            "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1, including latency_ms.",
             "description": "Shared Raft admin/status case for ByteRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8975,7 +8998,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "byteraft_metrics_admin_pipeline_status_shared",
           "skip_client": true
@@ -8998,8 +9022,6 @@
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
-              "src/partition/storage/data_raft_consensus.cc",
-              "src/partition/storage/data_raft_replication.cc",
               "src/metaserver_v2/service/raft_control_service.cc"
             ],
             "runner": "BUILD_TYPE=Release ITERATIONS=1 bash tools/run_live_raft_metrics_ubuntu22.sh",
@@ -9027,7 +9049,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "byteraft_admin_surface_requires_wal_and_peer_pipeline_shared",
           "skip_client": true
@@ -9079,7 +9102,8 @@
               ]
             },
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with case/step names, pass/fail status, output evidence, and latency_ms for comparison.",
-            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms"
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "server_byteraft_runtime_admin_route_shared",
           "skip_client": true

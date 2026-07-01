@@ -127,6 +127,16 @@ python3 tools/compare_unified_cpp_rust_case_reports.py \
 The comparison output includes `rust_only_misses`, `cpp_only_misses`,
 `shared_hard_failures`, `output_diffs`, and `latency_deltas`.
 
+ByteRaft/RustRaft shared cases must also declare
+`cpp_report_adapter: compat/cpp_unified_case_report_adapter.h`. The adapter
+now emits `generated_at_ms` and includes `ByteRaftUnifiedEvidence`, a typed
+evidence payload for WAL first/last indexes, read-index and lease safety,
+replication pipeline limits, reorder queues, snapshot lifecycle, membership
+roles, leader-transfer exact-once commit IDs, and admin counters. C++ ByteRaft
+tests should emit those fields directly instead of relying on static surface
+checks, then compare the output against the Rust report with the same
+`tools/compare_unified_cpp_rust_case_reports.py` command.
+
 For a migration pass on one family, run:
 
 ```bash
