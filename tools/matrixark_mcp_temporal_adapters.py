@@ -1621,10 +1621,27 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "debug_context_pack": bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
             "include_retrieval_metrics": bool(args.get("include_retrieval_metrics")),
+            "normalization_requirements": {
+                "scope_key": "canonical",
+                "node_hash": "integer",
+                "placement_key": "context:{scope_key}:node={node_hash}",
+                "resource_visibility": "apply_scope_before_scoring",
+                "skill_visibility": "apply_scope_before_scoring",
+                "shared_resource_scope": "tenant_or_global_visible_before_scoring",
+                "stale_superseded_state": "exclude_unless_include_superseded_resources",
+            },
             "required_output": {
                 "context_pack": True,
                 "selected_refs": True,
                 "dropped_summary": True,
+                "drop_counters": [
+                    "scope",
+                    "placement",
+                    "index_filter",
+                    "stale",
+                    "token_budget",
+                    "score_threshold",
+                ],
                 "telemetry": True,
                 "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
             },
@@ -1683,6 +1700,21 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "native_context_pack_ms": total_native_ms,
                 "source": "native_context_pack",
             }
+            native_drop_counters = native_telemetry.get("drop_counters") if isinstance(native_telemetry.get("drop_counters"), dict) else {}
+            if not native_drop_counters:
+                native_drop_counters = pack.get("drop_counters") if isinstance(pack.get("drop_counters"), dict) else {}
+            if not native_drop_counters and isinstance(pack.get("dropped_refs"), dict):
+                dropped = pack.get("dropped_refs", {})
+                native_drop_counters = {
+                    "scope": int(dropped.get("scope", 0) or dropped.get("access_denied", 0) or 0),
+                    "placement": int(dropped.get("placement", 0) or dropped.get("placement_filter", 0) or 0),
+                    "index_filter": int(dropped.get("index_filter", 0) or dropped.get("secondary_index_filter", 0) or 0),
+                    "stale": int(dropped.get("stale", 0) or dropped.get("superseded", 0) or 0),
+                    "token_budget": int(dropped.get("over_budget", 0) or dropped.get("max_selected_refs", 0) or 0),
+                    "score_threshold": int(dropped.get("low_score", 0) or dropped.get("score_threshold", 0) or 0),
+                }
+            if native_drop_counters:
+                retrieval_metrics["drop_counters"] = native_drop_counters
             pack["retrieval_metrics"] = retrieval_metrics
             pack["recall_policy"].setdefault(
                 "backend_retrieval_pushdown",
