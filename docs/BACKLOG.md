@@ -867,6 +867,21 @@ Completed since the last backlog update:
   - Integration under context retrieval systems.
   - LMCache-compatible remote storage interface only if it maps cleanly.
   - Do not position as GPU KV-cache replacement without tensor-aware cache semantics.
+  - Add MatrixArk hot/cold context storage split.
+    - TemporalStore should hold hot serving records only: `ContextEvent`,
+      `ContextEntity`, `ContextSummary`, `ContextEmbedding`, `ContextIndex`,
+      resource chunks, skill records, and compact `ContextPack` telemetry needed
+      for online retrieval.
+    - MatrixKV or another SQL-compatible cold metadata DB should hold immutable
+      raw agent ingestion logs for backfill, audit-light replay, portal history,
+      and offline analysis.
+    - S3 or object storage should hold large raw resource files and original
+      bytes, referenced from serving records by `raw_uri`; TemporalStore should
+      keep parsed chunks, citations, summaries, embeddings, and indexes rather
+      than raw file bytes.
+    - Backfill should read raw messages/resources from MatrixKV/S3 in batches,
+      rebuild serving context records, and write to TemporalStore through native
+      batch append paths with idempotency keys.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
