@@ -4649,7 +4649,9 @@ fn replica_roles_survive_wal_restore() {
 // shared-corpus: raft_rustraft_membership_roles_joint_consensus_matrix
 #[test]
 fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
-    let cluster = RaftCluster::new_single_shard_with_config(
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
         1,
         [1, 2, 3],
         RaftConfig {
@@ -4662,12 +4664,58 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         .add_node_with_role(5, RaftReplicaRole::Witness)
         .unwrap();
     cluster.add_learner_with_auto_promote(4, true).unwrap();
+    cluster.add_node(6).unwrap();
+    cluster.remove_node(6).unwrap();
+    cluster.begin_leader_transfer(2).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "membership-transfer-exact-once".to_string(),
+            value: b"committed-once".to_vec(),
+        })
+        .unwrap();
     cluster.begin_joint_consensus([1, 2, 3, 4, 5]).unwrap();
+    let cluster = RaftCluster::restore_single_shard_from_wal(
+        dir.path(),
+        1,
+        [1, 2, 3, 4, 5],
+        RaftConfig {
+            enable_pre_vote: true,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
 
     let admin = cluster.byteraft_runtime_admin_report();
     assert!(admin.witness_membership_present);
+    assert!(admin.learner_add_present);
+    assert!(admin.learner_catchup_present);
+    assert!(admin.learner_promote_present);
+    assert!(admin.voter_remove_present);
     assert!(admin.learner_auto_promote_present);
+    assert!(admin.leader_transfer_exact_once_present);
     assert!(admin.pending_joint_consensus_present);
+    assert!(admin.pending_joint_consensus_restart_present);
+    assert_eq!(admin.membership_evidence.learner_add_count, 1);
+    assert_eq!(admin.membership_evidence.learner_promote_count, 1);
+    assert_eq!(admin.membership_evidence.voter_remove_count, 1);
+    assert_eq!(admin.membership_evidence.leader_transfer_write_count, 1);
+    assert_eq!(
+        admin
+            .membership_evidence
+            .leader_transfer_exact_once_commit_count,
+        1
+    );
+    assert_eq!(
+        cluster.read_local(
+            1,
+            Command::StringGet {
+                key: "membership-transfer-exact-once".to_string(),
+            },
+        ),
+        Ok(CommandResponse::Bytes {
+            value: Some(b"committed-once".to_vec()),
+        })
+    );
     assert!(admin
         .capability_matrix
         .iter()
@@ -4695,6 +4743,15 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
         "temporalstore_raft_byteraft_local_peer_transfer_leader_target",
         "temporalstore_raft_byteraft_local_peer_pre_vote_rejections",
         "temporalstore_raft_byteraft_local_peer_election_rejections",
+        "temporalstore_raft_byteraft_learner_add_present",
+        "temporalstore_raft_byteraft_learner_catchup_present",
+        "temporalstore_raft_byteraft_learner_promote_present",
+        "temporalstore_raft_byteraft_voter_remove_present",
+        "temporalstore_raft_byteraft_leader_transfer_exact_once_present",
+        "temporalstore_raft_byteraft_pending_joint_consensus_restart_present",
+        "temporalstore_raft_byteraft_membership_learner_add_count",
+        "temporalstore_raft_byteraft_membership_voter_remove_count",
+        "temporalstore_raft_byteraft_membership_leader_transfer_exact_once_commit_count",
     ] {
         assert!(
             metrics.contains(metric),

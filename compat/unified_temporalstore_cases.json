@@ -8170,11 +8170,15 @@
           "command": {
             "acceptance": {
               "auto_promote_observed": true,
+              "leader_transfer_exact_once_commit_ids": true,
               "learner_add_promote_remove": true,
+              "multi_process_data_node_and_metaserver_raft": true,
               "pending_joint_consensus_persisted": true,
+              "secondary_lag_and_catchup": true,
+              "snapshot_restart_after_compaction": true,
               "stale_membership_rejected": true
             },
-            "cpp_runner_contract": "C++ runner emits learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, and leader transfer evidence.",
+            "cpp_runner_contract": "C++ runner emits matrixark/TemporalStore report fields for learner add/catch-up/promote/remove, auto-promote, witness or scoped-blocker status, pending config index, joint consensus restart, leader-transfer exact-once commit IDs, data-node/metaserver process rollout, failover on both planes, secondary lag/catch-up, snapshot restart after compaction, and latency deltas.",
             "description": "Shared Raft library case for ByteRaft membership roles: learner bootstrap, auto-promote, voter add/remove, leader transfer, witness/pending joint-consensus evidence, and rolling restart persistence of pending joint state.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8186,6 +8190,7 @@
             "runner": "BUILD_TYPE=Release ITERATIONS=1 MEMBERSHIP_OPS=200 bash tools/run_metaserver_raft_membership_ubuntu22.sh",
             "rust_runner": "cargo test -p temporalstore-rust temporal_raft_data_node_backend_bootstraps_learner_and_auto_promotes_peer temporal_raft_metaserver_backend_supports_membership_and_bounded_reads joint_consensus_requires_old_and_new_majorities_before_commit_or_write joint_consensus_state_survives_wal_restore_and_still_requires_both_majorities --lib --features temporal-raft-engine -- --test-threads=1",
             "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-library-validation --log <raft-library.json>",
+            "comparator": "tools/compare_temporalstore_unified_reports.py --rust <rust-report.json> --cpp <cpp-report.json> --emit-misses rust-only,cpp-only,shared-failures,latency-deltas",
             "suite": "cpp_data_raft_parity"
           },
           "name": "membership_roles_joint_consensus_shared",
