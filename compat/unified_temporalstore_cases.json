@@ -8483,9 +8483,10 @@
               "install_rollback_reported": true,
               "snapshot_during_membership_change_reported": true,
               "follower_rejoin_after_compacted_logs_reported": true,
-              "stale_term_rejected_before_install": true
+              "stale_term_rejected_before_install": true,
+              "install_progress_reported": true
             },
-            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ runner emits snapshot send attempts, chunk retry/backpressure, send timeout, rate limit, install progress, stale snapshot rejection, rollback count, membership-change snapshot evidence, compacted-log rejoin evidence, external snapshot refs, and restart recovery evidence; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "description": "Shared Raft library case for ByteRaft snapshot sender/downloader lifecycle: chunked install progress, retry/backpressure, stale-term rejection before buffering, external snapshot reference handoff, and restart recovery.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -8509,7 +8510,13 @@
               "case_fields": [
                 "name",
                 "status",
-                "steps"
+                "steps",
+                "evidence.snapshot_send_timeouts",
+                "evidence.snapshot_rate_limit_rejections",
+                "evidence.snapshot_install_progress_per_mille",
+                "evidence.snapshot_install_rolled_back",
+                "evidence.snapshot_during_membership_change",
+                "evidence.snapshot_rejoin_after_compacted_log"
               ],
               "step_fields": [
                 "name",
@@ -8874,7 +8881,12 @@
               "compacted_log_rejoin": true,
               "install_rollback_reported": true,
               "restart_recovery": true,
-              "retained_tail_replayed": true
+              "retained_tail_replayed": true,
+              "send_timeout_reported": true,
+              "rate_limit_reported": true,
+              "install_progress_reported": true,
+              "snapshot_during_membership_change_reported": true,
+              "follower_rejoin_after_compacted_logs_reported": true
             },
             "report_contract": {
               "schema": "temporalstore_unified_case_report_v1",
@@ -8887,7 +8899,13 @@
               "case_fields": [
                 "name",
                 "status",
-                "steps"
+                "steps",
+                "evidence.snapshot_send_timeouts",
+                "evidence.snapshot_rate_limit_rejections",
+                "evidence.snapshot_install_progress_per_mille",
+                "evidence.snapshot_install_rolled_back",
+                "evidence.snapshot_during_membership_change",
+                "evidence.snapshot_rejoin_after_compacted_log"
               ],
               "step_fields": [
                 "name",
@@ -8898,7 +8916,7 @@
             },
             "rust_runner": "cargo test -p temporalstore-rust byteraft_snapshot_lifecycle_reports_timeout_rate_limit_rollback_membership_and_rejoin wal_backed_apply_snapshot_fence_survives_snapshot_restart --lib -- --test-threads=1",
             "rust_report_contract": "Rust runner emits temporalstore_unified_case_report_v1 with this case name, pass/fail status, per-step output, and latency_ms for comparison.",
-            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms.",
+            "cpp_runner_contract": "C++ ByteRaft runner emits the same temporalstore_unified_case_report_v1 fields for this case, including matching case/step names, output evidence, and latency_ms; includes snapshot evidence fields for send timeout, rate limiting, install progress, install rollback, snapshot during membership change, and follower rejoin after compacted logs.",
             "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
             "required_paths": [
               "src/partition/storage/data_raft_consensus.cc",
