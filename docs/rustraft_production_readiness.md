@@ -1,9 +1,10 @@
 # RustRaft Production Readiness
 
-RustRaft is the standalone TemporalStore-owned Raft contract library in
-`crates/rustraft`, consumed by `crates/temporalstore-rust`. It does not replace
-the data-node or metaserver by itself. It defines the production semantics that
-those runtimes must prove.
+RustRaft is the standalone TemporalStore-owned Raft contract library in the
+separate `RustRaft` repository, consumed by `crates/temporalstore-rust` through
+the Git dependency `https://github.com/bjmeetsfo/RustRaft.git`. It does not
+replace the data-node or metaserver by itself. It defines the production
+semantics that those runtimes must prove.
 
 ## Status Labels
 
@@ -50,7 +51,7 @@ RustRaft production readiness requires evidence in these categories:
 
 ## TemporalStore Gates
 
-TemporalStore now consumes the workspace RustRaft library and validates:
+TemporalStore consumes the separate RustRaft library and validates:
 
 - RustRaft is OpenRaft-free at the public contract boundary.
 - Each requirement has a category and readiness field.
@@ -133,7 +134,7 @@ Latest local proof on June 29, 2026:
 ## Current Build Status
 
 The focused RustRaft library tests and TemporalStore RustRaft consumer tests pass
-against the workspace `crates/rustraft` library. Broader distributed/data-node
-Raft parity remains covered by `tools/run_raft_distributed_parity.sh`, which
-runs data-node distributed Raft, secondary replication, metaserver Raft, and the
+against the separate `RustRaft` checkout. Broader distributed/data-node Raft
+parity remains covered by `tools/run_raft_distributed_parity.sh`, which runs
+data-node distributed Raft, secondary replication, metaserver Raft, and the
 combined parity summary.
