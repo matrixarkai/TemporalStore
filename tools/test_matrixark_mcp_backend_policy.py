@@ -13,11 +13,11 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count, summarize_retrieval_metrics
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, selected_ref_count, summarize_retrieval_metrics, timeout_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count, summarize_retrieval_metrics
+    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, selected_ref_count, summarize_retrieval_metrics, timeout_count
 
 
 
@@ -308,6 +308,22 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(stage_metrics["stage_p95_ms"]["pack_ms"], 6.0)
         self.assertTrue(any(row["metric"] == "pack_p95_ms" for row in result["rows"]))
         self.assertTrue(any(row["metric"] == "cache_hit_rate" for row in result["rows"]))
+
+    def test_scale_report_counts_timeouts_and_fallback_flags(self) -> None:
+        self.assertEqual(timeout_count(["request timed out", "Slot not found", "timeout waiting for response"]), 2)
+        flags = fallback_flags_from_backend(
+            {
+                "status": "failed",
+                "retrieve": {"partial_context_packs": 1, "stage_metrics": {"samples": 0}},
+                "errors": {"ingest": ["memory fallback used"], "retrieve": []},
+                "backend_metrics": {"result": {"embedding_fallback_used": True}},
+            }
+        )
+
+        self.assertTrue(flags["memory_fallback"])
+        self.assertTrue(flags["hash_embedding_fallback"])
+        self.assertTrue(flags["partial_context_pack"])
+        self.assertTrue(flags["native_metrics_missing"])
 
     def _args(self, backend: str) -> argparse.Namespace:
         return argparse.Namespace(backend=backend)
