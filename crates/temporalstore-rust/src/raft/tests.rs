@@ -5424,7 +5424,9 @@ fn add_node_after_leader_snapshot_installs_snapshot_and_tail() {
 // shared-corpus: raft_rustraft_leader_transfer_high_write_fault_harness
 #[test]
 fn rustraft_leader_transfer_under_high_write_load_commits_once() {
-    let cluster = RaftCluster::new_single_shard_with_config(
+    let dir = tempfile::tempdir().unwrap();
+    let cluster = RaftCluster::new_single_shard_with_wal(
+        dir.path(),
         1,
         [1, 2, 3],
         RaftConfig {
@@ -5517,7 +5519,54 @@ fn rustraft_leader_transfer_under_high_write_load_commits_once() {
     assert_eq!(transferred_peer.transfer_leader_rejected, 0);
     assert_eq!(transferred_peer.transfer_leader_timeouts, 0);
     assert!(admin.admin_status_surface_complete);
+    assert!(admin.wal_segment_lifecycle_present);
+    assert!(admin.wal_last_log_index >= admin.commit_index);
     assert!(admin
+        .capability_matrix
+        .iter()
+        .any(|item| item.capability == "admin_status_surface" && item.ready));
+}
+
+// shared-corpus: raft_byteraft_admin_status_surface
+#[test]
+fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
+    let local_fixture = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    local_fixture
+        .propose(Command::StringSet {
+            key: "admin-without-wal".to_string(),
+            value: b"value".to_vec(),
+        })
+        .unwrap();
+    let local_admin = local_fixture.byteraft_runtime_admin_report();
+    assert!(!local_admin.admin_status_surface_complete);
+    assert!(!local_admin.wal_segment_lifecycle_present);
+    assert!(local_admin
+        .blockers
+        .contains(&"admin_status_surface_incomplete".to_string()));
+
+    let dir = tempfile::tempdir().unwrap();
+    let durable =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    durable
+        .propose(Command::StringSet {
+            key: "admin-with-wal".to_string(),
+            value: b"value".to_vec(),
+        })
+        .unwrap();
+    let durable_admin = durable.byteraft_runtime_admin_report();
+    assert!(durable_admin.admin_status_surface_complete);
+    assert!(durable_admin.wal_segment_lifecycle_present);
+    assert!(durable_admin.wal_first_log_index > 0);
+    assert!(durable_admin.wal_last_log_index >= durable_admin.commit_index);
+    assert!(durable_admin.peer_pipeline_states.iter().all(|peer| {
+        peer.next_index > 0
+            && peer.append_queue_limit > 0
+            && peer.inflight_bytes_limit > 0
+            && peer.apply_inflight_limit > 0
+            && peer.apply_batch_bytes_limit > 0
+    }));
+    assert!(durable_admin
         .capability_matrix
         .iter()
         .any(|item| item.capability == "admin_status_surface" && item.ready));
