@@ -867,6 +867,58 @@ Completed since the last backlog update:
   - Integration under context retrieval systems.
   - LMCache-compatible remote storage interface only if it maps cleanly.
   - Do not position as GPU KV-cache replacement without tensor-aware cache semantics.
+  - Add MatrixArk `ContextMemory` aggregate model.
+    - Treat context management as one logical product/domain model, even though
+      serving storage uses multiple compact record types underneath.
+    - `ContextMemory` should be the API and documentation box that owns:
+      `ContextNode`, `ContextEvent`, `ContextSegment`, `ContextEntity`,
+      `ContextSummary`, `ContextEmbedding`, `ContextIndex`, `ResourceChunk`,
+      `SkillSection`, ContextPack telemetry, and lifecycle state.
+    - Do not collapse every record into one huge physical TemporalStore object:
+      keep separate serving records for scan/filter/pack efficiency, independent
+      retention, and low write amplification.
+    - Use one canonical identity envelope for every record:
+      `scope_key`, `node_hash`, `record_type`, `event_time_key` or stable
+      `record_id`, `placement_key`, and optional `source_ref`.
+    - Avoid repeated strings in hot records:
+      account/tenant/user/session ids resolve to `scope_key`; full node paths
+      resolve through `ContextNode`; model names resolve through a model
+      registry/ref; keywords live in compact `ContextIndex` postings; raw/debug
+      extraction payloads live in audit/debug records.
+    - `ContextMemory` write path:
+      agent/resource/skill input -> request-scope resolution -> node placement
+      key -> event/chunk/entity/index/embedding append batch -> dirty summary
+      markers -> async summary refresh.
+    - `ContextMemory` read path:
+      query understanding -> scope gate -> same-session node traversal ->
+      shared resources/skills quota -> cross-session quota -> compact secondary
+      index prefilter -> native candidate fetch/score/rerank -> budget pack.
+    - Placement policy should colocate records for the same hot serving unit
+      where practical:
+      `context:{scope_key}:node={node_hash}` for session/user nodes,
+      `context:{tenant_scope}:shared:resource={resource_hash}` for tenant-shared
+      resources, and `context:global:*` only for explicitly global memory.
+    - Cross-session memory should be a controlled part of `ContextMemory`, not a
+      brute-force scan:
+      default to current session first, shared resources/skills second, and
+      cross-session summaries/entities/compressions only when score and budget
+      justify it; raw cross-session events require high-confidence evidence
+      needs.
+    - `ContextMemory` should expose one management/debug view:
+      node topology, raw conversation events, extracted facts/entities,
+      summaries, embeddings, resources/chunks, skill sections, selected/dropped
+      retrieval refs, and lifecycle/GC/backfill state.
+    - C++ and Rust parity should be tested at the aggregate level:
+      same source corpus -> same logical `ContextMemory` records, same compact
+      indexes, equivalent ContextPack selected refs, and comparable telemetry.
+    - Backlog implementation milestones:
+      - add a formal `ContextMemory` schema/readme with hot-record vs debug
+        fields;
+      - add C++/Rust shared expected-record fixtures for each owned record type;
+      - add compact API responses that return `ContextMemory` views without
+        leaking audit/debug fields into the model prompt;
+      - add placement-key routing and native index prefilter tests for
+        session, shared resource, skill, and cross-session reads.
   - Add MatrixArk hot/cold context storage split.
     - TemporalStore should hold hot serving records only: `ContextEvent`,
       `ContextEntity`, `ContextSummary`, `ContextEmbedding`, `ContextIndex`,
