@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import statistics
+import subprocess
 import sys
 import time
 from typing import Any
@@ -37,6 +38,7 @@ os.environ.setdefault("MATRIXARK_MAX_CONCURRENT_INGEST", "128")
 os.environ.setdefault("MATRIXARK_MAX_CONCURRENT_RETRIEVE", "128")
 
 from tools.matrixark_mcp_server import MatrixArkMcpServer  # noqa: E402
+from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter  # noqa: E402
 from tools.matrixark_mcp_temporal_adapters import (  # noqa: E402
     MatrixArkRustCliClient,
     MatrixArkTemporalStoreDirectAdapter,
@@ -112,6 +114,109 @@ def retrieval_metrics_from_result(result: Json) -> Json:
     return metrics if isinstance(metrics, dict) else {}
 
 
+def _count_refs(value: Any) -> int:
+    if isinstance(value, list):
+        return len(value)
+    if isinstance(value, dict):
+        total = 0
+        for item in value.values():
+            total += _count_refs(item)
+        return total
+    return 0
+
+
+def _sum_token_estimates(value: Any) -> int:
+    if isinstance(value, list):
+        total = 0
+        for item in value:
+            total += _sum_token_estimates(item)
+        return total
+    if isinstance(value, dict):
+        for key in ("token_estimate", "tokens", "token_count"):
+            if key in value:
+                try:
+                    return max(0, int(value.get(key) or 0))
+                except (TypeError, ValueError):
+                    return 0
+        total = 0
+        for item in value.values():
+            total += _sum_token_estimates(item)
+        return total
+    return 0
+
+
+def retrieval_phase0_fields(result: Json) -> Json:
+    pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
+    metrics = retrieval_metrics_from_result(result)
+    recall_policy = pack.get("recall_policy") if isinstance(pack.get("recall_policy"), dict) else {}
+    index_filter = (
+        recall_policy.get("secondary_index_filter")
+        if isinstance(recall_policy.get("secondary_index_filter"), dict)
+        else {}
+    )
+
+    def metric_int(*names: str) -> int:
+        for name in names:
+            raw = metrics.get(name)
+            if raw is None:
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def pack_int(*names: str) -> int:
+        for name in names:
+            raw = pack.get(name)
+            if raw is None:
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    candidate_count = metric_int("candidate_count", "candidate_records", "candidate_ref_count")
+    if not candidate_count:
+        candidate_count = pack_int("candidate_count", "primary_candidate_count", "auxiliary_candidate_count")
+    if not candidate_count:
+        candidate_count = selected_ref_count(result) + _count_refs(pack.get("dropped_refs"))
+
+    index_hits = metric_int("index_hits", "secondary_index_hits", "index_prefilter_hits")
+    if not index_hits:
+        try:
+            index_hits = int(index_filter.get("matched_candidate_count") or 0)
+        except (TypeError, ValueError):
+            index_hits = 0
+
+    token_count = metric_int("token_count", "used_context_tokens", "remote_context_tokens")
+    if not token_count:
+        token_count = pack_int(
+            "used_context_tokens",
+            "used_remote_context_tokens",
+            "total_prompt_context_tokens",
+            "context_tokens",
+        )
+    if not token_count:
+        token_count = (
+            _sum_token_estimates(pack.get("refs"))
+            or _sum_token_estimates(pack.get("selected_refs"))
+            or _sum_token_estimates(pack.get("context_refs"))
+            or _sum_token_estimates(pack.get("groups"))
+        )
+
+    return {
+        "selected_refs": selected_ref_count(result),
+        "dropped_refs": metric_int("dropped_refs", "dropped_ref_count") or _count_refs(pack.get("dropped_refs")),
+        "scanned_records": metric_int("scanned_records", "records_scanned"),
+        "index_hits": index_hits,
+        "candidate_count": candidate_count,
+        "token_count": token_count,
+        "timeout_partial": bool(result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", ""))),
+    }
+
+
 def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     if not rows:
         return {
@@ -119,15 +224,27 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "stage_avg_ms": {name: 0.0 for name in RETRIEVAL_STAGE_METRICS},
             "stage_p95_ms": {name: 0.0 for name in RETRIEVAL_STAGE_METRICS},
             "selected_refs_avg": 0.0,
+            "selected_refs_min": 0,
+            "selected_refs_max": 0,
+            "dropped_refs_avg": 0.0,
             "scanned_records_avg": 0.0,
+            "index_hits_avg": 0.0,
+            "candidate_count_avg": 0.0,
+            "token_count_avg": 0.0,
+            "timeout_partial_count": 0,
             "cache_hit_rate": 0.0,
             "placement_partitions_touched_avg": 0.0,
         }
     stage_values: dict[str, list[float]] = {name: [] for name in RETRIEVAL_STAGE_METRICS}
     selected_refs: list[float] = []
+    dropped_refs: list[float] = []
     scanned_records: list[float] = []
+    index_hits: list[float] = []
+    candidate_counts: list[float] = []
+    token_counts: list[float] = []
     placement_partitions: list[float] = []
     cache_hits = 0
+    timeout_partials = 0
     for row in rows:
         for name in RETRIEVAL_STAGE_METRICS:
             try:
@@ -139,15 +256,33 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         except (TypeError, ValueError):
             selected_refs.append(0.0)
         try:
+            dropped_refs.append(float(row.get("dropped_refs") or 0.0))
+        except (TypeError, ValueError):
+            dropped_refs.append(0.0)
+        try:
             scanned_records.append(float(row.get("scanned_records") or 0.0))
         except (TypeError, ValueError):
             scanned_records.append(0.0)
+        try:
+            index_hits.append(float(row.get("index_hits") or 0.0))
+        except (TypeError, ValueError):
+            index_hits.append(0.0)
+        try:
+            candidate_counts.append(float(row.get("candidate_count") or 0.0))
+        except (TypeError, ValueError):
+            candidate_counts.append(0.0)
+        try:
+            token_counts.append(float(row.get("token_count") or 0.0))
+        except (TypeError, ValueError):
+            token_counts.append(0.0)
         try:
             placement_partitions.append(float(row.get("placement_partitions_touched") or 0.0))
         except (TypeError, ValueError):
             placement_partitions.append(0.0)
         if bool(row.get("cache_hit")):
             cache_hits += 1
+        if bool(row.get("timeout_partial")):
+            timeout_partials += 1
     return {
         "samples": len(rows),
         "stage_avg_ms": {
@@ -159,7 +294,14 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             for name, values in stage_values.items()
         },
         "selected_refs_avg": round(statistics.fmean(selected_refs), 3) if selected_refs else 0.0,
+        "selected_refs_min": int(min(selected_refs)) if selected_refs else 0,
+        "selected_refs_max": int(max(selected_refs)) if selected_refs else 0,
+        "dropped_refs_avg": round(statistics.fmean(dropped_refs), 3) if dropped_refs else 0.0,
         "scanned_records_avg": round(statistics.fmean(scanned_records), 3) if scanned_records else 0.0,
+        "index_hits_avg": round(statistics.fmean(index_hits), 3) if index_hits else 0.0,
+        "candidate_count_avg": round(statistics.fmean(candidate_counts), 3) if candidate_counts else 0.0,
+        "token_count_avg": round(statistics.fmean(token_counts), 3) if token_counts else 0.0,
+        "timeout_partial_count": timeout_partials,
         "cache_hit_rate": round(cache_hits / len(rows), 6) if rows else 0.0,
         "placement_partitions_touched_avg": round(statistics.fmean(placement_partitions), 3) if placement_partitions else 0.0,
     }
@@ -192,6 +334,89 @@ def fallback_flags_from_backend(result: Json) -> Json:
     }
 
 
+def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Namespace | None = None) -> Json:
+    min_selected_refs = int(getattr(args, "phase0_min_selected_refs", 1) if args is not None else 1)
+    max_drift_ratio = float(getattr(args, "phase0_max_selected_ref_drift_ratio", 0.35) if args is not None else 0.35)
+    failures: list[Json] = []
+    backend_values: Json = {}
+    selected_for_drift: dict[str, float] = {}
+    for name, result in backends.items():
+        if not result or result.get("status") != "passed":
+            failures.append(
+                {
+                    "backend": name,
+                    "reason": "backend_not_passed",
+                    "status": result.get("status") if isinstance(result, dict) else "missing",
+                    "error": result.get("error") if isinstance(result, dict) else "",
+                }
+            )
+            backend_values[name] = {
+                "status": result.get("status") if isinstance(result, dict) else "missing",
+                "selected_refs_avg": 0.0,
+                "selected_refs_max": 0,
+                "dropped_refs_avg": 0.0,
+                "scanned_records_avg": 0.0,
+                "index_hits_avg": 0.0,
+                "candidate_count_avg": 0.0,
+                "token_count_avg": 0.0,
+                "timeout_partial_count": 0,
+                "timeouts": 0,
+            }
+            continue
+        retrieve = result.get("retrieve", {}) if isinstance(result.get("retrieve"), dict) else {}
+        stage = retrieve.get("stage_metrics", {}) if isinstance(retrieve.get("stage_metrics"), dict) else {}
+        selected_avg = float(retrieve.get("selected_refs_avg") or stage.get("selected_refs_avg") or 0.0)
+        selected_max = int(retrieve.get("selected_refs_max") or stage.get("selected_refs_max") or 0)
+        backend_values[name] = {
+            "status": result.get("status"),
+            "selected_refs_avg": selected_avg,
+            "selected_refs_max": selected_max,
+            "dropped_refs_avg": float(stage.get("dropped_refs_avg") or 0.0),
+            "scanned_records_avg": float(stage.get("scanned_records_avg") or 0.0),
+            "index_hits_avg": float(stage.get("index_hits_avg") or 0.0),
+            "candidate_count_avg": float(stage.get("candidate_count_avg") or 0.0),
+            "token_count_avg": float(stage.get("token_count_avg") or 0.0),
+            "timeout_partial_count": int(stage.get("timeout_partial_count") or retrieve.get("partial_context_packs") or 0),
+            "timeouts": int(retrieve.get("timeout_count") or 0),
+        }
+        if selected_avg < min_selected_refs:
+            failures.append(
+                {
+                    "backend": name,
+                    "reason": "selected_refs_below_minimum",
+                    "selected_refs_avg": selected_avg,
+                    "selected_refs_max": selected_max,
+                    "minimum": min_selected_refs,
+                }
+            )
+        else:
+            selected_for_drift[name] = selected_avg
+    if len(selected_for_drift) >= 2:
+        selected_values = list(selected_for_drift.values())
+        denominator = max(max(selected_values), 1.0)
+        drift_ratio = (max(selected_values) - min(selected_values)) / denominator
+        if drift_ratio > max_drift_ratio:
+            failures.append(
+                {
+                    "backend": "cross_backend",
+                    "reason": "selected_ref_drift_too_large",
+                    "selected_refs_avg_by_backend": selected_for_drift,
+                    "drift_ratio": round(drift_ratio, 6),
+                    "maximum": max_drift_ratio,
+                }
+            )
+    else:
+        drift_ratio = None
+    return {
+        "status": "failed" if failures else "passed",
+        "minimum_selected_refs": min_selected_refs,
+        "max_selected_ref_drift_ratio": max_drift_ratio,
+        "selected_ref_drift_ratio": round(drift_ratio, 6) if drift_ratio is not None else None,
+        "backend_values": backend_values,
+        "failures": failures,
+    }
+
+
 def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
     common = {
         "metaserver": args.metaserver,
@@ -205,6 +430,9 @@ def make_adapter(backend: str, args: argparse.Namespace, storage_prefix: str):
         return MatrixArkTemporalStoreDirectAdapter(library_path=args.cpp_lib, **common)
     if backend == "rust":
         return MatrixArkTemporalStoreRustAdapter(rust_cli=args.rust_cli, **common)
+    if backend == "python_ref":
+        store_path = Path(args.python_ref_store) if args.python_ref_store else Path("/tmp") / "matrixark_phase0_python_ref.jsonl"
+        return MatrixArkLocalAdapter(store_path)
     raise ValueError(f"unknown backend: {backend}")
 
 
@@ -233,6 +461,8 @@ def make_raw_client(backend: str, args: argparse.Namespace):
             request_timeout_ms=args.request_timeout_ms,
             io_timeout_ms=args.io_timeout_ms,
         )
+    if backend == "python_ref":
+        raise ValueError("python_ref does not expose raw TemporalStore hset/hget")
     raise ValueError(f"unknown backend: {backend}")
 
 
@@ -370,7 +600,16 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             }
             result["fallback_flags"] = fallback_flags_from_backend(result)
             return result
-        raw_storage = run_raw_storage(backend, args, run_id, client=getattr(adapter, "_client", None))
+        if backend == "python_ref":
+            raw_storage = {
+                "skipped": True,
+                "reason": "python reference backend exercises context retrieval, not raw TemporalStore hset/hget",
+                "write": {},
+                "read": {},
+                "errors": {"write": [], "read": []},
+            }
+        else:
+            raw_storage = run_raw_storage(backend, args, run_id, client=getattr(adapter, "_client", None))
         if args.skip_context_pipeline:
             result = {
                 "backend": backend,
@@ -476,8 +715,8 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 assert result is not None
                 selected_counts.append(selected_ref_count(result))
                 metrics = retrieval_metrics_from_result(result)
-                if metrics:
-                    retrieval_metric_rows.append(metrics)
+                phase0_fields = retrieval_phase0_fields(result)
+                retrieval_metric_rows.append({**metrics, **phase0_fields})
                 if result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", "")):
                     partial_count += 1
         retrieve_elapsed = time.perf_counter() - retrieve_started
@@ -539,9 +778,138 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
         server.close()
 
 
+def run_backend_isolated(backend: str, args: argparse.Namespace, run_id: str, artifact_dir: Path) -> Json:
+    output_path = artifact_dir / f"{backend}.json"
+    log_path = artifact_dir / f"{backend}.worker.log"
+    cmd = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "--backend-worker",
+        backend,
+        "--backend-worker-output",
+        str(output_path),
+        "--run-id",
+        run_id,
+        "--events",
+        str(args.events),
+        "--raw-ops",
+        str(args.raw_ops),
+        "--raw-read-ops",
+        str(args.raw_read_ops),
+        "--raw-batch-size",
+        str(args.raw_batch_size),
+        "--raw-read-batch-size",
+        str(args.raw_read_batch_size),
+        "--raw-workers",
+        str(args.raw_workers),
+        "--messages-per-ingest",
+        str(args.messages_per_ingest),
+        "--ingest-workers",
+        str(args.ingest_workers),
+        "--retrieve-queries",
+        str(args.retrieve_queries),
+        "--retrieve-workers",
+        str(args.retrieve_workers),
+        "--max-context-tokens",
+        str(args.max_context_tokens),
+        "--metaserver",
+        args.metaserver,
+        "--namespace",
+        args.namespace,
+        "--table",
+        args.table,
+        "--storage-prefix",
+        args.storage_prefix,
+        "--cpp-lib",
+        args.cpp_lib,
+        "--rust-cli",
+        args.rust_cli,
+        "--python-ref-store",
+        args.python_ref_store,
+        "--request-timeout-ms",
+        str(args.request_timeout_ms),
+        "--io-timeout-ms",
+        str(args.io_timeout_ms),
+        "--readiness-timeout-ms",
+        str(args.readiness_timeout_ms),
+        "--ingest-deadline-ms",
+        str(args.ingest_deadline_ms),
+        "--retrieve-deadline-ms",
+        str(args.retrieve_deadline_ms),
+        "--phase0-min-selected-refs",
+        str(args.phase0_min_selected_refs),
+        "--phase0-max-selected-ref-drift-ratio",
+        str(args.phase0_max_selected_ref_drift_ratio),
+    ]
+    if args.skip_context_pipeline:
+        cmd.append("--skip-context-pipeline")
+    started = time.perf_counter()
+    try:
+        completed = subprocess.run(
+            cmd,
+            cwd=str(ROOT),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=max(1, args.backend_worker_timeout_sec),
+        )
+        worker_log = {
+            "command": cmd,
+            "returncode": completed.returncode,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "stdout_tail": completed.stdout[-8000:],
+            "stderr_tail": completed.stderr[-8000:],
+        }
+    except subprocess.TimeoutExpired as exc:
+        worker_log = {
+            "command": cmd,
+            "returncode": None,
+            "elapsed_s": round(time.perf_counter() - started, 3),
+            "timed_out": True,
+            "stdout_tail": (exc.stdout or "")[-8000:] if isinstance(exc.stdout, str) else "",
+            "stderr_tail": (exc.stderr or "")[-8000:] if isinstance(exc.stderr, str) else "",
+        }
+    log_path.write_text(json.dumps(worker_log, indent=2, sort_keys=True), encoding="utf-8")
+    if output_path.exists():
+        try:
+            result = json.loads(output_path.read_text(encoding="utf-8"))
+            if worker_log.get("returncode") not in (0, None) and result.get("status") == "passed":
+                result["status"] = "backend_process_failed"
+            result["worker"] = worker_log
+            output_path.write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+            return result
+        except Exception as exc:
+            return {
+                "backend": backend,
+                "status": "backend_artifact_read_failed",
+                "error": str(exc),
+                "worker": worker_log,
+                "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+            }
+    status = "blocked_timeout" if worker_log.get("timed_out") else "backend_process_failed"
+    return {
+        "backend": backend,
+        "status": status,
+        "error": "backend worker did not write result artifact",
+        "worker": worker_log,
+        "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+        "fallback_flags": {"backend_startup_failed": True},
+    }
+
+
 def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | None = None) -> Json:
+    python_ref = getattr(args, "python_ref_result", None) if args is not None else None
+    phase0_backends = {"cpp": cpp, "rust": rust}
+    if isinstance(python_ref, dict):
+        phase0_backends["python_ref"] = python_ref
+    skip_context_pipeline = bool(getattr(args, "skip_context_pipeline", False) if args is not None else False)
+    phase0 = (
+        {"status": "skipped", "reason": "context pipeline disabled"}
+        if skip_context_pipeline
+        else phase0_correctness_gate(phase0_backends, args)
+    )
     if not cpp or not rust or cpp.get("status") != "passed" or rust.get("status") != "passed":
-        return {"status": "not_comparable", "reason": "both backends must pass"}
+        return {"status": "not_comparable", "reason": "both C++ and Rust backends must pass", "phase0_correctness": phase0}
     min_qps_ratio = float(getattr(args, "perf_min_qps_ratio", 0.8) if args is not None else 0.8)
     max_latency_ratio = float(getattr(args, "perf_max_latency_ratio", 2.0) if args is not None else 2.0)
     rows = []
@@ -562,6 +930,10 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("retrieve_timeout_count", ("retrieve", "timeout_count"), "lower"),
         ("partial_context_packs", ("retrieve", "partial_context_packs"), "lower"),
         ("selected_refs_avg", ("retrieve", "selected_refs_avg"), "approx"),
+        ("dropped_refs_avg", ("retrieve", "stage_metrics", "dropped_refs_avg"), "lower"),
+        ("index_hits_avg", ("retrieve", "stage_metrics", "index_hits_avg"), "approx"),
+        ("candidate_count_avg", ("retrieve", "stage_metrics", "candidate_count_avg"), "lower"),
+        ("token_count_avg", ("retrieve", "stage_metrics", "token_count_avg"), "approx"),
         ("query_plan_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "query_plan_ms"), "lower"),
         ("node_traversal_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "node_traversal_ms"), "lower"),
         ("index_prefilter_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "index_prefilter_ms"), "lower"),
@@ -621,19 +993,23 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
             }
         )
     blockers = [row for row in rows if not row.get("parity_passed")]
+    phase0_failed = phase0.get("status") == "failed"
     return {
-        "status": "passed" if not blockers else "failed",
+        "status": "failed" if phase0_failed or blockers else "passed",
+        "phase0_correctness": phase0,
         "rows": rows,
         "perf_parity": {
-            "passed": not blockers,
+            "passed": not blockers and not phase0_failed,
             "min_qps_ratio": min_qps_ratio,
             "max_latency_ratio": max_latency_ratio,
             "blockers": blockers,
+            "correctness_failures": phase0.get("failures", []),
         },
     }
 
 
 def write_report(path: Path, report: Json) -> None:
+    backend_order = [backend for backend in ("cpp", "rust", "python_ref") if backend in report.get("backends", {})]
     lines = [
         "# MatrixArk C++ vs Rust Scale Report",
         "",
@@ -650,7 +1026,7 @@ def write_report(path: Path, report: Json) -> None:
         "| backend | status | message QPS | ingest p50 | ingest p95 | ingest p99 | retrieve QPS | retrieve p50 | retrieve p95 | retrieve p99 | errors | partial packs |",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
-    for backend in ("cpp", "rust"):
+    for backend in backend_order:
         item = report["backends"].get(backend, {})
         ingest = item.get("ingest", {})
         ingest_messages = item.get("ingest_messages", {})
@@ -663,7 +1039,7 @@ def write_report(path: Path, report: Json) -> None:
             f"{retrieve.get('p99_ms', 0)} ms | {errors} | {retrieve.get('partial_context_packs', 0)} |"
         )
     lines.extend(["", "## Raw Storage", "", "| backend | write record QPS | write batch p95 | read QPS | read p95 | write errors | read errors |", "|---|---:|---:|---:|---:|---:|---:|"])
-    for backend in ("cpp", "rust"):
+    for backend in backend_order:
         item = report["backends"].get(backend, {})
         raw = item.get("raw_storage", {})
         write = raw.get("write", {})
@@ -679,11 +1055,11 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Retrieval Stage Metrics",
             "",
-            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | scanned records avg | cache hit rate | placement partitions avg |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | selected avg | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | cache hit rate | placement partitions avg |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
-    for backend in ("cpp", "rust"):
+    for backend in backend_order:
         retrieve = report["backends"].get(backend, {}).get("retrieve", {})
         metrics = retrieve.get("stage_metrics", {})
         p95 = metrics.get("stage_p95_ms", {})
@@ -692,11 +1068,49 @@ def write_report(path: Path, report: Json) -> None:
             f"{p95.get('query_plan_ms', 0)} ms | {p95.get('node_traversal_ms', 0)} ms | "
             f"{p95.get('index_prefilter_ms', 0)} ms | {p95.get('candidate_fetch_ms', 0)} ms | "
             f"{p95.get('score_ms', 0)} ms | {p95.get('pack_ms', 0)} ms | {p95.get('audit_ms', 0)} ms | "
-            f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('cache_hit_rate', 0)} | "
+            f"{metrics.get('selected_refs_avg', 0)} | {metrics.get('dropped_refs_avg', 0)} | "
+            f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('index_hits_avg', 0)} | "
+            f"{metrics.get('candidate_count_avg', 0)} | {metrics.get('token_count_avg', 0)} | "
+            f"{metrics.get('cache_hit_rate', 0)} | "
             f"{metrics.get('placement_partitions_touched_avg', 0)} |"
         )
     comp = report.get("comparison", {})
     if comp.get("status") in {"passed", "failed"}:
+        phase0 = comp.get("phase0_correctness", {})
+        lines.extend(
+            [
+                "",
+                "## Phase 0 Correctness Gate",
+                "",
+                f"- status: `{phase0.get('status')}`",
+                f"- minimum selected refs: `{phase0.get('minimum_selected_refs')}`",
+                f"- max selected-ref drift ratio: `{phase0.get('max_selected_ref_drift_ratio')}`",
+                f"- selected-ref drift ratio: `{phase0.get('selected_ref_drift_ratio')}`",
+            ]
+        )
+        backend_values = phase0.get("backend_values", {}) if isinstance(phase0.get("backend_values"), dict) else {}
+        if backend_values:
+            lines.extend(
+                [
+                    "",
+                    "| backend | selected avg | selected max | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | timeouts |",
+                    "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                ]
+            )
+            for backend in ("cpp", "rust"):
+                values = backend_values.get(backend, {}) if isinstance(backend_values.get(backend), dict) else {}
+                lines.append(
+                    f"| {backend} | {values.get('selected_refs_avg', 0)} | {values.get('selected_refs_max', 0)} | "
+                    f"{values.get('dropped_refs_avg', 0)} | {values.get('scanned_records_avg', 0)} | "
+                    f"{values.get('index_hits_avg', 0)} | {values.get('candidate_count_avg', 0)} | "
+                    f"{values.get('token_count_avg', 0)} | {values.get('timeouts', 0)} |"
+                )
+        if phase0.get("failures"):
+            lines.extend(["", "| failure | backend | details |", "|---|---|---|"])
+            for failure in phase0.get("failures", []):
+                lines.append(
+                    f"| {failure.get('reason')} | {failure.get('backend')} | `{json.dumps(failure, sort_keys=True)}` |"
+                )
         parity = comp.get("perf_parity", {})
         lines.extend(
             [
@@ -707,6 +1121,7 @@ def write_report(path: Path, report: Json) -> None:
                 f"- minimum QPS ratio: `{parity.get('min_qps_ratio')}`",
                 f"- maximum latency ratio: `{parity.get('max_latency_ratio')}`",
                 f"- blockers: `{len(parity.get('blockers', []))}`",
+                f"- correctness failures: `{len(parity.get('correctness_failures', []))}`",
             ]
         )
         if parity.get("blockers"):
@@ -722,6 +1137,38 @@ def write_report(path: Path, report: Json) -> None:
             )
     else:
         lines.extend(["", "## Comparison", "", f"`{comp.get('status')}`: {comp.get('reason', '')}"])
+        phase0 = comp.get("phase0_correctness", {}) if isinstance(comp.get("phase0_correctness"), dict) else {}
+        if phase0:
+            lines.extend(
+                [
+                    "",
+                    "## Phase 0 Correctness Gate",
+                    "",
+                    f"- status: `{phase0.get('status')}`",
+                    f"- minimum selected refs: `{phase0.get('minimum_selected_refs')}`",
+                    f"- max selected-ref drift ratio: `{phase0.get('max_selected_ref_drift_ratio')}`",
+                    f"- selected-ref drift ratio: `{phase0.get('selected_ref_drift_ratio')}`",
+                    "",
+                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | candidates avg | tokens avg | timeouts |",
+                    "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+                ]
+            )
+            backend_values = phase0.get("backend_values", {}) if isinstance(phase0.get("backend_values"), dict) else {}
+            for backend in backend_values:
+                values = backend_values.get(backend, {}) if isinstance(backend_values.get(backend), dict) else {}
+                lines.append(
+                    f"| {backend} | {values.get('status', '')} | {values.get('selected_refs_avg', 0)} | "
+                    f"{values.get('selected_refs_max', 0)} | {values.get('dropped_refs_avg', 0)} | "
+                    f"{values.get('scanned_records_avg', 0)} | {values.get('index_hits_avg', 0)} | "
+                    f"{values.get('candidate_count_avg', 0)} | {values.get('token_count_avg', 0)} | "
+                    f"{values.get('timeouts', 0)} |"
+                )
+            if phase0.get("failures"):
+                lines.extend(["", "| failure | backend | details |", "|---|---|---|"])
+                for failure in phase0.get("failures", []):
+                    lines.append(
+                        f"| {failure.get('reason')} | {failure.get('backend')} | `{json.dumps(failure, sort_keys=True)}` |"
+                    )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -749,9 +1196,18 @@ def main() -> int:
     parser.add_argument("--readiness-timeout-ms", type=int, default=60000)
     parser.add_argument("--ingest-deadline-ms", type=int, default=60000)
     parser.add_argument("--retrieve-deadline-ms", type=int, default=10000)
-    parser.add_argument("--backends", nargs="+", choices=["cpp", "rust"], default=["cpp", "rust"])
+    parser.add_argument("--backends", nargs="+", choices=["cpp", "rust", "python_ref"], default=["cpp", "rust"])
     parser.add_argument("--artifact-dir", default="")
+    parser.add_argument("--run-id", default="")
+    parser.add_argument("--backend-worker", choices=["cpp", "rust", "python_ref"], default="")
+    parser.add_argument("--backend-worker-output", default="")
+    parser.add_argument("--backend-worker-timeout-sec", type=int, default=900)
+    parser.add_argument("--python-ref-store", default="")
+    parser.add_argument("--no-isolate-backends", action="store_true")
     parser.add_argument("--skip-context-pipeline", action="store_true")
+    parser.add_argument("--phase0-min-selected-refs", type=int, default=1)
+    parser.add_argument("--phase0-max-selected-ref-drift-ratio", type=float, default=0.35)
+    parser.add_argument("--allow-phase0-correctness-failure", action="store_true")
     parser.add_argument("--perf-min-qps-ratio", type=float, default=0.8)
     parser.add_argument("--perf-max-latency-ratio", type=float, default=2.0)
     parser.add_argument("--require-perf-parity", action="store_true")
@@ -764,7 +1220,23 @@ def main() -> int:
         "oplog_mode": "async",
         "replication_mode": "shared_store",
     }
-    run_id = str(int(time.time() * 1000))
+    run_id = parsed.run_id or str(int(time.time() * 1000))
+    if parsed.backend_worker:
+        try:
+            result = run_backend(parsed.backend_worker, parsed, run_id)
+        except Exception as exc:
+            result = {
+                "backend": parsed.backend_worker,
+                "status": "backend_startup_failed",
+                "error": str(exc),
+                "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+            }
+        if parsed.backend_worker_output:
+            Path(parsed.backend_worker_output).write_text(json.dumps(result, indent=2, sort_keys=True), encoding="utf-8")
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("status") == "passed" else 1
+
     artifact_dir = Path(parsed.artifact_dir) if parsed.artifact_dir else ROOT / "docs" / "benchmarks" / f"cpp_rust_scale_{run_id}"
     artifact_dir.mkdir(parents=True, exist_ok=True)
     if "rust" in parsed.backends and not os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT"):
@@ -789,7 +1261,11 @@ def main() -> int:
             "table": parsed.table,
             "storage_options": parsed.storage_options,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
+            "python_ref_store": parsed.python_ref_store,
             "skip_context_pipeline": parsed.skip_context_pipeline,
+            "phase0_min_selected_refs": parsed.phase0_min_selected_refs,
+            "phase0_max_selected_ref_drift_ratio": parsed.phase0_max_selected_ref_drift_ratio,
+            "allow_phase0_correctness_failure": parsed.allow_phase0_correctness_failure,
             "perf_min_qps_ratio": parsed.perf_min_qps_ratio,
             "perf_max_latency_ratio": parsed.perf_max_latency_ratio,
             "require_perf_parity": parsed.require_perf_parity,
@@ -797,29 +1273,36 @@ def main() -> int:
         "backends": {},
     }
     for backend in parsed.backends:
-        try:
-            report["backends"][backend] = run_backend(backend, parsed, run_id)
-        except Exception as exc:
-            report["backends"][backend] = {
-                "backend": backend,
-                "status": "backend_startup_failed",
-                "error": str(exc),
-                "config": {
-                    "metaserver": parsed.metaserver,
-                    "namespace": parsed.namespace,
-                    "table": parsed.table,
-                    "cpp_lib": parsed.cpp_lib if backend == "cpp" else "",
-                    "rust_cli": parsed.rust_cli if backend == "rust" else "",
-                },
-                "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
-            }
+        if parsed.no_isolate_backends:
+            try:
+                report["backends"][backend] = run_backend(backend, parsed, run_id)
+            except Exception as exc:
+                report["backends"][backend] = {
+                    "backend": backend,
+                    "status": "backend_startup_failed",
+                    "error": str(exc),
+                    "config": {
+                        "metaserver": parsed.metaserver,
+                        "namespace": parsed.namespace,
+                        "table": parsed.table,
+                        "cpp_lib": parsed.cpp_lib if backend == "cpp" else "",
+                        "rust_cli": parsed.rust_cli if backend == "rust" else "",
+                    },
+                    "retrieve": {"stage_metrics": summarize_retrieval_metrics([])},
+                }
+        else:
+            report["backends"][backend] = run_backend_isolated(backend, parsed, run_id, artifact_dir)
         (artifact_dir / f"{backend}.json").write_text(json.dumps(report["backends"][backend], indent=2, sort_keys=True), encoding="utf-8")
+    parsed.python_ref_result = report["backends"].get("python_ref")
     report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"), parsed)
     (artifact_dir / "comparison.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     write_report(artifact_dir / "comparison.md", report)
     print(json.dumps({"artifact_dir": str(artifact_dir), "comparison": report["comparison"]}, indent=2, sort_keys=True))
     backends_passed = all(report["backends"].get(b, {}).get("status") == "passed" for b in parsed.backends)
     parity_passed = bool(report.get("comparison", {}).get("perf_parity", {}).get("passed", True))
+    phase0_failed = report.get("comparison", {}).get("phase0_correctness", {}).get("status") == "failed"
+    if phase0_failed and not parsed.allow_phase0_correctness_failure:
+        return 3
     if parsed.require_perf_parity and not parity_passed:
         return 2
     return 0 if backends_passed else 1
