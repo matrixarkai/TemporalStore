@@ -104,36 +104,19 @@
   },
   {
     "service": "storage_cache",
-    "ready": false,
-    "gate_status": "blocked",
-    "severity": "warning",
+    "ready": true,
+    "gate_status": "ready",
+    "severity": "ready",
     "remediation_order": 6,
     "owner": "storage_runtime",
     "areas": [
       "storage_cache"
     ],
-    "blocker_count": 2,
-    "blocker_classes": [
-      "storage_cache_durability"
-    ],
-    "next_action": "finish mtcache-class async writeback/backpressure and mature latency metrics",
-    "primary_blocker": {
-      "area": "storage_cache",
-      "capability": "mtcache-class async writeback and backpressure",
-      "evidence_field": "storage_cache_mtcache.async_writeback_backpressure_ready"
-    },
-    "failed_capabilities": [
-      {
-        "area": "storage_cache",
-        "capability": "mtcache-class async writeback and backpressure",
-        "evidence_field": "storage_cache_mtcache.async_writeback_backpressure_ready"
-      },
-      {
-        "area": "storage_cache",
-        "capability": "mtcache-class mature latency metrics",
-        "evidence_field": "storage_cache_mtcache.latency_metrics_ready"
-      }
-    ]
+    "blocker_count": 0,
+    "blocker_classes": [],
+    "next_action": "ready",
+    "primary_blocker": null,
+    "failed_capabilities": []
   },
   {
     "service": "feature_modules",

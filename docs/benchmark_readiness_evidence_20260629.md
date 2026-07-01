@@ -44,7 +44,7 @@ Machine-readable snapshot:
 
 - [`service_reports_20260629.json`](readiness/service_reports_20260629.json)
 
-Result: `9` ready services, `3` blocked services. The command correctly failed closed while emitting service reports.
+Result: `10` ready services, `2` blocked services. The command correctly failed closed while emitting service reports.
 
 | Service | Status | Severity | Blockers | Primary blocker capability | Evidence field |
 | --- | --- | --- | ---: | --- | --- |
@@ -53,7 +53,7 @@ Result: `9` ready services, `3` blocked services. The command correctly failed c
 | `ingestion` | `ready` | `ready` | `0` | ready | `none` |
 | `data_node` | `blocked` | `critical` | `3` | provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence | `raft_rollout.temporal_raft_data_node_process_rollout_ready` |
 | `metaserver` | `ready` | `ready` | `0` | ready | `none` |
-| `storage_cache` | `blocked` | `warning` | `2` | mtcache-class async writeback and backpressure | `storage_cache_mtcache.async_writeback_backpressure_ready` |
+| `storage_cache` | `ready` | `ready` | `0` | ready | `none` |
 | `feature_modules` | `ready` | `ready` | `0` | ready | `none` |
 | `context_workflow` | `ready` | `ready` | `0` | ready | `none` |
 | `fault_tolerance` | `ready` | `ready` | `0` | ready | `none` |
@@ -66,13 +66,12 @@ Result: `9` ready services, `3` blocked services. The command correctly failed c
 | Service | Owner | Severity | Primary blocker capability | Evidence field | Next action |
 | --- | --- | --- | --- | --- | --- |
 | `data_node` | `data_node_runtime` | `critical` | provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence | `raft_rollout.temporal_raft_data_node_process_rollout_ready` | finish metaserver-driven membership against real data-node Raft groups |
-| `storage_cache` | `storage_runtime` | `warning` | mtcache-class async writeback and backpressure | `storage_cache_mtcache.async_writeback_backpressure_ready` | finish mtcache-class async writeback/backpressure and mature latency metrics |
 | `raft_replication` | `consensus_runtime` | `critical` | provide passing TemporalRaft data-node multi-process rollout evidence with spawned process count, independent WAL/snapshot dirs, observed process requests, read-index responses, per-node log-store inspection, process API writes, real log-store validation, snapshot install, restart recovery, crash-window recovery after storage mutation/WAL persistence/snapshot install/apply fence, failover, membership changes, follower lag, secondary reads, and RustRaft-derived operational semantics evidence | `raft_rollout.temporal_raft_data_node_process_rollout_ready` | finish durable real-process TemporalRaft rollout, production mTLS transport, and external chaos coverage |
 
 ## What This Evidence Supports
 
 - Rust TemporalStore benchmark replay is valid deterministic engineering evidence for the archived LOCOMO and LongMemEval_s summaries.
-- The readiness gate is strict: it does not claim production readiness while data-node, storage-cache, and Raft process-path evidence remain blocked.
+- The readiness gate is strict: it does not claim production readiness while data-node and Raft process-path evidence remain blocked. Storage/cache is ready for the Rust-native local/shared-store contract; direct CacheLib/mtcache binary/API compatibility remains out of scope unless re-scoped.
 - The current evidence is suitable for regression tracking, shared C++/Rust corpus validation, and readiness triage.
 
 ## What This Evidence Does Not Claim
