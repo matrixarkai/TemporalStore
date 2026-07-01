@@ -7966,9 +7966,15 @@ fn execute_on_shard(
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
-            let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
-            if !(first_write_only && series.contains_key(&timeline_key)) {
+            if let Some(timeline_key) = context_event_timeline_key_for_write(
+                series,
+                cache,
+                page_store,
+                shard_id,
+                &event,
+                first_write_only,
+            ) {
                 let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
@@ -8004,12 +8010,18 @@ fn execute_on_shard(
             let event_object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
             let primary_time_ms = event.primary_time_ms();
-            let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
+            if let Some(event_timeline_key) = context_event_timeline_key_for_write(
+                event_series,
+                cache,
+                page_store,
+                shard_id,
+                &event,
+                first_write_only,
+            ) {
                 let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
