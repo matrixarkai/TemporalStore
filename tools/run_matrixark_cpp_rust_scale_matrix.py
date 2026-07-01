@@ -40,6 +40,9 @@ def load_json(path: Path) -> Json:
 
 
 def selected_ref_parity_status(comparison: Json) -> str:
+    phase0 = comparison.get("phase0_correctness", {}) if isinstance(comparison.get("phase0_correctness"), dict) else {}
+    if phase0.get("status") in {"passed", "failed"}:
+        return str(phase0.get("status"))
     for row in comparison.get("rows", []):
         if row.get("metric") == "selected_refs_avg":
             return "passed" if row.get("parity_passed") else "failed"
@@ -180,7 +183,8 @@ def write_summary_md(path: Path, summary: Json) -> None:
             "- 1K / 10K / 100K ingest tiers, or the explicit tiers passed to this runner.",
             "- retrieve worker tiers 4 / 8 / 16 / 32, or the explicit tiers passed to this runner.",
             "- same generated corpus for C++ and Rust within each case.",
-            "- selected ref parity via `selected_refs_avg`.",
+            "- Phase 0 correctness: selected refs, dropped refs, scanned records, index hits, candidates, token count, timeout/fallback flags.",
+            "- selected-ref zero/drift failures are correctness failures, not latency datapoints.",
             "- p50/p95/p99, QPS, timeout counts, partial-pack counts, fallback flags.",
             "- per-stage retrieval metrics: query plan, node traversal, index prefilter, candidate fetch, score, pack, audit.",
         ]
