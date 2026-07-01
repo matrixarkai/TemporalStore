@@ -11,9 +11,11 @@ from pathlib import Path
 import matrixark_mcp_server as mcp
 
 try:
+    from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
     from tools.run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
+    import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
     from run_matrixark_cpp_rust_scale_report import comparison, selected_ref_count
 
@@ -122,6 +124,19 @@ class _NativeContextPackClient:
             "quality_warnings": [],
         }
 
+
+class _AuditCaptureAdapter(mcp_local.MatrixArkLocalAdapter):
+    def __post_init__(self) -> None:
+        self.appended: list[dict] = []
+        self.audit_appended: list[dict] = []
+
+    def append(self, record: dict) -> None:
+        self.appended.append(record)
+
+    def append_audit(self, record: dict) -> None:
+        self.audit_appended.append(record)
+
+
 class _FailingWarmupClient:
     def hset(self, key: str, field: str, value: str) -> None:
         raise RuntimeError("Slot not found for deploy_ns/deploy_table")
@@ -152,8 +167,57 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp.MATRIXARK_MCP_PROFILE = self._old_profile
         mcp.MATRIXARK_ALLOW_LOCAL_BACKEND = self._old_allow_local
         mcp.MATRIXARK_REQUIRE_BACKEND_READY = self._old_require_ready
+        mcp_local.CONTEXT_TELEMETRY_WRITE_MODE = mcp_core.CONTEXT_TELEMETRY_WRITE_MODE
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         mcp_core._DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.clear()
+
+    def test_context_pack_visibility_defaults_to_inline_telemetry_without_audit_write(self) -> None:
+        adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))
+        mcp_local.CONTEXT_TELEMETRY_WRITE_MODE = "inline"
+
+        decision = adapter.append_context_pack_visibility(
+            pack={
+                "context_pack_id": "pack-inline",
+                "selected_refs": [{"ref_type": "event"}],
+                "dropped_refs": {"refs": []},
+            },
+            audit_record={"record_type": "context_pack_audit"},
+            query="what changed?",
+            scope={},
+            audit_mode="telemetry_only",
+            audit_sample_rate=1.0,
+        )
+
+        self.assertEqual(decision["audit_mode"], "telemetry_only")
+        self.assertEqual(decision["telemetry_write_mode"], "inline")
+        self.assertTrue(decision["telemetry_record"])
+        self.assertFalse(decision["rich_replay_audit"])
+        self.assertFalse(decision["serving_blocked_on_full_audit"])
+        self.assertEqual(adapter.appended, [])
+        self.assertEqual(adapter.audit_appended, [])
+
+    def test_context_pack_visibility_full_audit_uses_async_audit_hook(self) -> None:
+        adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))
+        mcp_local.CONTEXT_TELEMETRY_WRITE_MODE = "async"
+
+        decision = adapter.append_context_pack_visibility(
+            pack={
+                "context_pack_id": "pack-full",
+                "selected_refs": [{"ref_type": "event"}],
+                "dropped_refs": {"refs": []},
+            },
+            audit_record={"record_type": "context_pack_audit"},
+            query="what changed?",
+            scope={},
+            audit_mode="full",
+            audit_sample_rate=1.0,
+        )
+
+        self.assertEqual(decision["audit_mode"], "full")
+        self.assertEqual(decision["telemetry_write_mode"], "async")
+        self.assertTrue(decision["rich_replay_audit"])
+        self.assertEqual(adapter.appended, [])
+        self.assertEqual([record["record_type"] for record in adapter.audit_appended], ["context_pack_telemetry", "context_pack_audit"])
 
     def test_scale_report_counts_compact_context_pack_groups(self) -> None:
         self.assertEqual(

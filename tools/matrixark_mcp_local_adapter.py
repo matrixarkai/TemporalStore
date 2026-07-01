@@ -372,6 +372,9 @@ class MatrixArkLocalAdapter:
         audit_mode: str,
         audit_sample_rate: float = 1.0,
     ) -> Json:
+        telemetry_write_mode = CONTEXT_TELEMETRY_WRITE_MODE
+        if telemetry_write_mode not in {"inline", "async", "sync", "off"}:
+            raise MatrixArkError("MATRIXARK_CONTEXT_TELEMETRY_WRITE_MODE must be inline, async, sync, or off")
         force_rich_audit = bool(
             pack.get("partial_context_pack")
             or pack.get("insufficient_context")
@@ -380,20 +383,27 @@ class MatrixArkLocalAdapter:
         sample_basis = stable_hash(f"{pack.get('context_pack_id', '')}:{query}") % 1_000_000
         sample_value = sample_basis / 1_000_000.0
         rich_audit_sampled = bool(audit_mode == "full" and (force_rich_audit or sample_value < audit_sample_rate))
+        telemetry_enabled = audit_mode != "off" and telemetry_write_mode != "off"
         visibility_decision = {
             "audit_mode": audit_mode,
             "audit_sample_rate": round(audit_sample_rate, 6),
             "audit_sample_value": round(sample_value, 6),
             "rich_replay_audit": rich_audit_sampled,
+            "full_replay_audit_enabled": audit_mode == "full",
             "rich_replay_audit_force_reason": (
                 "partial_or_warning" if force_rich_audit and audit_mode == "full" else "sampled" if rich_audit_sampled else "not_sampled"
             ),
-            "telemetry_record": audit_mode != "off",
+            "telemetry_record": telemetry_enabled,
+            "telemetry_write_mode": telemetry_write_mode,
+            "serving_blocked_on_full_audit": False,
+            "full_replay_audit_requires_full_mode": True,
         }
         telemetry = self.telemetry_record_for_context_pack(pack, query=query, scope=scope, audit_mode=audit_mode)
         telemetry["visibility_decision"] = visibility_decision
-        if audit_mode != "off":
+        if telemetry_enabled and telemetry_write_mode == "sync":
             self.append(telemetry)
+        elif telemetry_enabled and telemetry_write_mode == "async":
+            self.append_audit(telemetry)
         if rich_audit_sampled:
             audit_record["operational_visibility_policy"] = visibility_decision
             self.append_audit(audit_record)
@@ -3780,10 +3790,10 @@ class MatrixArkLocalAdapter:
         scope = optional_object(args, "scope")
         storage_options = normalize_storage_options(args)
         ranking = optional_object(args, "ranking")
-        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "off")).strip().lower()
+        audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
-        raw_audit_sample_rate = args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 1.0))
+        raw_audit_sample_rate = args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01))
         try:
             audit_sample_rate = clamp01(float(raw_audit_sample_rate))
         except (TypeError, ValueError):
