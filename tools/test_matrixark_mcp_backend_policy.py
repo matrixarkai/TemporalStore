@@ -616,8 +616,20 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(stats["native_pushdown"])
         self.assertEqual(stats["execution_mode"], "native_secondary_index_prefilter")
         self.assertEqual(stats["native_index_ref_hash_count"], 1)
+        self.assertGreaterEqual(stats["native_index_postings_found"], 1)
+        self.assertTrue(stats["native_index_posting_buckets"])
+        self.assertFalse(stats["broad_scan_used"])
         self.assertGreaterEqual(stats["native_locations"], 1)
         self.assertEqual({record["record_type"] for record in result["records"]}, {"context_event", "context_embedding", "context_index"})
+        lookup_values = [
+            value
+            for (key, field), value in client.store.items()
+            if ":context_index_lookup:" in key and field == "source_type:message"
+        ]
+        self.assertTrue(lookup_values)
+        lookup_payload = json.loads(lookup_values[0])
+        self.assertEqual(lookup_payload["ref_hashes"], [101])
+        self.assertTrue(lookup_payload["posting_buckets"])
         broad_record_loads = [
             entries
             for entries in client.batch_hget_entries
@@ -625,6 +637,39 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         ]
         self.assertTrue(broad_record_loads)
         self.assertTrue(all(len(entries) < adapter._shard_size for entries in broad_record_loads))
+
+    def test_direct_retrieval_blocks_broad_scan_without_explicit_fallback(self) -> None:
+        client = _NativeIndexClient()
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:phase2-no-broad"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._shard_size = 1024
+        adapter._index_cache = None
+        adapter._records_cache = None
+        adapter._retrieval_candidate_cache = {}
+        adapter._retrieval_candidate_cache_lock = threading.RLock()
+        adapter._entry_count_cache = None
+        adapter._legacy_index_mode = False
+        adapter._records_lock = threading.RLock()
+        adapter._metrics_lock = threading.RLock()
+
+        result = adapter.retrieval_records(
+            scope={"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+            secondary_index_groups=[{"source_type:message"}],
+            selected_node_hashes={44},
+        )
+
+        self.assertEqual(result["records"], [])
+        stats = result["scan_stats"]
+        self.assertEqual(stats["execution_mode"], "native_prefilter_no_match_broad_scan_blocked")
+        self.assertFalse(stats["native_pushdown"])
+        self.assertFalse(stats["broad_scan_fallback_allowed"])
+        self.assertFalse(stats["broad_scan_used"])
+        self.assertTrue(stats["broad_scan_blocked"])
+        self.assertEqual(stats["scanned"], 0)
 
     def test_direct_native_retrieve_matches_reference_logical_refs(self) -> None:
         scope = {"tenant_hash": 11, "user_hash": 22, "session_hash": 33}
@@ -820,8 +865,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
         self.assertEqual(request["normalization_requirements"]["scope_key"], "canonical")
         self.assertEqual(request["normalization_requirements"]["placement_key"], "context:{scope_key}:node={node_hash}")
+        self.assertEqual(request["execution_plan_requirements"]["phase"], "phase2_placement_compact_index")
+        self.assertEqual(request["execution_plan_requirements"]["candidate_fetch"], "selected_node_placement_partitions_only")
+        self.assertEqual(request["execution_plan_requirements"]["secondary_index"], "compact_postings_by_scope_index_time_bucket")
+        self.assertEqual(request["execution_plan_requirements"]["broad_prefix_scan"], "disabled_unless_explicit_debug_fallback")
         self.assertIn("scope", request["required_output"]["drop_counters"])
         self.assertIn("score_threshold", request["required_output"]["drop_counters"])
+        self.assertTrue(request["required_output"]["broad_scan_used"])
         self.assertTrue(request["required_output"]["selected_refs"])
         self.assertTrue(request["required_output"]["dropped_summary"])
         self.assertTrue(request["required_output"]["retrieval_metrics"])
