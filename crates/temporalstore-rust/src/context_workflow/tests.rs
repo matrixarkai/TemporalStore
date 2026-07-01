@@ -508,6 +508,12 @@ fn context_query_debug_reports_filter_groups_drops_and_injection_order() {
             .summary_embedding_selected_count,
         2
     );
+    assert_eq!(
+        debug
+            .tree_traversal_summary
+            .summary_embedding_lookup_batches,
+        1
+    );
     assert!(!debug.selected_refs.is_empty());
     assert_eq!(debug.injection_ordering.len(), debug.selected_refs.len());
     assert_eq!(debug.injection_ordering[0].prompt_rank, 1);
