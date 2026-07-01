@@ -921,6 +921,8 @@ pub struct ContextTreeTraversalDebug {
     #[serde(default)]
     pub summary_embedding_selected_count: usize,
     #[serde(default)]
+    pub summary_embedding_lookup_batches: usize,
+    #[serde(default)]
     pub query_embedding_dimension: usize,
     #[serde(default)]
     pub query_embedding_provider: String,
@@ -3636,6 +3638,9 @@ pub fn retrieve_context(
     } else {
         request.tiers.clone()
     };
+    let include_l0 = tiers.contains(&ContextTier::L0);
+    let include_l1 = tiers.contains(&ContextTier::L1);
+    let include_l2 = tiers.contains(&ContextTier::L2);
     let mut node_hashes = if request.node_hashes.is_empty() {
         return ContextRetrieveReport {
             status: Status::error(
@@ -3665,34 +3670,47 @@ pub fn retrieve_context(
             };
         }
     };
-    let mut summary_scores = Vec::new();
+    let mut summary_ref_owners = BTreeMap::new();
+    let mut summary_ref_hashes = Vec::with_capacity(node_hashes.len().saturating_mul(2));
     for node_hash in &node_hashes {
-        let ref_hashes = vec![
-            context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l0"),
-            context_embedding_ref_hash(request.tenant_hash, *node_hash, "node_l1"),
-        ];
+        for label in ["node_l0", "node_l1"] {
+            let ref_hash = context_embedding_ref_hash(request.tenant_hash, *node_hash, label);
+            summary_ref_owners.insert(ref_hash, *node_hash);
+            summary_ref_hashes.push(ref_hash);
+        }
+    }
+    let mut summary_scores_by_node = BTreeMap::<u64, (i64, usize)>::new();
+    if !summary_ref_hashes.is_empty() {
         let embeddings = engine.execute(ExecuteRequest {
             shard_id: request.shard_id,
             command: Command::ContextQueryEmbeddings {
                 tenant_hash: request.tenant_hash,
-                ref_hashes,
-                limit: Some(2),
+                ref_hashes: summary_ref_hashes,
+                limit: Some(node_hashes.len().saturating_mul(2).max(1)),
             },
         });
-        let mut best_score = 0i64;
-        let mut found = 0usize;
         if let CommandResponse::ContextEmbeddings { embeddings } = embeddings.response {
-            found = embeddings.len();
-            best_score = embeddings
-                .iter()
-                .map(|embedding| {
-                    context_embedding_similarity_micros(&query_embedding, &embedding.vector)
-                })
-                .max()
-                .unwrap_or_default();
+            for embedding in embeddings {
+                if let Some(node_hash) = summary_ref_owners.get(&embedding.ref_hash) {
+                    let score =
+                        context_embedding_similarity_micros(&query_embedding, &embedding.vector);
+                    let entry = summary_scores_by_node.entry(*node_hash).or_default();
+                    entry.0 = entry.0.max(score);
+                    entry.1 = entry.1.saturating_add(1);
+                }
+            }
         }
-        summary_scores.push((*node_hash, best_score, found));
     }
+    let mut summary_scores = node_hashes
+        .iter()
+        .map(|node_hash| {
+            let (best_score, found) = summary_scores_by_node
+                .get(node_hash)
+                .copied()
+                .unwrap_or_default();
+            (*node_hash, best_score, found)
+        })
+        .collect::<Vec<_>>();
     summary_scores.sort_by_key(|(node_hash, score, _)| (Reverse(*score), *node_hash));
     node_hashes = summary_scores
         .iter()
@@ -3711,6 +3729,9 @@ pub fn retrieve_context(
         .iter()
         .filter(|(_, _, found)| *found > 0)
         .count();
+    query_understanding_debug
+        .tree_traversal_summary
+        .summary_embedding_lookup_batches = usize::from(!summary_scores.is_empty());
     query_understanding_debug
         .tree_traversal_summary
         .query_embedding_dimension = query_embedding.len();
@@ -3739,7 +3760,7 @@ pub fn retrieve_context(
         {
             node_count += 1;
             node_source_ref = node.raw_metadata_ref.clone();
-            if tiers.contains(&ContextTier::L0) {
+            if include_l0 {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l0", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L0,
@@ -3750,7 +3771,7 @@ pub fn retrieve_context(
                     source_ref: node.raw_metadata_ref.clone(),
                 });
             }
-            if tiers.contains(&ContextTier::L1) {
+            if include_l1 {
                 blocks.push(ContextBlock {
                     uri: format!("{}/l1", context_node_uri(request.tenant_hash, node_hash)),
                     tier: ContextTier::L1,
@@ -3793,7 +3814,7 @@ pub fn retrieve_context(
                     continue;
                 }
                 event_count += 1;
-                if tiers.contains(&ContextTier::L2) {
+                if include_l2 {
                     let source_ref = if event.source_ref.is_empty() {
                         node_source_ref.clone()
                     } else {

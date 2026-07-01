@@ -74,6 +74,7 @@ pub(super) fn context_query_understanding_debug(
             selected_path_count: 0,
             summary_embedding_candidate_count: 0,
             summary_embedding_selected_count: 0,
+            summary_embedding_lookup_batches: 0,
             query_embedding_dimension: 0,
             query_embedding_provider: String::new(),
             summary_embeddings: Vec::new(),
