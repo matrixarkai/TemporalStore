@@ -1,0 +1,112 @@
+{
+  "behavior": {
+    "budget_defaults": {
+      "cross_session": "bounded cap; normally summaries/entities/compressions first, raw events only for high-confidence evidence",
+      "same_session": "highest priority; fills first when relevant",
+      "shared_resources_skills": "separate quota and eligibility before scoring; selected only when query intent matches"
+    },
+    "pipeline": [
+      "query understanding creates source/resource/session intent",
+      "scope filter runs before candidate eligibility",
+      "ContextNode tree traversal scores child L0/L1 embeddings layer by layer",
+      "current-session leaf candidates are fetched first",
+      "cross-session candidates use bounded session/node fanout",
+      "shared resources/skills use separate shared path quota",
+      "rerank combines lexical/embedding relevance, temporal freshness, and business boosts",
+      "ContextPack assembly spends tokens on selected evidence only"
+    ],
+    "rerank_factors": {
+      "business_boost": "approval, owner, deadline, cost, policy, procedure, resource, and skill evidence get extra weight",
+      "relevance": "primary score from query/text overlap or embedding candidate score",
+      "shared_resource_boost": "tenant/shared and global resource evidence gets a modest boost when the query asks for docs/runbooks/policy",
+      "temporal_decay": "fresh/current evidence gets boost; stale evidence can still win if relevance is strong"
+    }
+  },
+  "checks": [
+    {
+      "checked": [
+        "REGISTER_FUNCTION(CONTEXT, TRAVERSE_CONTEXT_TREE",
+        "QueryChildrenInternal",
+        "CosineSimilarity(request.query_vector(), embedding.vector())",
+        "top_k_per_depth",
+        "max_children_scored_per_parent"
+      ],
+      "missing": [],
+      "name": "cpp_layer_traversal_native",
+      "status": "pass"
+    },
+    {
+      "checked": [
+        "DecayedEventScore",
+        "rank_by_decayed_score",
+        "min_decayed_score",
+        "decay_half_life_ms"
+      ],
+      "missing": [],
+      "name": "cpp_temporal_decay_event_query",
+      "status": "pass"
+    },
+    {
+      "checked": [
+        "ctx-traverse-global-topk",
+        "set_rank_by_decayed_score(true)",
+        "ASSERT_GT(response.decayed_scores(0), response.decayed_scores(1))",
+        "TRAVERSE_CONTEXT_TREE"
+      ],
+      "missing": [],
+      "name": "cpp_unit_coverage_for_layer_and_decay",
+      "status": "pass"
+    },
+    {
+      "checked": [
+        "context_weighted_rerank_score",
+        "context_temporal_decay_boost",
+        "context_business_boost",
+        "shared",
+        "tenant/shared",
+        "Reverse(context_weighted_rerank_score"
+      ],
+      "missing": [],
+      "name": "rust_native_weighted_rerank",
+      "status": "pass"
+    },
+    {
+      "checked": [
+        "context_retrieval_reranks_cross_session_and_shared_resource_evidence",
+        "session:old/project_aurora",
+        "session:current/project_aurora",
+        "tenant/shared/resources/project_aurora_gpu_runbook.pdf#page=1",
+        "expected current cross-session Bob evidence first",
+        "expected shared resource evidence first"
+      ],
+      "missing": [],
+      "name": "rust_unit_coverage_for_cross_session_and_shared_resource",
+      "status": "pass"
+    },
+    {
+      "case": "context_cross_session_shared_resource_weighted_rerank",
+      "name": "shared_corpus_case",
+      "required_paths": [
+        "src/extension/context/implement.cc",
+        "src/extension/context/test.cc",
+        "crates/temporalstore-rust/src/context_workflow.rs",
+        "crates/temporalstore-rust/src/context_workflow/query.rs",
+        "crates/temporalstore-rust/src/context_workflow/tests.rs"
+      ],
+      "rust_runner": "cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_shared_resource_evidence --lib -- --test-threads=1",
+      "status": "pass"
+    }
+  ],
+  "notes": [
+    "C++ native surface already contains TRAVERSE_CONTEXT_TREE and decayed QUERY_EVENTS primitives.",
+    "Rust native retrieve path now applies weighted reranking before the existing relevance/tier/time tie-breakers.",
+    "Live full-Cargo validation can be slow in this Windows/WSL workspace; the report records the command separately from the fast source/corpus gate."
+  ],
+  "status": "pass",
+  "title": "MatrixArk Layer Traversal, Shared Resource, Cross-Session Rerank Report",
+  "validation_commands": [
+    "python3 -m json.tool compat/unified_temporalstore_cases.json >/tmp/unified_context_cases.json",
+    "python3 tools/run_context_shared_cases.py --validate-only",
+    "cargo test -p temporalstore-rust context_retrieval_reranks_cross_session_and_shared_resource_evidence --lib -- --test-threads=1"
+  ]
+}

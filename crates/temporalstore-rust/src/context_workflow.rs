@@ -3799,8 +3799,18 @@ pub fn retrieve_context(
         }
     }
 
+    let reference_time_ms = blocks
+        .iter()
+        .map(|block| block.event_time_ms)
+        .max()
+        .unwrap_or(request.end_time_ms);
     blocks.sort_by_key(|block| {
         (
+            Reverse(context_weighted_rerank_score(
+                &request.query,
+                block,
+                reference_time_ms,
+            )),
             Reverse(context_relevance_score(&request.query, &block.text)),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
