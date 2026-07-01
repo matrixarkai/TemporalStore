@@ -110,6 +110,7 @@ struct CHashEntry {
     key: *const c_char,
     field: *const c_char,
     value: *const c_char,
+    route_json: *const c_char,
 }
 
 #[cfg(feature = "direct")]
@@ -459,7 +460,7 @@ impl Client {
         if entries.is_empty() && count_key.unwrap_or("").is_empty() {
             return Ok(());
         }
-        let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 3 + 2);
+        let mut strings: Vec<CString> = Vec::with_capacity(entries.len() * 4 + 2);
         let mut c_entries: Vec<CHashEntry> = Vec::with_capacity(entries.len());
         for (key, field, value) in entries {
             let key_index = strings.len();
@@ -468,10 +469,13 @@ impl Client {
             strings.push(cstring(field)?);
             let value_index = strings.len();
             strings.push(cstring(value)?);
+            let route_index = strings.len();
+            strings.push(cstring("{}")?);
             c_entries.push(CHashEntry {
                 key: strings[key_index].as_ptr(),
                 field: strings[field_index].as_ptr(),
                 value: strings[value_index].as_ptr(),
+                route_json: strings[route_index].as_ptr(),
             });
         }
         let count_key_c = match count_key {

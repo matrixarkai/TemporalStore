@@ -7,6 +7,7 @@
 #include <shared_mutex>
 #include <sstream>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 
 #include "client/client_impl.h"
@@ -450,19 +451,44 @@ Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEn
             ValidateSize(entry.field.size(), impl_->options.max_key_bytes, "entry.field"));
         RETURN_IF_STATUS_ERROR(
             ValidateSize(entry.value.size(), impl_->options.max_value_bytes, "entry.value"));
+        RETURN_IF_STATUS_ERROR(
+            ValidateSize(entry.route_json.size(), impl_->options.max_value_bytes, "entry.route_json"));
     }
     if (!count_key.empty()) {
         RETURN_IF_STATUS_ERROR(ValidateSize(count_key.size(), impl_->options.max_key_bytes, "count_key"));
         RETURN_IF_STATUS_ERROR(
             ValidateSize(count_value.size(), impl_->options.max_value_bytes, "count_value"));
     }
+    struct CoalescedEntry {
+        HashEntry entry;
+        size_t order = 0;
+    };
+    std::vector<CoalescedEntry> coalesced;
+    coalesced.reserve(entries.size());
+    std::unordered_map<std::string, size_t> index_by_hash_field;
+    for (const auto& entry : entries) {
+        const std::string identity = entry.key + "\n" + entry.field;
+        auto iter = index_by_hash_field.find(identity);
+        if (iter == index_by_hash_field.end()) {
+            index_by_hash_field.emplace(identity, coalesced.size());
+            coalesced.push_back(CoalescedEntry{entry, coalesced.size()});
+        } else {
+            coalesced[iter->second].entry = entry;
+        }
+    }
+    std::stable_sort(coalesced.begin(), coalesced.end(), [](const CoalescedEntry& left, const CoalescedEntry& right) {
+        if (left.entry.route_json == right.entry.route_json) {
+            return left.order < right.order;
+        }
+        return left.entry.route_json < right.entry.route_json;
+    });
     return impl_->WithRetry(true, [&]() {
         std::unique_ptr<Pipeline> pipeline;
         Pipeline* raw_pipeline = nullptr;
         RETURN_IF_STATUS_ERROR(impl_->table->OpenPipeline(&raw_pipeline));
         pipeline.reset(raw_pipeline);
-        for (const auto& entry : entries) {
-            RETURN_IF_STATUS_ERROR(pipeline->HSet(entry.key, entry.field, entry.value));
+        for (const auto& item : coalesced) {
+            RETURN_IF_STATUS_ERROR(pipeline->HSet(item.entry.key, item.entry.field, item.entry.value));
         }
         if (!count_key.empty()) {
             RETURN_IF_STATUS_ERROR(pipeline->Set(count_key, count_value));

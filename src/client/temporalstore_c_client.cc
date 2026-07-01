@@ -424,6 +424,7 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
                 entry.key ? entry.key : "",
                 entry.field ? entry.field : "",
                 entry.value ? entry.value : "",
+                entry.route_json ? entry.route_json : "",
             });
         }
         status = client->impl->MatrixArkBatchAppendRecords(

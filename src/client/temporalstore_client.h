@@ -138,6 +138,7 @@ struct HashEntry {
     std::string key;
     std::string field;
     std::string value;
+    std::string route_json;
 };
 
 class TemporalStoreClient {
