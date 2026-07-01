@@ -41,7 +41,12 @@ FAILED = {"failed", "error", "timeout"}
 SKIPPED = {"skipped", "not_run", "blocked"}
 
 
-def load_report(path: Path) -> dict[str, Any]:
+def load_report(
+    path: Path,
+    *,
+    required_schema: str | None,
+    required_fields: list[str],
+) -> dict[str, Any]:
     try:
         with path.open("r", encoding="utf-8") as handle:
             report = json.load(handle)
@@ -51,10 +56,27 @@ def load_report(path: Path) -> dict[str, Any]:
         raise SystemExit(f"{path}: invalid JSON: {exc}") from exc
     if not isinstance(report, dict):
         raise SystemExit(f"{path}: report must be an object")
+    if required_schema is not None and report.get("schema") != required_schema:
+        raise SystemExit(
+            f"{path}: report.schema must be {required_schema!r}, got {report.get('schema')!r}"
+        )
+    for field in required_fields:
+        if not has_path(report, field):
+            raise SystemExit(f"{path}: missing required report field {field}")
     cases = report.get("cases")
     if not isinstance(cases, list):
         raise SystemExit(f"{path}: report.cases must be a list")
     return report
+
+
+def has_path(row: dict[str, Any], path: str) -> bool:
+    current: Any = row
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return False
+    return True
 
 
 def normalize_status(value: Any) -> str:
@@ -234,6 +256,17 @@ def main() -> int:
     parser.add_argument("--rust-report", type=Path, required=True)
     parser.add_argument("--cpp-report", type=Path, required=True)
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--require-schema",
+        default=None,
+        help="require both reports to expose this schema value",
+    )
+    parser.add_argument(
+        "--require-field",
+        action="append",
+        default=[],
+        help="require both reports to expose a top-level or dotted field path; may be repeated",
+    )
     parser.add_argument("--latency-ratio-tolerance", type=float, default=3.0)
     parser.add_argument(
         "--allow-output-diffs",
@@ -243,8 +276,16 @@ def main() -> int:
     args = parser.parse_args()
 
     result = compare_reports(
-        load_report(args.rust_report),
-        load_report(args.cpp_report),
+        load_report(
+            args.rust_report,
+            required_schema=args.require_schema,
+            required_fields=args.require_field,
+        ),
+        load_report(
+            args.cpp_report,
+            required_schema=args.require_schema,
+            required_fields=args.require_field,
+        ),
         latency_ratio_tolerance=args.latency_ratio_tolerance,
         strict_outputs=not args.allow_output_diffs,
     )
