@@ -1071,7 +1071,16 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         else phase0_correctness_gate(phase0_backends, args)
     )
     if not cpp or not rust or cpp.get("status") != "passed" or rust.get("status") != "passed":
-        return {"status": "not_comparable", "reason": "both C++ and Rust backends must pass", "phase0_correctness": phase0}
+        return {
+            "status": "not_comparable",
+            "reason": "both C++ and Rust backends must pass",
+            "status_labels": {
+                "feature_correct": phase0.get("status") == "passed",
+                "performance_candidate": False,
+                "production_performance_parity": False,
+            },
+            "phase0_correctness": phase0,
+        }
     min_qps_ratio = float(getattr(args, "perf_min_qps_ratio", 0.8) if args is not None else 0.8)
     max_latency_ratio = float(getattr(args, "perf_max_latency_ratio", 2.0) if args is not None else 2.0)
     rows = []
@@ -1105,6 +1114,9 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("audit_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "audit_ms"), "lower"),
         ("scanned_records_avg", ("retrieve", "stage_metrics", "scanned_records_avg"), "lower"),
         ("cache_hit_rate", ("retrieve", "stage_metrics", "cache_hit_rate"), "higher"),
+        ("index_postings_touched_avg", ("retrieve", "stage_metrics", "index_postings_touched_avg"), "approx"),
+        ("broad_scan_used_count", ("retrieve", "stage_metrics", "broad_scan_used_count"), "lower"),
+        ("broad_scan_blocked_count", ("retrieve", "stage_metrics", "broad_scan_blocked_count"), "lower"),
         ("placement_partitions_touched_avg", ("retrieve", "stage_metrics", "placement_partitions_touched_avg"), "approx"),
         ("memory_fallback", ("fallback_flags", "memory_fallback"), "lower"),
         ("hash_embedding_fallback", ("fallback_flags", "hash_embedding_fallback"), "lower"),
@@ -1156,8 +1168,21 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         )
     blockers = [row for row in rows if not row.get("parity_passed")]
     phase0_failed = phase0.get("status") == "failed"
+    feature_correct = not phase0_failed
+    performance_candidate = bool(
+        cpp
+        and rust
+        and cpp.get("status") == "passed"
+        and rust.get("status") == "passed"
+    )
+    production_performance_parity = bool(feature_correct and performance_candidate and not blockers)
     return {
         "status": "failed" if phase0_failed or blockers else "passed",
+        "status_labels": {
+            "feature_correct": feature_correct,
+            "performance_candidate": performance_candidate,
+            "production_performance_parity": production_performance_parity,
+        },
         "phase0_correctness": phase0,
         "rows": rows,
         "perf_parity": {
@@ -1239,6 +1264,18 @@ def write_report(path: Path, report: Json) -> None:
             f"{metrics.get('placement_partitions_touched_avg', 0)} |"
         )
     comp = report.get("comparison", {})
+    if isinstance(comp.get("status_labels"), dict):
+        labels = comp.get("status_labels", {})
+        lines.extend(
+            [
+                "",
+                "## Status Labels",
+                "",
+                f"- feature_correct: `{bool(labels.get('feature_correct'))}`",
+                f"- performance_candidate: `{bool(labels.get('performance_candidate'))}`",
+                f"- production_performance_parity: `{bool(labels.get('production_performance_parity'))}`",
+            ]
+        )
     if comp.get("status") in {"passed", "failed"}:
         phase0 = comp.get("phase0_correctness", {})
         lines.extend(
