@@ -529,6 +529,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
     def _context_ref_locator_key(self) -> str:
         return f"{self._storage_prefix}:context_ref_locator"
 
+    def _context_placement_lookup_key(self, scope_key: str) -> str:
+        scope_hash = stable_hash(scope_key) if scope_key else 0
+        return f"{self._storage_prefix}:context_placement_lookup:{scope_hash}"
+
     def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
         refs: list[int] = []
         seen: set[int] = set()
@@ -598,9 +602,25 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         """
         lookup_updates: dict[tuple[str, str], list[int]] = {}
         locator_updates: dict[int, list[Json]] = {}
+        placement_updates: dict[tuple[str, str], list[Json]] = {}
         for bundle, record_key, record_id in bundles:
             location = {"key": record_key, "field": record_id}
             for record in bundle:
+                node_hash = record.get("node_hash")
+                scope_key_for_placement = str(record.get("scope_key") or "")
+                if not scope_key_for_placement:
+                    scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
+                    scope_key_for_placement = canonical_scope_key(scope) if scope else ""
+                if scope_key_for_placement and node_hash is not None:
+                    try:
+                        placement_node_hash = int(node_hash)
+                    except (TypeError, ValueError):
+                        placement_node_hash = 0
+                    if placement_node_hash:
+                        placement_updates.setdefault(
+                            (self._context_placement_lookup_key(scope_key_for_placement), str(placement_node_hash)),
+                            [],
+                        ).append(location)
                 for ref_hash in context_index_ref_hashes(record):
                     locator_updates.setdefault(ref_hash, []).append(location)
                 if record.get("record_type") != "context_index":
@@ -633,6 +653,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             entries.append(
                 {
                     "key": locator_key,
+                    "field": field,
+                    "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
+                }
+            )
+        for (key, field), new_locations in placement_updates.items():
+            merged_locations = self._merge_ref_locations(self._read_hash_value_best_effort(key, field), new_locations)
+            entries.append(
+                {
+                    "key": key,
                     "field": field,
                     "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
                 }
@@ -1422,6 +1451,55 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 records.append(decoded)
         return records
 
+    def _native_locations_for_selected_nodes(self, *, scope: Json, selected_node_hashes: set[int]) -> Json:
+        batch_hget = getattr(self._client, "batch_hget", None)
+        scope_key = canonical_scope_key(scope)
+        if not callable(batch_hget) or not scope_key or not selected_node_hashes:
+            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": "missing_scope_or_nodes"}
+        entries = [
+            {"key": self._context_placement_lookup_key(scope_key), "field": str(node_hash)}
+            for node_hash in sorted(selected_node_hashes)
+            if node_hash
+        ]
+        if not entries:
+            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": "empty_node_set"}
+        try:
+            rows = batch_hget(entries)
+        except Exception as exc:
+            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": f"placement_lookup_failed:{exc}"}
+        locations: list[Json] = []
+        seen: set[tuple[str, str]] = set()
+        locator_rows = 0
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict):
+                continue
+            value = row.get("value")
+            if not value:
+                continue
+            try:
+                decoded = json.loads(str(value))
+            except Exception:
+                continue
+            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
+            if not isinstance(raw_locations, list):
+                continue
+            locator_rows += 1
+            for location in raw_locations:
+                if not isinstance(location, dict):
+                    continue
+                key = str(location.get("key") or "")
+                field = str(location.get("field") or "")
+                if not key or not field or (key, field) in seen:
+                    continue
+                locations.append({"key": key, "field": field})
+                seen.add((key, field))
+        return {
+            "locations": locations,
+            "locator_rows": locator_rows,
+            "eligible": bool(locations),
+            "reason": "ok" if locations else "no_matching_placement_rows",
+        }
+
     def _filter_retrieval_candidates(
         self,
         records: list[Json],
@@ -1493,19 +1571,31 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
         allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
         selected_nodes = selected_node_hashes or set()
-        index_result = self._native_index_ref_hashes(scope=scope, secondary_index_groups=secondary_index_groups)
+        placement_result = self._native_locations_for_selected_nodes(scope=scope, selected_node_hashes=selected_nodes)
+        index_result = {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "eligible": False, "reason": "skipped_for_placement_lookup"}
         fallback_reason = ""
         raw_records: list[Json] = []
         native_pushdown = False
-        if bool(index_result.get("eligible")):
+        native_mode = ""
+        if bool(placement_result.get("eligible")):
+            raw_records = self._load_records_from_locations(placement_result.get("locations", []))
+            native_pushdown = bool(raw_records)
+            native_mode = "native_placement_prefetch"
+            if not raw_records:
+                fallback_reason = "native_placement_locations_empty"
+        if not native_pushdown:
+            index_result = self._native_index_ref_hashes(scope=scope, secondary_index_groups=secondary_index_groups)
+        if not native_pushdown and bool(index_result.get("eligible")):
             location_result = self._native_locations_for_refs(index_result.get("ref_hashes", set()))
             raw_records = self._load_records_from_locations(location_result.get("locations", []))
             native_pushdown = bool(raw_records)
+            native_mode = "native_secondary_index_prefilter"
             if not raw_records:
                 fallback_reason = "native_index_locations_empty"
         else:
             location_result = {"locations": [], "locator_rows": 0}
-            fallback_reason = str(index_result.get("reason") or "native_index_not_eligible")
+            if not native_pushdown:
+                fallback_reason = str(index_result.get("reason") or placement_result.get("reason") or "native_index_not_eligible")
 
         if native_pushdown:
             filtered, filter_stats = self._filter_retrieval_candidates(
@@ -1531,8 +1621,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "count": count,
             "scan_stats": {
                 "backend": self._backend_label(),
-                "execution_mode": "native_secondary_index_prefilter" if native_pushdown else "temporalstore_candidate_cache_fallback",
+                "execution_mode": native_mode if native_pushdown else "temporalstore_candidate_cache_fallback",
                 "native_pushdown": native_pushdown,
+                "native_placement_nodes": len(selected_nodes),
+                "native_placement_locator_rows": placement_result.get("locator_rows", 0),
+                "native_placement_locations": len(placement_result.get("locations", [])),
                 "native_index_terms": index_result.get("index_terms", []),
                 "native_index_postings_found": index_result.get("postings_found", 0),
                 "native_index_ref_hash_count": len(index_result.get("ref_hashes", set())),
