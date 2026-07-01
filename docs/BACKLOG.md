@@ -986,6 +986,83 @@ Completed since the last backlog update:
   - Move MatrixArk batch writes below HSet into the native append queue and
     coalesced write path.
   - Separate audit/debug writes from the serving path by default.
+  - Detailed C++ context performance optimization plan:
+    - Phase 0: establish a stable baseline.
+      - Run the same corpus through C++ native, Rust native/proxy, and Python
+        reference retrieval.
+      - Record selected refs, dropped refs, scanned records, index hits,
+        candidate count, token count, p50/p95/p99, timeout count, and fallback
+        flags.
+      - Treat `selected_refs=0` or major selected-ref drift as correctness
+        failure, not a latency result.
+    - Phase 1: fix native retrieve correctness.
+      - Normalize `scope_key`, `node_hash`, `placement_key`, resource/skill
+        scope, stale/superseded state, and shared-resource visibility before
+        scoring.
+      - Add a parity assertion:
+        same source corpus -> C++ selected refs approximately equal Rust/Python
+        selected refs, with allowed ordering differences only when scores tie.
+      - Add explicit debug counters for candidates dropped by scope, placement,
+        index filter, stale version, token budget, and score threshold.
+    - Phase 2: replace broad scans with placement-key routing.
+      - Route hot context records by `context:{scope_key}:node={node_hash}`.
+      - Fetch only selected node placement partitions after L0/L1 traversal.
+      - Keep broad prefix scan only as fallback/debug and mark it in telemetry.
+      - Track `placement_partitions_touched` and `records_scanned_per_query`.
+    - Phase 3: push compact secondary-index prefilter fully native.
+      - Use compact postings keyed by `scope_key + index_name + time_bucket` or
+        equivalent old TemporalStore secondary-index mechanism.
+      - Query plan:
+        query understanding -> secondary filters -> postings lookup ->
+        candidate ref ids -> candidate fetch -> score/rerank.
+      - Avoid one index row per event in the hot serving path; split large
+        postings only after the configured max refs per posting.
+    - Phase 4: add parsed candidate cache.
+      - Cache compact candidate structs, not JSON strings.
+      - Key cache by `scope_key + node_hash + record_type + append_watermark`.
+      - Invalidate on append watermark change, resource version change, skill
+        status change, or index posting update.
+      - Track cache hit/miss, parse time saved, and invalidation reason.
+    - Phase 5: move score/rerank/pack native.
+      - C++ owns candidate scoring, temporal decay, business boosts,
+        same-session boost, shared resource quota, cross-session quota, and
+        token-budget packing.
+      - Python receives compact ContextPack payload plus telemetry, never raw
+        candidate tables.
+      - Keep debug/audit details out of the prompt payload by default.
+    - Phase 6: optimize write path below HSet.
+      - Add or harden `matrixark_batch_append_records` in the C++ engine.
+      - Route by placement key, coalesce record/index/embedding/audit-light
+        writes, and persist according to `storage_options`.
+      - Measure append queue wait, coalesced batch size, storage engine time,
+        sync/async durability result, and per-record write amplification.
+    - Phase 7: separate audit/debug from serving latency.
+      - Inline only cheap telemetry counters.
+      - Sample or enqueue ContextPack audit/debug records asynchronously.
+      - Full replay/audit is enabled by policy, not on every hot retrieval by
+        default.
+    - Phase 8: add C++ per-stage metrics.
+      - `query_plan_ms`, `node_traversal_ms`, `index_prefilter_ms`,
+        `candidate_fetch_ms`, `score_ms`, `pack_ms`, `audit_ms`,
+        `append_queue_wait_ms`, `append_engine_ms`, `selected_refs`,
+        `dropped_refs`, `scanned_records`, `index_postings_read`,
+        `candidate_cache_hit`, and `placement_partitions_touched`.
+    - Phase 9: run gated scale validation after each fix.
+      - 1K, 10K, and 100K event ingestion.
+      - Retrieve workers 4, 8, 16, and 32.
+      - Large PDF/CSV/repo resource imports.
+      - ContextMemory pipeline with resources, skills, cross-session retrieval,
+        compact secondary indexes, and audit-light telemetry.
+      - Compare C++ vs Rust for selected-ref parity, p50/p95/p99, QPS, errors,
+        timeouts, and fallback flags.
+    - Acceptance target:
+      - C++ native retrieval returns non-empty, relevant ContextPacks for the
+        shared corpus.
+      - C++ selected refs are logically equivalent to Rust/Python reference.
+      - C++ no longer performs broad scans on normal indexed queries.
+      - C++ hot retrieval path does not block on full audit/debug writes.
+      - C++ p95/p99 are within the agreed parity envelope for the same storage
+        mode and topology.
 
 - Rust performance focus.
   - Keep Rust on proxy/direct-SDK paths, not the old record-log concept for
