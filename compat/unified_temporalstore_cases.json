@@ -7924,14 +7924,14 @@
       ]
     },
     {
-      "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, candidate drop reasons, summary traversal evidence, selected refs, and prompt injection ordering.",
+      "description": "Shared C++/Rust Context query-understanding debug case for C++-style filter-group traces, per-group candidate decisions/drop reasons, summary traversal evidence, selected refs, and prompt injection ordering.",
       "family": "context",
       "name": "context_query_debug_filter_group_cpp_parity",
       "shard_id": 42,
       "steps": [
         {
           "command": {
-            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, dropped candidate reasons, summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
+            "description": "Rust runs a mixed relevant/unrelated context retrieval and emits matrixark_context_query_debug_v1 with secondary-index filter groups, per-group candidate_decisions, dropped candidate reasons, summary embedding traversal, selected refs, and injection ordering. C++ parity maps to the MatrixArk query/index debug flow and Context model filter-group diagnostics.",
             "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-context-query-debug-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",

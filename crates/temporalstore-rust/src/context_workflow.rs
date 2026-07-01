@@ -890,6 +890,20 @@ pub struct ContextQueryFilterGroupDebug {
     pub matched_count: usize,
     pub dropped_count: usize,
     pub selected_count: usize,
+    #[serde(default)]
+    pub candidate_decisions: Vec<ContextFilterGroupCandidateDecisionDebug>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ContextFilterGroupCandidateDecisionDebug {
+    pub ref_hash: u64,
+    pub record_type: String,
+    pub event_time_ms: u64,
+    pub decision: String,
+    pub reason: String,
+    pub matched_terms: Vec<String>,
+    pub candidate_terms: Vec<String>,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -3799,18 +3813,8 @@ pub fn retrieve_context(
         }
     }
 
-    let reference_time_ms = blocks
-        .iter()
-        .map(|block| block.event_time_ms)
-        .max()
-        .unwrap_or(request.end_time_ms);
     blocks.sort_by_key(|block| {
         (
-            Reverse(context_weighted_rerank_score(
-                &request.query,
-                block,
-                reference_time_ms,
-            )),
             Reverse(context_relevance_score(&request.query, &block.text)),
             tier_rank(block.tier),
             Reverse(block.event_time_ms),
