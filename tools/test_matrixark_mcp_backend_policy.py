@@ -353,6 +353,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(stage_metrics["stage_p95_ms"]["pack_ms"], 6.0)
         self.assertTrue(any(row["metric"] == "pack_p95_ms" for row in result["rows"]))
         self.assertTrue(any(row["metric"] == "cache_hit_rate" for row in result["rows"]))
+        self.assertTrue(result["status_labels"]["feature_correct"])
+        self.assertTrue(result["status_labels"]["performance_candidate"])
+        self.assertTrue(result["status_labels"]["production_performance_parity"])
 
     def test_scale_report_counts_timeouts_and_fallback_flags(self) -> None:
         self.assertEqual(timeout_count(["request timed out", "Slot not found", "timeout waiting for response"]), 2)
@@ -681,6 +684,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "scope": scope,
                 "scope_key": mcp_core.canonical_scope_key(scope),
                 "node_hash": 44,
+                "resource_version": "rv1",
                 "updated_at_ms": 1780000000000,
                 "text": "Alice approved the GPU budget.",
             },
@@ -796,6 +800,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(logical_refs(direct_result["records"]), {("context_event", 101), ("context_embedding", 101), ("context_index", 101)})
         self.assertTrue(direct_result["scan_stats"]["native_pushdown"])
         self.assertEqual(direct_result["scan_stats"]["execution_mode"], "native_placement_prefetch")
+        self.assertEqual(
+            direct_result["scan_stats"]["native_candidate_cache_key_shape"],
+            "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
+        )
+        self.assertEqual(direct_result["scan_stats"]["native_candidate_cache_payload"], "compact_struct")
+        self.assertEqual(direct_result["scan_stats"]["native_resource_version_watermark"], "rv1")
         self.assertEqual(direct_result["scan_stats"]["native_placement_nodes"], 1)
         self.assertGreaterEqual(direct_result["scan_stats"]["native_placement_locator_rows"], 1)
         self.assertGreaterEqual(direct_result["scan_stats"]["native_placement_locations"], 1)
@@ -822,6 +832,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "scope": scope,
                     "scope_key": mcp_core.canonical_scope_key(scope),
                     "node_hash": 44,
+                    "resource_version": "rv2",
                     "updated_at_ms": 1780000000003,
                     "text": "New append changes the watermark.",
                 }
@@ -830,6 +841,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         mcp_core._DIRECT_RETRIEVAL_CANDIDATE_CACHE.clear()
         direct_after_append_result = direct.retrieval_records(**kwargs)
         self.assertFalse(direct_after_append_result["scan_stats"]["native_placement_candidate_cache_hit"])
+        self.assertEqual(direct_after_append_result["scan_stats"]["native_resource_version_watermark"], "rv1|rv2")
         self.assertIn(("context_event", 404), logical_refs(direct_after_append_result["records"]))
 
     def test_direct_retrieve_uses_native_context_pack_api_when_available(self) -> None:
@@ -867,11 +879,19 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["normalization_requirements"]["placement_key"], "context:{scope_key}:node={node_hash}")
         self.assertEqual(request["execution_plan_requirements"]["phase"], "phase2_placement_compact_index")
         self.assertEqual(request["execution_plan_requirements"]["candidate_fetch"], "selected_node_placement_partitions_only")
+        self.assertEqual(
+            request["execution_plan_requirements"]["candidate_cache"],
+            "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
+        )
+        self.assertEqual(request["execution_plan_requirements"]["candidate_cache_payload"], "compact_structs_not_json_strings")
+        self.assertEqual(request["execution_plan_requirements"]["pack_assembly"], "native_score_rank_budget_pack_selected_refs_dropped_summary")
+        self.assertEqual(request["execution_plan_requirements"]["write_path"], "native_batch_append_records_append_queue_coalesced_persistence")
         self.assertEqual(request["execution_plan_requirements"]["secondary_index"], "compact_postings_by_scope_index_time_bucket")
         self.assertEqual(request["execution_plan_requirements"]["broad_prefix_scan"], "disabled_unless_explicit_debug_fallback")
         self.assertIn("scope", request["required_output"]["drop_counters"])
         self.assertIn("score_threshold", request["required_output"]["drop_counters"])
         self.assertTrue(request["required_output"]["broad_scan_used"])
+        self.assertTrue(request["required_output"]["candidate_cache_key_shape"])
         self.assertTrue(request["required_output"]["selected_refs"])
         self.assertTrue(request["required_output"]["dropped_summary"])
         self.assertTrue(request["required_output"]["retrieval_metrics"])
