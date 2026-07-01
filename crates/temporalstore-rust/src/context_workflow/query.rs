@@ -2,10 +2,10 @@ use crate::types::{ContextEvent, Status};
 
 use super::{
     context_embeddings_for_extract, normalize_provider, truncate_words, ContextBlock,
-    ContextInjectionOrderingDebug, ContextModelProviderConfig, ContextPrefilterCandidateDebug,
-    ContextQueryFilterGroupDebug, ContextQueryFilterGroupSummaryDebug,
-    ContextQueryUnderstandingDebug, ContextRetrieveRequest, ContextSelectedRefDebug, ContextTier,
-    ContextTreeTraversalDebug,
+    ContextFilterGroupCandidateDecisionDebug, ContextInjectionOrderingDebug,
+    ContextModelProviderConfig, ContextPrefilterCandidateDebug, ContextQueryFilterGroupDebug,
+    ContextQueryFilterGroupSummaryDebug, ContextQueryUnderstandingDebug, ContextRetrieveRequest,
+    ContextSelectedRefDebug, ContextTier, ContextTreeTraversalDebug,
 };
 pub(super) fn tier_rank(tier: ContextTier) -> u8 {
     match tier {
@@ -101,15 +101,35 @@ pub(super) fn context_query_debug_record_candidate(
     for group in &mut debug.verbose_filter_groups {
         group.candidate_count += 1;
         push_debug_hash(&mut group.candidate_ref_hashes, ref_hash);
-        if passes_prefilter
-            && context_debug_filter_group_matches(group, &candidate_terms, event_text)
-        {
+        let matched_terms =
+            context_debug_filter_group_matched_terms(group, &candidate_terms, event_text);
+        let matched_group = passes_prefilter && !matched_terms.is_empty();
+        if matched_group {
             group.matched_count += 1;
             push_debug_hash(&mut group.matched_ref_hashes, ref_hash);
         } else {
             group.dropped_count += 1;
             push_debug_hash(&mut group.dropped_ref_hashes, ref_hash);
         }
+        push_filter_group_decision(
+            group,
+            ContextFilterGroupCandidateDecisionDebug {
+                ref_hash,
+                record_type: "context_event".to_string(),
+                event_time_ms: event.event_time_ms,
+                decision: if matched_group { "matched" } else { "dropped" }.to_string(),
+                reason: if matched_group {
+                    "matched_filter_group".to_string()
+                } else if passes_prefilter {
+                    "filter_group_term_miss".to_string()
+                } else {
+                    "secondary_index_prefilter_miss".to_string()
+                },
+                matched_terms,
+                candidate_terms: candidate_terms.clone(),
+                text: truncate_words(&event.text, 24),
+            },
+        );
     }
     if passes_prefilter {
         debug.candidates_passing_prefilter += 1;
@@ -372,24 +392,38 @@ fn context_debug_filter_group_matches(
     candidate_terms: &[String],
     text: &str,
 ) -> bool {
+    !context_debug_filter_group_matched_terms(group, candidate_terms, text).is_empty()
+}
+
+fn context_debug_filter_group_matched_terms(
+    group: &ContextQueryFilterGroupDebug,
+    candidate_terms: &[String],
+    text: &str,
+) -> Vec<String> {
     let text_lower = text.to_ascii_lowercase();
     let text_normalized = context_normalize_for_match(text);
-    group.terms.iter().any(|term| {
-        if let Some(query_term) = term.strip_prefix("query_term:") {
-            query_term == "*"
-                || context_text_matches_term(&text_lower, &text_normalized, query_term)
-        } else if let Some(source_term) = term.strip_prefix("source_ref:") {
-            candidate_terms.iter().any(|candidate| {
-                candidate
-                    .strip_prefix("source_ref:")
-                    .map_or(false, |candidate_source| {
-                        candidate_source.contains(source_term)
-                    })
-            }) || text_lower.contains(source_term)
-        } else {
-            candidate_terms.iter().any(|candidate| candidate == term) || text_lower.contains(term)
-        }
-    })
+    group
+        .terms
+        .iter()
+        .filter(|term| {
+            if let Some(query_term) = term.strip_prefix("query_term:") {
+                query_term == "*"
+                    || context_text_matches_term(&text_lower, &text_normalized, query_term)
+            } else if let Some(source_term) = term.strip_prefix("source_ref:") {
+                candidate_terms.iter().any(|candidate| {
+                    candidate
+                        .strip_prefix("source_ref:")
+                        .map_or(false, |candidate_source| {
+                            candidate_source.contains(source_term)
+                        })
+                }) || text_lower.contains(source_term)
+            } else {
+                candidate_terms.iter().any(|candidate| candidate == *term)
+                    || text_lower.contains(term.as_str())
+            }
+        })
+        .cloned()
+        .collect()
 }
 
 fn context_selected_ref_hash(block: &ContextBlock) -> u64 {
@@ -402,6 +436,20 @@ fn context_selected_ref_hash(block: &ContextBlock) -> u64 {
 fn push_debug_hash(values: &mut Vec<u64>, value: u64) {
     if values.len() < 32 && !values.contains(&value) {
         values.push(value);
+    }
+}
+
+fn push_filter_group_decision(
+    group: &mut ContextQueryFilterGroupDebug,
+    decision: ContextFilterGroupCandidateDecisionDebug,
+) {
+    if group.candidate_decisions.len() < 16
+        && !group
+            .candidate_decisions
+            .iter()
+            .any(|existing| existing.ref_hash == decision.ref_hash)
+    {
+        group.candidate_decisions.push(decision);
     }
 }
 
@@ -643,96 +691,6 @@ pub(super) fn context_relevance_score(query: &str, text: &str) -> u32 {
         score = score.saturating_add(75);
     }
     score
-}
-
-pub(super) fn context_weighted_rerank_score(
-    query: &str,
-    block: &ContextBlock,
-    reference_time_ms: u64,
-) -> u64 {
-    let relevance = context_relevance_score(query, &block.text) as u64;
-    let time = context_temporal_decay_boost(block.event_time_ms, reference_time_ms);
-    let business = context_business_boost(query, block);
-    relevance
-        .saturating_mul(1_000)
-        .saturating_add(time)
-        .saturating_add(business)
-}
-
-pub(super) fn context_temporal_decay_boost(event_time_ms: u64, reference_time_ms: u64) -> u64 {
-    if event_time_ms == 0 || reference_time_ms == 0 {
-        return 0;
-    }
-    if event_time_ms >= reference_time_ms {
-        return 180;
-    }
-    let age_ms = reference_time_ms.saturating_sub(event_time_ms);
-    let hour_ms = 60 * 60 * 1_000;
-    if age_ms <= hour_ms {
-        180
-    } else if age_ms <= 24 * hour_ms {
-        140
-    } else if age_ms <= 7 * 24 * hour_ms {
-        90
-    } else if age_ms <= 30 * 24 * hour_ms {
-        45
-    } else {
-        10
-    }
-}
-
-pub(super) fn context_business_boost(query: &str, block: &ContextBlock) -> u64 {
-    let query_terms = context_query_terms(query);
-    let question_type = context_query_question_type(&query_terms);
-    let text = format!(
-        "{} {} {}",
-        block.text.to_ascii_lowercase(),
-        block.source_ref.to_ascii_lowercase(),
-        block.uri.to_ascii_lowercase()
-    );
-    let mut boost = match block.tier {
-        ContextTier::L0 => 25,
-        ContextTier::L1 => 35,
-        ContextTier::L2 => 45,
-    };
-    if text.contains("skill") || text.contains("skill.md") {
-        boost += if question_type == "procedure" {
-            240
-        } else {
-            80
-        };
-    }
-    if text.contains("resource")
-        || text.contains("document")
-        || text.contains("runbook")
-        || text.contains(".pdf")
-        || text.contains(".md")
-    {
-        boost += if matches!(question_type.as_str(), "fact" | "current_state") {
-            150
-        } else {
-            90
-        };
-    }
-    if text.contains("shared") || text.contains("tenant/shared") || text.contains("global") {
-        boost += 70;
-    }
-    if text.contains("approval")
-        || text.contains("approved")
-        || text.contains("owner")
-        || text.contains("deadline")
-        || text.contains("cost")
-        || text.contains("policy")
-        || text.contains("procedure")
-    {
-        boost += 80;
-    }
-    if question_type == "current_state"
-        && (text.contains("latest") || text.contains("current") || text.contains("now"))
-    {
-        boost += 100;
-    }
-    boost
 }
 
 pub(super) fn context_query_terms(query: &str) -> Vec<String> {
