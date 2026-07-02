@@ -3431,7 +3431,7 @@
       "steps": [
         {
           "command": {
-            "description": "Unified C++/Rust control-plane Raft membership case; Rust readiness keeps this blocked for real networked metaserver orchestration until production rollout.",
+            "description": "Unified C++/Rust control-plane Raft membership case; Rust readiness requires scheduler-owned membership evidence including generation/token coupling, learner catch-up/promote, leader transfer, voter remove, and route reads after post-failover replacement plus scale-down.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -3468,7 +3468,7 @@
         },
         {
           "command": {
-            "description": "Unified C++/Rust control-plane Raft post-failover replacement and follow-up scale-down case.",
+            "description": "Unified C++/Rust control-plane Raft post-failover replacement and follow-up scale-down case. The Rust scheduler coverage report must prove replacement voters [10,12,13], scale-down voters [10,13], route reads after each change, and stale generation/token rejection.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
