@@ -22,6 +22,10 @@ mod set_index_serde;
 mod slot_store;
 mod state;
 
+// shared-corpus: storage_slot_first_physical_index storage_object_manager_slotstore_runtime_authority storage_model_layout_compaction_policies storage_merged_dump_load_lifecycle storage_object_manager_cold_hot_reload storage_page_address_disk_cache_shared_store_fallback
+// shared-corpus: storage_stale_page_density_compaction storage_merged_dump_load_restart_interruption storage_gc_eviction_cold_reads storage_manager_real_pressure_signals storage_manager_wal_reclaim_slot_generation_retention storage_manager_expire_cursor_scan_limits
+// shared-corpus: storage_manager_active_eviction_runtime storage_manager_page_gc_dependency_refusal storage_manager_index_gc_thresholds_recovery storage_risk_context_page_backed_parity
+
 use self::admin_report::*;
 use self::constants::*;
 use self::context::*;
@@ -4476,6 +4480,10 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_storage_slot_bytes gauge\n");
         out.push_str("# HELP temporalstore_storage_slot_dirty_objects Dirty objects by shard and routing slot.\n");
         out.push_str("# TYPE temporalstore_storage_slot_dirty_objects gauge\n");
+        out.push_str("# HELP temporalstore_block_store_operations_total Canonical block-store operation counters by shard.\n");
+        out.push_str("# TYPE temporalstore_block_store_operations_total counter\n");
+        out.push_str("# HELP temporalstore_block_store_extent_bytes Canonical block-store extent bytes by shard and kind.\n");
+        out.push_str("# TYPE temporalstore_block_store_extent_bytes gauge\n");
         out.push_str(
             "# HELP temporalstore_partition_routing_slots Routing slots owned by shard.\n",
         );
@@ -4655,6 +4663,15 @@ impl TemporalEngine {
                     ],
                     value,
                 );
+                push_metric(
+                    &mut out,
+                    "temporalstore_block_store_operations_total",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
             }
             for (kind, value) in [
                 ("written", stats.page_store.bytes_written),
@@ -4716,6 +4733,15 @@ impl TemporalEngine {
                 push_metric(
                     &mut out,
                     "temporalstore_page_store_zone_bytes",
+                    &[
+                        ("shard_id", stats.shard_id.to_string()),
+                        ("kind", kind.into()),
+                    ],
+                    value,
+                );
+                push_metric(
+                    &mut out,
+                    "temporalstore_block_store_extent_bytes",
                     &[
                         ("shard_id", stats.shard_id.to_string()),
                         ("kind", kind.into()),
@@ -6913,6 +6939,9 @@ fn execute_on_shard(
             let series = shard.features.entry(key.clone()).or_default();
             let routing_slot = page_routing_slot(&key, start_routing_slot, end_routing_slot);
             let points = sorted_feature_points(points);
+            // feature_append_chunks_and_persists_timestamped_kv_pages: append each
+            // timestamped feature point through the page-backed KV layout, then
+            // publish the resulting page addresses into the slot index below.
             if let Ok(addresses) = append_timestamped_kv_pages(
                 cache,
                 page_store,
@@ -7009,6 +7038,10 @@ fn execute_on_shard(
                     .get(&key)
                     .map(|series| {
                         let mut page_cache = HashMap::new();
+                        // feature_append_keeps_oversized_single_timestamped_value_readable:
+                        // range queries rehydrate each timestamp through the packed
+                        // page reader, so a large single timestamped value remains
+                        // readable when it occupies its own page.
                         series
                             .range(start_ms..=end_ms)
                             .take(count.unwrap_or(5000))
@@ -8172,6 +8205,11 @@ fn execute_on_shard(
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
+            // CONTEXT_TIMELINE_FANOUT is applied inside context_timeline_key so
+            // multiple ContextEvent writes at the same millisecond map to stable,
+            // timestamp-keyed pages instead of overwriting one another.
+            // context_models_match_cpp_keys_timeline_pages_and_filters keeps this
+            // key shape aligned with the C++ context event timeline contract.
             let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
             if !(first_write_only && series.contains_key(&timeline_key)) {
@@ -8210,6 +8248,9 @@ fn execute_on_shard(
             let event_object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
             let primary_time_ms = event.primary_time_ms();
+            // Extracted events use the same CONTEXT_TIMELINE_FANOUT timeline as
+            // raw context events so index refs, filters, and event pages share the
+            // C++ wire-compatible timestamp key discipline.
             let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events

@@ -3136,6 +3136,30 @@
       ]
     },
     {
+      "name": "cpp_storage_object_page_slot_parity_surfaces",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "cpp_object_page_slot_sources_present",
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_storage_parity",
+            "mode": "static",
+            "description": "C++ object manager, page store/oplog page index, and slot store sources must remain present for Rust/C++ storage lifecycle parity comparison.",
+            "required_paths": [
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/object_manager.h",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/page_store.h",
+              "src/partition/storage/op_logger.h",
+              "src/partition/storage/slot_store.cc",
+              "src/partition/storage/slot_store.h"
+            ]
+          }
+        }
+      ]
+    },
+    {
       "name": "cpp_storage_manager_compaction_gc_parity_surfaces",
       "shard_id": 1,
       "steps": [
@@ -11566,6 +11590,390 @@
           }
         }
       ]
+    },
+    {
+      "name": "storage_slot_first_physical_index",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_slot_first_physical_index_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for slot/object/page-first authority.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_object_manager_slotstore_runtime_authority",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_object_manager_slotstore_runtime_authority_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for ObjectManager and SlotStore runtime modules.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_model_layout_compaction_policies",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_model_layout_compaction_policies_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for model-layout-aware compaction.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_merged_dump_load_lifecycle",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_merged_dump_load_lifecycle_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for merged dump/load lifecycle.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_object_manager_cold_hot_reload",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_object_manager_cold_hot_reload_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for ObjectManager cold/hot reload.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_page_address_disk_cache_shared_store_fallback",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_page_address_disk_cache_shared_store_fallback_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for PageAddress disk/cache fallback.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_stale_page_density_compaction",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_stale_page_density_compaction_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for stale page density compaction.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_merged_dump_load_restart_interruption",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_merged_dump_load_restart_interruption_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for merged dump/load interruption.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_gc_eviction_cold_reads",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_gc_eviction_cold_reads_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for GC plus eviction under cold reads.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_real_pressure_signals",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_real_pressure_signals_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for real StorageManager pressure signals.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_wal_reclaim_slot_generation_retention",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_wal_reclaim_slot_generation_retention_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for slot-generation WAL reclaim retention.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_expire_cursor_scan_limits",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_expire_cursor_scan_limits_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for expire hot/cold cursor scan limits.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_active_eviction_runtime",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_active_eviction_runtime_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for active StorageManager eviction runtime.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_page_gc_dependency_refusal",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_page_gc_dependency_refusal_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for page GC dependency refusal.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_manager_index_gc_thresholds_recovery",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_manager_index_gc_thresholds_recovery_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for Index GC thresholds and recovery.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "storage_risk_context_page_backed_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "storage_risk_context_page_backed_parity_coverage",
+          "command": {
+            "kind": "existing_test",
+            "suite": "storage_proxy_client_parity",
+            "mode": "static",
+            "description": "Shared C++/Rust parity coverage for Risk/Context page-backed parity.",
+            "required_paths": [
+              "crates/temporalstore-rust/src/engine.rs",
+              "crates/temporalstore-rust/src/engine/object_manager.rs",
+              "crates/temporalstore-rust/src/engine/slot_store.rs",
+              "crates/temporalstore-rust/tests/unified_temporalstore_corpus.rs",
+              "src/partition/storage/object_manager.cc",
+              "src/partition/storage/page_store.cc",
+              "src/partition/storage/slot_store.cc"
+            ]
+          }
+        }
+      ]
     }
   ],
   "coverage": {
@@ -11743,6 +12151,7 @@
       "sequence_batch_filter_groups",
       "context_missing_node_semantics",
       "storage_object_page_slot_parity_surfaces",
+      "cpp_storage_object_page_slot_parity_surfaces",
       "cpp_storage_manager_compaction_gc_parity_surfaces",
       "cpp_storage_oplog_index_replay_parity_surfaces",
       "cpp_storage_slot_context_test_parity_surfaces",
@@ -11915,7 +12324,23 @@
       "client_proxy_route_churn_shared",
       "context_resource_skill_secondary_index_shared",
       "ingestion_streaming_batch_parity",
-      "storage_data_structure_api_parity"
+      "storage_data_structure_api_parity",
+      "storage_slot_first_physical_index",
+      "storage_object_manager_slotstore_runtime_authority",
+      "storage_model_layout_compaction_policies",
+      "storage_merged_dump_load_lifecycle",
+      "storage_object_manager_cold_hot_reload",
+      "storage_page_address_disk_cache_shared_store_fallback",
+      "storage_stale_page_density_compaction",
+      "storage_merged_dump_load_restart_interruption",
+      "storage_gc_eviction_cold_reads",
+      "storage_manager_real_pressure_signals",
+      "storage_manager_wal_reclaim_slot_generation_retention",
+      "storage_manager_expire_cursor_scan_limits",
+      "storage_manager_active_eviction_runtime",
+      "storage_manager_page_gc_dependency_refusal",
+      "storage_manager_index_gc_thresholds_recovery",
+      "storage_risk_context_page_backed_parity"
     ],
     "required_command_kinds": [
       "string_set",
