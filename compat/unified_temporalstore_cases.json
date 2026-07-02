@@ -9066,8 +9066,11 @@
           "command": {
             "acceptance": {
               "capability_matrix_present": true,
+              "peer_pipeline_limits_observed": true,
+              "peer_pipeline_runtime_activity_observed": true,
               "peer_pipeline_state_present": true,
-              "prometheus_byteraft_metrics_present": true
+              "prometheus_byteraft_metrics_present": true,
+              "quorum_peer_progress_observed": true
             },
             "cpp_runner_contract": "C++ runner emits ByteRaft admin/local-status and Prometheus metric-family evidence in temporalstore_unified_case_report_v1, including latency_ms.",
             "description": "Shared Raft admin/status case for ByteRaft-style runtime report fields: capability matrix, read-index/lease counters, per-peer match/next indexes, inflight bytes/count, append/reorder queue depths, snapshot lifecycle counters, transfer-leader state, offline timeout state, and Prometheus metric families.",
@@ -9120,10 +9123,12 @@
             "acceptance": {
               "admin_surface_requires_wal_evidence": true,
               "peer_pipeline_limits_nonzero": true,
+              "peer_pipeline_runtime_activity_observed": true,
+              "quorum_peer_progress_observed": true,
               "wal_first_last_log_index_present": true
             },
-            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
-            "description": "Shared ByteRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence and per-peer pipeline fields are required.",
+            "cpp_runner_contract": "C++ ByteRaft local-status/admin runner emits non-vacuous WAL first/last index, quorum peer progress, per-peer runtime pipeline activity, per-peer queue/limit fields, snapshot progress fields, and transfer/election counters before the admin surface is marked complete; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "description": "Shared ByteRaft admin-surface case: Rust and C++ must not mark the status/admin surface complete from API presence alone; durable WAL segment evidence, quorum peer progress, and non-vacuous per-peer pipeline activity are required.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [
