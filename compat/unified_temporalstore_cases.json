@@ -5496,14 +5496,15 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes.",
+      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes plus PageIndex-like page/block entries.",
       "family": "storage/cache",
       "name": "storage_stream_random_size_reopen_scan",
       "shard_id": 92,
       "steps": [
         {
           "command": {
-            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, and stream scan records.",
+            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, stream scan records, and PageIndex-like block entry fields.",
+            "expect_page_index_entries": true,
             "kind": "storage_stream_reopen_scan",
             "scenario": "random_size_reopen_scan"
           },
