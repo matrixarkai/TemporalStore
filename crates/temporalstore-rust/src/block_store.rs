@@ -7,10 +7,6 @@ use std::sync::{Arc, Mutex};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::storage_config::{
-    StorageTuningConfig, DEFAULT_BLOCK_SEGMENT_TARGET_BYTES, DEFAULT_STREAM_MAX_BLOB_SIZE,
-};
-
 mod paths;
 mod record;
 
@@ -96,10 +92,6 @@ pub struct BlockStoreOptions {
     pub compression_min_bytes: usize,
     #[serde(default = "default_page_record_compression_level")]
     pub compression_level: i32,
-    #[serde(default = "default_block_segment_target_bytes")]
-    pub block_segment_target_bytes: u64,
-    #[serde(default = "default_stream_max_blob_size")]
-    pub stream_max_blob_size: u64,
 }
 
 impl Default for BlockStoreOptions {
@@ -108,42 +100,8 @@ impl Default for BlockStoreOptions {
             compression_enabled: default_page_record_compression_enabled(),
             compression_min_bytes: default_page_record_compression_min_bytes(),
             compression_level: default_page_record_compression_level(),
-            block_segment_target_bytes: default_block_segment_target_bytes(),
-            stream_max_blob_size: default_stream_max_blob_size(),
         }
     }
-}
-
-impl BlockStoreOptions {
-    pub fn from_storage_tuning(config: StorageTuningConfig) -> Self {
-        Self {
-            block_segment_target_bytes: config.block_segment_target_bytes,
-            stream_max_blob_size: config.stream_max_blob_size,
-            ..Self::default()
-        }
-    }
-
-    pub fn from_env() -> Self {
-        let config = StorageTuningConfig::from_env();
-        Self {
-            block_segment_target_bytes: config.block_segment_target_bytes,
-            stream_max_blob_size: config.stream_max_blob_size,
-            ..Self::default()
-        }
-    }
-
-    pub fn effective_segment_target_bytes(self) -> u64 {
-        self.block_segment_target_bytes
-            .min(self.stream_max_blob_size)
-    }
-}
-
-fn default_block_segment_target_bytes() -> u64 {
-    DEFAULT_BLOCK_SEGMENT_TARGET_BYTES
-}
-
-fn default_stream_max_blob_size() -> u64 {
-    DEFAULT_STREAM_MAX_BLOB_SIZE
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -466,7 +424,7 @@ impl LocalBlockStore {
         let next_page_id = next_page_id_at(&root).unwrap_or_default();
         let manifest_exists =
             extent_manifest_path(&root).exists() || legacy_zone_manifest_path(&root).exists();
-        let (mut extents, manifest_rebuilt) = if manifest_exists {
+        let (mut extents, mut manifest_rebuilt) = if manifest_exists {
             match load_extent_manifest_at(&root) {
                 Ok(extents) => (extents, false),
                 Err(_) => (rebuild_extent_manifest_at(&root).unwrap_or_default(), true),
@@ -474,6 +432,8 @@ impl LocalBlockStore {
         } else {
             (rebuild_extent_manifest_at(&root).unwrap_or_default(), true)
         };
+        manifest_rebuilt |=
+            reconcile_extent_manifest_with_disk(&root, &mut extents).unwrap_or_default();
         ensure_extent_descriptor(
             &mut extents,
             &root,
@@ -516,32 +476,18 @@ impl LocalBlockStore {
     ) -> Result<BlockAddress, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         fs::create_dir_all(&inner.root)?;
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         let page_id = inner.next_page_id;
-        let mut record = encode_page_record(
+        let extent_id = extent_id_for_segment(inner.page_segment_id);
+        let record = encode_page_record(
             bytes,
             page_id,
             object_id,
             routing_slot,
-            extent_id_for_segment(inner.page_segment_id),
+            extent_id,
             inner.options,
         )?;
-        let segment_target_bytes = inner.options.effective_segment_target_bytes();
-        if inner.write_offset > 0
-            && inner.write_offset.saturating_add(record.bytes.len() as u64) > segment_target_bytes
-        {
-            roll_segment_locked(&mut inner)?;
-            record = encode_page_record(
-                bytes,
-                page_id,
-                object_id,
-                routing_slot,
-                extent_id_for_segment(inner.page_segment_id),
-                inner.options,
-            )?;
-        }
-        let path = segment_path(&inner.root, inner.page_segment_id);
-        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-        let extent_id = extent_id_for_segment(inner.page_segment_id);
         let address = BlockAddress {
             page_segment_id: inner.page_segment_id,
             offset: inner.write_offset,
@@ -580,7 +526,47 @@ impl LocalBlockStore {
 
     pub fn roll_segment(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        roll_segment_locked(&mut inner)
+        fs::create_dir_all(&inner.root)?;
+        let previous_page_segment_id = inner.page_segment_id;
+        let next_from_current = inner.page_segment_id.saturating_add(1);
+        let next_from_disk = segment_ids_at(&inner.root)?
+            .into_iter()
+            .max()
+            .map(|id| id.saturating_add(1))
+            .unwrap_or_default();
+        inner.page_segment_id = next_from_current.max(next_from_disk);
+        inner.write_offset = 0;
+        let path = segment_path(&inner.root, inner.page_segment_id);
+        let file = File::create(&path)?;
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
+        let transition_unix_ms = now_unix_ms();
+        if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
+            previous.state = BlockStoreExtentState::Sealed;
+            previous.updated_unix_ms = Some(transition_unix_ms);
+        }
+        let new_extent = BlockStoreExtentDescriptor {
+            extent_id: extent_id_for_segment(inner.page_segment_id),
+            page_segment_id: inner.page_segment_id,
+            state: BlockStoreExtentState::Active,
+            physical_bytes: 0,
+            logical_bytes: 0,
+            created_unix_ms: Some(transition_unix_ms),
+            updated_unix_ms: Some(transition_unix_ms),
+            first_page_id: None,
+            last_page_id: None,
+            readable_prefix_physical_bytes: 0,
+            has_corruption: false,
+            first_error_offset: None,
+            first_error: None,
+        };
+        let page_segment_id = inner.page_segment_id;
+        inner.extents.insert(page_segment_id, new_extent);
+        persist_extent_manifest(&inner.root, &inner.extents)?;
+        Ok(BlockStoreRollReport {
+            previous_page_segment_id,
+            new_page_segment_id: inner.page_segment_id,
+        })
     }
 
     pub fn read(&self, address: &BlockAddress) -> Result<Vec<u8>, BlockStoreError> {
@@ -1405,54 +1391,6 @@ impl LocalBlockStore {
     }
 }
 
-fn roll_segment_locked(
-    inner: &mut BlockStoreInner,
-) -> Result<BlockStoreRollReport, BlockStoreError> {
-    fs::create_dir_all(&inner.root)?;
-    let previous_page_segment_id = inner.page_segment_id;
-    let next_from_current = inner.page_segment_id.saturating_add(1);
-    let next_from_disk = segment_ids_at(&inner.root)?
-        .into_iter()
-        .max()
-        .map(|id| id.saturating_add(1))
-        .unwrap_or_default();
-    inner.page_segment_id = next_from_current.max(next_from_disk);
-    inner.write_offset = 0;
-    let path = segment_path(&inner.root, inner.page_segment_id);
-    let file = File::create(&path)?;
-    file.sync_all()?;
-    sync_parent_dir(&path)?;
-
-    let transition_unix_ms = now_unix_ms();
-    if let Some(previous) = inner.extents.get_mut(&previous_page_segment_id) {
-        previous.state = BlockStoreExtentState::Sealed;
-        previous.updated_unix_ms = Some(transition_unix_ms);
-    }
-    let new_extent = BlockStoreExtentDescriptor {
-        extent_id: extent_id_for_segment(inner.page_segment_id),
-        page_segment_id: inner.page_segment_id,
-        state: BlockStoreExtentState::Active,
-        physical_bytes: 0,
-        logical_bytes: 0,
-        created_unix_ms: Some(transition_unix_ms),
-        updated_unix_ms: Some(transition_unix_ms),
-        first_page_id: None,
-        last_page_id: None,
-        readable_prefix_physical_bytes: 0,
-        has_corruption: false,
-        first_error_offset: None,
-        first_error: None,
-    };
-    let page_segment_id = inner.page_segment_id;
-    inner.extents.insert(page_segment_id, new_extent);
-    persist_extent_manifest(&inner.root, &inner.extents)?;
-
-    Ok(BlockStoreRollReport {
-        previous_page_segment_id,
-        new_page_segment_id: inner.page_segment_id,
-    })
-}
-
 fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
     let mut states = Vec::new();
     if summary.active_extents > 0 {
@@ -1689,6 +1627,120 @@ fn rebuild_extent_manifest_at(
             });
     }
     Ok(extents)
+}
+
+fn reconcile_extent_manifest_with_disk(
+    root: &Path,
+    extents: &mut BTreeMap<u64, BlockStoreExtentDescriptor>,
+) -> Result<bool, BlockStoreError> {
+    let mut changed = false;
+    let live_segment_ids = segment_ids_at(root)?.into_iter().collect::<BTreeSet<_>>();
+    let delayed_segments = delayed_destroy_segment_reports_at(root)?
+        .into_iter()
+        .map(|report| (report.page_segment_id, report))
+        .collect::<BTreeMap<_, _>>();
+    let latest = live_segment_ids
+        .iter()
+        .next_back()
+        .copied()
+        .unwrap_or_default();
+
+    for page_segment_id in &live_segment_ids {
+        let path = segment_path(root, *page_segment_id);
+        let bytes = fs::read(&path)?;
+        let report = inspect_segment(&bytes, *page_segment_id);
+        let desired_state = if *page_segment_id == latest {
+            BlockStoreExtentState::Active
+        } else {
+            BlockStoreExtentState::Sealed
+        };
+        let created_unix_ms = file_created_unix_ms(&path).or_else(|| file_modified_unix_ms(&path));
+        let updated_unix_ms = file_modified_unix_ms(&path).or_else(|| file_created_unix_ms(&path));
+        match extents.get_mut(page_segment_id) {
+            Some(extent) => {
+                let old = extent.clone();
+                extent.extent_id = extent_id_for_segment(*page_segment_id);
+                extent.page_segment_id = *page_segment_id;
+                extent.state = desired_state;
+                extent.physical_bytes = bytes.len() as u64;
+                extent.logical_bytes = report.logical_bytes;
+                extent.created_unix_ms = extent.created_unix_ms.or(created_unix_ms);
+                extent.updated_unix_ms = updated_unix_ms;
+                extent.first_page_id = report.first_page_id;
+                extent.last_page_id = report.last_page_id;
+                extent.readable_prefix_physical_bytes = report.readable_prefix_physical_bytes;
+                extent.has_corruption = report.has_corruption;
+                extent.first_error_offset = report.first_error_offset;
+                extent.first_error = report.first_error;
+                changed |= *extent != old;
+            }
+            None => {
+                extents.insert(
+                    *page_segment_id,
+                    BlockStoreExtentDescriptor {
+                        extent_id: extent_id_for_segment(*page_segment_id),
+                        page_segment_id: *page_segment_id,
+                        state: desired_state,
+                        physical_bytes: bytes.len() as u64,
+                        logical_bytes: report.logical_bytes,
+                        created_unix_ms,
+                        updated_unix_ms,
+                        first_page_id: report.first_page_id,
+                        last_page_id: report.last_page_id,
+                        readable_prefix_physical_bytes: report.readable_prefix_physical_bytes,
+                        has_corruption: report.has_corruption,
+                        first_error_offset: report.first_error_offset,
+                        first_error: report.first_error,
+                    },
+                );
+                changed = true;
+            }
+        }
+    }
+
+    for (page_segment_id, report) in &delayed_segments {
+        let old = extents.get(page_segment_id).cloned();
+        extents.insert(
+            *page_segment_id,
+            BlockStoreExtentDescriptor {
+                extent_id: extent_id_for_segment(*page_segment_id),
+                page_segment_id: *page_segment_id,
+                state: BlockStoreExtentState::DelayedDestroy,
+                physical_bytes: report.physical_bytes,
+                logical_bytes: old.as_ref().map(|extent| extent.logical_bytes).unwrap_or(0),
+                created_unix_ms: old
+                    .as_ref()
+                    .and_then(|extent| extent.created_unix_ms)
+                    .or(report.modified_unix_ms),
+                updated_unix_ms: report.modified_unix_ms,
+                first_page_id: old.as_ref().and_then(|extent| extent.first_page_id),
+                last_page_id: old.as_ref().and_then(|extent| extent.last_page_id),
+                readable_prefix_physical_bytes: 0,
+                has_corruption: false,
+                first_error_offset: None,
+                first_error: None,
+            },
+        );
+        changed |= extents.get(page_segment_id) != old.as_ref();
+    }
+
+    let known_ids = extents.keys().copied().collect::<Vec<_>>();
+    for page_segment_id in known_ids {
+        if live_segment_ids.contains(&page_segment_id)
+            || delayed_segments.contains_key(&page_segment_id)
+        {
+            continue;
+        }
+        if let Some(extent) = extents.get_mut(&page_segment_id) {
+            if extent.state != BlockStoreExtentState::Purged {
+                extent.state = BlockStoreExtentState::Purged;
+                extent.updated_unix_ms = Some(now_unix_ms());
+                changed = true;
+            }
+        }
+    }
+
+    Ok(changed)
 }
 
 fn persist_extent_manifest(
@@ -2071,43 +2123,6 @@ mod tests {
     }
 
     #[test]
-    fn append_auto_rolls_when_public_segment_target_is_exceeded() {
-        let dir = tempfile::tempdir().unwrap();
-        let store = LocalBlockStore::with_options(
-            dir.path(),
-            BlockStoreOptions {
-                compression_enabled: false,
-                block_segment_target_bytes: 256,
-                stream_max_blob_size: 256,
-                ..BlockStoreOptions::default()
-            },
-        );
-        let first = store.append(&vec![b'a'; 192]).unwrap();
-        let second = store.append(&vec![b'b'; 192]).unwrap();
-
-        assert_eq!(first.page_segment_id, 0);
-        assert_eq!(second.page_segment_id, 1);
-        assert_eq!(second.offset, 0);
-        assert_eq!(first.extent_id, Some(extent_id_for_segment(0)));
-        assert_eq!(second.extent_id, Some(extent_id_for_segment(1)));
-        assert_eq!(store.read(&first).unwrap(), vec![b'a'; 192]);
-        assert_eq!(store.read(&second).unwrap(), vec![b'b'; 192]);
-    }
-
-    #[test]
-    fn block_store_options_follow_storage_tuning_segment_limit() {
-        let options = BlockStoreOptions::from_storage_tuning(StorageTuningConfig {
-            block_segment_target_bytes: 8192,
-            stream_max_blob_size: 4096,
-            ..StorageTuningConfig::default()
-        });
-
-        assert_eq!(options.block_segment_target_bytes, 8192);
-        assert_eq!(options.stream_max_blob_size, 4096);
-        assert_eq!(options.effective_segment_target_bytes(), 4096);
-    }
-
-    #[test]
     fn reopened_store_appends_to_latest_existing_segment() {
         let dir = tempfile::tempdir().unwrap();
         let store = LocalBlockStore::new(dir.path());
@@ -2124,6 +2139,71 @@ mod tests {
         assert_eq!(reopened.read(&first).unwrap(), b"first");
         assert_eq!(reopened.read(&second).unwrap(), b"second");
         assert_eq!(reopened.read(&third).unwrap(), b"third");
+    }
+
+    #[test]
+    fn reopen_reconciles_manifest_missing_existing_stream_extent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        store.roll_segment().unwrap();
+        let second = store.append(b"second").unwrap();
+        drop(store);
+
+        let manifest_path = extent_manifest_path(dir.path());
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["extents"] = serde_json::json!([manifest["extents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|extent| extent["page_segment_id"] == serde_json::json!(first.page_segment_id))
+            .unwrap()
+            .clone()]);
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.extent_descriptors();
+
+        assert!(descriptors
+            .iter()
+            .any(|extent| extent.page_segment_id == first.page_segment_id
+                && extent.state == BlockStoreExtentState::Sealed));
+        assert!(descriptors
+            .iter()
+            .any(|extent| extent.page_segment_id == second.page_segment_id
+                && extent.state == BlockStoreExtentState::Active));
+        assert_eq!(reopened.read(&first).unwrap(), b"first");
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
+    }
+
+    #[test]
+    fn reopen_marks_manifest_extent_without_stream_file_as_purged() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalBlockStore::new(dir.path());
+        let first = store.append(b"first").unwrap();
+        store.roll_segment().unwrap();
+        let second = store.append(b"second").unwrap();
+        drop(store);
+
+        fs::remove_file(segment_path(dir.path(), first.page_segment_id)).unwrap();
+
+        let reopened = LocalBlockStore::new(dir.path());
+        let descriptors = reopened.extent_descriptors();
+
+        assert!(descriptors
+            .iter()
+            .any(|extent| extent.page_segment_id == first.page_segment_id
+                && extent.state == BlockStoreExtentState::Purged));
+        assert!(descriptors
+            .iter()
+            .any(|extent| extent.page_segment_id == second.page_segment_id
+                && extent.state == BlockStoreExtentState::Active));
+        assert_eq!(reopened.read(&second).unwrap(), b"second");
     }
 
     #[test]
