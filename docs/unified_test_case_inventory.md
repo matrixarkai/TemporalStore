@@ -238,6 +238,31 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_rustraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
 | `raft_rustraft_leader_transfer_high_write_fault_harness` | Leader transfer under high write load has no lost or duplicate committed writes. |
 | `raft_rustraft_follower_rejoin_compacted_logs_fault_harness` | Follower rejoin after compaction installs snapshot, replays retained tail, and becomes read-eligible after catch-up. |
+
+### Storage/Proxy/Client Parity Coverage
+
+These shared coverage cases keep Rust and C++ aligned on StorageManager, ObjectManager,
+SlotStore, proxy, and direct-client behavior while native runners mature.
+
+ObjectManager/SlotStore runtime authority modules are covered by
+`storage_object_manager_slotstore_runtime_authority` and the related
+`storage_slot_first_physical_index` case. Storage lifecycle parity also includes
+`storage_model_layout_compaction_policies`, `storage_merged_dump_load_lifecycle`,
+`storage_object_manager_cold_hot_reload`, `storage_page_address_disk_cache_shared_store_fallback`,
+`storage_stale_page_density_compaction`, `storage_merged_dump_load_restart_interruption`,
+`storage_gc_eviction_cold_reads`, and `storage_risk_context_page_backed_parity`.
+
+StorageManager runtime and lifecycle gap cases include
+`storage_manager_continuous_background_runtime`, `storage_manager_real_pressure_signals`,
+`storage_manager_wal_reclaim_slot_generation_retention`,
+`storage_manager_expire_cursor_scan_limits`, `storage_manager_active_eviction_runtime`,
+`storage_manager_page_gc_dependency_refusal`, `storage_manager_index_gc_thresholds_recovery`,
+and `storage_manager_metrics_admin_phase_reports`.
+
+Proxy and direct-client parity coverage includes `control_multi_proxy_topology_churn_scale`,
+`control_client_cpp_partition_set_route_cache`,
+`control_client_pipeline_batch_partial_timeout_contract`, and
+`control_client_deployment_placement_routing_hooks`.
 | `raft_rustraft_rolling_restart_joint_consensus_fault_harness` | Rolling restart with pending joint consensus completes or rolls back safely. |
 | `raft_rustraft_shared_fault_gate` | Combined RustRaft-derived data-node and metaserver Raft fault gate. |
 | `raft_temporal_raft_process_read_safety_and_membership_matrix` | Production TemporalRaft multi-process read safety, membership, snapshot, restart, follower lag, and secondary-read evidence matrix. |
