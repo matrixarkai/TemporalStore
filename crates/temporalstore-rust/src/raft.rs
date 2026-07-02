@@ -763,6 +763,12 @@ pub struct ByteRaftRuntimeAdminReport {
     pub pre_vote_requests: u64,
     pub pre_vote_accepted: u64,
     pub pre_vote_rejected: u64,
+    #[serde(default)]
+    pub quorum_peer_progress_observed: bool,
+    #[serde(default)]
+    pub peer_pipeline_runtime_activity_observed: bool,
+    #[serde(default)]
+    pub peer_pipeline_limits_observed: bool,
     pub admin_status_surface_complete: bool,
     #[serde(default)]
     pub capability_matrix: Vec<ByteRaftCapabilityEvidence>,
@@ -8903,8 +8909,42 @@ impl RaftClusterInner {
                 && peer.apply_batch_bytes_limit > 0
                 && peer.snapshot_install_progress_per_mille <= 1_000
         });
+        let quorum_peer_progress_observed = status.commit_index > 0
+            && peer_pipeline_states
+                .iter()
+                .filter(|peer| peer.replica_role.participates_in_quorum())
+                .count()
+                >= status.majority
+            && peer_pipeline_states
+                .iter()
+                .filter(|peer| peer.replica_role.participates_in_quorum())
+                .all(|peer| {
+                    peer.match_index >= status.commit_index
+                        && peer.next_index >= peer.match_index.saturating_add(1)
+                });
+        let peer_pipeline_runtime_activity_observed = peer_pipeline_states.iter().any(|peer| {
+            peer.append_requests > 0
+                || peer.append_accepted > 0
+                || peer.append_rejected > 0
+                || peer.match_index > 0
+                || peer.next_index > 1
+                || peer.append_queue_max_depth > 0
+                || peer.apply_queue_max_depth > 0
+                || peer.inflight_entries > 0
+                || peer.inflight_bytes > 0
+                || peer.snapshot_installed_index > 0
+                || peer.snapshot_send_attempts > 0
+                || peer.snapshot_install_progress_per_mille > 0
+                || peer.transfer_leader_accepted > 0
+                || peer.pre_vote_rejections > 0
+                || peer.election_rejections > 0
+        });
+        let peer_pipeline_limits_observed =
+            !peer_pipeline_states.is_empty() && peer_admin_surface_complete;
         let admin_status_surface_complete = !peer_pipeline_states.is_empty()
             && peer_admin_surface_complete
+            && quorum_peer_progress_observed
+            && peer_pipeline_runtime_activity_observed
             && wal_segment_lifecycle_present
             && wal_last_log_index >= status.commit_index
             && peer_pipeline_states.iter().all(|peer| peer.next_index > 0)
@@ -9006,9 +9046,9 @@ impl RaftClusterInner {
             ByteRaftCapabilityEvidence {
                 capability: "admin_status_surface".to_string(),
                 ready: admin_status_surface_complete,
-                evidence_field: "admin_status_surface_complete; /raft/control/byteraft_runtime_admin; prometheus byteraft metrics".to_string(),
+                evidence_field: "admin_status_surface_complete; quorum_peer_progress_observed; peer_pipeline_runtime_activity_observed; peer_pipeline_limits_observed; /raft/control/byteraft_runtime_admin; prometheus byteraft metrics".to_string(),
                 detail: format!(
-                    "majority={}; commit_index={}; peer_rows={}",
+                    "majority={}; commit_index={}; peer_rows={}; quorum_progress={quorum_peer_progress_observed}; runtime_activity={peer_pipeline_runtime_activity_observed}; limits={peer_pipeline_limits_observed}",
                     status.majority,
                     status.commit_index,
                     peer_pipeline_states.len()
@@ -9175,6 +9215,15 @@ impl RaftClusterInner {
         if !admin_status_surface_complete {
             blockers.push("admin_status_surface_incomplete".to_string());
         }
+        if !quorum_peer_progress_observed {
+            blockers.push("quorum_peer_progress_evidence_missing".to_string());
+        }
+        if !peer_pipeline_runtime_activity_observed {
+            blockers.push("peer_pipeline_runtime_activity_missing".to_string());
+        }
+        if !peer_pipeline_limits_observed {
+            blockers.push("peer_pipeline_limits_missing".to_string());
+        }
 
         ByteRaftRuntimeAdminReport {
             shard_id: self.shard_id,
@@ -9268,6 +9317,9 @@ impl RaftClusterInner {
             pre_vote_requests: self.read_safety_state.pre_vote_requests,
             pre_vote_accepted: self.read_safety_state.pre_vote_accepted,
             pre_vote_rejected: self.read_safety_state.pre_vote_rejected,
+            quorum_peer_progress_observed,
+            peer_pipeline_runtime_activity_observed,
+            peer_pipeline_limits_observed,
             admin_status_surface_complete,
             capability_matrix,
             ready: blockers.is_empty(),
@@ -10139,6 +10191,32 @@ fn append_byteraft_runtime_admin_prometheus(
         "temporalstore_raft_byteraft_ready",
         &[("kind", kind.to_string())],
         u64::from(report.ready),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_quorum_peer_progress_observed Whether admin readiness observed quorum peer match/next progress from runtime state.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_quorum_peer_progress_observed gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_quorum_peer_progress_observed",
+        &[("kind", kind.to_string())],
+        u64::from(report.quorum_peer_progress_observed),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_pipeline_runtime_activity_observed Whether per-peer pipeline state has non-vacuous runtime activity.\n");
+    out.push_str(
+        "# TYPE temporalstore_raft_byteraft_peer_pipeline_runtime_activity_observed gauge\n",
+    );
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_peer_pipeline_runtime_activity_observed",
+        &[("kind", kind.to_string())],
+        u64::from(report.peer_pipeline_runtime_activity_observed),
+    );
+    out.push_str("# HELP temporalstore_raft_byteraft_peer_pipeline_limits_observed Whether per-peer pipeline limits are populated for admin readiness.\n");
+    out.push_str("# TYPE temporalstore_raft_byteraft_peer_pipeline_limits_observed gauge\n");
+    push_raft_metric(
+        out,
+        "temporalstore_raft_byteraft_peer_pipeline_limits_observed",
+        &[("kind", kind.to_string())],
+        u64::from(report.peer_pipeline_limits_observed),
     );
     out.push_str("# HELP temporalstore_raft_byteraft_capability_ready ByteRaft-style capability readiness matrix.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_capability_ready gauge\n");

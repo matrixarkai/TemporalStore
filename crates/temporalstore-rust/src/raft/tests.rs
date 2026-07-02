@@ -5822,6 +5822,9 @@ fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
     let local_admin = local_fixture.byteraft_runtime_admin_report();
     assert!(!local_admin.admin_status_surface_complete);
     assert!(!local_admin.wal_segment_lifecycle_present);
+    assert!(local_admin.quorum_peer_progress_observed);
+    assert!(local_admin.peer_pipeline_runtime_activity_observed);
+    assert!(local_admin.peer_pipeline_limits_observed);
     assert!(local_admin
         .blockers
         .contains(&"admin_status_surface_incomplete".to_string()));
@@ -5837,8 +5840,11 @@ fn byteraft_admin_status_surface_requires_wal_and_peer_pipeline_fields() {
         })
         .unwrap();
     let durable_admin = durable.byteraft_runtime_admin_report();
-    assert!(durable_admin.admin_status_surface_complete);
     assert!(durable_admin.wal_segment_lifecycle_present);
+    assert!(durable_admin.quorum_peer_progress_observed);
+    assert!(durable_admin.peer_pipeline_runtime_activity_observed);
+    assert!(durable_admin.peer_pipeline_limits_observed);
+    assert!(durable_admin.admin_status_surface_complete);
     assert!(durable_admin.wal_first_log_index > 0);
     assert!(durable_admin.wal_last_log_index >= durable_admin.commit_index);
     assert!(durable_admin.peer_pipeline_states.iter().all(|peer| {
