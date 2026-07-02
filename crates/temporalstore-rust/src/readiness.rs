@@ -832,10 +832,11 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     ];
     let mtcache_dram_pmem_ssd_placement_ready = true;
     let mtcache_dram_pmem_ssd_placement_evidence = vec![
-        "CacheTieringPolicy models memory capacity, SSD capacity, hotness thresholds, max block sizes, and SSD write-through admission".to_string(),
-        "admission decisions place hot or pinned blocks in memory plus SSD and warm/large blocks in the SSD tier".to_string(),
-        "entry inspection reports block kind, routing slot, hotness, hit counts, and admission reason for placement auditing".to_string(),
-        "PMEM is treated as an SSD-class persistent tier in the Rust-native deployment contract".to_string(),
+        "CacheTieringPolicy models DRAM, PMEM, and SSD capacity, hotness thresholds, max block sizes, and SSD write-through admission".to_string(),
+        "admission decisions place hot or pinned blocks in DRAM plus PMEM/SSD, warm blocks in PMEM plus SSD, and large cold blocks in SSD".to_string(),
+        "MultiLayerCache has distinct resident DRAM and PMEM maps plus an SSD/file tier; PMEM hits promote into DRAM before falling through to SSD".to_string(),
+        "entry inspection and Prometheus metrics report PMEM bytes, hits, fills, admission, and eviction counters alongside memory and SSD".to_string(),
+        "cache_dram_pmem_ssd_tiers_admit_refill_and_evict proves PMEM admission, PMEM hit/refill, PMEM capacity eviction, and SSD retention".to_string(),
     ];
     let mtcache_async_writeback_backpressure_ready = true;
     let mtcache_async_writeback_backpressure_evidence = vec![
@@ -2443,7 +2444,11 @@ mod tests {
         assert!(report
             .mtcache_dram_pmem_ssd_placement_evidence
             .iter()
-            .any(|item| item.contains("PMEM is treated as an SSD-class")));
+            .any(|item| item.contains("distinct resident DRAM and PMEM maps")));
+        assert!(report
+            .mtcache_dram_pmem_ssd_placement_evidence
+            .iter()
+            .any(|item| item.contains("PMEM admission, PMEM hit/refill")));
         assert!(report.mtcache_async_writeback_backpressure_ready);
         assert!(report
             .mtcache_async_writeback_backpressure_evidence

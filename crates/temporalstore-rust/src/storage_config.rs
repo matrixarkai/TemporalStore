@@ -162,7 +162,10 @@ mod tests {
             DEFAULT_COMPACTION_WATERMARK_BYTES
         );
         assert!(config.cold_scan_no_cache_fill);
-        assert_eq!(config.page_index_cache_bytes, DEFAULT_PAGE_INDEX_CACHE_BYTES);
+        assert_eq!(
+            config.page_index_cache_bytes,
+            DEFAULT_PAGE_INDEX_CACHE_BYTES
+        );
         assert_eq!(
             config.block_index_cache_bytes,
             DEFAULT_BLOCK_INDEX_CACHE_BYTES

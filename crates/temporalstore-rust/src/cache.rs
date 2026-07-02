@@ -116,6 +116,20 @@ pub struct CacheStats {
     pub invalidations: u64,
     pub memory_evictions: u64,
     #[serde(default)]
+    pub pmem_hits: u64,
+    #[serde(default)]
+    pub pmem_fills: u64,
+    #[serde(default)]
+    pub pmem_evictions: u64,
+    #[serde(default)]
+    pub pmem_admission_accepted: u64,
+    #[serde(default)]
+    pub pmem_admission_rejected: u64,
+    #[serde(default)]
+    pub pmem_eviction_capacity: u64,
+    #[serde(default)]
+    pub pmem_eviction_pinned_skips: u64,
+    #[serde(default)]
     pub memory_admission_accepted: u64,
     #[serde(default)]
     pub memory_admission_rejected: u64,
@@ -289,6 +303,8 @@ pub struct CacheStats {
     pub compressed_hits: u64,
     pub compression_bytes_saved: u64,
     pub memory_bytes: u64,
+    #[serde(default)]
+    pub pmem_bytes: u64,
     pub disk_bytes: u64,
 }
 
@@ -621,6 +637,8 @@ pub struct CacheEntryInfo {
     pub record_key: String,
     pub selector: String,
     pub memory_bytes: u64,
+    #[serde(default)]
+    pub pmem_bytes: u64,
     pub disk_bytes: u64,
     #[serde(default)]
     pub pinned: bool,
@@ -646,6 +664,12 @@ pub struct CacheEvictionReport {
     pub memory_low_hit_evictions: u64,
     pub memory_stale_evictions: u64,
     pub memory_pinned_skips: u64,
+    #[serde(default)]
+    pub pmem_evictions: u64,
+    #[serde(default)]
+    pub pmem_capacity_evictions: u64,
+    #[serde(default)]
+    pub pmem_pinned_skips: u64,
     pub ssd_evictions: u64,
     pub ssd_capacity_evictions: u64,
     pub ssd_cold_evictions: u64,
@@ -742,16 +766,20 @@ pub struct MultiLayerCache {
 struct CacheInner {
     memory_capacity_bytes: usize,
     memory_bytes: usize,
+    pmem_capacity_bytes: usize,
+    pmem_bytes: usize,
     ssd_capacity_bytes: usize,
     ssd_bytes: u64,
     disk_dir: PathBuf,
     tiering_policy: CacheTieringPolicy,
     block_options: CacheBlockOptions,
     memory: HashMap<CacheKey, Arc<[u8]>>,
+    pmem: HashMap<CacheKey, Arc<[u8]>>,
     disk_index: HashMap<CacheKey, u64>,
     disk_order: VecDeque<CacheKey>,
     pinned: HashSet<CacheKey>,
     order: VecDeque<CacheKey>,
+    pmem_order: VecDeque<CacheKey>,
     async_writeback_queue: VecDeque<CacheWritebackJob>,
     max_async_writeback_queue: usize,
     metadata: HashMap<CacheKey, CacheEntryMeta>,
@@ -801,16 +829,20 @@ impl MultiLayerCache {
             inner: Arc::new(RwLock::new(CacheInner {
                 memory_capacity_bytes: tiering_policy.memory_capacity_bytes,
                 memory_bytes: 0,
+                pmem_capacity_bytes: tiering_policy.pmem_capacity_bytes,
+                pmem_bytes: 0,
                 ssd_capacity_bytes: tiering_policy.ssd_capacity_bytes,
                 ssd_bytes: 0,
                 disk_dir,
                 tiering_policy,
                 block_options,
                 memory: HashMap::new(),
+                pmem: HashMap::new(),
                 disk_index: HashMap::new(),
                 disk_order: VecDeque::new(),
                 pinned: HashSet::new(),
                 order: VecDeque::new(),
+                pmem_order: VecDeque::new(),
                 async_writeback_queue: VecDeque::new(),
                 max_async_writeback_queue: 1024,
                 metadata: HashMap::new(),
@@ -831,6 +863,19 @@ impl MultiLayerCache {
                 inner.record_get_latency(started);
                 inner.record_read_through_latency(started);
                 return Ok(Some(value.to_vec()));
+            }
+            if let Some(value) = inner.pmem.get(key).cloned() {
+                inner.stats.pmem_hits = inner.stats.pmem_hits.saturating_add(1);
+                inner.touch_key(key);
+                inner.record_hit(key, value.len());
+                let decoded = value.to_vec();
+                if !inner.put_memory(key.clone(), decoded.clone()) {
+                    inner.stats.refill_failures += 1;
+                }
+                inner.record_get_latency(started);
+                inner.record_read_through_latency(started);
+                inner.record_refill_latency(started);
+                return Ok(Some(decoded));
             }
         }
 
@@ -1040,9 +1085,14 @@ impl MultiLayerCache {
             inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
         }
         inner.order.retain(|candidate| candidate != key);
+        if let Some(value) = inner.pmem.remove(key) {
+            inner.pmem_bytes = inner.pmem_bytes.saturating_sub(value.len());
+        }
+        inner.pmem_order.retain(|candidate| candidate != key);
         inner.pinned.remove(key);
         inner.stats.invalidations += 1;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.pmem_bytes = inner.pmem_bytes as u64;
         inner.refresh_pin_stats();
     }
 
@@ -1054,11 +1104,14 @@ impl MultiLayerCache {
     pub fn update_production_tiering_policy(&self, policy: CacheTieringPolicy) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.memory_capacity_bytes = policy.memory_capacity_bytes;
+        inner.pmem_capacity_bytes = policy.pmem_capacity_bytes;
         inner.ssd_capacity_bytes = policy.ssd_capacity_bytes;
         inner.tiering_policy = policy;
         inner.evict_memory_to_capacity();
+        inner.evict_pmem_to_capacity();
         inner.evict_ssd_to_capacity();
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.pmem_bytes = inner.pmem_bytes as u64;
         inner.stats.disk_bytes = inner.ssd_bytes;
         inner.refresh_pin_stats();
     }
@@ -1075,6 +1128,7 @@ impl CacheInner {
         let decision = self.tiering_policy.decide(&request);
         let admit_ssd = decision.admit_ssd || self.tiering_policy.ssd_write_through;
         let admit_memory = decision.admit_memory;
+        let admit_pmem = decision.admit_pmem;
 
         if admit_memory {
             self.record_metadata(
@@ -1088,6 +1142,21 @@ impl CacheInner {
             let _ = self.put_memory(key.clone(), value.clone());
         } else {
             self.stats.memory_admission_rejected += 1;
+        }
+
+        if admit_pmem {
+            self.record_metadata(
+                &key,
+                request.block_kind,
+                request.routing_slot,
+                value.len(),
+                request.hotness,
+                decision.reason,
+            );
+            let _ = self.put_pmem(key.clone(), value.clone());
+        } else {
+            self.stats.pmem_admission_rejected =
+                self.stats.pmem_admission_rejected.saturating_add(1);
         }
 
         if !admit_ssd {
@@ -1178,6 +1247,7 @@ impl MultiLayerCache {
             inner
                 .memory
                 .keys()
+                .chain(inner.pmem.keys())
                 .chain(inner.disk_index.keys())
                 .filter(|key| {
                     key.shard_id == shard_id
@@ -1200,16 +1270,23 @@ impl MultiLayerCache {
         let memory_keys = inner
             .memory
             .keys()
+            .chain(inner.pmem.keys())
             .filter(|key| key.shard_id == shard_id)
             .cloned()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
             .collect::<Vec<_>>();
         let memory_entries_removed = memory_keys.len();
         for key in &memory_keys {
             if let Some(value) = inner.memory.remove(key) {
                 inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
             }
+            if let Some(value) = inner.pmem.remove(key) {
+                inner.pmem_bytes = inner.pmem_bytes.saturating_sub(value.len());
+            }
         }
         inner.order.retain(|key| key.shard_id != shard_id);
+        inner.pmem_order.retain(|key| key.shard_id != shard_id);
         inner.disk_order.retain(|key| key.shard_id != shard_id);
         inner.disk_index.retain(|key, _| key.shard_id != shard_id);
         inner.metadata.retain(|key, _| key.shard_id != shard_id);
@@ -1224,6 +1301,7 @@ impl MultiLayerCache {
         }
         inner.stats.invalidations += memory_entries_removed as u64;
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.pmem_bytes = inner.pmem_bytes as u64;
         inner.ssd_bytes = inner.ssd_bytes.saturating_sub(disk_bytes_before);
         inner.stats.disk_bytes = inner.ssd_bytes;
         inner.refresh_pin_stats();
@@ -1244,6 +1322,7 @@ impl MultiLayerCache {
         let slot_keys = inner
             .memory
             .keys()
+            .chain(inner.pmem.keys())
             .chain(inner.disk_index.keys())
             .filter(|key| key.shard_id == shard_id && key.selector.starts_with(&prefix))
             .cloned()
@@ -1258,6 +1337,9 @@ impl MultiLayerCache {
         for key in &slot_keys {
             if let Some(value) = inner.memory.remove(key) {
                 inner.memory_bytes = inner.memory_bytes.saturating_sub(value.len());
+            }
+            if let Some(value) = inner.pmem.remove(key) {
+                inner.pmem_bytes = inner.pmem_bytes.saturating_sub(value.len());
             }
             let path = inner.disk_path(key);
             disk_bytes_removed = disk_bytes_removed.saturating_add(
@@ -1275,6 +1357,9 @@ impl MultiLayerCache {
             .order
             .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
         inner
+            .pmem_order
+            .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
+        inner
             .disk_order
             .retain(|key| !(key.shard_id == shard_id && key.selector.starts_with(&prefix)));
         inner.stats.invalidations = inner
@@ -1282,6 +1367,7 @@ impl MultiLayerCache {
             .invalidations
             .saturating_add(memory_entries_removed as u64);
         inner.stats.memory_bytes = inner.memory_bytes as u64;
+        inner.stats.pmem_bytes = inner.pmem_bytes as u64;
         inner.ssd_bytes = inner.ssd_bytes.saturating_sub(disk_bytes_removed);
         inner.stats.disk_bytes = inner.ssd_bytes;
         inner.refresh_pin_stats();
@@ -1297,6 +1383,7 @@ impl MultiLayerCache {
         let keys = inner
             .memory
             .keys()
+            .chain(inner.pmem.keys())
             .chain(inner.disk_index.keys())
             .filter(|key| key.shard_id == shard_id)
             .cloned()
@@ -1307,6 +1394,11 @@ impl MultiLayerCache {
                 let pinned = inner.pinned.contains(&key);
                 let memory_bytes = inner
                     .memory
+                    .get(&key)
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default();
+                let pmem_bytes = inner
+                    .pmem
                     .get(&key)
                     .map(|value| value.len() as u64)
                     .unwrap_or_default();
@@ -1324,6 +1416,7 @@ impl MultiLayerCache {
                     record_key: key.record_key,
                     selector: key.selector,
                     memory_bytes,
+                    pmem_bytes,
                     disk_bytes,
                     pinned,
                     block_kind: meta.map(|meta| meta.block_kind),
@@ -1348,6 +1441,7 @@ impl MultiLayerCache {
         let inner = self.inner.read().expect("cache lock poisoned");
         CacheStats {
             memory_bytes: inner.memory_bytes as u64,
+            pmem_bytes: inner.pmem_bytes as u64,
             disk_bytes: inner.ssd_bytes,
             pinned_entries: inner.pinned.len() as u64,
             pinned_bytes: inner.pinned_memory_bytes(),
@@ -1366,6 +1460,9 @@ impl MultiLayerCache {
             memory_low_hit_evictions: stats.eviction_low_hit,
             memory_stale_evictions: stats.eviction_stale,
             memory_pinned_skips: stats.eviction_pinned_skips,
+            pmem_evictions: stats.pmem_evictions,
+            pmem_capacity_evictions: stats.pmem_eviction_capacity,
+            pmem_pinned_skips: stats.pmem_eviction_pinned_skips,
             ssd_evictions: stats.ssd_evictions,
             ssd_capacity_evictions: stats.ssd_eviction_capacity,
             ssd_cold_evictions: stats.ssd_eviction_cold,
@@ -1383,9 +1480,13 @@ impl MultiLayerCache {
     pub fn clear_memory_for_test(&self) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.memory.clear();
+        inner.pmem.clear();
         inner.order.clear();
+        inner.pmem_order.clear();
         inner.memory_bytes = 0;
+        inner.pmem_bytes = 0;
         inner.stats.memory_bytes = 0;
+        inner.stats.pmem_bytes = 0;
         inner.refresh_pin_stats();
     }
 
@@ -1806,10 +1907,44 @@ impl CacheInner {
         true
     }
 
+    fn put_pmem(&mut self, key: CacheKey, value: Vec<u8>) -> bool {
+        let eviction_started = Instant::now();
+        if self.pmem_capacity_bytes == 0 || value.len() > self.pmem_capacity_bytes {
+            self.stats.pmem_admission_rejected =
+                self.stats.pmem_admission_rejected.saturating_add(1);
+            return false;
+        }
+        self.stats.pmem_admission_accepted = self.stats.pmem_admission_accepted.saturating_add(1);
+        self.stats.pmem_fills = self.stats.pmem_fills.saturating_add(1);
+        let value = Arc::<[u8]>::from(value);
+        if let Some(old) = self.pmem.insert(key.clone(), Arc::clone(&value)) {
+            self.pmem_bytes = self.pmem_bytes.saturating_sub(old.len());
+            self.touch_key(&key);
+        } else {
+            self.pmem_order.push_back(key);
+        }
+        self.pmem_bytes = self.pmem_bytes.saturating_add(value.len());
+        while self.pmem_bytes > self.pmem_capacity_bytes {
+            if !self.evict_one_pmem_entry() {
+                self.stats.pmem_eviction_pinned_skips =
+                    self.stats.pmem_eviction_pinned_skips.saturating_add(1);
+                break;
+            }
+            self.record_eviction_latency(eviction_started);
+        }
+        self.stats.pmem_bytes = self.pmem_bytes as u64;
+        self.refresh_pin_stats();
+        true
+    }
+
     fn touch_key(&mut self, key: &CacheKey) {
         self.order.retain(|candidate| candidate != key);
         if self.memory.contains_key(key) {
             self.order.push_back(key.clone());
+        }
+        self.pmem_order.retain(|candidate| candidate != key);
+        if self.pmem.contains_key(key) {
+            self.pmem_order.push_back(key.clone());
         }
     }
 
@@ -1818,6 +1953,16 @@ impl CacheInner {
             let before = self.memory_bytes;
             self.evict_one_memory_entry();
             if self.memory_bytes == before {
+                break;
+            }
+        }
+    }
+
+    fn evict_pmem_to_capacity(&mut self) {
+        while self.pmem_bytes > self.pmem_capacity_bytes {
+            let before = self.pmem_bytes;
+            self.evict_one_pmem_entry();
+            if self.pmem_bytes == before {
                 break;
             }
         }
@@ -1847,6 +1992,31 @@ impl CacheInner {
         }
         self.order.retain(|candidate| candidate != &victim);
         self.stats.memory_bytes = self.memory_bytes as u64;
+        false
+    }
+
+    fn evict_one_pmem_entry(&mut self) -> bool {
+        let Some((victim, _reason, pinned_skips)) = self.select_pmem_eviction_victim() else {
+            return false;
+        };
+        self.stats.pmem_eviction_pinned_skips = self
+            .stats
+            .pmem_eviction_pinned_skips
+            .saturating_add(pinned_skips);
+        if let Some(old_value) = self.pmem.remove(&victim) {
+            self.pmem_bytes = self.pmem_bytes.saturating_sub(old_value.len());
+            self.pmem_order.retain(|candidate| candidate != &victim);
+            self.stats.pmem_evictions = self.stats.pmem_evictions.saturating_add(1);
+            self.stats.pmem_eviction_capacity = self.stats.pmem_eviction_capacity.saturating_add(1);
+            if !self.memory.contains_key(&victim) && !self.disk_index.contains_key(&victim) {
+                self.metadata.remove(&victim);
+            }
+            self.stats.pmem_bytes = self.pmem_bytes as u64;
+            self.refresh_pin_stats();
+            return true;
+        }
+        self.pmem_order.retain(|candidate| candidate != &victim);
+        self.stats.pmem_bytes = self.pmem_bytes as u64;
         false
     }
 
@@ -1896,6 +2066,11 @@ impl CacheInner {
 
     fn select_memory_eviction_victim(&mut self) -> Option<(CacheKey, EvictionReason, u64)> {
         let keys = self.memory.keys().cloned().collect::<Vec<_>>();
+        self.select_eviction_victim(keys)
+    }
+
+    fn select_pmem_eviction_victim(&mut self) -> Option<(CacheKey, EvictionReason, u64)> {
+        let keys = self.pmem.keys().cloned().collect::<Vec<_>>();
         self.select_eviction_victim(keys)
     }
 
@@ -2037,10 +2212,15 @@ impl CacheInner {
             self.disk_order.retain(|candidate| candidate != key);
             self.ssd_bytes = self.ssd_bytes.saturating_sub(disk_bytes);
         }
+        if let Some(value) = self.pmem.remove(key) {
+            self.pmem_bytes = self.pmem_bytes.saturating_sub(value.len());
+        }
+        self.pmem_order.retain(|candidate| candidate != key);
         self.metadata.remove(key);
         self.pinned.remove(key);
         self.stats.invalidations += 1;
         self.stats.memory_bytes = self.memory_bytes as u64;
+        self.stats.pmem_bytes = self.pmem_bytes as u64;
         self.stats.disk_bytes = self.ssd_bytes;
         self.refresh_pin_stats();
     }

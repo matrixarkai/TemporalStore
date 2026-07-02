@@ -2713,6 +2713,90 @@ fn cache_replacement_policy_soak() {
 }
 
 #[test]
+// shared-corpus: storage_cache_replacement_policy_soak;
+fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
+    let dir = tempfile::tempdir().unwrap();
+    let cache = crate::cache::MultiLayerCache::with_tiering_policy(
+        dir.path(),
+        crate::cache::CacheTieringPolicy {
+            memory_capacity_bytes: 16,
+            pmem_capacity_bytes: 24,
+            ssd_capacity_bytes: 4096,
+            memory_hotness_threshold: 10,
+            pmem_admit_hotness_threshold: 5,
+            ssd_admit_hotness_threshold: 2,
+            max_memory_block_bytes: 32,
+            max_pmem_block_bytes: 32,
+            max_ssd_block_bytes: 128,
+            ssd_write_through: true,
+        },
+        crate::cache::CacheBlockOptions::default(),
+    );
+    let key = CacheKey::page_with_slot(9, 1, 0, 16, Some(11));
+    let request = crate::cache::CacheAdmissionRequest {
+        block_kind: crate::cache::CacheBlockKind::Page,
+        shard_id: 9,
+        routing_slot: Some(11),
+        block_bytes: 16,
+        hotness: 6,
+        pinned: false,
+    };
+
+    cache
+        .put_with_admission(key.clone(), b"pmem-tier-value!".to_vec(), request)
+        .unwrap();
+    let stats = cache.stats();
+    assert_eq!(stats.memory_bytes, 0, "PMEM admission should not warm DRAM");
+    assert!(
+        stats.pmem_bytes > 0,
+        "PMEM tier should hold the admitted block"
+    );
+    assert!(
+        stats.disk_bytes > 0,
+        "SSD write-through should persist the block"
+    );
+    assert_eq!(stats.pmem_admission_accepted, 1);
+    assert_eq!(stats.ssd_admission_accepted, 1);
+
+    assert_eq!(
+        cache.get(&key).unwrap(),
+        Some(b"pmem-tier-value!".to_vec()),
+        "PMEM hit should serve before SSD and promote to DRAM"
+    );
+    let stats = cache.stats();
+    assert!(stats.pmem_hits > 0);
+    assert!(stats.memory_bytes > 0);
+    assert!(stats.refill_latency_samples > 0);
+
+    for idx in 0..4 {
+        let cold_key = CacheKey::page_with_slot(9, 2 + idx, 0, 16, Some(11));
+        cache
+            .put_with_admission(
+                cold_key,
+                vec![b'a' + idx as u8; 16],
+                crate::cache::CacheAdmissionRequest {
+                    block_kind: crate::cache::CacheBlockKind::Page,
+                    shard_id: 9,
+                    routing_slot: Some(11),
+                    block_bytes: 16,
+                    hotness: 6,
+                    pinned: false,
+                },
+            )
+            .unwrap();
+    }
+    let eviction = cache.eviction_report();
+    assert!(
+        eviction.pmem_evictions > 0,
+        "PMEM capacity pressure should evict through the middle tier: {eviction:?}"
+    );
+    assert!(
+        cache.stats().disk_bytes > 0,
+        "SSD tier should retain refill copies after PMEM eviction"
+    );
+}
+
+#[test]
 fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     let dir = tempfile::tempdir().unwrap();
     let page_dir = dir.path().join("pages");

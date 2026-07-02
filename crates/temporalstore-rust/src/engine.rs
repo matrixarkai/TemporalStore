@@ -4409,6 +4409,22 @@ impl TemporalEngine {
                 ("puts", stats.cache.puts),
                 ("invalidations", stats.cache.invalidations),
                 ("memory_evictions", stats.cache.memory_evictions),
+                ("pmem_hits", stats.cache.pmem_hits),
+                ("pmem_fills", stats.cache.pmem_fills),
+                ("pmem_evictions", stats.cache.pmem_evictions),
+                (
+                    "pmem_admission_accepted",
+                    stats.cache.pmem_admission_accepted,
+                ),
+                (
+                    "pmem_admission_rejected",
+                    stats.cache.pmem_admission_rejected,
+                ),
+                ("pmem_eviction_capacity", stats.cache.pmem_eviction_capacity),
+                (
+                    "pmem_eviction_pinned_skips",
+                    stats.cache.pmem_eviction_pinned_skips,
+                ),
                 (
                     "memory_admission_accepted",
                     stats.cache.memory_admission_accepted,
@@ -4453,6 +4469,7 @@ impl TemporalEngine {
             }
             for (tier, value) in [
                 ("memory", stats.cache.memory_bytes),
+                ("pmem", stats.cache.pmem_bytes),
                 ("disk", stats.cache.disk_bytes),
                 ("compression_saved", stats.cache.compression_bytes_saved),
             ] {
