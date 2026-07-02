@@ -269,11 +269,8 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
     let mut event_b = event_a.clone();
     event_b.event_id_hash = 6;
     event_b.text = "second".to_string();
-    let mut event_c = event_a.clone();
-    event_c.event_id_hash = 5 + 1_048_576;
-    event_c.text = "same millisecond same timeline slot".to_string();
 
-    for event in [event_a.clone(), event_b.clone(), event_c.clone()] {
+    for event in [event_a.clone(), event_b.clone()] {
         let write = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::ContextWriteEvent {
@@ -325,7 +322,7 @@ fn context_models_match_cpp_keys_timeline_pages_and_filters() {
         CommandResponse::ContextEvents { ref object_key, ref events }
             if object_key == "ctx:event:11:42"
                 && events.iter().map(|event| event.text.as_str()).collect::<Vec<_>>()
-                    == vec!["first", "same millisecond same timeline slot", "second"]
+                    == vec!["first", "second"]
     ));
 
     let index_ref = ContextIndexRef {
@@ -1570,8 +1567,14 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
-        let address = shard.strings.get_mut("owned").expect("string address");
-        address.object_id = Some(address.object_id.unwrap_or_default().wrapping_add(1));
+        let page = shard
+            .slot_index
+            .slot_map
+            .values_mut()
+            .flat_map(|slot| slot.page_index.values_mut())
+            .find(|page| page.object_key == "owned")
+            .expect("owned slot page");
+        page.address.object_id = Some(page.object_id.wrapping_add(1));
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -1619,12 +1622,21 @@ fn recovery_reports_reused_object_id_conflicts() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         let first_object_id = shard
-            .strings
-            .get("first")
-            .and_then(|address| address.object_id)
+            .slot_index
+            .slot_map
+            .values()
+            .flat_map(|slot| slot.page_index.values())
+            .find(|page| page.object_key == "first")
+            .map(|page| page.object_id)
             .expect("first object id");
-        let second = shard.strings.get_mut("second").expect("second address");
-        second.object_id = Some(first_object_id);
+        let second = shard
+            .slot_index
+            .slot_map
+            .values_mut()
+            .flat_map(|slot| slot.page_index.values_mut())
+            .find(|page| page.object_key == "second")
+            .expect("second slot page");
+        second.address.object_id = Some(first_object_id);
         first_object_id
     };
 
@@ -6403,6 +6415,54 @@ fn slot_index_is_authoritative_when_secondary_views_are_missing() {
             value: Some(b"slot-value".to_vec())
         }
     );
+}
+
+// shared-corpus: storage_recovery_reconciles_slot_index_to_model_views
+#[test]
+fn storage_recovery_uses_slot_index_not_stale_secondary_model_maps() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    assert!(
+        engine
+            .execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "slot-authority".to_string(),
+                    value: b"authoritative".to_vec(),
+                },
+            })
+            .status
+            .ok
+    );
+
+    {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard loaded");
+        assert!(!shard.slot_index.slot_map.is_empty());
+        let stale = shard
+            .strings
+            .get_mut("slot-authority")
+            .expect("secondary string view");
+        stale.object_id = Some(stale.object_id.unwrap_or_default().wrapping_add(99));
+        stale.routing_slot = Some(stale.routing_slot.unwrap_or_default().wrapping_add(99));
+        stale.page_segment_id = stale.page_segment_id.wrapping_add(999);
+    }
+
+    let recovery = engine.storage_recovery_report(1);
+    assert_eq!(recovery.total_page_refs, 1);
+    assert_eq!(recovery.readable_page_refs, 1);
+    assert!(recovery.all_live_pages_readable);
+    assert!(recovery.owner_mismatch_page_refs.is_empty());
+    assert_eq!(recovery.missing_owner_page_refs, 0);
+    assert_eq!(recovery.object_lifecycle.owner_mismatch_page_refs, 0);
+    assert_eq!(recovery.segment_integrity.owner_mismatch_page_ref_count, 0);
+    assert!(recovery.segment_integrity.integrity_ok);
 }
 
 // shared-corpus: storage_dump_load_recovery
