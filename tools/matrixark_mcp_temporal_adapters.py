@@ -528,6 +528,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     fallback = route
         return fallback
 
+    def _native_append_options(self) -> Json:
+        return {
+            "append_path": "native_append_queue",
+            "coalesce_writes": True,
+            "route_by": "placement_key",
+            "persist_from_storage_options": True,
+            "hset_lowering": "forbidden_for_parity",
+            "count_update": "same_batch",
+            "audit_hot_path": "inline_counters_only",
+            "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
+        }
+
     def _context_index_lookup_key(self, scope_key: str) -> str:
         scope_hash = stable_hash(scope_key) if scope_key else 0
         return f"{self._storage_prefix}:context_index_lookup:{scope_hash}"
@@ -1056,7 +1068,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
-                    lambda: append_records(event_time_entries + native_index_entries + entries, count_key=self._count_key, count_value=str(sequence)),
+                    lambda: append_records(
+                        event_time_entries + native_index_entries + entries,
+                        count_key=self._count_key,
+                        count_value=str(sequence),
+                        append_options=self._native_append_options(),
+                    ),
                     op="matrixark_batch_append_records",
                 )
                 if self._write_throttle_s > 0:
@@ -1718,6 +1735,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "pack_assembly": "native_score_rank_budget_pack_selected_refs_dropped_summary",
                 "python_role": "dispatcher_only_no_candidate_materialization_no_hot_path_pack",
                 "write_path": "native_batch_append_records_append_queue_coalesced_persistence",
+                "write_route": "placement_key_partition_route_before_persistence",
+                "write_coalescing": "native_append_queue_coalesces_by_record_key_field",
+                "durability": "storage_options_select_async_sync_shared_store_or_raft",
+                "retrieval_hot_path_audit": "inline_counters_only_no_full_audit_blocking",
+                "context_pack_audit": "sample_or_enqueue_async_policy_enabled",
+                "full_replay_audit_default": "disabled",
                 "broad_prefix_scan": "disabled_unless_explicit_debug_fallback",
                 "fallback_telemetry_required": True,
             },
@@ -2422,6 +2445,9 @@ class MatrixArkRustCliClient:
                 "supports_readiness": True,
                 "supports_metrics": True,
                 "supports_batch_append": True,
+                "supports_native_append_queue": True,
+                "supports_coalesced_writes": True,
+                "supports_placement_key_routing": True,
                 "supports_prefix_scan": True,
                 "supports_graceful_shutdown": True,
                 "structured_errors": True,
@@ -2449,7 +2475,14 @@ class MatrixArkRustCliClient:
             return
         self._call_json("batch_hset", entries=entries)
 
-    def matrixark_batch_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
+    def matrixark_batch_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
         if not entries and not count_key:
             return
         compact_entries = [
@@ -2462,10 +2495,23 @@ class MatrixArkRustCliClient:
             entries_compact=compact_entries,
             key=count_key or "",
             value=count_value or "",
+            append_options=append_options or {},
         )
 
-    def matrixark_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
-        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+    def matrixark_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        self.matrixark_batch_append_records(
+            entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:

@@ -21,6 +21,7 @@ pub mod redis;
 pub mod replica_replay;
 pub mod sdk;
 pub mod shared_store;
+pub mod storage_config;
 pub mod types;
 pub mod wal;
 
