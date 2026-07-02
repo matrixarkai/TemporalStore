@@ -404,6 +404,58 @@ New public report fields must not introduce backend-specific names such as:
 - `extent_id` when the report means canonical `block_id`, `segment_id`, or
   `extent` without stating the mapping.
 
+## Migration Strategy
+
+### Phase 1: Shared Schema And Aliases
+
+Phase 1 is documentation and compatibility mapping. C++ and Rust must both
+publish the shared schema in docs and tests before changing production report
+payloads.
+
+Required Phase 1 outputs:
+
+- canonical schema for `PageAddress`, `BlockAddress`, `PageIndexEntry`,
+  `BlockIndexEntry`, `ObjectIndex`, `TombstoneGcMetadata`, watermarks, and
+  page/block metrics;
+- explicit alias map for old names such as `page_store`, `block_store`,
+  `page_segment_id`, `zone_id`, `extent_id`, and `stream_blob`;
+- fail-closed validators for the shared page-address corpus, public storage
+  knobs, and page/block metric names;
+- report examples showing both the canonical field and any compatibility alias.
+
+Phase 1 rules:
+
+- Aliases may be read by tools and dashboards, but parity gates must validate
+  the canonical fields.
+- New reports must include canonical fields even when old alias fields are still
+  emitted for compatibility.
+- Compatibility aliases must be marked as `legacy_alias` or placed under a
+  `compatibility_aliases` object so they cannot be confused with the public
+  contract.
+
+### Phase 2: Rename/Report Compatibility
+
+Phase 2 changes public reports and APIs to prefer canonical names without
+breaking existing consumers.
+
+Required Phase 2 behavior:
+
+- C++ and Rust emit canonical names by default.
+- Existing old report fields remain readable through adapters or are emitted
+  under `compatibility_aliases` for one compatibility window.
+- Report parsers normalize old and new field names into the same in-memory
+  shape before comparison.
+- CI verifies that old reports still parse, new reports use canonical names,
+  and mixed C++/Rust report pairs compare on canonical fields only.
+- Deprecation warnings identify alias usage, but do not fail old-report parsing
+  until the compatibility window ends.
+
+Phase 2 removal gate:
+
+- remove or hide alias output only after dashboards, benchmark reports, portal
+  pages, C++ tests, Rust tests, and replay/audit tooling all read the canonical
+  schema directly.
+
 ## C++/Rust Mapping
 
 | Canonical term | C++ current/private source | Rust current/private source | Public output |
