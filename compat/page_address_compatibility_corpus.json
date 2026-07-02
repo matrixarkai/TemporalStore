@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "name": "temporalstore-page-address-compatibility-corpus",
-  "description": "Shared C++/Rust corpus for canonical PageAddress compatibility, range lookup, split, and compaction behavior.",
+  "description": "Shared C++/Rust corpus for canonical PageAddress compatibility, range lookup, split, compaction, tombstone, cold scan, and restart index rebuild behavior.",
   "address_fields": [
     "shard_id",
     "zone_id",
@@ -200,5 +200,131 @@
       "a1",
       "a2"
     ]
+  },
+  "tombstone_case": {
+    "name": "tombstone_skips_stale_records",
+    "records": [
+      {
+        "timestamp_ms": 3000,
+        "value": "live-before"
+      },
+      {
+        "timestamp_ms": 3010,
+        "value": "deleted",
+        "tombstone": {
+          "deleted_at_ms": 9000,
+          "reason": "ttl_expired"
+        }
+      },
+      {
+        "timestamp_ms": 3020,
+        "value": "live-after"
+      }
+    ],
+    "query": {
+      "start_ms": 2990,
+      "end_ms": 3030,
+      "include_tombstoned": false,
+      "expected_values": [
+        "live-before",
+        "live-after"
+      ]
+    },
+    "debug_replay_query": {
+      "start_ms": 2990,
+      "end_ms": 3030,
+      "include_tombstoned": true,
+      "expected_values": [
+        "live-before",
+        "deleted",
+        "live-after"
+      ]
+    }
+  },
+  "cold_scan_case": {
+    "name": "cold_scan_does_not_warm_serving_cache",
+    "timestamp_range": {
+      "start_ms": 1000,
+      "end_ms": 1059
+    },
+    "cache_before": {
+      "hot_keys": [
+        "serving:recent"
+      ],
+      "admission_count": 7
+    },
+    "read_options": {
+      "no_cache_fill": true,
+      "no_promote": true,
+      "decode_batch_limit": 2
+    },
+    "expected_cache_after": {
+      "hot_keys": [
+        "serving:recent"
+      ],
+      "admission_count": 7
+    },
+    "expected_scan": {
+      "page_address_ids": [
+        "a1",
+        "a2",
+        "b1"
+      ],
+      "max_decoded_per_batch": 2
+    }
+  },
+  "restart_rebuild_case": {
+    "name": "crash_restart_rebuilds_page_and_block_index",
+    "manifest_before_crash": {
+      "page_index_entries": [
+        {
+          "logical_key": "feature:tenant=77:user=9:object=storage-feature",
+          "start_ms": 1000,
+          "end_ms": 1019,
+          "address_id": "a1"
+        },
+        {
+          "logical_key": "feature:tenant=77:user=9:object=storage-feature",
+          "start_ms": 1020,
+          "end_ms": 1039,
+          "address_id": "a2"
+        },
+        {
+          "logical_key": "feature:tenant=77:user=9:object=storage-feature",
+          "start_ms": 1040,
+          "end_ms": 1059,
+          "address_id": "b1"
+        }
+      ],
+      "block_index_entries": [
+        {
+          "address_id": "a1",
+          "storage_uri": "local://zone-10/segment-3",
+          "checksum": "sha256:a1"
+        },
+        {
+          "address_id": "a2",
+          "storage_uri": "local://zone-10/segment-3",
+          "checksum": "sha256:a2"
+        },
+        {
+          "address_id": "b1",
+          "storage_uri": "local://zone-11/segment-1",
+          "checksum": "sha256:b1"
+        }
+      ]
+    },
+    "expected_after_restart": {
+      "page_index_entry_count": 3,
+      "block_index_entry_count": 3,
+      "lookup_query_name": "middle_range",
+      "expected_address_ids": [
+        "a1",
+        "a2",
+        "b1"
+      ],
+      "unreadable_page_refs": 0,
+      "checksum_mismatches": 0
+    }
   }
 }

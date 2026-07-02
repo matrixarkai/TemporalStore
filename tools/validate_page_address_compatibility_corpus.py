@@ -141,6 +141,102 @@ def validate_compaction_rewrite(corpus: dict[str, Any]) -> None:
         )
 
 
+def _query_records(case: dict[str, Any], query: dict[str, Any]) -> list[str]:
+    include_tombstoned = bool(query.get("include_tombstoned", False))
+    selected = []
+    for record in case["records"]:
+        timestamp_ms = int(record["timestamp_ms"])
+        if timestamp_ms < int(query["start_ms"]) or timestamp_ms > int(query["end_ms"]):
+            continue
+        if record.get("tombstone") and not include_tombstoned:
+            continue
+        selected.append(str(record["value"]))
+    return selected
+
+
+def validate_tombstone_filtering(corpus: dict[str, Any]) -> None:
+    case = corpus["tombstone_case"]
+    selected = _query_records(case, case["query"])
+    if selected != case["query"]["expected_values"]:
+        raise AssertionError(
+            f"tombstone filtered query mismatch: got {selected}, expected {case['query']['expected_values']}"
+        )
+    replay_selected = _query_records(case, case["debug_replay_query"])
+    if replay_selected != case["debug_replay_query"]["expected_values"]:
+        raise AssertionError(
+            "debug/replay query must be able to include tombstoned records when policy allows it"
+        )
+
+
+def validate_cold_scan_no_cache_promotion(corpus: dict[str, Any]) -> None:
+    case = corpus["cold_scan_case"]
+    if not case["read_options"].get("no_cache_fill") or not case["read_options"].get("no_promote"):
+        raise AssertionError("cold scans must use no_cache_fill and no_promote by default")
+
+    page_index = corpus["timestamp_page_index"]
+    scan_range = case["timestamp_range"]
+    selected = [
+        entry["address_id"]
+        for entry in page_index["entries"]
+        if int(entry["start_ms"]) <= int(scan_range["end_ms"])
+        and int(entry["end_ms"]) >= int(scan_range["start_ms"])
+    ]
+    expected_scan = case["expected_scan"]
+    if selected != expected_scan["page_address_ids"]:
+        raise AssertionError(f"cold scan page selection mismatch: got {selected}, expected {expected_scan['page_address_ids']}")
+
+    decode_limit = int(case["read_options"]["decode_batch_limit"])
+    if decode_limit > int(expected_scan["max_decoded_per_batch"]):
+        raise AssertionError("cold scan decode batch limit exceeds expected bound")
+
+    if case["cache_before"] != case["expected_cache_after"]:
+        raise AssertionError("cold scan must not change serving hot-cache keys or admission counters")
+
+
+def validate_restart_rebuild_indexes(corpus: dict[str, Any]) -> None:
+    case = corpus["restart_rebuild_case"]
+    manifest = case["manifest_before_crash"]
+    expected = case["expected_after_restart"]
+
+    page_entries = manifest["page_index_entries"]
+    block_entries = manifest["block_index_entries"]
+    if len(page_entries) != int(expected["page_index_entry_count"]):
+        raise AssertionError("restart page index entry count mismatch")
+    if len(block_entries) != int(expected["block_index_entry_count"]):
+        raise AssertionError("restart block index entry count mismatch")
+
+    address_by_id = {address["id"]: address for address in corpus["addresses"]}
+    block_by_id = {entry["address_id"]: entry for entry in block_entries}
+    for entry in page_entries:
+        address_id = entry["address_id"]
+        if address_id not in address_by_id:
+            raise AssertionError(f"page index references unknown address {address_id}")
+        block_entry = block_by_id.get(address_id)
+        if not block_entry:
+            raise AssertionError(f"block index missing durable location for {address_id}")
+        if block_entry.get("checksum") != address_by_id[address_id].get("checksum"):
+            raise AssertionError(f"checksum mismatch for rebuilt address {address_id}")
+
+    lookup_query_name = expected["lookup_query_name"]
+    query = next(
+        query
+        for query in corpus["timestamp_page_index"]["queries"]
+        if query["name"] == lookup_query_name
+    )
+    rebuilt_lookup = [
+        entry["address_id"]
+        for entry in page_entries
+        if int(entry["start_ms"]) <= int(query["end_ms"])
+        and int(entry["end_ms"]) >= int(query["start_ms"])
+    ]
+    if rebuilt_lookup != expected["expected_address_ids"]:
+        raise AssertionError(
+            f"rebuilt page index lookup mismatch: got {rebuilt_lookup}, expected {expected['expected_address_ids']}"
+        )
+    if int(expected["unreadable_page_refs"]) != 0 or int(expected["checksum_mismatches"]) != 0:
+        raise AssertionError("restart rebuild corpus expects all pages readable with no checksum mismatch")
+
+
 def main() -> int:
     corpus = _load_corpus()
     if corpus.get("schema_version") != 1:
@@ -152,6 +248,9 @@ def main() -> int:
     validate_timestamp_range_lookup(corpus)
     validate_page_split(corpus)
     validate_compaction_rewrite(corpus)
+    validate_tombstone_filtering(corpus)
+    validate_cold_scan_no_cache_promotion(corpus)
+    validate_restart_rebuild_indexes(corpus)
 
     print("page address compatibility corpus passed:")
     print("- encode/decode PageAddress")
@@ -159,6 +258,9 @@ def main() -> int:
     print("- timestamp range to page address lookup")
     print("- page split behavior")
     print("- compaction rewrite preserves logical records")
+    print("- tombstone skips stale records")
+    print("- cold scan does not warm serving cache")
+    print("- crash/restart rebuilds page/block index")
     return 0
 
 

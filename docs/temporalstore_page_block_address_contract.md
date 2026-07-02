@@ -438,7 +438,10 @@ PageAddress subset that both C++ and Rust must consume:
 - stable ordering by `{shard_id, zone_id, segment_id, page_id, offset}`;
 - timestamp range -> page address lookup;
 - page split behavior;
-- page compaction rewrite preserving logical records.
+- page compaction rewrite preserving logical records;
+- tombstone filtering that skips stale records on normal reads;
+- cold scan reads that do not warm the serving cache;
+- crash/restart rebuild of `PageIndex` and `BlockIndex`.
 
 `tools/validate_page_address_compatibility_corpus.py` is the lightweight
 fail-closed validator for this shared corpus. Native C++ and Rust tests should
