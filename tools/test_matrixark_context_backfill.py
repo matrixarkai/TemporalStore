@@ -64,7 +64,11 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             summary = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
             self.assertEqual(summary["metrics"]["scanned"], 2)
             self.assertEqual(summary["metrics"]["written"], 2)
-            self.assertIn("matrixark_context_backfill_records_total", prom.read_text())
+            self.assertEqual(summary["metrics"]["source_batches"], 1)
+            self.assertEqual(summary["metrics"]["target_batches"], 1)
+            prom_text = prom.read_text()
+            self.assertIn("matrixark_context_backfill_records_total", prom_text)
+            self.assertIn("matrixark_context_backfill_batches_total", prom_text)
             self.assertEqual(len(read_target_records(backfill.LocalJsonKV(path), "matrixark:context_backfill:test")), 2)
 
             resumed = backfill.run_backfill(self.make_args(path, prometheus_output=str(prom)))
@@ -80,6 +84,25 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             summary = backfill.run_backfill(self.make_args(path, source_prefix="legacy", target_prefix="shadow:legacy"))
             self.assertEqual(summary["metrics"]["scanned"], 1)
             self.assertEqual(summary["metrics"]["context_events"], 1)
+
+
+    def test_batch_helpers_use_backend_batch_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            source = backfill.MatrixKVRecordLog(kv, prefix="matrixark:mcp")
+
+            rows = source.read_many([(0, None), (1, None)])
+            self.assertEqual([row[0] for row in rows], [0, 1])
+            self.assertTrue(all(row[2] is None for row in rows))
+            self.assertEqual(kv.batch_hget_calls, 1)
+
+            target = backfill.MatrixKVBackfillTarget(kv, prefix="shadow:batch")
+            target.append_many([{ "record_type": "context_event", "event_id_hash": 3 }])
+            self.assertEqual(kv.matrixark_append_records_calls, 1)
+            self.assertEqual(kv.get_string("shadow:batch:record_count"), "1")
 
     def test_missing_record_dead_letters_and_in_place_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
