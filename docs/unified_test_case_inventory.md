@@ -258,6 +258,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `ingestion_dead_letter_export` | Rust-executable/C++-static gate for dead-letter capture/export and non-blocking ingestion behavior. |
 | `ingestion_lag_metrics` | Rust-executable/C++-static gate for Kafka lag, committed offset, and ingestion metric behavior. |
 | `ingestion_restart_idempotence` | Rust-executable/C++-static gate for restart/failover idempotence behavior for offsets and checkpoints. |
+| `ingestion_streaming_batch_parity` | Rust-executable/C++-static gate for streaming and batch ingestion parity: ordered stream sequence fences, duplicate replay rejection, in-flight backpressure, durable stream commits, mixed-source batch continuation, and ops metrics. |
 | `context_management_ingest_retrieve_pipeline` | Rust-executable/C++-static gate for Context management, ingest/extract, retrieval handoff, provider routing, and OpenViking-style block construction. |
 | `context_retrieval_qa_synonym_ranking` | Rust-executable/C++-static gate for Context QA retrieval synonym and adjacent-phrase ranking. |
 | `context_openviking_reasoning_vlm_parity` | Rust-executable/C++-static gate for OpenViking/VikingMem-style multi-hop, temporal, update, stale-memory, open-domain, and VLM context evidence. |

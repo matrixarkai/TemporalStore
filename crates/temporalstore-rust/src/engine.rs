@@ -4336,6 +4336,8 @@ impl TemporalEngine {
         out.push_str("# TYPE temporalstore_ingestion_kafka_lag gauge\n");
         out.push_str("# HELP temporalstore_ingestion_kafka_committed_offset Kafka committed offset by topic and partition.\n");
         out.push_str("# TYPE temporalstore_ingestion_kafka_committed_offset gauge\n");
+        out.push_str("# HELP temporalstore_ingestion_stream_committed_sequence Streaming ingestion committed sequence by stream.\n");
+        out.push_str("# TYPE temporalstore_ingestion_stream_committed_sequence gauge\n");
         out.push_str("# HELP temporalstore_ingestion_flink_checkpoint_state Flink checkpoint state as a one-hot gauge.\n");
         out.push_str("# TYPE temporalstore_ingestion_flink_checkpoint_state gauge\n");
         for stats in self.loaded_shard_stats() {
@@ -4705,6 +4707,11 @@ impl TemporalEngine {
             ("failed", ingestion.stats.failed_total),
             ("duplicate", ingestion.stats.duplicate_total),
             ("dead_letter", ingestion.stats.dead_letter_total),
+            (
+                "stream_backpressure",
+                ingestion.stats.stream_backpressure_total,
+            ),
+            ("stream_duplicate", ingestion.stats.stream_duplicate_total),
             ("kafka_committed", ingestion.stats.kafka_committed_total),
             ("flink_precommit", ingestion.stats.flink_precommit_total),
             ("flink_commit", ingestion.stats.flink_commit_total),
@@ -4732,6 +4739,14 @@ impl TemporalEngine {
                     ("partition", offset.partition.to_string()),
                 ],
                 offset.committed_offset.max(0) as u64,
+            );
+        }
+        for stream in ingestion.stream_commits {
+            push_metric(
+                &mut out,
+                "temporalstore_ingestion_stream_committed_sequence",
+                &[("stream_id", stream.stream_id)],
+                stream.committed_sequence,
             );
         }
         for checkpoint in ingestion.flink_checkpoints {
