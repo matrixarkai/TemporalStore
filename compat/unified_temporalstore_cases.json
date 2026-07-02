@@ -10322,6 +10322,107 @@
           }
         },
         {
+          "name": "feature_cpp_first_existing_timestamp_ignored",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "FIRST",
+            "points": [
+              {
+                "timestamp_ms": 30,
+                "value": [
+                  56,
+                  56
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_cpp_first_new_timestamp_inserts",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "FIRST",
+            "points": [
+              {
+                "timestamp_ms": 60,
+                "value": [
+                  56
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "feature_cpp_update_missing_timestamp_ignored",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "UPDATE",
+            "points": [
+              {
+                "timestamp_ms": 70,
+                "value": [
+                  57
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_cpp_update_existing_timestamp_updates",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "UPDATE",
+            "points": [
+              {
+                "timestamp_ms": 10,
+                "value": [
+                  48
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "feature_cpp_block_policy_rejected",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "BLOCK",
+            "points": [
+              {
+                "timestamp_ms": 80,
+                "value": [
+                  58
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "status",
+            "status": "invalid_argument"
+          }
+        },
+        {
           "name": "feature_boundary_query_after_restart",
           "command": {
             "kind": "feature_query",
@@ -10336,7 +10437,7 @@
               {
                 "timestamp_ms": 10,
                 "value": [
-                  49
+                  48
                 ]
               },
               {
@@ -10361,6 +10462,12 @@
                 "timestamp_ms": 50,
                 "value": [
                   53
+                ]
+              },
+              {
+                "timestamp_ms": 60,
+                "value": [
+                  56
                 ]
               }
             ]
@@ -11994,7 +12101,8 @@
         "family": "storage/cache",
         "status": "temporary_static_surface_gate",
         "suites": [
-          "cpp_storage_parity"
+          "cpp_storage_parity",
+          "storage_proxy_client_parity"
         ],
         "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report rust-report.json --cpp-report cpp-report.json",
         "next_executable_families": [

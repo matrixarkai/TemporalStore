@@ -167,6 +167,9 @@ C++ execution should progressively cover every executable case.
 | `timestamped_query_bounds` | Feature and Sequence count limits and empty timestamp windows. |
 | `feature_policy_filter_aggregate_lifecycle` | Feature append policy, aggregate, replace/delete, C++ row filtering, and scan-bound count behavior. |
 | `feature_nested_proto_aggregate_semantics` | Feature nested/proto-shaped payload roundtrip, C++ row filtering, and sum/avg/min/max/count aggregate semantics. |
+| `feature_cpp_boundary_count_duplicate_semantics` | C++ Feature boundary/count behavior, duplicate timestamp policy behavior, exact `FIRST`/`UPDATE` policy aliases, and `BLOCK` rejection. |
+| `feature_cpp_filter_operator_semantics` | C++ Feature filter operators over protobuf row fields. |
+| `feature_cpp_aggregate_replace_delete_recovery` | Feature aggregate, replace/delete, and restart recovery behavior. |
 | `sequence_batch_filter_groups` | Sequence unsorted writes, filtered ordered reads, batch groups, and missing sequence groups. |
 | `context_missing_node_semantics` | Missing Context node returns a stable object key and `null` node. |
 | `storage_dump_load_recovery` | Rust executes the C++ migration storage corpus through slot dump/load, restart, recovery, and logical reads. |

@@ -3395,6 +3395,125 @@ fn feature_append_packs_many_timestamp_values_into_one_page() {
     assert_eq!(agg.response, CommandResponse::Aggregate { value: 2 });
 }
 
+// shared-corpus: feature_cpp_boundary_count_duplicate_semantics
+#[test]
+fn feature_cpp_policy_aliases_first_update_and_block() {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+
+    let base = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureAppend {
+            key: "cpp-policy-feature".to_string(),
+            points: vec![FeaturePoint {
+                timestamp_ms: 10,
+                value: vec![b'a'],
+            }],
+        },
+    });
+    assert!(base.status.ok);
+
+    let first_existing: Command = serde_json::from_value(serde_json::json!({
+        "kind": "feature_append_with_policy",
+        "key": "cpp-policy-feature",
+        "policy": "FIRST",
+        "points": [{"timestamp_ms": 10, "value": [120]}]
+    }))
+    .expect("C++ FIRST policy alias should deserialize");
+    let first_existing = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: first_existing,
+    });
+    assert_eq!(
+        first_existing.response,
+        CommandResponse::Integer { value: 0 }
+    );
+
+    let first_new: Command = serde_json::from_value(serde_json::json!({
+        "kind": "feature_append_with_policy",
+        "key": "cpp-policy-feature",
+        "policy": "FIRST",
+        "points": [{"timestamp_ms": 20, "value": [98]}]
+    }))
+    .expect("C++ FIRST policy alias should deserialize");
+    let first_new = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: first_new,
+    });
+    assert_eq!(first_new.response, CommandResponse::Integer { value: 1 });
+
+    let update_missing: Command = serde_json::from_value(serde_json::json!({
+        "kind": "feature_append_with_policy",
+        "key": "cpp-policy-feature",
+        "policy": "UPDATE",
+        "points": [{"timestamp_ms": 30, "value": [99]}]
+    }))
+    .expect("C++ UPDATE policy alias should deserialize");
+    let update_missing = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: update_missing,
+    });
+    assert_eq!(
+        update_missing.response,
+        CommandResponse::Integer { value: 0 }
+    );
+
+    let update_existing: Command = serde_json::from_value(serde_json::json!({
+        "kind": "feature_append_with_policy",
+        "key": "cpp-policy-feature",
+        "policy": "UPDATE",
+        "points": [{"timestamp_ms": 10, "value": [65]}]
+    }))
+    .expect("C++ UPDATE policy alias should deserialize");
+    let update_existing = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: update_existing,
+    });
+    assert_eq!(
+        update_existing.response,
+        CommandResponse::Integer { value: 1 }
+    );
+
+    let block: Command = serde_json::from_value(serde_json::json!({
+        "kind": "feature_append_with_policy",
+        "key": "cpp-policy-feature",
+        "policy": "BLOCK",
+        "points": [{"timestamp_ms": 40, "value": [100]}]
+    }))
+    .expect("C++ BLOCK policy alias should deserialize");
+    let block = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: block,
+    });
+    assert!(!block.status.ok);
+    assert_eq!(block.status.code, "invalid_argument");
+
+    let query = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::FeatureQuery {
+            key: "cpp-policy-feature".to_string(),
+            start_ms: 0,
+            end_ms: 50,
+            count: None,
+        },
+    });
+    assert_eq!(
+        query.response,
+        CommandResponse::FeaturePoints {
+            points: vec![
+                FeaturePoint {
+                    timestamp_ms: 10,
+                    value: vec![b'A'],
+                },
+                FeaturePoint {
+                    timestamp_ms: 20,
+                    value: vec![b'b'],
+                },
+            ]
+        }
+    );
+}
+
 #[test]
 fn feature_append_chunks_and_persists_timestamped_kv_pages() {
     let engine = TemporalEngine::default();

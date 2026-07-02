@@ -6986,6 +6986,7 @@ fn execute_on_shard(
                     FeatureWritePolicy::Upsert => true,
                     FeatureWritePolicy::InsertIfAbsent => !exists,
                     FeatureWritePolicy::ReplaceExisting => exists,
+                    FeatureWritePolicy::Block => false,
                 };
                 if should_write {
                     accepted_timestamps.insert(point.timestamp_ms);
@@ -12666,8 +12667,27 @@ fn validate_command_preconditions(
                 return Err(Status::error("not_found", "key not found"));
             }
         }
-        Command::FeatureAppend { key, points }
-        | Command::FeatureAppendWithPolicy { key, points, .. } => {
+        Command::FeatureAppend { key, points } => {
+            let current = shard
+                .features
+                .get(key)
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(points.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
+        Command::FeatureAppendWithPolicy {
+            key,
+            points,
+            policy,
+        } => {
+            if *policy == FeatureWritePolicy::Block {
+                return Err(Status::error("invalid_argument", "Invalid write policy"));
+            }
             let current = shard
                 .features
                 .get(key)
