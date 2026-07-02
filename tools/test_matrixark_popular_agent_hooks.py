@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import matrixark_agent_config
 from matrixark_mcp_server import MatrixArkLocalAdapter
 
 
@@ -138,6 +139,28 @@ class MatrixArkPopularAgentHooksTest(unittest.TestCase):
             self.assertEqual("hook_boundary", result["committed"]["commit_reason"])
             records = MatrixArkLocalAdapter(event_log).read_all()
             self.assertTrue(any(record.get("record_type") == "context_batch_commit" for record in records))
+
+    def test_agent_config_exposes_one_envelope_for_popular_agents(self) -> None:
+        self.assertEqual(
+            matrixark_agent_config.SUPPORTED_AGENT_CLIENTS,
+            ["codex", "claude", "cursor", "openclaw", "opencode", "aider", "continue", "cline", "roo", "generic"],
+        )
+        envelope = matrixark_agent_config.agent_envelope_schema()
+        self.assertTrue(envelope["visible_local_context_only"])
+        self.assertIn("query", envelope["fields"])
+        self.assertIn("scope", envelope["fields"])
+        self.assertIn("local_context_tokens", envelope["fields"])
+        self.assertIn("max_context_tokens", envelope["fields"])
+        self.assertIn("lifecycle_event_type", envelope["fields"])
+        self.assertEqual(envelope["lifecycle_tools"]["before_llm"], "matrixark_retrieve")
+        self.assertEqual(envelope["lifecycle_tools"]["session_boundary"], "matrixark_session_commit")
+        self.assertIn("hidden prompt", envelope["do_not_send"])
+
+        for agent in ("opencode", "aider", "continue", "cline", "roo"):
+            snippet = json.loads(matrixark_agent_config.named_agent_json(agent, ".", "tools/matrixark_mcp_cpp_server.sh"))
+            self.assertEqual(snippet["agent"], agent)
+            self.assertEqual(snippet["envelope"]["schema"], "matrixark_agent_envelope_v1")
+            self.assertIn("matrixark_retrieve", snippet["required_tools"])
 
 
 if __name__ == "__main__":

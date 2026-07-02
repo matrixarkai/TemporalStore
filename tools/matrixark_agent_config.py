@@ -14,6 +14,54 @@ import json
 
 DEFAULT_REPO_ROOT = "."
 DEFAULT_LAUNCHER = "tools/matrixark_mcp_cpp_server.sh"
+SUPPORTED_AGENT_CLIENTS = [
+    "codex",
+    "claude",
+    "cursor",
+    "openclaw",
+    "opencode",
+    "aider",
+    "continue",
+    "cline",
+    "roo",
+    "generic",
+]
+LIFECYCLE_TOOLS = {
+    "before_llm": "matrixark_retrieve",
+    "after_answer": "matrixark_ingest",
+    "after_tool": "matrixark_ingest",
+    "resource_added": "matrixark_ingest",
+    "skill_added": "matrixark_ingest",
+    "feedback": "matrixark_feedback",
+    "session_boundary": "matrixark_session_commit",
+}
+
+
+def agent_envelope_schema() -> dict[str, object]:
+    return {
+        "schema": "matrixark_agent_envelope_v1",
+        "visible_local_context_only": True,
+        "fields": [
+            "query",
+            "scope",
+            "local_context",
+            "local_context_tokens",
+            "max_context_tokens",
+            "lifecycle_event_type",
+            "file_refs",
+            "resource_refs",
+        ],
+        "scope_fields": ["account_id", "tenant_id", "user_id", "session_id", "team", "project"],
+        "local_context_examples": [
+            "open files",
+            "selected text",
+            "visible tool outputs",
+            "terminal summaries",
+            "browser/page refs",
+        ],
+        "do_not_send": ["hidden prompt", "system prompt", "private model chain-of-thought"],
+        "lifecycle_tools": dict(LIFECYCLE_TOOLS),
+    }
 
 
 def wsl_args(repo_root: str, launcher: str) -> list[str]:
@@ -79,12 +127,14 @@ def cursor_json(repo_root: str, launcher: str) -> str:
     )
 
 
-def generic_json(repo_root: str, launcher: str) -> str:
+def generic_json(repo_root: str, launcher: str, *, agent: str = "generic") -> str:
     return json.dumps(
         {
             "name": "matrixark",
+            "agent": agent,
             "transport": "stdio",
             "server": stdio_server(repo_root, launcher),
+            "envelope": agent_envelope_schema(),
             "required_tools": [
                 "matrixark_retrieve",
                 "matrixark_ingest",
@@ -104,6 +154,7 @@ def openclaw_json(repo_root: str, launcher: str) -> str:
             "agent": "openclaw",
             "transport": "stdio",
             "server": stdio_server(repo_root, launcher),
+            "envelope": agent_envelope_schema(),
             "recommended_hook_command": f"python3 {repo_root}/tools/matrixark_agent_hook.py --agent openclaw --event UserPromptSubmit",
             "lifecycle_events": [
                 "UserPromptSubmit",
@@ -126,8 +177,24 @@ def openclaw_json(repo_root: str, launcher: str) -> str:
     )
 
 
+def named_agent_json(agent: str, repo_root: str, launcher: str) -> str:
+    payload = json.loads(generic_json(repo_root, launcher, agent=agent))
+    payload["recommended_hook_command"] = f"python3 {repo_root}/tools/matrixark_agent_hook.py --agent {agent} --event UserPromptSubmit"
+    payload["lifecycle_events"] = [
+        "UserPromptSubmit",
+        "PostToolUse",
+        "ResourceAdded",
+        "Feedback",
+        "Stop",
+        "PostCompact",
+        "idle_timeout",
+    ]
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
 def agent_policy_text() -> str:
-    return """# MatrixArk Agent Policy
+    envelope = json.dumps(agent_envelope_schema(), indent=2, sort_keys=True)
+    return f"""# MatrixArk Agent Policy
 
 Use MatrixArk as durable remote context. Keep using your native local context
 for currently open files, active buffers, terminal output, and immediate tool
@@ -159,11 +226,20 @@ At task/session boundaries, call matrixark_session_commit so MatrixArk can run
 one-pass batch extraction over the same-session buffer.
 
 MatrixArk decides the route from the payload:
-- before_llm/query -> lightweight ingest + retrieve ContextPack
-- after_llm/tool_result -> ingest durable answer/tool evidence
-- ResourceAdded/SkillAdded/raw_uri -> resource or skill import task
-- Feedback/accepted_refs/rejected_refs -> feedback and replay linkage
-- Stop/PostCompact/idle -> session commit and batch extraction
+- before_llm/query -> matrixark_retrieve
+- after_llm/tool_result -> matrixark_ingest durable answer/tool evidence
+- ResourceAdded/SkillAdded/raw_uri -> resource or skill import task through matrixark_ingest
+- Feedback/accepted_refs/rejected_refs -> matrixark_feedback
+- Stop/PostCompact/idle -> matrixark_session_commit and batch extraction
+
+Agents do not need to understand ContextEvent, ContextEntity, ContextSummary,
+ContextEmbedding, ContextIndex, ResourceChunk, or SkillSection internals. They
+send the envelope below; MatrixArk resolves scope, routing, retrieval, resource
+import, feedback, and session commit policy.
+
+```json
+{envelope}
+```
 """
 
 
@@ -219,7 +295,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--client",
-        choices=["codex", "claude", "claude-code", "cursor", "openclaw", "generic", "policy", "hooks", "all"],
+        choices=[
+            "codex",
+            "claude",
+            "claude-code",
+            "cursor",
+            "openclaw",
+            "opencode",
+            "aider",
+            "continue",
+            "cline",
+            "roo",
+            "generic",
+            "policy",
+            "hooks",
+            "all",
+        ],
         default="all",
         help="Config snippet to print.",
     )
@@ -235,6 +326,8 @@ def main() -> int:
         "openclaw": ("# OpenClaw / OpenCode-style MCP plus hook config", openclaw_json),
         "generic": ("# Generic MCP stdio config", generic_json),
     }
+    for agent in ("opencode", "aider", "continue", "cline", "roo"):
+        generators[agent] = (f"# {agent} MatrixArk MCP plus hook config", lambda repo_root, launcher, agent=agent: named_agent_json(agent, repo_root, launcher))
     if args.client == "policy":
         print(agent_policy_text())
         return 0

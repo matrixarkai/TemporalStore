@@ -316,11 +316,20 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         report = {
             "config": {
                 "events": 1000,
+                "dataset": "matrixark-scale-synthetic",
                 "messages_per_ingest": 20,
+                "batch_size": 20,
                 "retrieve_workers": 4,
                 "retrieve_queries": 16,
                 "max_context_tokens": 12000,
                 "storage_options": {"storage_family": "shared_store"},
+                "topology": {"metaserver": "127.0.0.1:18000", "namespace": "deploy_ns", "table": "deploy_table"},
+                "embedding_provider": "hash",
+                "embedding_model": "matrixark-local-token-hash-v1",
+                "reader_provider": "deterministic",
+                "reader_model": "matrixark-deterministic-reader",
+                "judge_provider": "deterministic",
+                "judge_model": "matrixark-deterministic-judge",
             },
             "comparison": {"phase0_correctness": {"status": "failed"}},
             "backends": {
@@ -361,6 +370,44 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         report = {
             "config": {
                 "events": 1000,
+                "dataset": "matrixark-scale-synthetic",
+                "messages_per_ingest": 20,
+                "batch_size": 20,
+                "retrieve_workers": 4,
+                "retrieve_queries": 16,
+                "max_context_tokens": 12000,
+                "storage_options": {"storage_family": "shared_store"},
+                "topology": {"metaserver": "127.0.0.1:18000", "namespace": "deploy_ns", "table": "deploy_table"},
+                "embedding_provider": "hash",
+                "embedding_model": "matrixark-local-token-hash-v1",
+                "reader_provider": "deterministic",
+                "reader_model": "matrixark-deterministic-reader",
+                "judge_provider": "deterministic",
+                "judge_model": "matrixark-deterministic-judge",
+            },
+            "comparison": {"phase0_correctness": {"status": "passed"}},
+            "backends": {
+                "cpp": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+                "rust": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+            },
+        }
+
+        gate = production_policy_gate(report)
+
+        self.assertEqual(gate["status"], "passed")
+        self.assertEqual(gate["blockers"], [])
+
+    def test_production_policy_gate_blocks_perf_claim_without_reader_judge_model_config(self) -> None:
+        metrics = {
+            "selected_refs_max": 3,
+            "broad_scan_used_count": 0,
+            "python_pack_fallback_count": 0,
+            "raw_candidate_tables_returned_count": 0,
+            "stage_p95_ms": {"audit_ms": 0},
+        }
+        report = {
+            "config": {
+                "events": 1000,
                 "messages_per_ingest": 20,
                 "retrieve_workers": 4,
                 "retrieve_queries": 16,
@@ -376,8 +423,9 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
 
         gate = production_policy_gate(report)
 
-        self.assertEqual(gate["status"], "passed")
-        self.assertEqual(gate["blockers"], [])
+        self.assertEqual(gate["status"], "failed")
+        blocker_names = {item["name"] for item in gate["blockers"]}
+        self.assertIn("same_dataset_storage_topology_budget_batch_models", blocker_names)
 
     def test_context_pack_visibility_full_audit_uses_async_audit_hook(self) -> None:
         adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))

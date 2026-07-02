@@ -1505,17 +1505,25 @@ def production_policy_gate(report: Json) -> Json:
         )
 
     same_config_fields = [
-        "events",
-        "messages_per_ingest",
-        "retrieve_workers",
-        "retrieve_queries",
-        "max_context_tokens",
+        "dataset",
         "storage_options",
+        "topology",
+        "max_context_tokens",
+        "batch_size",
+        "embedding_provider",
+        "embedding_model",
+        "reader_provider",
+        "reader_model",
+        "judge_provider",
+        "judge_model",
     ]
     add_check(
-        "same_run_config_for_cpp_and_rust",
+        "same_dataset_storage_topology_budget_batch_models",
         all(field in config for field in same_config_fields),
-        "Performance parity requires the same dataset, storage mode, topology, token budget, batch size, and model config.",
+        (
+            "Performance parity requires the same dataset, storage mode, topology, token budget, "
+            "batch size, embedding model, reader, and judge for C++ and Rust."
+        ),
     )
 
     blockers = [check for check in checks if check.get("status") != "passed"]
@@ -1528,7 +1536,7 @@ def production_policy_gate(report: Json) -> Json:
             "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
             "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
             "Audit/debug records do not block hot retrieval by default.",
-            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, and model config for C++ and Rust.",
+            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, and judge for C++ and Rust.",
         ],
     }
 
@@ -1795,6 +1803,13 @@ def main() -> int:
     parser.add_argument("--retrieve-queries", type=int, default=128)
     parser.add_argument("--retrieve-workers", type=int, default=16)
     parser.add_argument("--max-context-tokens", type=int, default=12000)
+    parser.add_argument("--dataset", default=os.environ.get("MATRIXARK_PARITY_DATASET", "matrixark-scale-synthetic"))
+    parser.add_argument("--embedding-provider", default=os.environ.get("MATRIXARK_EMBEDDING_PROVIDER", "hash"))
+    parser.add_argument("--embedding-model", default=os.environ.get("MATRIXARK_EMBEDDING_MODEL", "matrixark-local-token-hash-v1"))
+    parser.add_argument("--reader-provider", default=os.environ.get("MATRIXARK_READER_PROVIDER", "deterministic"))
+    parser.add_argument("--reader-model", default=os.environ.get("MATRIXARK_READER_MODEL", "matrixark-deterministic-reader"))
+    parser.add_argument("--judge-provider", default=os.environ.get("MATRIXARK_JUDGE_PROVIDER", "deterministic"))
+    parser.add_argument("--judge-model", default=os.environ.get("MATRIXARK_JUDGE_MODEL", "matrixark-deterministic-judge"))
     parser.add_argument("--metaserver", default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"))
     parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"))
     parser.add_argument("--table", default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"))
@@ -1873,15 +1888,28 @@ def main() -> int:
             "raw_read_ops": parsed.raw_read_ops,
             "raw_batch_size": parsed.raw_batch_size,
             "raw_read_batch_size": parsed.raw_read_batch_size,
+            "dataset": parsed.dataset,
             "raw_workers": parsed.raw_workers,
             "messages_per_ingest": parsed.messages_per_ingest,
+            "batch_size": parsed.messages_per_ingest,
             "ingest_workers": parsed.ingest_workers,
             "retrieve_queries": parsed.retrieve_queries,
             "retrieve_workers": parsed.retrieve_workers,
             "max_context_tokens": parsed.max_context_tokens,
+            "embedding_provider": parsed.embedding_provider,
+            "embedding_model": parsed.embedding_model,
+            "reader_provider": parsed.reader_provider,
+            "reader_model": parsed.reader_model,
+            "judge_provider": parsed.judge_provider,
+            "judge_model": parsed.judge_model,
             "metaserver": parsed.metaserver,
             "namespace": parsed.namespace,
             "table": parsed.table,
+            "topology": {
+                "metaserver": parsed.metaserver,
+                "namespace": parsed.namespace,
+                "table": parsed.table,
+            },
             "storage_options": parsed.storage_options,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
