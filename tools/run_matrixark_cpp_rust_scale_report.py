@@ -237,6 +237,39 @@ STORAGE_RECLAIM_SEMANTICS = [
     "physical_reclaim_errors_zero",
 ]
 
+STORAGE_CACHE_LAYER_NAMES = [
+    "memory_object_cache",
+    "page_index_cache",
+    "block_index_cache",
+    "disk_block_cache",
+    "shared_store_read_through",
+]
+
+STORAGE_CACHE_SEMANTICS = [
+    "lookup_hot_to_cold",
+    "refill_from_durable_on_miss",
+    "invalidate_on_append_watermark",
+    "invalidate_on_compaction_watermark",
+    "cold_scan_no_promote",
+    "writeback_backpressure_reported",
+]
+
+STORAGE_CACHE_METRIC_NAMES = [
+    "memory_cache_hits",
+    "memory_cache_misses",
+    "page_index_cache_hits",
+    "page_index_cache_misses",
+    "block_index_cache_hits",
+    "block_index_cache_misses",
+    "disk_cache_hits",
+    "disk_cache_misses",
+    "shared_store_read_throughs",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
+]
+
 STORAGE_LIFECYCLE_METRIC_NAMES = [
     "storage_manager_prepare_count",
     "storage_manager_reclaim_count",
@@ -257,6 +290,19 @@ STORAGE_LIFECYCLE_METRIC_NAMES = [
     "cache_admissions",
     "cache_evictions",
     "cache_rehydrates",
+    "memory_cache_hits",
+    "memory_cache_misses",
+    "page_index_cache_hits",
+    "page_index_cache_misses",
+    "block_index_cache_hits",
+    "block_index_cache_misses",
+    "disk_cache_hits",
+    "disk_cache_misses",
+    "shared_store_read_throughs",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
     "cold_scan_no_cache_reads",
     "hot_cache_promotions",
     "tombstone_records",
@@ -1947,6 +1993,22 @@ def write_report(path: Path, report: Json) -> None:
     lines.extend(
         [
             "",
+            "## Required Multi-Layer Cache Contract",
+            "",
+            "Both engines must report these cache layers and semantics before cache parity claims are accepted:",
+            "",
+            "### Layers",
+            "",
+        ]
+    )
+    lines.extend(f"- `{name}`" for name in STORAGE_CACHE_LAYER_NAMES)
+    lines.extend(["", "### Semantics", ""])
+    lines.extend(f"- `{name}`" for name in STORAGE_CACHE_SEMANTICS)
+    lines.extend(["", "### Metrics", ""])
+    lines.extend(f"- `{name}`" for name in STORAGE_CACHE_METRIC_NAMES)
+    lines.extend(
+        [
+            "",
             "## Required Storage Lifecycle Metrics",
             "",
             "Both C++ and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
@@ -2329,6 +2391,9 @@ def main() -> int:
             "required_storage_cold_scan_sequence": STORAGE_COLD_SCAN_SEQUENCE_STEPS,
             "required_storage_lifecycle_phases": STORAGE_LIFECYCLE_PHASE_NAMES,
             "required_storage_reclaim_semantics": STORAGE_RECLAIM_SEMANTICS,
+            "required_storage_cache_layers": STORAGE_CACHE_LAYER_NAMES,
+            "required_storage_cache_semantics": STORAGE_CACHE_SEMANTICS,
+            "required_storage_cache_metrics": STORAGE_CACHE_METRIC_NAMES,
             "required_storage_lifecycle_metrics": STORAGE_LIFECYCLE_METRIC_NAMES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,

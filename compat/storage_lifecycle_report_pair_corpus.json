@@ -67,6 +67,21 @@
       "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
       "physical_reclaim_context_specific": false
     },
+    "storage_cache_layers": [
+      "memory_object_cache",
+      "page_index_cache",
+      "block_index_cache",
+      "disk_block_cache",
+      "shared_store_read_through"
+    ],
+    "storage_cache_semantics": [
+      "lookup_hot_to_cold",
+      "refill_from_durable_on_miss",
+      "invalidate_on_append_watermark",
+      "invalidate_on_compaction_watermark",
+      "cold_scan_no_promote",
+      "writeback_backpressure_reported"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
@@ -87,6 +102,19 @@
       "cache_admissions": 10,
       "cache_evictions": 2,
       "cache_rehydrates": 1,
+      "memory_cache_hits": 11,
+      "memory_cache_misses": 3,
+      "page_index_cache_hits": 9,
+      "page_index_cache_misses": 1,
+      "block_index_cache_hits": 8,
+      "block_index_cache_misses": 1,
+      "disk_cache_hits": 4,
+      "disk_cache_misses": 1,
+      "shared_store_read_throughs": 1,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
       "cold_scan_no_cache_reads": 3,
       "hot_cache_promotions": 0,
       "tombstone_records": 1,
@@ -171,6 +199,21 @@
       "matrixark_context_gc_role": "marks_logical_raw_event_eligibility_only",
       "physical_reclaim_context_specific": false
     },
+    "storage_cache_layers": [
+      "memory_object_cache",
+      "page_index_cache",
+      "block_index_cache",
+      "disk_block_cache",
+      "shared_store_read_through"
+    ],
+    "storage_cache_semantics": [
+      "lookup_hot_to_cold",
+      "refill_from_durable_on_miss",
+      "invalidate_on_append_watermark",
+      "invalidate_on_compaction_watermark",
+      "cold_scan_no_promote",
+      "writeback_backpressure_reported"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
@@ -191,6 +234,19 @@
       "cache_admissions": 10,
       "cache_evictions": 2,
       "cache_rehydrates": 1,
+      "memory_cache_hits": 11,
+      "memory_cache_misses": 3,
+      "page_index_cache_hits": 9,
+      "page_index_cache_misses": 1,
+      "block_index_cache_hits": 8,
+      "block_index_cache_misses": 1,
+      "disk_cache_hits": 4,
+      "disk_cache_misses": 1,
+      "shared_store_read_throughs": 1,
+      "cache_refills": 3,
+      "cache_invalidations": 2,
+      "cache_writeback_queue_depth": 0,
+      "cache_writeback_rejections": 0,
       "cold_scan_no_cache_reads": 3,
       "hot_cache_promotions": 0,
       "tombstone_records": 1,

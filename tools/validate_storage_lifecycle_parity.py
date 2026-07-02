@@ -22,6 +22,39 @@ CONTRACT = ROOT / "docs" / "temporalstore_page_block_address_contract.md"
 SCALE_REPORT = ROOT / "tools" / "run_matrixark_cpp_rust_scale_report.py"
 REPORT_PAIR_CORPUS = ROOT / "compat" / "storage_lifecycle_report_pair_corpus.json"
 
+REQUIRED_STORAGE_CACHE_LAYERS = [
+    "memory_object_cache",
+    "page_index_cache",
+    "block_index_cache",
+    "disk_block_cache",
+    "shared_store_read_through",
+]
+
+REQUIRED_STORAGE_CACHE_SEMANTICS = [
+    "lookup_hot_to_cold",
+    "refill_from_durable_on_miss",
+    "invalidate_on_append_watermark",
+    "invalidate_on_compaction_watermark",
+    "cold_scan_no_promote",
+    "writeback_backpressure_reported",
+]
+
+REQUIRED_STORAGE_CACHE_METRICS = [
+    "memory_cache_hits",
+    "memory_cache_misses",
+    "page_index_cache_hits",
+    "page_index_cache_misses",
+    "block_index_cache_hits",
+    "block_index_cache_misses",
+    "disk_cache_hits",
+    "disk_cache_misses",
+    "shared_store_read_throughs",
+    "cache_refills",
+    "cache_invalidations",
+    "cache_writeback_queue_depth",
+    "cache_writeback_rejections",
+]
+
 REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "storage_manager_prepare_count",
     "storage_manager_reclaim_count",
@@ -42,6 +75,7 @@ REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "cache_admissions",
     "cache_evictions",
     "cache_rehydrates",
+    *REQUIRED_STORAGE_CACHE_METRICS,
     "cold_scan_no_cache_reads",
     "hot_cache_promotions",
     "tombstone_records",
@@ -239,6 +273,30 @@ def _dig_reclaim_scope(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _dig_cache_layers(report: dict[str, Any]) -> list[str]:
+    candidates = [
+        report.get("storage_cache_layers"),
+        report.get("storage_lifecycle", {}).get("cache_layers") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_cache", {}).get("layers") if isinstance(report.get("storage_cache"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
+            return candidate
+    return []
+
+
+def _dig_cache_semantics(report: dict[str, Any]) -> list[str]:
+    candidates = [
+        report.get("storage_cache_semantics"),
+        report.get("storage_lifecycle", {}).get("cache_semantics") if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_cache", {}).get("semantics") if isinstance(report.get("storage_cache"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
+            return candidate
+    return []
+
+
 def _as_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -338,6 +396,9 @@ def validate_contract_and_runner() -> list[str]:
     runner_cold_scan_sequence = _extract_runner_list("STORAGE_COLD_SCAN_SEQUENCE_STEPS")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
     runner_reclaim_semantics = _extract_runner_list("STORAGE_RECLAIM_SEMANTICS")
+    runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
+    runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
+    runner_cache_metrics = _extract_runner_list("STORAGE_CACHE_METRIC_NAMES")
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
             failures.append(f"contract missing canonical public field `{name}`")
@@ -351,6 +412,12 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
     if runner_reclaim_semantics != REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         failures.append("runner:STORAGE_RECLAIM_SEMANTICS does not match the canonical reclaim semantics")
+    if runner_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
+        failures.append("runner:STORAGE_CACHE_LAYER_NAMES does not match the canonical cache layers")
+    if runner_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
+        failures.append("runner:STORAGE_CACHE_SEMANTICS does not match the canonical cache semantics")
+    if runner_cache_metrics != REQUIRED_STORAGE_CACHE_METRICS:
+        failures.append("runner:STORAGE_CACHE_METRIC_NAMES does not match the canonical cache metrics")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing lifecycle metric `{metric}`")
@@ -365,6 +432,15 @@ def validate_contract_and_runner() -> list[str]:
     for semantic in REQUIRED_STORAGE_RECLAIM_SEMANTICS:
         if f"`{semantic}`" not in contract_text:
             failures.append(f"contract missing reclaim semantic `{semantic}`")
+    for layer in REQUIRED_STORAGE_CACHE_LAYERS:
+        if f"`{layer}`" not in contract_text:
+            failures.append(f"contract missing cache layer `{layer}`")
+    for semantic in REQUIRED_STORAGE_CACHE_SEMANTICS:
+        if f"`{semantic}`" not in contract_text:
+            failures.append(f"contract missing cache semantic `{semantic}`")
+    for metric in REQUIRED_STORAGE_CACHE_METRICS:
+        if f"`{metric}`" not in contract_text:
+            failures.append(f"contract missing cache metric `{metric}`")
     for value in REQUIRED_STORAGE_RECLAIM_SCOPE.values():
         if isinstance(value, str) and f"`{value}`" not in contract_text and f'"{value}"' not in contract_text:
             failures.append(f"contract missing reclaim scope value `{value}`")
@@ -389,6 +465,10 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_reclaim_semantics = _dig_reclaim_semantics(rust_report)
     cpp_reclaim_scope = _dig_reclaim_scope(cpp_report)
     rust_reclaim_scope = _dig_reclaim_scope(rust_report)
+    cpp_cache_layers = _dig_cache_layers(cpp_report)
+    rust_cache_layers = _dig_cache_layers(rust_report)
+    cpp_cache_semantics = _dig_cache_semantics(cpp_report)
+    rust_cache_semantics = _dig_cache_semantics(rust_report)
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
@@ -424,6 +504,14 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         failures.append(f"cpp storage_reclaim_scope drift: {cpp_reclaim_scope!r}")
     if rust_reclaim_scope != REQUIRED_STORAGE_RECLAIM_SCOPE:
         failures.append(f"rust storage_reclaim_scope drift: {rust_reclaim_scope!r}")
+    if cpp_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
+        failures.append(f"cpp storage_cache_layers drift: {cpp_cache_layers!r}")
+    if rust_cache_layers != REQUIRED_STORAGE_CACHE_LAYERS:
+        failures.append(f"rust storage_cache_layers drift: {rust_cache_layers!r}")
+    if cpp_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
+        failures.append(f"cpp storage_cache_semantics drift: {cpp_cache_semantics!r}")
+    if rust_cache_semantics != REQUIRED_STORAGE_CACHE_SEMANTICS:
+        failures.append(f"rust storage_cache_semantics drift: {rust_cache_semantics!r}")
 
     for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
         for path, key in _walk_public_keys(report):
@@ -506,6 +594,8 @@ def main() -> int:
         + " / context_gc="
         + REQUIRED_STORAGE_RECLAIM_SCOPE["matrixark_context_gc_role"]
     )
+    print("- storage_cache_layers=" + ", ".join(REQUIRED_STORAGE_CACHE_LAYERS))
+    print("- storage_cache_semantics=" + ", ".join(REQUIRED_STORAGE_CACHE_SEMANTICS))
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
     if validated_pair:
