@@ -13,11 +13,11 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 
 
 
@@ -237,6 +237,54 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(decision["serving_blocked_on_full_audit"])
         self.assertEqual(adapter.appended, [])
         self.assertEqual(adapter.audit_appended, [])
+
+    def test_phase_scale_matrix_tracks_required_post_phase_sweeps(self) -> None:
+        args = argparse.Namespace(
+            events=1000,
+            retrieve_workers=4,
+            skip_context_pipeline=False,
+            phase_name="phase-4",
+            phase_scale_events="1000,10000,100000",
+            phase_retrieve_workers="4,8,16,32",
+            phase_resource_imports="large_pdf,large_csv,repo_directory",
+            phase_contextmemory_features="resources,skills,cross_session_retrieval,compact_indexes,audit_light_telemetry",
+            completed_scale_events="10000,100000",
+            completed_retrieve_workers="8,16,32",
+            completed_resource_imports="large_pdf,large_csv,repo_directory",
+            completed_contextmemory_features="resources,skills",
+            require_phase_scale_matrix=True,
+        )
+
+        gate = phase_scale_matrix_gate({"config": {"events": 1000, "retrieve_workers": 4}}, args)
+
+        self.assertEqual(gate["status"], "passed")
+        self.assertEqual(gate["open_required_cases"], [])
+        self.assertEqual(gate["phase"], "phase-4")
+
+    def test_phase_scale_matrix_can_fail_closed_for_missing_scale_evidence(self) -> None:
+        args = argparse.Namespace(
+            events=1000,
+            retrieve_workers=4,
+            skip_context_pipeline=False,
+            phase_name="phase-4",
+            phase_scale_events="1000,10000,100000",
+            phase_retrieve_workers="4,8,16,32",
+            phase_resource_imports="large_pdf,large_csv,repo_directory",
+            phase_contextmemory_features="resources,skills,cross_session_retrieval,compact_indexes,audit_light_telemetry",
+            completed_scale_events="",
+            completed_retrieve_workers="",
+            completed_resource_imports="",
+            completed_contextmemory_features="",
+            require_phase_scale_matrix=True,
+        )
+
+        gate = phase_scale_matrix_gate({"config": {"events": 1000, "retrieve_workers": 4}}, args)
+
+        self.assertEqual(gate["status"], "failed")
+        open_cases = {(item["group"], item["case"]) for item in gate["open_required_cases"]}
+        self.assertIn(("event_ingestion", 10000), open_cases)
+        self.assertIn(("event_ingestion", 100000), open_cases)
+        self.assertIn(("resource_imports", "large_pdf"), open_cases)
 
     def test_context_pack_visibility_full_audit_uses_async_audit_hook(self) -> None:
         adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))
