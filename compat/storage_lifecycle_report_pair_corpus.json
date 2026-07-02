@@ -25,7 +25,8 @@
       "compaction_watermark": "CompactionWatermark",
       "compatibility_aliases": {
         "page_store": "StorageZone",
-        "page_segment_id": "segment_id"
+        "page_segment_id": "segment_id",
+        "oplog": "AppendWatermark"
       }
     },
     "storage_read_sequence": [
@@ -178,7 +179,8 @@
       "compaction_watermark": "CompactionWatermark",
       "compatibility_aliases": {
         "block_store": "StorageZone",
-        "stream_blob": "Segment"
+        "stream_blob": "Segment",
+        "oplog_sequence": "AppendWatermark"
       }
     },
     "storage_read_sequence": [

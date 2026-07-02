@@ -473,6 +473,8 @@ New public report fields must not introduce backend-specific names such as:
 
 - `page_store` for C++ but `block_store` for Rust;
 - `page_segment_id` when the report means canonical `segment_id`;
+- `oplog`, `oplog_id`, or `oplog_sequence` when the report means canonical
+  `AppendWatermark` or append-log lifecycle metrics;
 - `extent_id` when the report means canonical `block_id`, `segment_id`, or
   `extent` without stating the mapping.
 
@@ -490,7 +492,8 @@ Required Phase 1 outputs:
   `BlockIndexEntry`, `ObjectIndex`, `TombstoneGcMetadata`, watermarks, and
   page/block metrics;
 - explicit alias map for old names such as `page_store`, `block_store`,
-  `page_segment_id`, `zone_id`, `extent_id`, and `stream_blob`;
+  `page_segment_id`, `zone_id`, `extent_id`, `stream_blob`, `oplog`,
+  `oplog_id`, and `oplog_sequence`;
 - fail-closed validators for the shared page-address corpus, public storage
   knobs, and page/block metric names;
 - report examples showing both the canonical field and any compatibility alias.
