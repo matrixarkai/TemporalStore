@@ -368,6 +368,34 @@ fn client_route_cache_preserves_cpp_partition_set_member_version_hierarchy() {
         topology_report.routes[0].partition_id,
         partition_set.members[0].partition_id
     );
+
+    let parity = client.direct_sdk_parity_report();
+    assert!(
+        parity.ready,
+        "direct SDK parity blockers: {:?}",
+        parity.blockers
+    );
+    assert!(parity.rust_native_migration_contract_ready);
+    assert!(parity.typed_table_client_ready);
+    assert!(parity.cpp_partition_set_route_cache_ready);
+    assert!(parity.partition_member_version_ready);
+    assert!(parity.topology_sync_ready);
+    assert!(parity.meta_syncer_ready);
+    assert!(parity.retry_budget_ready);
+    assert!(parity.route_invalidation_ready);
+    assert!(parity.placement_hooks_ready);
+    assert!(parity.location_affine_secondary_reads_ready);
+    assert!(parity.primary_only_writes_ready);
+    assert_eq!(parity.cpp_partition_set_count, 1);
+    assert_eq!(parity.cpp_partition_member_count, 2);
+    assert_eq!(parity.missing_route_count, 0);
+    assert_eq!(parity.max_topology_version, 12);
+    assert!(parity.meta_sync_generation > 0);
+    for family in ["string", "hash", "feature", "redis", "admin", "context"] {
+        assert!(parity
+            .direct_sdk_command_families
+            .contains(&family.to_string()));
+    }
 }
 
 #[test]
