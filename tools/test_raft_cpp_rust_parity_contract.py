@@ -68,18 +68,18 @@ class RaftCppRustParityContractTest(unittest.TestCase):
         self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
 
         rust_missing = json.loads(json.dumps(corpus["rust"]))
-        del rust_missing["data_node_raft"]["behavior_evidence"]["write_replication"]
+        del rust_missing["data_node_raft"]["behavior_evidence"]["quorum_write"]
         failures = validate_report_pair(corpus["cpp"], rust_missing)
         self.assertIn(
-            "rust data_node_raft.behavior_evidence missing `write_replication`",
+            "rust data_node_raft.behavior_evidence missing `quorum_write`",
             failures,
         )
 
         cpp_failed = json.loads(json.dumps(corpus["cpp"]))
-        cpp_failed["data_node_raft"]["behavior_evidence"]["leader_failover"]["status"] = "failed"
+        cpp_failed["data_node_raft"]["behavior_evidence"]["read_after_write_under_leader_change"]["status"] = "failed"
         failures = validate_report_pair(cpp_failed, corpus["rust"])
         self.assertIn(
-            "cpp data_node_raft.behavior_evidence.leader_failover status drift: 'failed'",
+            "cpp data_node_raft.behavior_evidence.read_after_write_under_leader_change status drift: 'failed'",
             failures,
         )
 

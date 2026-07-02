@@ -104,16 +104,16 @@ semantics. `leader_election_events` use `Term`, `LeaderId`, `CommitIndex`, and
 `data_node_raft.behavior_evidence` must include these behavior keys, each with
 `status: passed`, before data-node Raft parity can be marked feature-correct:
 
-- `leader_election`
-- `write_replication`
-- `slot_assignment`
-- `primary_placement`
-- `topology_readiness`
-- `membership_add_remove`
-- `follower_catch_up`
+- `append_replication`
+- `quorum_write`
+- `async_sync_apply`
+- `follower_visibility`
 - `leader_failover`
-- `restart_recovery`
-- `snapshot_restore`
+- `replica_add_remove`
+- `learner_promotion`
+- `snapshot_install`
+- `apply_lag_recovery`
+- `read_after_write_under_leader_change`
 
 `tools/validate_raft_cpp_rust_parity_contract.py` validates this contract and
 the synthetic C++/Rust report pair in

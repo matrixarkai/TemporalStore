@@ -101,16 +101,16 @@ REQUIRED_METASERVER_RAFT_BEHAVIORS = [
 ]
 
 REQUIRED_DATA_NODE_RAFT_BEHAVIORS = [
-    "leader_election",
-    "write_replication",
-    "slot_assignment",
-    "primary_placement",
-    "topology_readiness",
-    "membership_add_remove",
-    "follower_catch_up",
+    "append_replication",
+    "quorum_write",
+    "async_sync_apply",
+    "follower_visibility",
     "leader_failover",
-    "restart_recovery",
-    "snapshot_restore",
+    "replica_add_remove",
+    "learner_promotion",
+    "snapshot_install",
+    "apply_lag_recovery",
+    "read_after_write_under_leader_change",
 ]
 
 REQUIRED_RAFT_METRICS = [
