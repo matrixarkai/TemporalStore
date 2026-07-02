@@ -29,6 +29,7 @@ class MatrixArkServiceMetrics:
         self._last_resource_import_lag_ms = 0
         self._last_dirty_summary_lag_ms = 0
         self._last_audit_write_failures = 0
+        self._last_model_fallback_flags: dict[str, int] = {}
 
     def observe_operation(self, operation: str, status: str, elapsed_ms: float, *, timeout: bool = False) -> None:
         with self._lock:
@@ -106,6 +107,11 @@ class MatrixArkServiceMetrics:
             self._last_resource_queue_depth = max(0, int(queue_depth))
             self._last_audit_write_failures = max(0, int(audit_write_failures))
 
+    def update_model_fallback_flags(self, **flags: object) -> None:
+        with self._lock:
+            for name, value in flags.items():
+                self._last_model_fallback_flags[str(name)] = 1 if bool(value) else 0
+
     @staticmethod
     def _percentile(values: list[float], percentile: float) -> float:
         if not values:
@@ -137,6 +143,7 @@ class MatrixArkServiceMetrics:
                 "resource_import_lag_ms": self._last_resource_import_lag_ms,
                 "dirty_summary_lag_ms": self._last_dirty_summary_lag_ms,
                 "audit_write_failures": self._last_audit_write_failures,
+                "model_fallback_flags": dict(self._last_model_fallback_flags),
             }
 
     def render_prometheus(self, *, backend: str, storage_mode: str) -> str:
@@ -205,12 +212,16 @@ class MatrixArkServiceMetrics:
                 "# HELP matrixark_audit_write_failures_total MatrixArk audit write flush failure count.",
                 "# TYPE matrixark_audit_write_failures_total counter",
                 f"matrixark_audit_write_failures_total{{{base_labels}}} {int(snap['audit_write_failures'])}",
+                "# HELP matrixark_model_fallback_flag MatrixArk parser/model fallback flag, 1 when fallback is active.",
+                "# TYPE matrixark_model_fallback_flag gauge",
                 "# HELP matrixark_model_latency_ms MatrixArk parser/model latency quantiles by stage.",
                 "# TYPE matrixark_model_latency_ms gauge",
                 "# HELP matrixark_model_latency_ms_bucket MatrixArk parser/model latency buckets by stage.",
                 "# TYPE matrixark_model_latency_ms_bucket counter",
             ]
         )
+        for name, value in sorted((snap.get("model_fallback_flags") or {}).items()):
+            lines.append(f'matrixark_model_fallback_flag{{{base_labels},flag="{self._escape(str(name))}"}} {int(value)}')
         for stage, row in sorted(snap["model"].items()):
             stage_label = self._escape(stage)
             samples = [float(value) for value in row.get("latencies", [])]
@@ -222,5 +233,4 @@ class MatrixArkServiceMetrics:
                 le = "+Inf" if bucket == float("inf") else str(int(bucket))
                 lines.append(f'matrixark_model_latency_ms_bucket{{{base_labels},stage="{stage_label}",le="{le}"}} {int(count)}')
         return "\n".join(lines) + "\n"
-
 
