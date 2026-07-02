@@ -577,8 +577,14 @@ impl ByteRaftPeerPipelineState {
             match_index: self.match_index,
             next_index: self.next_index,
             append_requests: self.append_requests,
+            append_batches: self.append_requests,
+            max_append_batch_entries: self.inflight_entries.max(1),
+            max_append_batch_bytes: self.inflight_bytes,
             append_accepted: self.append_accepted,
             append_rejected: self.append_rejected,
+            retry_attempts: self.append_rejected,
+            backoff_ms: 0,
+            next_retry_after_ms: 0,
             inflight_entries: self.inflight_entries,
             inflight_bytes: self.inflight_bytes,
             append_queue_depth: self.append_queue_depth,
@@ -616,6 +622,14 @@ impl ByteRaftPeerPipelineState {
             transfer_leader_timeouts: self.transfer_leader_timeouts,
             pre_vote_rejections: self.pre_vote_rejections,
             election_rejections: self.election_rejections,
+            follower_lag: self
+                .next_index
+                .saturating_sub(self.match_index.saturating_add(1)),
+            learner_catchup_rounds: u64::from(self.auto_promoted_from_learner),
+            learner_caught_up: self.auto_promoted_from_learner,
+            witness_quorum_required: 0,
+            witness_quorum_acked: 0,
+            witness_quorum_reached: false,
             offline_timeout_reached: self.offline_timeout_reached,
             offline_timeout_rejections: self.offline_timeout_rejections,
         }
@@ -9021,16 +9035,13 @@ impl RaftClusterInner {
         let quorum_peer_progress_observed = status.commit_index > 0
             && peer_pipeline_states
                 .iter()
-                .filter(|peer| peer.replica_role.participates_in_quorum())
-                .count()
-                >= status.majority
-            && peer_pipeline_states
-                .iter()
-                .filter(|peer| peer.replica_role.participates_in_quorum())
-                .all(|peer| {
-                    peer.match_index >= status.commit_index
+                .filter(|peer| {
+                    peer.replica_role.participates_in_quorum()
+                        && peer.match_index >= status.commit_index
                         && peer.next_index >= peer.match_index.saturating_add(1)
-                });
+                })
+                .count()
+                >= status.majority;
         let peer_pipeline_runtime_activity_observed = peer_pipeline_states.iter().any(|peer| {
             peer.append_requests > 0
                 || peer.append_accepted > 0
@@ -10293,6 +10304,13 @@ fn append_byteraft_runtime_admin_prometheus(
     kind: &str,
     report: ByteRaftRuntimeAdminReport,
 ) {
+    let rustraft_capability_report = rustraft_capability_report_from_byteraft_admin(&report);
+    let rustraft_metrics = ::rustraft::rustraft_byteraft_runtime_capability_prometheus(
+        &rustraft_capability_report,
+        &[("kind", kind)],
+    );
+    out.push_str(&rustraft_metrics.text);
+
     out.push_str("# HELP temporalstore_raft_byteraft_ready Whether ByteRaft-style production runtime evidence is complete.\n");
     out.push_str("# TYPE temporalstore_raft_byteraft_ready gauge\n");
     push_raft_metric(
@@ -11435,6 +11453,67 @@ fn append_byteraft_local_status_prometheus(
             labels,
             peer.pipeline_state.election_rejections,
         );
+    }
+}
+
+fn rustraft_capability_report_from_byteraft_admin(
+    report: &ByteRaftRuntimeAdminReport,
+) -> ::rustraft::RustRaftByteRaftRuntimeCapabilityReport {
+    let capability_evidence = report
+        .capability_matrix
+        .iter()
+        .map(|capability| ::rustraft::RaftCapabilityEvidence {
+            capability: capability.capability.clone(),
+            present: capability.ready,
+            evidence: capability
+                .evidence_field
+                .split(';')
+                .map(str::trim)
+                .filter(|field| !field.is_empty())
+                .map(|field| {
+                    if capability.ready {
+                        format!("present:{field}")
+                    } else {
+                        format!("missing:{field}")
+                    }
+                })
+                .collect(),
+            source_reference: "temporalstore_byteraft_runtime_admin_report".to_string(),
+        })
+        .collect::<Vec<_>>();
+    let satisfied = capability_evidence
+        .iter()
+        .filter(|capability| capability.present)
+        .map(|capability| capability.capability.clone())
+        .collect::<Vec<_>>();
+    let missing = capability_evidence
+        .iter()
+        .filter(|capability| !capability.present)
+        .map(|capability| capability.capability.clone())
+        .collect::<Vec<_>>();
+    let blockers = capability_evidence
+        .iter()
+        .filter(|capability| !capability.present)
+        .flat_map(|capability| {
+            capability
+                .evidence
+                .iter()
+                .filter(|field| field.starts_with("missing:"))
+                .map(move |field| format!("{}:{}", capability.capability, field))
+        })
+        .chain(
+            report
+                .blockers
+                .iter()
+                .map(|blocker| format!("temporalstore:blocker:{blocker}")),
+        )
+        .collect::<Vec<_>>();
+    ::rustraft::RustRaftByteRaftRuntimeCapabilityReport {
+        ready: report.ready && missing.is_empty() && blockers.is_empty(),
+        capability_evidence,
+        satisfied,
+        missing,
+        blockers,
     }
 }
 
