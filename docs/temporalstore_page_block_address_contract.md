@@ -279,6 +279,30 @@ Required behavior:
   replay/debug policy asks for retained historical data.
 - Cold scans must use no-cache/no-promote reads by default.
 
+### Cold Scan Path
+
+Canonical cold scan flow:
+
+```text
+timestamp range
+-> page index scan
+-> no-cache page read
+-> bounded decode
+-> no hot-cache promotion
+```
+
+Required behavior:
+
+- Cold lifecycle scans must start from a timestamp range and use `PageIndex`
+  range iteration rather than warming a serving object cache.
+- Page reads must be marked no-cache/no-promote by default when
+  `TS_COLD_SCAN_NO_CACHE_FILL=true`.
+- Decode work must be bounded by batch size, byte budget, and deadline so
+  compression, backfill, audit, or GC workers cannot starve serving retrieval.
+- Cold scan reads may write warm summaries, tombstones, or compaction metadata,
+  but raw source pages must not enter hot LRU/admission unless an explicit
+  replay/query path reinforces them.
+
 ## Public Config Parity
 
 C++ and Rust must expose the same public storage tuning knobs. The names below
