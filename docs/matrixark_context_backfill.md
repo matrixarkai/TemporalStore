@@ -82,7 +82,15 @@ Rollback for a full rebuild is another guarded metadata flip back to the value s
 
 ## Incremental Repair Promotion
 
-For incremental repair, do not switch the whole active prefix. Backfill the lost source sequence range into a shadow repair prefix, validate that prefix, then replay the same range into the active prefix with guarded in-place mode. The deterministic idempotency keys make the promotion safe to retry.
+For incremental repair, do not switch the whole active prefix. Use a bounded source sequence window, backfill that window into a shadow repair prefix, then run `incremental_repair`. The repair mode validates the shadow prefix, resolves the active prefix pointer, replays the same bounded range into the active prefix, writes an audit record, and keeps the active prefix pointer unchanged.
+
+`incremental_repair` is intentionally guarded:
+
+- requires `--start-seq` and `--end-seq`; open-ended repair is rejected
+- requires `--target-prefix` for the shadow repair prefix
+- requires `--confirm-incremental-repair=YES`
+- uses `--repair-active-prefix` when supplied, otherwise reads `--active-prefix-key`
+- uses target-side idempotency keys so retrying the same repair does not append duplicate active records
 
 ```bash
 python3 tools/matrixark_context_backfill.py \
@@ -95,22 +103,29 @@ python3 tools/matrixark_context_backfill.py \
   --dry-run=0
 
 python3 tools/matrixark_context_backfill.py \
-  --mode=validate_shadow \
+  --mode=incremental_repair \
+  --confirm-incremental-repair=YES \
   --source-prefix=matrixark:mcp \
   --target-prefix=matrixark:context_repair:partition-123 \
   --job-id=repair-partition-123 \
   --start-seq=1200000 \
   --end-seq=1255000 \
-  --batch-size=1024
+  --batch-size=1024 \
+  --dry-run=0
+```
 
+If the active prefix pointer is not available in the target store, pass it explicitly:
+
+```bash
 python3 tools/matrixark_context_backfill.py \
-  --mode=in_place \
-  --confirm-in-place=YES \
+  --mode=incremental_repair \
+  --confirm-incremental-repair=YES \
+  --repair-active-prefix=matrixark:context:active \
   --source-prefix=matrixark:mcp \
-  --job-id=repair-partition-123-promote \
+  --target-prefix=matrixark:context_repair:partition-123 \
+  --job-id=repair-partition-123 \
   --start-seq=1200000 \
   --end-seq=1255000 \
-  --batch-size=1024 \
   --dry-run=0
 ```
 
