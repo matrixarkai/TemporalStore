@@ -1450,6 +1450,11 @@ def phase_scale_matrix_gate(report: Json, args: argparse.Namespace) -> Json:
         "resource_imports": _completion_checks(required_imports, completed_imports),
         "contextmemory_pipeline": _completion_checks(required_features, completed_features),
     }
+    full_contextmemory_pipeline_passed = all(
+        row.get("status") == "passed"
+        for group in ("resource_imports", "contextmemory_pipeline")
+        for row in checks.get(group, [])
+    )
     open_required_cases: list[Json] = []
     for group, rows in checks.items():
         for row in rows:
@@ -1462,6 +1467,15 @@ def phase_scale_matrix_gate(report: Json, args: argparse.Namespace) -> Json:
         "status": status,
         "require_gate": require_gate,
         "checks": checks,
+        "full_contextmemory_pipeline": {
+            "status": "passed" if full_contextmemory_pipeline_passed else "incomplete",
+            "required_resource_imports": required_imports,
+            "required_features": required_features,
+            "description": (
+                "large PDF/CSV/repo resource imports plus resources, skills, "
+                "cross-session retrieval, compact indexes, and audit-light telemetry"
+            ),
+        },
         "open_required_cases": open_required_cases,
         "evidence": {
             "current_run": {
@@ -1673,6 +1687,7 @@ def write_report(path: Path, report: Json) -> None:
                 f"- phase: `{phase_scale.get('phase')}`",
                 f"- require gate: `{bool(phase_scale.get('require_gate'))}`",
                 f"- open required cases: `{len(phase_scale.get('open_required_cases', []))}`",
+                f"- full ContextMemory pipeline: `{(phase_scale.get('full_contextmemory_pipeline') or {}).get('status', 'unknown') if isinstance(phase_scale.get('full_contextmemory_pipeline'), dict) else 'unknown'}`",
                 "",
                 "| group | case | status |",
                 "|---|---|---|",
