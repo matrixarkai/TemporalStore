@@ -1284,13 +1284,27 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         else phase0_correctness_gate(phase0_backends, args)
     )
     if not cpp or not rust or cpp.get("status") != "passed" or rust.get("status") != "passed":
+        feature_parity_passed = phase0.get("status") == "passed"
         return {
             "status": "not_comparable",
             "reason": "both C++ and Rust backends must pass",
             "status_labels": {
-                "feature_correct": phase0.get("status") == "passed",
+                "feature_correct": feature_parity_passed,
                 "performance_candidate": False,
                 "production_performance_parity": False,
+            },
+            "rust_vs_cpp_parity": {
+                "feature_parity": {
+                    "status": "passed" if feature_parity_passed else str(phase0.get("status") or "unknown"),
+                    "passed": feature_parity_passed,
+                    "source": "phase0_correctness",
+                    "criteria": SHARED_CORRECTNESS_REQUIREMENTS,
+                },
+                "performance_parity": {
+                    "status": "not_comparable",
+                    "passed": False,
+                    "reason": "both C++ and Rust backends must pass before performance parity is evaluated",
+                },
             },
             "phase0_correctness": phase0,
         }
@@ -1388,6 +1402,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         )
     blockers = [row for row in rows if not row.get("parity_passed")]
     phase0_failed = phase0.get("status") == "failed"
+    feature_parity_passed = phase0.get("status") == "passed"
     feature_correct = not phase0_failed
     performance_candidate = bool(
         cpp
@@ -1395,13 +1410,48 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         and cpp.get("status") == "passed"
         and rust.get("status") == "passed"
     )
-    production_performance_parity = bool(feature_correct and performance_candidate and not blockers)
+    performance_parity_passed = bool(performance_candidate and not blockers)
+    production_performance_parity = bool(feature_parity_passed and performance_parity_passed)
     return {
         "status": "failed" if phase0_failed or blockers else "passed",
         "status_labels": {
             "feature_correct": feature_correct,
             "performance_candidate": performance_candidate,
             "production_performance_parity": production_performance_parity,
+        },
+        "rust_vs_cpp_parity": {
+            "feature_parity": {
+                "status": "passed" if feature_parity_passed else str(phase0.get("status") or "unknown"),
+                "passed": feature_parity_passed,
+                "source": "phase0_correctness",
+                "criteria": SHARED_CORRECTNESS_REQUIREMENTS,
+                "failures": phase0.get("failures", []),
+            },
+            "performance_parity": {
+                "status": "passed" if performance_parity_passed else "failed",
+                "passed": performance_parity_passed,
+                "min_qps_ratio": min_qps_ratio,
+                "max_latency_ratio": max_latency_ratio,
+                "blockers": blockers,
+                "required_same_config": [
+                    "dataset",
+                    "storage_mode",
+                    "topology",
+                    "token_budget",
+                    "batch_size",
+                    "embedding_model",
+                    "reader_model",
+                    "judge_model",
+                ],
+            },
+            "production_performance_parity": {
+                "status": "passed" if production_performance_parity else "failed",
+                "passed": production_performance_parity,
+                "definition": (
+                    "feature parity passed and live same-config performance parity "
+                    "metrics are within configured thresholds"
+                ),
+            },
         },
         "phase0_correctness": phase0,
         "rows": rows,
@@ -1674,6 +1724,32 @@ def write_report(path: Path, report: Json) -> None:
                 f"- feature_correct: `{bool(labels.get('feature_correct'))}`",
                 f"- performance_candidate: `{bool(labels.get('performance_candidate'))}`",
                 f"- production_performance_parity: `{bool(labels.get('production_performance_parity'))}`",
+            ]
+        )
+    rust_vs_cpp = comp.get("rust_vs_cpp_parity", {}) if isinstance(comp.get("rust_vs_cpp_parity"), dict) else {}
+    if rust_vs_cpp:
+        feature = rust_vs_cpp.get("feature_parity", {}) if isinstance(rust_vs_cpp.get("feature_parity"), dict) else {}
+        performance = (
+            rust_vs_cpp.get("performance_parity", {})
+            if isinstance(rust_vs_cpp.get("performance_parity"), dict)
+            else {}
+        )
+        production = (
+            rust_vs_cpp.get("production_performance_parity", {})
+            if isinstance(rust_vs_cpp.get("production_performance_parity"), dict)
+            else {}
+        )
+        lines.extend(
+            [
+                "",
+                "## Rust Vs C++ Parity",
+                "",
+                f"- feature parity: `{feature.get('status', 'unknown')}`",
+                f"- performance parity: `{performance.get('status', 'unknown')}`",
+                f"- production performance parity: `{production.get('status', 'unknown')}`",
+                f"- min Rust/C++ QPS ratio: `{performance.get('min_qps_ratio', '')}`",
+                f"- max Rust/C++ latency ratio: `{performance.get('max_latency_ratio', '')}`",
+                f"- performance blockers: `{len(performance.get('blockers', [])) if isinstance(performance.get('blockers'), list) else 0}`",
             ]
         )
     phase_scale = report.get("phase_scale_matrix", {})
