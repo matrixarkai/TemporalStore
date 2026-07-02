@@ -59,6 +59,7 @@ class BackfillMetrics:
     context_audits: int = 0
     source_batches: int = 0
     target_batches: int = 0
+    scan_hash_batches: int = 0
     started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     finished_at_ms: int = 0
 
@@ -107,6 +108,7 @@ class BackfillMetrics:
                 'context_audits': self.context_audits,
                 'source_batches': self.source_batches,
                 'target_batches': self.target_batches,
+                'scan_hash_batches': self.scan_hash_batches,
             },
         }
 
@@ -131,6 +133,7 @@ class BackfillMetrics:
             '# TYPE matrixark_context_backfill_batches_total counter',
             f'matrixark_context_backfill_batches_total{{{labels},phase="source"}} {self.source_batches}',
             f'matrixark_context_backfill_batches_total{{{labels},phase="target"}} {self.target_batches}',
+            f'matrixark_context_backfill_batches_total{{{labels},phase="scan_hash"}} {self.scan_hash_batches}',
         ])
         return '\n'.join(lines) + '\n'
 
@@ -199,6 +202,13 @@ class TemporalStoreKV:
         if count_key is not None and count_value is not None:
             self.put_string(count_key, count_value)
 
+    def scan_hash(self, key: str) -> Json:
+        scan_hash = getattr(self.client, 'scan_hash', None)
+        if callable(scan_hash):
+            result = scan_hash(key)
+            return result if isinstance(result, dict) else {}
+        return {}
+
 
 class LocalJsonKV:
     """Small test backend with TemporalStore-like string/hash operations."""
@@ -209,6 +219,7 @@ class LocalJsonKV:
         self.batch_hget_calls = 0
         self.batch_hset_calls = 0
         self.matrixark_append_records_calls = 0
+        self.scan_hash_calls = 0
         if path.exists():
             self.data = json.loads(path.read_text(encoding='utf-8'))
         else:
@@ -280,6 +291,10 @@ class LocalJsonKV:
         self.batch_hset(entries)
         if count_key is not None and count_value is not None:
             self.put_string(count_key, count_value)
+
+    def scan_hash(self, key: str) -> Json:
+        self.scan_hash_calls += 1
+        return dict(self.data['hashes'].get(key, {}))
 
 
 class MatrixKVRecordLog:
@@ -358,17 +373,71 @@ class MatrixKVRecordLog:
         except Exception as exc:
             return sequence, None, exc
 
-    def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
+    def source_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> tuple[Iterable[tuple[int, str | None]], str]:
         count = self.count()
         if count > 0:
             stop = min(count, end_seq if end_seq is not None else count)
-            for sequence in range(max(0, start_seq), stop):
-                yield sequence, self.read_at(sequence)
-            return
+            return ((sequence, None) for sequence in range(max(0, start_seq), stop)), 'record_count'
         index = self.legacy_index()
-        stop = min(len(index), end_seq if end_seq is not None else len(index))
-        for sequence in range(max(0, start_seq), stop):
-            yield sequence, self.read_legacy(index[sequence])
+        if index:
+            stop = min(len(index), end_seq if end_seq is not None else len(index))
+            return ((sequence, index[sequence]) for sequence in range(max(0, start_seq), stop)), 'record_index'
+        scan_hash = getattr(self.kv, 'scan_hash', None)
+        if callable(scan_hash):
+            return self._scan_sharded_refs(start_seq=max(0, start_seq), end_seq=end_seq, max_empty_scan_shards=max_empty_scan_shards), 'scan_hash'
+        return iter(()), 'empty'
+
+    def _scan_sharded_refs(self, *, start_seq: int, end_seq: int | None, max_empty_scan_shards: int) -> Iterable[tuple[int, str | None]]:
+        first_shard = start_seq // self.shard_size
+        last_shard = (end_seq - 1) // self.shard_size if end_seq is not None and end_seq > 0 else None
+        empty_seen = 0
+        shard = first_shard
+        while True:
+            if last_shard is not None and shard > last_shard:
+                break
+            payload = self.kv.scan_hash(f'{self.prefix}:records:{shard:06d}')
+            fields = self._scan_hash_fields(payload)
+            if not fields:
+                empty_seen += 1
+                if last_shard is None and empty_seen >= max_empty_scan_shards:
+                    break
+            else:
+                empty_seen = 0
+                for field in fields:
+                    try:
+                        offset = int(field)
+                    except ValueError:
+                        continue
+                    sequence = shard * self.shard_size + offset
+                    if sequence < start_seq:
+                        continue
+                    if end_seq is not None and sequence >= end_seq:
+                        continue
+                    yield sequence, None
+            shard += 1
+
+    @staticmethod
+    def _scan_hash_fields(payload: Json) -> list[str]:
+        if not payload:
+            return []
+        if isinstance(payload.get('fields'), dict):
+            return sorted(str(field) for field in payload['fields'].keys())
+        if isinstance(payload.get('records'), dict):
+            return sorted(str(field) for field in payload['records'].keys())
+        if isinstance(payload.get('items'), list):
+            fields = []
+            for item in payload['items']:
+                if isinstance(item, dict) and 'field' in item:
+                    fields.append(str(item.get('field') or ''))
+                elif isinstance(item, (list, tuple)) and item:
+                    fields.append(str(item[0]))
+            return sorted(field for field in fields if field)
+        return sorted(str(field) for field in payload.keys())
+
+    def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
+        refs, _ = self.source_refs(start_seq=start_seq, end_seq=end_seq, max_empty_scan_shards=1)
+        for sequence, legacy_record_id in refs:
+            yield sequence, self.read_at(sequence) if legacy_record_id is None else self.read_legacy(legacy_record_id)
 
 
 class MatrixKVBackfillTarget:
@@ -585,6 +654,8 @@ def run_backfill(args: argparse.Namespace) -> Json:
         if not batch:
             return
         metrics.source_batches += 1
+        if scan_mode == 'scan_hash':
+            metrics.scan_hash_batches += 1
         for sequence, raw_record, read_error in source.read_many(batch):
             metrics.scanned += 1
             if read_error is not None:
@@ -592,14 +663,11 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 continue
             process_raw_record(sequence, raw_record or {})
 
-    count = source.count()
-    if count > 0:
-        stop = min(count, args.end_seq if args.end_seq is not None else count)
-        source_items = ((sequence, None) for sequence in range(start_seq, stop))
-    else:
-        legacy_index = source.legacy_index()
-        stop = min(len(legacy_index), args.end_seq if args.end_seq is not None else len(legacy_index))
-        source_items = ((sequence, legacy_index[sequence]) for sequence in range(start_seq, stop))
+    source_items, scan_mode = source.source_refs(
+        start_seq=start_seq,
+        end_seq=args.end_seq,
+        max_empty_scan_shards=args.source_scan_max_empty_shards,
+    )
 
     if outer_bulk:
         kv.begin_bulk()
@@ -737,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--start-seq', type=int, default=0)
     parser.add_argument('--end-seq', type=int)
     parser.add_argument('--batch-size', type=int, default=256)
+    parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
     parser.add_argument('--resume', type=int, choices=[0, 1], default=1)
     parser.add_argument('--fail-fast', action='store_true')
@@ -754,6 +823,8 @@ def main() -> int:
     args.skip_validation = bool(args.skip_validation)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
+    if args.source_scan_max_empty_shards <= 0:
+        parser.error('--source-scan-max-empty-shards must be positive')
     try:
         if args.mode == 'validate_shadow':
             summary = run_validate_shadow(args)
