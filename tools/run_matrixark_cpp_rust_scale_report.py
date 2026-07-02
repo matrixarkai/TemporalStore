@@ -199,14 +199,48 @@ PAGE_BLOCK_METRIC_NAMES = [
     "compaction_watermark",
 ]
 
+STORAGE_READ_SEQUENCE_STEPS = [
+    "logical_key_timestamp_range",
+    "page_index_lookup",
+    "page_address_list",
+    "block_index_lookup",
+    "page_read",
+    "decode_records",
+]
+
+STORAGE_COLD_SCAN_SEQUENCE_STEPS = [
+    "timestamp_page_index_scan",
+    "no_cache_page_read",
+    "bounded_decode",
+    "no_hot_cache_promotion",
+]
+
+STORAGE_LIFECYCLE_PHASE_NAMES = [
+    "prepare",
+    "reclaim",
+    "evict",
+    "expire",
+    "page_gc",
+    "block_gc",
+    "compaction",
+    "index_gc",
+    "delayed_destroy",
+    "follower_cursor_safety",
+    "watermark_progress",
+]
+
 STORAGE_LIFECYCLE_METRIC_NAMES = [
     "storage_manager_prepare_count",
     "storage_manager_reclaim_count",
     "storage_manager_evict_count",
     "storage_manager_expire_count",
     "storage_manager_page_gc_count",
+    "storage_manager_block_gc_count",
     "storage_manager_compaction_count",
     "storage_manager_index_gc_count",
+    "storage_manager_delayed_destroy_count",
+    "storage_manager_follower_cursor_safety_count",
+    "storage_manager_watermark_progress_count",
     "storage_manager_loop_ms",
     "stream_rollover_count",
     "storage_zone_total_bytes",
@@ -1858,6 +1892,36 @@ def write_report(path: Path, report: Json) -> None:
     lines.extend(
         [
             "",
+            "## Required Storage Read Sequence",
+            "",
+            "Normal reads must report this canonical sequence before storage read-path parity claims are accepted:",
+            "",
+        ]
+    )
+    lines.extend(f"{index}. `{name}`" for index, name in enumerate(STORAGE_READ_SEQUENCE_STEPS, start=1))
+    lines.extend(
+        [
+            "",
+            "## Required Storage Cold Scan Sequence",
+            "",
+            "Cold scans must report this canonical no-promote sequence before cold lifecycle parity claims are accepted:",
+            "",
+        ]
+    )
+    lines.extend(f"{index}. `{name}`" for index, name in enumerate(STORAGE_COLD_SCAN_SEQUENCE_STEPS, start=1))
+    lines.extend(
+        [
+            "",
+            "## Required Storage Lifecycle Phases",
+            "",
+            "StorageManager/StoreManager reports must cover these phases before stream/zone/eviction/GC/reclaim parity claims are accepted:",
+            "",
+        ]
+    )
+    lines.extend(f"- `{name}`" for name in STORAGE_LIFECYCLE_PHASE_NAMES)
+    lines.extend(
+        [
+            "",
             "## Required Storage Lifecycle Metrics",
             "",
             "Both C++ and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
@@ -2236,6 +2300,9 @@ def main() -> int:
             "storage_options": parsed.storage_options,
             "effective_storage_tuning": effective_storage_tuning_from_env(),
             "required_page_block_metrics": PAGE_BLOCK_METRIC_NAMES,
+            "required_storage_read_sequence": STORAGE_READ_SEQUENCE_STEPS,
+            "required_storage_cold_scan_sequence": STORAGE_COLD_SCAN_SEQUENCE_STEPS,
+            "required_storage_lifecycle_phases": STORAGE_LIFECYCLE_PHASE_NAMES,
             "required_storage_lifecycle_metrics": STORAGE_LIFECYCLE_METRIC_NAMES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,

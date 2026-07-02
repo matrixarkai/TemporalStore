@@ -28,8 +28,12 @@ REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "storage_manager_evict_count",
     "storage_manager_expire_count",
     "storage_manager_page_gc_count",
+    "storage_manager_block_gc_count",
     "storage_manager_compaction_count",
     "storage_manager_index_gc_count",
+    "storage_manager_delayed_destroy_count",
+    "storage_manager_follower_cursor_safety_count",
+    "storage_manager_watermark_progress_count",
     "storage_manager_loop_ms",
     "stream_rollover_count",
     "storage_zone_total_bytes",
@@ -48,6 +52,36 @@ REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "physical_reclaim_errors",
     "append_watermark",
     "compaction_watermark",
+]
+
+REQUIRED_STORAGE_READ_SEQUENCE = [
+    "logical_key_timestamp_range",
+    "page_index_lookup",
+    "page_address_list",
+    "block_index_lookup",
+    "page_read",
+    "decode_records",
+]
+
+REQUIRED_STORAGE_COLD_SCAN_SEQUENCE = [
+    "timestamp_page_index_scan",
+    "no_cache_page_read",
+    "bounded_decode",
+    "no_hot_cache_promotion",
+]
+
+REQUIRED_STORAGE_LIFECYCLE_PHASES = [
+    "prepare",
+    "reclaim",
+    "evict",
+    "expire",
+    "page_gc",
+    "block_gc",
+    "compaction",
+    "index_gc",
+    "delayed_destroy",
+    "follower_cursor_safety",
+    "watermark_progress",
 ]
 
 REQUIRED_CONFIG_FIELDS = [
@@ -139,6 +173,29 @@ def _dig_config(report: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _dig_sequence(report: dict[str, Any], key: str) -> list[str]:
+    candidates = [
+        report.get(key),
+        report.get("storage_lifecycle", {}).get(key) if isinstance(report.get("storage_lifecycle"), dict) else None,
+        report.get("storage_sequences", {}).get(key) if isinstance(report.get("storage_sequences"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
+            return candidate
+    return []
+
+
+def _dig_lifecycle_phases(report: dict[str, Any]) -> list[str]:
+    candidates = [
+        report.get("storage_lifecycle_phases"),
+        report.get("storage_lifecycle", {}).get("phases") if isinstance(report.get("storage_lifecycle"), dict) else None,
+    ]
+    for candidate in candidates:
+        if isinstance(candidate, list) and all(isinstance(item, str) for item in candidate):
+            return candidate
+    return []
+
+
 def _as_number(value: Any) -> float | None:
     if isinstance(value, bool):
         return None
@@ -195,16 +252,31 @@ def validate_contract_and_runner() -> list[str]:
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
     runner_metrics = _extract_runner_list("STORAGE_LIFECYCLE_METRIC_NAMES")
+    runner_read_sequence = _extract_runner_list("STORAGE_READ_SEQUENCE_STEPS")
+    runner_cold_scan_sequence = _extract_runner_list("STORAGE_COLD_SCAN_SEQUENCE_STEPS")
+    runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
             failures.append(f"contract missing canonical public field `{name}`")
     if runner_metrics != REQUIRED_STORAGE_LIFECYCLE_METRICS:
         failures.append("runner:STORAGE_LIFECYCLE_METRIC_NAMES does not match the canonical lifecycle metric order")
+    if runner_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
+        failures.append("runner:STORAGE_READ_SEQUENCE_STEPS does not match the canonical read sequence")
+    if runner_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+        failures.append("runner:STORAGE_COLD_SCAN_SEQUENCE_STEPS does not match the canonical cold scan sequence")
+    if runner_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
+        failures.append("runner:STORAGE_LIFECYCLE_PHASE_NAMES does not match the canonical lifecycle phase order")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing lifecycle metric `{metric}`")
         if metric not in runner_metrics:
             failures.append(f"runner missing lifecycle metric `{metric}`")
+    for step in REQUIRED_STORAGE_READ_SEQUENCE + REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+        if f"`{step}`" not in contract_text:
+            failures.append(f"contract missing storage sequence step `{step}`")
+    for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
+        if f"`{phase}`" not in contract_text:
+            failures.append(f"contract missing lifecycle phase `{phase}`")
     return failures
 
 
@@ -216,6 +288,12 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_config = _dig_config(rust_report)
     cpp_public_shape = _normalize_public_storage_shape(cpp_report)
     rust_public_shape = _normalize_public_storage_shape(rust_report)
+    cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
+    rust_read_sequence = _dig_sequence(rust_report, "storage_read_sequence")
+    cpp_cold_scan_sequence = _dig_sequence(cpp_report, "storage_cold_scan_sequence")
+    rust_cold_scan_sequence = _dig_sequence(rust_report, "storage_cold_scan_sequence")
+    cpp_lifecycle_phases = _dig_lifecycle_phases(cpp_report)
+    rust_lifecycle_phases = _dig_lifecycle_phases(rust_report)
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
@@ -230,6 +308,19 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"cpp metrics missing `{metric}`")
         if metric not in rust_metrics:
             failures.append(f"rust metrics missing `{metric}`")
+
+    if cpp_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
+        failures.append(f"cpp storage_read_sequence drift: {cpp_read_sequence!r}")
+    if rust_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
+        failures.append(f"rust storage_read_sequence drift: {rust_read_sequence!r}")
+    if cpp_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+        failures.append(f"cpp storage_cold_scan_sequence drift: {cpp_cold_scan_sequence!r}")
+    if rust_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+        failures.append(f"rust storage_cold_scan_sequence drift: {rust_cold_scan_sequence!r}")
+    if cpp_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
+        failures.append(f"cpp storage_lifecycle_phases drift: {cpp_lifecycle_phases!r}")
+    if rust_lifecycle_phases != REQUIRED_STORAGE_LIFECYCLE_PHASES:
+        failures.append(f"rust storage_lifecycle_phases drift: {rust_lifecycle_phases!r}")
 
     for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
         for path, key in _walk_public_keys(report):
@@ -299,6 +390,9 @@ def main() -> int:
         return 1
 
     print("storage lifecycle parity contract passed:")
+    print("- storage_read_sequence=" + " -> ".join(REQUIRED_STORAGE_READ_SEQUENCE))
+    print("- storage_cold_scan_sequence=" + " -> ".join(REQUIRED_STORAGE_COLD_SCAN_SEQUENCE))
+    print("- storage_lifecycle_phases=" + ", ".join(REQUIRED_STORAGE_LIFECYCLE_PHASES))
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
     if validated_pair:
