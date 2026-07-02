@@ -21,6 +21,16 @@ try:
     from tools.matrixark_mcp_core import _mcp_debug_log
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
+    from tools.matrixark_mcp_backends import (
+        add_backend_arguments,
+        backend_ready_required,
+        build_mcp_adapter,
+        default_mcp_backend,
+        ensure_startup_backend_ready,
+        production_profile_enabled,
+        validate_mcp_backend_policy,
+    )
+    from tools.matrixark_mcp_dispatch import dispatch_matrixark_tool
     from tools.matrixark_mcp_admin import is_admin_tool
     from tools.matrixark_mcp_ingestion import is_ingestion_tool
     from tools.matrixark_mcp_requests import normalize_mcp_tool_request
@@ -31,6 +41,16 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import _mcp_debug_log
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
+    from matrixark_mcp_backends import (
+        add_backend_arguments,
+        backend_ready_required,
+        build_mcp_adapter,
+        default_mcp_backend,
+        ensure_startup_backend_ready,
+        production_profile_enabled,
+        validate_mcp_backend_policy,
+    )
+    from matrixark_mcp_dispatch import dispatch_matrixark_tool
     from matrixark_mcp_admin import is_admin_tool
     from matrixark_mcp_ingestion import is_ingestion_tool
     from matrixark_mcp_requests import normalize_mcp_tool_request
@@ -468,212 +488,7 @@ class MatrixArkMcpServer:
             raise MatrixArkError(str(exc))
 
     def _call_tool_dispatch(self, name: str, args: Json, hook: Json | None, identity: Json, request_deadline_ms: int) -> Json:
-            if name == "matrixark_backend_ready":
-                started_perf = time.perf_counter()
-                try:
-                    result = adapter_ensure_backend_ready(
-                        self.adapter,
-                        reason=str(args.get("reason") or "manual"),
-                        probe=bool(args.get("probe", True)),
-                        timeout_ms=args.get("timeout_ms"),
-                    )
-                except Exception as exc:
-                    self.metrics.observe_operation("backend_ready", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    self.metrics.observe_backend_ready(False, "error")
-                    raise
-                status = "ok" if result.get("status") == "ready" else "topology_not_ready"
-                self.metrics.observe_operation("backend_ready", "ok", (time.perf_counter() - started_perf) * 1000.0)
-                self.metrics.observe_backend_ready(result.get("status") == "ready", str(result.get("status") or status))
-                self.access.append_audit(
-                    "backend.ready",
-                    identity,
-                    status=status,
-                    details={"backend": result.get("backend"), "attempts": result.get("attempts")},
-                )
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_backend_metrics":
-                started_perf = time.perf_counter()
-                try:
-                    result = self._merge_service_prometheus(self.adapter.backend_metrics())
-                except Exception as exc:
-                    self.metrics.observe_operation("backend_metrics", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                self.metrics.observe_operation("backend_metrics", "ok", (time.perf_counter() - started_perf) * 1000.0)
-                self.access.append_audit(
-                    "backend.metrics",
-                    identity,
-                    status="ok",
-                    details={"backend": result.get("backend"), "metrics_format": result.get("metrics_format")},
-                )
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_ingest":
-                started_perf = time.perf_counter()
-                try:
-                    result = self.adapter.ingest(args, hook=hook)
-                except Exception as exc:
-                    self.metrics.observe_operation("ingest", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                self.metrics.observe_operation("ingest", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
-                self._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
-                self.metrics.observe_ingest_result(result)
-                self.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
-                response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_batch_extract":
-                started_perf = time.perf_counter()
-                try:
-                    result = self.adapter.batch_extract(args, hook=hook)
-                except Exception as exc:
-                    self.metrics.observe_operation("batch_extract", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                self.metrics.observe_operation("batch_extract", "ok", (time.perf_counter() - started_perf) * 1000.0)
-                self.access.append_audit("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")})
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_session_commit":
-                result = self.adapter.session_commit(args, hook=hook)
-                self.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_refresh_summaries":
-                started_perf = time.perf_counter()
-                try:
-                    result = self.adapter.refresh_summaries(args)
-                except Exception as exc:
-                    self.metrics.observe_operation("summary_refresh", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
-                self.access.append_audit("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")})
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_retrieve":
-                started_perf = time.perf_counter()
-                effective_retrieve_deadline_ms = int(args.get("deadline_ms") or request_deadline_ms or 0)
-                if effective_retrieve_deadline_ms > 0 and "deadline_ms" not in args:
-                    args["deadline_ms"] = effective_retrieve_deadline_ms
-                try:
-                    result = self.adapter.retrieve(args)
-                except Exception as exc:
-                    elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                    timeout = is_retryable_temporalstore_error(exc) or (request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
-                    self.metrics.observe_operation("retrieve", "error", elapsed_ms, timeout=timeout)
-                    if timeout:
-                        result = self._retrieve_timeout_fallback(args, deadline_ms=effective_retrieve_deadline_ms or request_deadline_ms, elapsed_ms=elapsed_ms, reason="request_deadline_exception")
-                        result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["request_deadline_exception"]
-                        result["request_deadline_ms"] = request_deadline_ms
-                        result["request_elapsed_ms"] = round(elapsed_ms, 3)
-                        result["partial_context_pack"] = True
-                        self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)
-                        self.metrics.observe_retrieve_result(result)
-                        self.access.append_audit("context.retrieve", identity, status="timeout_partial", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
-                        return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
-                    raise
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                timeout = request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms
-                if timeout and not (result.get("partial_context_pack") or result.get("partial")):
-                    result = self._retrieve_timeout_fallback(args, deadline_ms=effective_retrieve_deadline_ms or request_deadline_ms, elapsed_ms=elapsed_ms, reason="request_deadline_after_retrieve")
-                    result["quality_warnings"] = list(result.get("quality_warnings", [])) + ["request_deadline_after_retrieve"]
-                    result["partial_context_pack"] = True
-                result["request_deadline_ms"] = request_deadline_ms
-                result["request_elapsed_ms"] = round(elapsed_ms, 3)
-                self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=timeout)
-                self.metrics.observe_retrieve_result(result)
-                self.access.append_audit("context.retrieve", identity, status="timeout_partial" if timeout else "ok", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
-                return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
-            if name == "matrixark_ingestion_dashboard":
-                result = self.adapter.ingestion_dashboard(args)
-                self.access.append_audit("context.ingestion_dashboard", identity, status="ok", details={"table": result.get("table"), "total": result.get("total")})
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_auth_signup":
-                result = self.access.signup(args, identity)
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_auth_sso_login":
-                result = self.access.sso_login(args, identity)
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_auth_sso_callback":
-                result = self.access.sso_callback(args, identity)
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_management_portal":
-                result = self.access.management_portal(args, identity)
-                self.access.append_audit("admin.management_portal", identity, status="ok", details={"account_id": result.get("account_id"), "tenant_id": result.get("tenant_id")})
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_list_resources":
-                result = self.adapter.list_resources(args)
-                self.access.append_audit("resource.list", identity, status="ok", details={"count": result.get("count")})
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_list_skills":
-                result = self.adapter.list_skills(args)
-                self.access.append_audit("skill.list", identity, status="ok", details={"count": result.get("count")})
-                return {**result, "access": args.get("_matrixark_auth", {})}
-            if name == "matrixark_update_skill":
-                result = self.adapter.update_skill(args)
-                self.access.append_audit("skill.update", identity, status="ok", details={"skill_hash": result.get("skill_hash"), "skill_status": result.get("status")})
-                response = {**result, "access": args.get("_matrixark_auth", {})}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_feedback":
-                started_perf = time.perf_counter()
-                try:
-                    result = self.adapter.feedback(args, hook=hook)
-                except Exception as exc:
-                    self.metrics.observe_operation("feedback", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                self.metrics.observe_operation("feedback", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
-                self._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
-                self.access.append_audit("context.feedback", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
-                response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_replay":
-                started_perf = time.perf_counter()
-                try:
-                    result = self.adapter.replay(args)
-                except Exception as exc:
-                    self.metrics.observe_operation("replay", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
-                    raise
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                self.metrics.observe_operation("replay", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
-                self._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
-                self.access.append_audit("context.replay", identity, status="ok", details={"context_pack_id": args.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
-                return {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
-            if name == "matrixark_admin_create_account":
-                response = self.access.create_account(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_update_account":
-                response = self.access.update_account(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_list_accounts":
-                return self.access.list_accounts(args, identity)
-            if name == "matrixark_admin_create_user":
-                response = self.access.create_user(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_update_user":
-                response = self.access.update_user(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_list_users":
-                return self.access.list_users(args, identity)
-            if name == "matrixark_admin_create_api_key":
-                response = self.access.create_api_key(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_apply_api_key":
-                response = self.access.apply_api_key(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_list_api_keys":
-                return self.access.list_api_keys(args, identity)
-            if name == "matrixark_admin_rotate_api_key":
-                response = self.access.rotate_api_key(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_revoke_api_key":
-                response = self.access.revoke_api_key(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_map_sso_user":
-                response = self.access.map_sso_user(args, identity)
-                return self._finalize_write_response(name, args, identity, hook, response)
-            if name == "matrixark_admin_audit":
-                return self.access.audit(args, identity)
-            raise MatrixArkError(f"unsupported tool {name!r}")
+        return dispatch_matrixark_tool(self, name, args, hook, identity, request_deadline_ms)
 
     def read_message(self) -> Json | None:
         if self.line_json:
@@ -790,24 +605,7 @@ def validate_mcp_backend_policy(args: argparse.Namespace) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--backend",
-        choices=["local", "temporalstore-local", "temporalstore-direct", "temporalstore-rust"],
-        default=default_mcp_backend(),
-        help="Storage backend. local uses JSONL; temporalstore-local uses a no-metaserver local TemporalStore-shaped record log; temporalstore-direct uses the native C++ TemporalStore SDK.",
-    )
-    parser.add_argument(
-        "--event-log",
-        type=Path,
-        default=Path("/tmp/matrixark-mcp-events.jsonl"),
-        help="JSONL event log used by the local adapter.",
-    )
-    parser.add_argument(
-        "--local-store",
-        type=Path,
-        default=Path(os.environ.get("MATRIXARK_TEMPORALSTORE_LOCAL_STORE", "/tmp/matrixark-mcp-temporalstore-local.jsonl")),
-        help="Persistent local record log for --backend temporalstore-local. This mode does not require metaserver.",
-    )
+    add_backend_arguments(parser)
     parser.add_argument(
         "--line-json",
         action="store_true",
@@ -836,79 +634,10 @@ def main() -> int:
         default=os.environ.get("MATRIXARK_ACCESS_MODE", "dev"),
         help="dev allows omitted API keys for local testing; enforced requires scoped MatrixArk API keys.",
     )
-    parser.add_argument(
-        "--metaserver",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_METASERVER", "127.0.0.1:18000"),
-        help="C++ TemporalStore metaserver address for --backend temporalstore-direct.",
-    )
-    parser.add_argument(
-        "--namespace",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_NAMESPACE", "deploy_ns"),
-        help="TemporalStore namespace for --backend temporalstore-direct.",
-    )
-    parser.add_argument(
-        "--table",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_TABLE", "deploy_table"),
-        help="TemporalStore table for --backend temporalstore-direct.",
-    )
-    parser.add_argument(
-        "--temporalstore-lib",
-        default=os.environ.get("TEMPORALSTORE_LIB", ""),
-        help="Path to libbcache2.so for --backend temporalstore-direct.",
-    )
-    parser.add_argument(
-        "--storage-prefix",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_PREFIX", "matrixark:mcp"),
-        help="TemporalStore key prefix for MatrixArk records.",
-    )
-    parser.add_argument(
-        "--rust-cli",
-        default=os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_CLI", ""),
-        help="Path to the Rust matrixark_gateway or matrixark_record_log binary for --backend temporalstore-rust.",
-    )
-    parser.add_argument(
-        "--request-timeout-ms",
-        type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")),
-        help="Per-request timeout for the native C++ TemporalStore SDK.",
-    )
-    parser.add_argument(
-        "--io-timeout-ms",
-        type=int,
-        default=int(os.environ.get("MATRIXARK_TEMPORALSTORE_IO_TIMEOUT_MS", "20000")),
-        help="BRPC I/O timeout for the native C++ TemporalStore SDK.",
-    )
     args = parser.parse_args()
     _mcp_debug_log(f"main: parsed backend={args.backend} metaserver={args.metaserver}")
-    validate_mcp_backend_policy(args)
-    if args.backend == "temporalstore-direct":
-        adapter = MatrixArkTemporalStoreDirectAdapter(
-            metaserver=args.metaserver,
-            namespace=args.namespace,
-            table=args.table,
-            library_path=args.temporalstore_lib,
-            storage_prefix=args.storage_prefix,
-            request_timeout_ms=args.request_timeout_ms,
-            io_timeout_ms=args.io_timeout_ms,
-        )
-    elif args.backend == "temporalstore-rust":
-        adapter = MatrixArkTemporalStoreRustAdapter(
-            rust_cli=args.rust_cli,
-            metaserver=args.metaserver,
-            namespace=args.namespace,
-            table=args.table,
-            storage_prefix=args.storage_prefix,
-            request_timeout_ms=args.request_timeout_ms,
-            io_timeout_ms=args.io_timeout_ms,
-        )
-    elif args.backend == "temporalstore-local":
-        adapter = MatrixArkLocalAdapter(args.local_store)
-    else:
-        adapter = MatrixArkLocalAdapter(args.event_log)
-    if backend_ready_required(args.backend):
-        readiness = adapter_ensure_backend_ready(adapter, reason="mcp_startup", probe=True)
-        if readiness.get("status") != "ready":
-            raise MatrixArkError(f"MatrixArk MCP backend not ready at startup: {json.dumps(readiness, sort_keys=True)}")
+    adapter = build_mcp_adapter(args)
+    ensure_startup_backend_ready(adapter, args.backend)
     _mcp_debug_log("main: adapter ready; serving")
     mcp_server = MatrixArkMcpServer(adapter, line_json=args.line_json, access_mode=args.access_mode)
     if args.http_port:
