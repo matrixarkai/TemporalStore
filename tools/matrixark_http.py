@@ -50,6 +50,25 @@ def _http_api_key(headers: Any, args: Json) -> None:
         args.setdefault("api_key", header_key.strip())
 
 
+def _http_cloud_mode(server: Any) -> bool:
+    mode = os.environ.get("MATRIXARK_HTTP_MODE", "").strip().lower()
+    if mode in {"cloud", "prod", "production"}:
+        return True
+    return getattr(getattr(server, "access", None), "mode", "dev") == "enforced"
+
+
+def _http_trusted_gateway(headers: Any) -> bool:
+    if not headers:
+        return False
+    trusted = headers.get("X-MatrixArk-Trusted-Gateway", "") or headers.get("X-MatrixArk-Gateway-Verified", "")
+    return str(trusted).strip().lower() in {"1", "true", "yes", "trusted"}
+
+
+def _http_has_auth(headers: Any, args: Json) -> bool:
+    _http_api_key(headers, args)
+    return bool(args.get("api_key")) or _http_trusted_gateway(headers)
+
+
 HTTP_TOOL_ROUTES: dict[str, str] = {
     "/api/management_portal": "matrixark_management_portal",
     "/api/ingestion_dashboard": "matrixark_ingestion_dashboard",
@@ -74,6 +93,7 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
 
     class MatrixArkHttpHandler(SimpleHTTPRequestHandler):
         server_version = "MatrixArkPortal/0.1"
+        cloud_mode = _http_cloud_mode(server)
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, directory=str(static_root), **kwargs)
@@ -82,8 +102,14 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
             _mcp_debug_log("http " + format % args)
 
         def end_headers(self) -> None:
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-MatrixArk-API-Key")
+            if self.cloud_mode:
+                self.send_header("Access-Control-Allow-Origin", os.environ.get("MATRIXARK_HTTP_ALLOWED_ORIGIN", "https://app.matrixark.ai"))
+            else:
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, X-MatrixArk-API-Key, X-MatrixArk-Trusted-Gateway, X-MatrixArk-Gateway-Verified",
+            )
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             super().end_headers()
 
@@ -113,6 +139,16 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
 
         def _call_tool_route(self, tool_name: str, args: Json) -> None:
             try:
+                if self.cloud_mode and not _http_has_auth(self.headers, args):
+                    self._write_json(
+                        401,
+                        {
+                            "status": "error",
+                            "tool": tool_name,
+                            "error": "MatrixArk cloud HTTP API requires bearer API key or trusted gateway authentication",
+                        },
+                    )
+                    return
                 _http_api_key(self.headers, args)
                 result = server.call_tool(tool_name, args)
                 self._write_json(200, {"status": "ok", "tool": tool_name, "result": result})
@@ -154,4 +190,3 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
             self._write_json(404, {"status": "error", "error": f"unknown API path {parsed.path}"})
 
     return MatrixArkHttpHandler
-

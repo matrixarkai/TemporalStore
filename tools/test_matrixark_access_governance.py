@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 from matrixark_mcp_server import MatrixArkLocalAdapter, MatrixArkMcpServer, MatrixArkError, make_matrixark_http_handler
@@ -456,6 +457,69 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
             httpd.shutdown()
             httpd.server_close()
             thread.join(timeout=5)
+
+    def test_http_cloud_mode_requires_auth_or_trusted_gateway_and_restricts_cors(self) -> None:
+        saved = {key: os.environ.get(key) for key in ["MATRIXARK_HTTP_MODE", "MATRIXARK_HTTP_ALLOWED_ORIGIN"]}
+        os.environ["MATRIXARK_HTTP_MODE"] = "cloud"
+        os.environ["MATRIXARK_HTTP_ALLOWED_ORIGIN"] = "https://console.matrixark.test"
+        try:
+            server = self.make_server()
+            handler = make_matrixark_http_handler(
+                server,
+                Path(__file__).resolve().parents[1] / "tools" / "temporalstore-monitoring-ui",
+            )
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            base_url = f"http://127.0.0.1:{httpd.server_address[1]}"
+
+            def post(path: str, payload: dict, headers: dict | None = None) -> tuple[int, dict, str]:
+                body = json.dumps(payload).encode("utf-8")
+                req = Request(
+                    base_url + path,
+                    data=body,
+                    headers={"Content-Type": "application/json", **(headers or {})},
+                    method="POST",
+                )
+                try:
+                    with urlopen(req, timeout=10) as response:
+                        return response.status, json.loads(response.read().decode("utf-8")), response.headers.get("Access-Control-Allow-Origin", "")
+                except HTTPError as exc:
+                    return exc.code, json.loads(exc.read().decode("utf-8")), exc.headers.get("Access-Control-Allow-Origin", "")
+
+            try:
+                status, body, origin = post("/api/management_portal", {"arguments": {}})
+                self.assertEqual(401, status)
+                self.assertEqual("https://console.matrixark.test", origin)
+                self.assertIn("requires bearer API key", body["error"])
+
+                status, body, origin = post(
+                    "/api/auth/sso_callback",
+                    {
+                        "arguments": {
+                            "trusted_gateway": True,
+                            "provider": "github",
+                            "external_user_id": "gh-cloud",
+                            "account_id": "acct_cloud",
+                            "tenant_id": "tenant_cloud",
+                            "matrixark_user_id": "alice",
+                        }
+                    },
+                    headers={"X-MatrixArk-Trusted-Gateway": "true"},
+                )
+                self.assertEqual(200, status)
+                self.assertEqual("ok", body["status"])
+                self.assertEqual("https://console.matrixark.test", origin)
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=5)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
 
 
 if __name__ == "__main__":

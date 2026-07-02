@@ -41,11 +41,50 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         metrics_mod = importlib.import_module("tools.matrixark_mcp_metrics")
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
+        admin_mod = importlib.import_module("tools.matrixark_mcp_admin")
+        ingestion_mod = importlib.import_module("tools.matrixark_mcp_ingestion")
+        retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
+        requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
 
         self.assertIs(server_mod.MatrixArkServiceMetrics, metrics_mod.MatrixArkServiceMetrics)
         self.assertIs(server_mod.MatrixArkLocalAdapter, local_mod.MatrixArkLocalAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreDirectAdapter, temporal_mod.MatrixArkTemporalStoreDirectAdapter)
         self.assertIs(server_mod.MatrixArkTemporalStoreRustAdapter, temporal_mod.MatrixArkTemporalStoreRustAdapter)
+        self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
+        self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))
+        self.assertTrue(admin_mod.is_admin_tool("matrixark_management_portal"))
+        self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
+
+    def test_pyproject_exposes_matrixark_console_scripts(self) -> None:
+        pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+        self.assertIn('matrixark-mcp-server = "tools.matrixark_mcp_server:main"', pyproject_text)
+        self.assertIn('matrixark-http-portal = "tools.matrixark_admin:http_portal_main"', pyproject_text)
+        self.assertIn('matrixark-agent-hook = "tools.matrixark_agent_hook:main"', pyproject_text)
+        self.assertIn('matrixark-admin = "tools.matrixark_admin:main"', pyproject_text)
+
+    def test_request_boundary_generates_idempotency_and_validates_storage(self) -> None:
+        requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
+        args = requests_mod.normalize_mcp_tool_request(
+            "matrixark_ingest",
+            {
+                "messages": [{"role": "user", "content": "Alice approved the GPU budget."}],
+                "storage_options": {"route": "raft_async"},
+                "agent_name": "codex",
+            },
+            write_tools={"matrixark_ingest"},
+        )
+        self.assertRegex(args["idempotency_key"], r"^auto:matrixark_ingest:")
+        self.assertEqual("raft", args["storage_options"]["storage_family"])
+        self.assertEqual("async", args["storage_options"]["write_mode"])
+        self.assertEqual("acct_local", args["scope"]["account_id"])
+        self.assertEqual("tenant_codex", args["scope"]["tenant_id"])
+
+        with self.assertRaises(Exception):
+            requests_mod.normalize_mcp_tool_request(
+                "matrixark_ingest",
+                {"messages": [{"role": "user", "content": "bad"}], "storage_options": {"route": "not_real"}},
+                write_tools={"matrixark_ingest"},
+            )
 
     def test_core_module_has_no_duplicate_top_level_symbols(self) -> None:
         module_path = TOOLS_DIR / "matrixark_mcp_core.py"
@@ -160,6 +199,8 @@ class MatrixArkMcpProtocolHardeningTest(unittest.TestCase):
         result = server.call_tool("matrixark_ingest", args)
         self.assertIn(result["status"], {"accepted", "ok"})
         self.assertIn("event_id_hash", result)
+        self.assertIsInstance(result["idempotency_key_hash"], int)
+        self.assertFalse(result["idempotent_replay"])
         self.assertIn("agent_hook", args)
 
     def test_retrieval_audit_is_off_by_default(self) -> None:

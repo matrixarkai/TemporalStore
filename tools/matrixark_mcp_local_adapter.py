@@ -3797,7 +3797,12 @@ class MatrixArkLocalAdapter:
         audit_mode = str(args.get("audit_mode") or os.environ.get("MATRIXARK_CONTEXT_AUDIT_MODE", "telemetry_only")).strip().lower()
         if audit_mode not in {"full", "telemetry_only", "off"}:
             raise MatrixArkError("audit_mode must be full, telemetry_only, or off")
-        raw_audit_sample_rate = args.get("audit_sample_rate", os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01))
+        if "audit_sample_rate" in args:
+            raw_audit_sample_rate = args.get("audit_sample_rate")
+        elif audit_mode == "full":
+            raw_audit_sample_rate = 1.0
+        else:
+            raw_audit_sample_rate = os.environ.get("MATRIXARK_CONTEXT_AUDIT_SAMPLE_RATE", 0.01)
         try:
             audit_sample_rate = clamp01(float(raw_audit_sample_rate))
         except (TypeError, ValueError):
@@ -4992,7 +4997,7 @@ class MatrixArkLocalAdapter:
             "append_queue_wait_ms": 0.0,
             "append_engine_ms": 0.0,
             "selected_refs": len(selected),
-            "dropped_refs": int(len(dropped_refs)),
+            "dropped_refs": int(len(dropped_over_budget)),
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
             "candidate_cache_hit": candidate_cache_hit,
             "cache_hit": candidate_cache_hit,

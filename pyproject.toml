@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matrixark-mcp"
+version = "0.2.0"
+description = "MatrixArk MCP and HTTP control-plane tools for TemporalStore-backed context management"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [{name = "MatrixArkAI contributors"}]
+dependencies = []
+
+[project.scripts]
+matrixark-mcp-server = "tools.matrixark_mcp_server:main"
+matrixark-http-portal = "tools.matrixark_admin:http_portal_main"
+matrixark-agent-hook = "tools.matrixark_agent_hook:main"
+matrixark-admin = "tools.matrixark_admin:main"
+
+[tool.setuptools]
+packages = ["tools"]
