@@ -4422,7 +4422,7 @@
       "steps": [
         {
           "command": {
-            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
+            "cpp_reference": "src/extension/context/test.cc",
             "description": "Shared C++/Rust Context case translated from C++ WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -4705,7 +4705,7 @@
               "temporalstore-rust"
             ],
             "cxx_reference_paths": [
-              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
+              "tools/matrixark_mcp_server.py"
             ],
             "description": "Shared MatrixArk MCP server can select temporalstore-direct for C++ or temporalstore-rust for Rust; the Rust backend provides the record-log put/get/hset/hget boundary expected by the shared server.",
             "kind": "existing_test",
