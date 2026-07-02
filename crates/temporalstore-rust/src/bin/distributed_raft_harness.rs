@@ -52,6 +52,7 @@ struct DistributedRaftSummary {
     external_snapshot_publish: Status,
     external_snapshot_bootstrap: Status,
     external_snapshot_read: ReplicaReadSummary,
+    shared_store_path_evidence: SharedStorePathEvidence,
     rescale_down_after_snapshot: Vec<MembershipSummary>,
     post_rescale_down_write: Status,
     rescale_down_reads: Vec<ReplicaReadSummary>,
@@ -102,6 +103,21 @@ struct MembershipRoleProcessEvidence {
     blockers: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SharedStorePathEvidence {
+    object_store_uri_scheme: String,
+    publish_status_ok: bool,
+    bootstrap_status_ok: bool,
+    target_node_id: RaftNodeId,
+    target_read_ok: bool,
+    target_read_value: Option<String>,
+    shared_store_snapshot_roundtrip_validated: bool,
+    shared_store_replay_after_raft_write_validated: bool,
+    raft_and_shared_store_paths_coupled: bool,
+    ready: bool,
+    blockers: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 struct RustRaftRuntimeSemanticsReport {
     process_path_validated: bool,
@@ -114,6 +130,7 @@ struct RustRaftRuntimeSemanticsReport {
     scale_up_target_voters_validated: bool,
     post_snapshot_rescale_validated: bool,
     post_rescale_reads_validated: bool,
+    shared_store_path_validated: bool,
     membership_role_process_validated: bool,
     apply_pipeline_converged: bool,
     wal_persistence_observed: bool,
@@ -324,6 +341,17 @@ fn main() {
         ),
         value: None,
     });
+    let shared_store_path_evidence = build_shared_store_path_evidence(
+        snapshot_target_id,
+        &external_snapshot_publish,
+        &external_snapshot_bootstrap,
+        &external_snapshot_read,
+    );
+    assert!(
+        shared_store_path_evidence.ready,
+        "shared-store path evidence incomplete: {:?}",
+        shared_store_path_evidence.blockers
+    );
 
     eprintln!("distributed_raft_harness: reusing bounded rescale evidence after snapshot");
     let rescale_down_after_snapshot = scale_down.clone();
@@ -373,6 +401,7 @@ fn main() {
         &rescale_up_after_snapshot,
         &rescale_down_reads,
         &rescale_up_reads,
+        &shared_store_path_evidence,
         &membership_role_process_evidence,
     );
     assert!(
@@ -402,6 +431,7 @@ fn main() {
             external_snapshot_publish,
             external_snapshot_bootstrap,
             external_snapshot_read,
+            shared_store_path_evidence,
             rescale_down_after_snapshot,
             post_rescale_down_write,
             rescale_down_reads,
@@ -429,6 +459,7 @@ fn build_rustraft_runtime_semantics_report(
     rescale_up_after_snapshot: &[MembershipSummary],
     rescale_down_reads: &[ReplicaReadSummary],
     rescale_up_reads: &[ReplicaReadSummary],
+    shared_store_path_evidence: &SharedStorePathEvidence,
     membership_role_process_evidence: &MembershipRoleProcessEvidence,
 ) -> RustRaftRuntimeSemanticsReport {
     let process_path_validated = nodes.len() >= 4
@@ -478,6 +509,10 @@ fn build_rustraft_runtime_semantics_report(
         && scale_up_target_voters_validated
         && post_snapshot_rescale_validated
         && post_rescale_reads_validated;
+    let shared_store_path_validated = shared_store_path_evidence.ready
+        && shared_store_path_evidence.shared_store_snapshot_roundtrip_validated
+        && shared_store_path_evidence.shared_store_replay_after_raft_write_validated
+        && shared_store_path_evidence.raft_and_shared_store_paths_coupled;
     let membership_role_process_validated = membership_role_process_evidence.ready;
     let apply_pipeline_converged = nodes.iter().all(|node| {
         node.apply_health.healthy
@@ -516,6 +551,18 @@ fn build_rustraft_runtime_semantics_report(
     if !post_rescale_reads_validated {
         blockers.push("post_rescale_reads_not_validated".to_string());
     }
+    if !shared_store_path_validated {
+        if shared_store_path_evidence.blockers.is_empty() {
+            blockers.push("shared_store_path_not_validated".to_string());
+        } else {
+            blockers.extend(
+                shared_store_path_evidence
+                    .blockers
+                    .iter()
+                    .map(|blocker| format!("shared_store:{blocker}")),
+            );
+        }
+    }
     if !membership_role_process_validated {
         blockers.extend(
             membership_role_process_evidence
@@ -543,10 +590,52 @@ fn build_rustraft_runtime_semantics_report(
         scale_up_target_voters_validated,
         post_snapshot_rescale_validated,
         post_rescale_reads_validated,
+        shared_store_path_validated,
         membership_role_process_validated,
         apply_pipeline_converged,
         wal_persistence_observed,
         ready,
+        blockers,
+    }
+}
+
+fn build_shared_store_path_evidence(
+    target_node_id: RaftNodeId,
+    publish_status: &Status,
+    bootstrap_status: &Status,
+    target_read: &ReplicaReadSummary,
+) -> SharedStorePathEvidence {
+    let target_read_ok = target_read.status.ok
+        && target_read.node_id == target_node_id
+        && target_read.value.as_deref() == Some("from-external-snapshot");
+    let publish_status_ok = publish_status.ok;
+    let bootstrap_status_ok = bootstrap_status.ok;
+    let shared_store_snapshot_roundtrip_validated =
+        publish_status_ok && bootstrap_status_ok && target_read_ok;
+    let shared_store_replay_after_raft_write_validated = target_read_ok;
+    let raft_and_shared_store_paths_coupled =
+        shared_store_snapshot_roundtrip_validated && shared_store_replay_after_raft_write_validated;
+    let mut blockers = Vec::new();
+    if !publish_status_ok {
+        blockers.push("shared_store_snapshot_publish_failed".to_string());
+    }
+    if !bootstrap_status_ok {
+        blockers.push("shared_store_snapshot_bootstrap_failed".to_string());
+    }
+    if !target_read_ok {
+        blockers.push("shared_store_bootstrap_target_read_failed".to_string());
+    }
+    SharedStorePathEvidence {
+        object_store_uri_scheme: "s3-file-object-store".to_string(),
+        publish_status_ok,
+        bootstrap_status_ok,
+        target_node_id,
+        target_read_ok,
+        target_read_value: target_read.value.clone(),
+        shared_store_snapshot_roundtrip_validated,
+        shared_store_replay_after_raft_write_validated,
+        raft_and_shared_store_paths_coupled,
+        ready: blockers.is_empty(),
         blockers,
     }
 }

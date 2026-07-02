@@ -3406,7 +3406,7 @@
       "steps": [
         {
           "command": {
-            "description": "Unified C++/Rust Raft case for the C++ data_raft_replication_test and the Rust distributed Raft validation harness.",
+            "description": "Unified C++/Rust Raft case for the C++ data_raft_replication_test and the Rust distributed Raft validation harness. Rust evidence must cover both the data-node Raft path and the shared-store snapshot/replay path through shared_store_path_evidence.",
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
@@ -3548,7 +3548,7 @@
         },
         {
           "command": {
-            "description": "Unified C++/Rust data-node Raft snapshot restore/bootstrap case.",
+            "description": "Unified C++/Rust data-node Raft snapshot restore/bootstrap case. Rust must prove shared-store snapshot roundtrip, target-node read after bootstrap, and coupling between Raft writes and shared-store replay evidence.",
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
