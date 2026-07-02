@@ -22,6 +22,8 @@ The runner also supports the older legacy layout:
 <prefix>:records field <record_id> -> JSON record
 ```
 
+If both metadata keys are missing, the runner falls back to bounded MatrixKV hash scanning over `<prefix>:records:<shard>`. The scan starts at `--start-seq`, respects `--end-seq`, and stops after `--source-scan-max-empty-shards` consecutive empty shards when no explicit end sequence is supplied. This makes repair jobs tolerant of missing or stale source metadata without unbounded keyspace scans.
+
 The source prefix defaults to `matrixark:mcp`.
 
 ## Running A Shadow Backfill
@@ -35,7 +37,7 @@ BATCH_SIZE=256 \
 bash tools/run_matrixark_context_backfill_ubuntu22.sh
 ```
 
-The runner processes source records in `BATCH_SIZE` chunks. It uses backend batch reads (`batch_hget`) and batch appends (`matrixark_append_records` or `batch_hset`) when available, falling back to single-record operations only when the backend does not expose a batch API. The runner prints a JSON summary and writes Prometheus-compatible metrics, including source and target batch counts, to `/tmp/matrixark_context_backfill_<job_id>.prom` unless `PROM_OUTPUT` is set.
+The runner processes source records in `BATCH_SIZE` chunks. It uses backend batch reads (`batch_hget`) and batch appends (`matrixark_append_records` or `batch_hset`) when available, falling back to single-record operations only when the backend does not expose a batch API. Source discovery can use record-count, legacy index, or bounded `scan_hash`; Prometheus metrics include source, target, and scan-hash batch counts. The runner prints a JSON summary and writes Prometheus-compatible metrics to `/tmp/matrixark_context_backfill_<job_id>.prom` unless `PROM_OUTPUT` is set.
 
 ## Resume And Dead Letters
 
