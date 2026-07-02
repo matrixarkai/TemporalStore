@@ -297,6 +297,22 @@ pub struct BlockStoreExtentSummary {
     pub oldest_reclaimable_extent_age_ms: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStoreZoneUsage {
+    #[serde(alias = "zone_id")]
+    pub extent_id: u64,
+    pub page_segment_id: u64,
+    pub state: BlockStoreExtentState,
+    pub page_store_used_bytes: u64,
+    pub live_page_store_used_bytes: u64,
+    pub reclaimable_page_store_used_bytes: u64,
+    pub purged_page_store_used_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_page_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_page_id: Option<u64>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StreamBackedExtentRuntimeReport {
     pub runtime_ready: bool,
@@ -312,6 +328,10 @@ pub struct StreamBackedExtentRuntimeReport {
     pub delayed_destroy_extents: u64,
     #[serde(alias = "purged_zones")]
     pub purged_extents: u64,
+    #[serde(default)]
+    pub zone_stats_ready: bool,
+    #[serde(default)]
+    pub zone_usage: Vec<BlockStoreZoneUsage>,
     pub stream_segment_count: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -764,6 +784,16 @@ impl LocalBlockStore {
         self.extent_descriptors()
     }
 
+    pub fn zone_usage(&self) -> Vec<BlockStoreZoneUsage> {
+        extent_zone_usage(
+            &self
+                .inner
+                .lock()
+                .expect("block store lock poisoned")
+                .extents,
+        )
+    }
+
     pub fn gc_segments_before(
         &self,
         retain_from_page_segment_id: u64,
@@ -1188,6 +1218,15 @@ impl LocalBlockStore {
         drop(inner);
 
         let summary = summarize_extents(&extents);
+        let zone_usage = extent_zone_usage(&extents);
+        let zone_stats_ready = zone_usage.iter().all(|zone| {
+            zone.extent_id == extent_id_for_segment(zone.page_segment_id)
+                && zone.page_store_used_bytes
+                    == zone
+                        .live_page_store_used_bytes
+                        .saturating_add(zone.reclaimable_page_store_used_bytes)
+                        .saturating_add(zone.purged_page_store_used_bytes)
+        });
         let segment_reports = {
             let mut reports = Vec::new();
             for id in segment_ids_at(&root)? {
@@ -1351,6 +1390,9 @@ impl LocalBlockStore {
                 "extent manifest still diverges from live/delayed-destroy stream files".to_string(),
             );
         }
+        if !zone_stats_ready {
+            blockers.push("page-store zone usage accounting is inconsistent".to_string());
+        }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
         }
@@ -1373,6 +1415,8 @@ impl LocalBlockStore {
             sealed_extents: summary.sealed_extents,
             delayed_destroy_extents: summary.delayed_destroy_extents,
             purged_extents: summary.purged_extents,
+            zone_stats_ready,
+            zone_usage,
             stream_segment_count,
             physical_bytes,
             logical_bytes,
@@ -1411,6 +1455,8 @@ impl LocalBlockStore {
                 "extent manifest descriptors are validated against inspected stream boundaries"
                     .to_string(),
                 "open-time reconciliation repairs manifest/live stream divergence like C++ zone updates"
+                    .to_string(),
+                "zone usage reports map extent ids to page-store used bytes like C++ ZoneStats"
                     .to_string(),
             ],
         })
@@ -1451,6 +1497,34 @@ fn extent_lifecycle_states(summary: &BlockStoreExtentSummary) -> Vec<String> {
         states.push("purged".to_string());
     }
     states
+}
+
+fn extent_zone_usage(
+    extents: &BTreeMap<u64, BlockStoreExtentDescriptor>,
+) -> Vec<BlockStoreZoneUsage> {
+    extents
+        .values()
+        .map(|extent| {
+            let (live, reclaimable, purged) = match extent.state {
+                BlockStoreExtentState::Active | BlockStoreExtentState::Sealed => {
+                    (extent.physical_bytes, 0, 0)
+                }
+                BlockStoreExtentState::DelayedDestroy => (0, extent.physical_bytes, 0),
+                BlockStoreExtentState::Purged => (0, 0, extent.physical_bytes),
+            };
+            BlockStoreZoneUsage {
+                extent_id: extent.extent_id,
+                page_segment_id: extent.page_segment_id,
+                state: extent.state,
+                page_store_used_bytes: extent.physical_bytes,
+                live_page_store_used_bytes: live,
+                reclaimable_page_store_used_bytes: reclaimable,
+                purged_page_store_used_bytes: purged,
+                first_page_id: extent.first_page_id,
+                last_page_id: extent.last_page_id,
+            }
+        })
+        .collect()
 }
 
 impl Default for LocalBlockStore {
@@ -1527,6 +1601,9 @@ pub type BlockStoreZoneDescriptor = BlockStoreExtentDescriptor;
 
 #[deprecated(since = "0.1.0", note = "use BlockStoreExtentSummary")]
 pub type BlockStoreZoneSummary = BlockStoreExtentSummary;
+
+#[deprecated(since = "0.1.0", note = "use BlockStoreZoneUsage")]
+pub type PageStoreZoneUsage = BlockStoreZoneUsage;
 
 #[deprecated(since = "0.1.0", note = "use StreamBackedExtentRuntimeReport")]
 pub type StreamBackedZoneRuntimeReport = StreamBackedExtentRuntimeReport;
@@ -2489,6 +2566,23 @@ mod tests {
         assert!(initial_summary.oldest_live_extent_age_ms.is_some());
         assert!(initial_summary.oldest_reclaimable_extent_unix_ms.is_none());
         assert!(initial_summary.oldest_reclaimable_extent_age_ms.is_none());
+        let initial_zone_usage = store.zone_usage();
+        assert_eq!(initial_zone_usage.len(), 2);
+        assert_eq!(initial_zone_usage[0].extent_id, extents[0].extent_id);
+        assert_eq!(
+            initial_zone_usage[0].page_segment_id,
+            extents[0].page_segment_id
+        );
+        assert_eq!(
+            initial_zone_usage[0].page_store_used_bytes,
+            extents[0].physical_bytes
+        );
+        assert_eq!(
+            initial_zone_usage[0].live_page_store_used_bytes,
+            extents[0].physical_bytes
+        );
+        assert_eq!(initial_zone_usage[0].reclaimable_page_store_used_bytes, 0);
+        assert_eq!(initial_zone_usage[0].purged_page_store_used_bytes, 0);
 
         let reopened = LocalBlockStore::new(dir.path());
         let reopened_extents = reopened.extent_descriptors();
@@ -2542,6 +2636,16 @@ mod tests {
             delayed[0].updated_unix_ms
         );
         assert!(delayed_summary.oldest_reclaimable_extent_age_ms.is_some());
+        let delayed_zone_usage = reopened.zone_usage();
+        let delayed_first = delayed_zone_usage
+            .iter()
+            .find(|zone| zone.page_segment_id == first.page_segment_id)
+            .unwrap();
+        assert_eq!(
+            delayed_first.reclaimable_page_store_used_bytes,
+            delayed[0].physical_bytes
+        );
+        assert_eq!(delayed_first.live_page_store_used_bytes, 0);
 
         let purge = reopened
             .purge_delayed_destroy_segments_with_report()
@@ -2562,6 +2666,16 @@ mod tests {
         );
         assert_eq!(purged_summary.live_physical_bytes, purged[1].physical_bytes);
         assert_eq!(purged_summary.reclaimable_physical_bytes, 0);
+        let purged_zone_usage = LocalBlockStore::new(dir.path()).zone_usage();
+        let purged_first = purged_zone_usage
+            .iter()
+            .find(|zone| zone.page_segment_id == first.page_segment_id)
+            .unwrap();
+        assert_eq!(
+            purged_first.purged_page_store_used_bytes,
+            purged[0].physical_bytes
+        );
+        assert_eq!(purged_first.reclaimable_page_store_used_bytes, 0);
         assert!(purged_summary.oldest_known_extent_unix_ms.is_some());
         assert!(purged_summary.oldest_live_extent_unix_ms.is_some());
         assert!(purged_summary.oldest_reclaimable_extent_unix_ms.is_none());
@@ -2600,6 +2714,16 @@ mod tests {
         assert_eq!(report.extent_lifecycle_states, vec!["active", "sealed"]);
         assert!(report.extent_manifest_ready);
         assert!(report.extent_manifest_rebuild_ready);
+        assert!(report.zone_stats_ready);
+        assert_eq!(report.zone_usage.len(), 2);
+        assert_eq!(
+            report
+                .zone_usage
+                .iter()
+                .map(|zone| zone.page_store_used_bytes)
+                .sum::<u64>(),
+            report.physical_bytes
+        );
         assert!(!report.extent_manifest_reconciled_on_open);
         assert!(report.extent_manifest_disk_consistent);
         assert_eq!(report.manifest_missing_stream_extents, 0);
@@ -2764,6 +2888,16 @@ mod tests {
         assert_eq!(before_gc.last_page_id, third.page_id);
         assert!(before_gc.page_id_continuity_ready);
         assert!(before_gc.extent_manifest_rebuild_ready);
+        assert!(before_gc.zone_stats_ready);
+        assert_eq!(before_gc.zone_usage.len(), 2);
+        assert_eq!(
+            before_gc
+                .zone_usage
+                .iter()
+                .map(|zone| zone.page_store_used_bytes)
+                .sum::<u64>(),
+            before_gc.physical_bytes
+        );
         assert!(before_gc.logical_stream_bytes_read >= 16);
         assert!(before_gc.extent_state_transition_count >= 2);
 
@@ -2794,6 +2928,17 @@ mod tests {
         assert!(report.append_roll_ready);
         assert!(report.extent_manifest_ready);
         assert!(report.extent_manifest_rebuild_ready);
+        assert!(report.zone_stats_ready);
+        assert!(report
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreExtentState::DelayedDestroy
+                && zone.reclaimable_page_store_used_bytes > 0));
+        assert!(report
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreExtentState::Active
+                && zone.live_page_store_used_bytes > 0));
         assert!(report.envelope_checksum_ready);
         assert!(report.compression_stream_ready);
         assert!(report.delayed_destroy_ready);
@@ -2828,6 +2973,12 @@ mod tests {
         assert_eq!(purged.delayed_destroy_extents, 0);
         assert_eq!(purged.purged_extents, 1);
         assert_eq!(purged.extent_lifecycle_states, vec!["active", "purged"]);
+        assert!(purged.zone_stats_ready);
+        assert!(purged
+            .zone_usage
+            .iter()
+            .any(|zone| zone.state == BlockStoreExtentState::Purged
+                && zone.purged_page_store_used_bytes > 0));
         assert!(purged.purge_lifecycle_ready);
         assert!(purged.append_roll_ready);
         assert!(purged.page_id_continuity_ready);
