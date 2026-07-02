@@ -154,6 +154,16 @@ class RaftCppRustParityContractTest(unittest.TestCase):
             failures,
         )
 
+        rust_bad_description = json.loads(json.dumps(corpus["rust"]))
+        rust_bad_description["report_summary"]["status_label_descriptions"][
+            "performance_candidate"
+        ] = "live run completed"
+        failures = validate_report_pair(corpus["cpp"], rust_bad_description)
+        self.assertIn(
+            "rust report_summary.status_label_descriptions.performance_candidate drift: 'live run completed'",
+            failures,
+        )
+
     def test_healthy_data_node_with_excessive_apply_lag_fails_closed(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
         self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])

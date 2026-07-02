@@ -204,12 +204,14 @@ C++ and Rust must report the same `quorum_rule` and
 
 `parity_status` uses these labels:
 
-- `feature_correct`
-- `performance_candidate`
-- `production_performance_parity`
+- `feature_correct`: shared Raft contract passes
+- `performance_candidate`: live C++ and Rust runs complete under same config
+- `production_performance_parity`: failover/recovery/QPS/latency within thresholds
 
 `report_summary.status_labels` must repeat these labels so a single shared
 report can be rendered without digging into backend internals.
+`report_summary.status_label_descriptions` must repeat the exact label
+definitions.
 
 If `data_node_unhealthy_when_apply_lag_exceeds_threshold` reports
 `raft_health_status: healthy` while `apply_lag_max` is greater than

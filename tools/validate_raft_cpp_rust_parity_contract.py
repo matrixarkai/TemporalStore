@@ -221,6 +221,12 @@ REQUIRED_RAFT_STATUS_LABELS = [
     "production_performance_parity",
 ]
 
+REQUIRED_RAFT_STATUS_LABEL_DESCRIPTIONS = {
+    "feature_correct": "shared Raft contract passes",
+    "performance_candidate": "live C++ and Rust runs complete under same config",
+    "production_performance_parity": "failover/recovery/QPS/latency within thresholds",
+}
+
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -245,6 +251,9 @@ def _validate_contract_doc() -> list[str]:
     ):
         if f"`{name}`" not in text:
             failures.append(f"contract missing `{name}`")
+    for description in REQUIRED_RAFT_STATUS_LABEL_DESCRIPTIONS.values():
+        if description not in text:
+            failures.append(f"contract missing status label description {description!r}")
     return failures
 
 
@@ -376,6 +385,16 @@ def _validate_report_summary(backend: str, value: Any) -> list[str]:
         for label in REQUIRED_RAFT_STATUS_LABELS:
             if label not in status_labels:
                 failures.append(f"{backend} report_summary.status_labels missing `{label}`")
+        descriptions = value.get("status_label_descriptions")
+        if not isinstance(descriptions, dict):
+            failures.append(f"{backend} report_summary.status_label_descriptions missing object")
+        else:
+            for label, description in REQUIRED_RAFT_STATUS_LABEL_DESCRIPTIONS.items():
+                if descriptions.get(label) != description:
+                    failures.append(
+                        f"{backend} report_summary.status_label_descriptions.{label} drift: "
+                        f"{descriptions.get(label)!r}"
+                    )
     return failures
 
 
