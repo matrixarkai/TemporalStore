@@ -302,6 +302,8 @@ message NativeRetrieveTelemetry {
     bool compact_index_bucket_used = 30;
     uint32 compact_index_bucket_count = 31;
     uint32 placement_fetch_count = 32;
+    uint32 timeout_count = 33;
+    repeated string fallback_flags = 34;
 }
 
 message RetrieveContextPackRequest {

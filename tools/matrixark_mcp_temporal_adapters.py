@@ -2029,6 +2029,13 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             candidate_cache_hit = bool(
                 native_telemetry.get("candidate_cache_hit", native_telemetry.get("cache_hit", False))
             )
+            native_fallback_flags = native_telemetry.get("fallback_flags")
+            if isinstance(native_fallback_flags, str):
+                fallback_flags = [native_fallback_flags]
+            elif isinstance(native_fallback_flags, list):
+                fallback_flags = [str(flag) for flag in native_fallback_flags if str(flag)]
+            else:
+                fallback_flags = []
             retrieval_metrics = {
                 "query_plan_ms": round(float(native_telemetry.get("query_plan_ms") or native_stage_metrics.get("query_plan_ms") or 0.0), 3),
                 "node_traversal_ms": round(float(native_telemetry.get("node_traversal_ms") or native_stage_metrics.get("node_traversal_ms") or 0.0), 3),
@@ -2057,6 +2064,8 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "broad_scan_used": bool(native_telemetry.get("broad_scan_used", False)),
                 "broad_scan_blocked": bool(native_telemetry.get("broad_scan_blocked", False)),
                 "broad_scan_fallback_allowed": bool(native_telemetry.get("broad_scan_fallback_allowed", False)),
+                "timeout_count": int(native_telemetry.get("timeout_count") or 0),
+                "fallback_flags": fallback_flags,
                 "broad_scan_policy": "explicit_fallback_or_debug_only",
                 "fallback_reason": str(native_telemetry.get("fallback_reason") or ""),
                 "normal_path_stages": list(request["normal_path_stages"]),

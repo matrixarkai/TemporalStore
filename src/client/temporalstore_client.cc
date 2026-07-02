@@ -602,6 +602,15 @@ std::string RenderContextPackResponseJson(
     os << "\"placement_partitions_touched\":" << telemetry.placement_partitions_touched() << ",";
     os << "\"broad_scan_used\":" << (telemetry.broad_scan_used() ? "true" : "false") << ",";
     os << "\"broad_scan_blocked\":" << (telemetry.broad_scan_blocked() ? "true" : "false") << ",";
+    os << "\"timeout_count\":" << telemetry.timeout_count() << ",";
+    os << "\"fallback_flags\":[";
+    for (int i = 0; i < telemetry.fallback_flags_size(); ++i) {
+        if (i != 0) {
+            os << ",";
+        }
+        os << "\"" << JsonEscape(telemetry.fallback_flags(i)) << "\"";
+    }
+    os << "],";
     os << "\"native_pack_assembly\":true,";
     os << "\"python_pack_fallback\":false,";
     os << "\"candidate_cache_key_shape\":\"scope_key+node_hash+record_type+append_watermark+resource_version_watermark\",";

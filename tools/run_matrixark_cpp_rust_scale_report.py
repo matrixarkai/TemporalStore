@@ -206,6 +206,16 @@ def _count_refs(value: Any) -> int:
     return 0
 
 
+def _flag_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    if isinstance(value, dict):
+        return [str(key) for key, enabled in value.items() if bool(enabled)]
+    return []
+
+
 def _sum_token_estimates(value: Any) -> int:
     if isinstance(value, list):
         total = 0
@@ -387,6 +397,8 @@ def retrieval_phase0_fields(result: Json) -> Json:
         "correctness_evidence": correctness_evidence,
         "candidate_count": candidate_count,
         "token_count": token_count,
+        "timeout_count": metric_int("timeout_count"),
+        "fallback_flags": _flag_list(metrics.get("fallback_flags")) or _flag_list(pack.get("fallback_flags")),
         "timeout_partial": bool(result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", ""))),
     }
 
@@ -406,6 +418,8 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "candidate_count_avg": 0.0,
             "token_count_avg": 0.0,
             "timeout_partial_count": 0,
+            "timeout_count": 0,
+            "fallback_flags_total": {},
             "drop_counters_total": {},
             "correctness_evidence": {},
             "selected_ref_signatures_by_query": {},
@@ -438,6 +452,8 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     raw_candidate_tables_returned_count = 0
     cache_hits = 0
     timeout_partials = 0
+    timeout_total = 0
+    fallback_flags_total: Json = {}
     for row in rows:
         for name in RETRIEVAL_STAGE_METRICS:
             try:
@@ -503,6 +519,12 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             cache_hits += 1
         if bool(row.get("timeout_partial")):
             timeout_partials += 1
+        try:
+            timeout_total += int(row.get("timeout_count") or 0)
+        except (TypeError, ValueError):
+            pass
+        for flag in _flag_list(row.get("fallback_flags")):
+            fallback_flags_total[flag] = int(fallback_flags_total.get(flag, 0) or 0) + 1
     return {
         "samples": len(rows),
         "stage_avg_ms": {
@@ -522,6 +544,8 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         "candidate_count_avg": round(statistics.fmean(candidate_counts), 3) if candidate_counts else 0.0,
         "token_count_avg": round(statistics.fmean(token_counts), 3) if token_counts else 0.0,
         "timeout_partial_count": timeout_partials,
+        "timeout_count": timeout_total,
+        "fallback_flags_total": fallback_flags_total,
         "drop_counters_total": drop_counters_total,
         "correctness_evidence": correctness_evidence_total,
         "selected_ref_signatures_by_query": selected_ref_signatures_by_query,
@@ -1303,6 +1327,7 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("audit_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "audit_ms"), "lower"),
         ("append_queue_wait_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "append_queue_wait_ms"), "lower"),
         ("append_engine_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "append_engine_ms"), "lower"),
+        ("native_timeout_count", ("retrieve", "stage_metrics", "timeout_count"), "lower"),
         ("scanned_records_avg", ("retrieve", "stage_metrics", "scanned_records_avg"), "lower"),
         ("cache_hit_rate", ("retrieve", "stage_metrics", "cache_hit_rate"), "higher"),
         ("index_postings_read_avg", ("retrieve", "stage_metrics", "index_postings_read_avg"), "approx"),
@@ -1599,8 +1624,8 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Retrieval Stage Metrics",
             "",
-            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | append queue wait p95 | append engine p95 | selected avg | dropped avg | scanned avg | index hits avg | index postings read avg | candidates avg | tokens avg | broad scan used | python pack fallback | native pack | cache hit rate | placement partitions avg |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | append queue wait p95 | append engine p95 | selected avg | dropped avg | scanned avg | index hits avg | index postings read avg | candidates avg | tokens avg | native timeouts | fallback flags | broad scan used | python pack fallback | native pack | cache hit rate | placement partitions avg |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|---:|---:|---:|",
         ]
     )
     for backend in backend_order:
@@ -1617,6 +1642,8 @@ def write_report(path: Path, report: Json) -> None:
             f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('index_hits_avg', 0)} | "
             f"{metrics.get('index_postings_read_avg', metrics.get('index_postings_touched_avg', 0))} | "
             f"{metrics.get('candidate_count_avg', 0)} | {metrics.get('token_count_avg', 0)} | "
+            f"{metrics.get('timeout_count', 0)} | "
+            f"{', '.join(sorted(str(k) for k in metrics.get('fallback_flags_total', {}).keys())) if isinstance(metrics.get('fallback_flags_total'), dict) else ''} | "
             f"{metrics.get('broad_scan_used_count', 0)} | {metrics.get('python_pack_fallback_count', 0)} | "
             f"{metrics.get('native_pack_assembly_count', 0)} | "
             f"{metrics.get('cache_hit_rate', 0)} | "
