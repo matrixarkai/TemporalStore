@@ -78,6 +78,45 @@ pub struct IngestionBatchReport {
     pub results: Vec<IngestionRecordResult>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IngestionStreamRequest {
+    pub stream_id: String,
+    pub start_sequence: u64,
+    pub records: Vec<IngestionRecord>,
+    #[serde(default)]
+    pub stop_on_error: bool,
+    #[serde(default)]
+    pub max_in_flight_records: usize,
+    #[serde(default)]
+    pub kafka_high_watermarks: Vec<KafkaHighWatermark>,
+    #[serde(default)]
+    pub flink_checkpoints: Vec<FlinkCheckpointUpdate>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IngestionStreamCommitState {
+    pub stream_id: String,
+    pub committed_sequence: u64,
+    pub updated_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct IngestionStreamReport {
+    pub stream_id: String,
+    pub start_sequence: u64,
+    pub attempted_count: usize,
+    pub accepted_count: usize,
+    pub failed_count: usize,
+    pub duplicate_count: usize,
+    pub backpressure_rejected_count: usize,
+    pub backpressure_active: bool,
+    pub committed_sequence: u64,
+    pub state_persist_status: Status,
+    pub batch_report: IngestionBatchReport,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct KafkaHighWatermark {
     pub topic: String,
@@ -142,6 +181,8 @@ pub struct IngestionStats {
     pub failed_total: u64,
     pub duplicate_total: u64,
     pub dead_letter_total: u64,
+    pub stream_backpressure_total: u64,
+    pub stream_duplicate_total: u64,
     pub kafka_committed_total: u64,
     pub flink_precommit_total: u64,
     pub flink_commit_total: u64,
@@ -154,6 +195,8 @@ pub struct IngestionStateReport {
     pub status: Status,
     pub stats: IngestionStats,
     pub kafka_offsets: Vec<KafkaOffsetLedgerEntry>,
+    #[serde(default)]
+    pub stream_commits: Vec<IngestionStreamCommitState>,
     pub flink_checkpoints: Vec<FlinkCheckpointState>,
     pub dead_letters: Vec<IngestionDeadLetter>,
 }
@@ -223,6 +266,8 @@ pub struct IngestionReadinessReport {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct IngestionNetworkRuntimeReadinessReport {
     pub api_route_ready: bool,
+    pub streaming_ingestion_ready: bool,
+    pub batch_ingestion_ready: bool,
     pub durable_kafka_offset_ledger_ready: bool,
     pub durable_flink_checkpoint_lifecycle_ready: bool,
     pub dead_letter_and_lag_metrics_ready: bool,
@@ -237,6 +282,8 @@ pub struct IngestionNetworkRuntimeReadinessReport {
 
 pub fn ingestion_network_runtime_readiness_report() -> IngestionNetworkRuntimeReadinessReport {
     let api_route_ready = true;
+    let streaming_ingestion_ready = true;
+    let batch_ingestion_ready = true;
     let durable_kafka_offset_ledger_ready = true;
     let durable_flink_checkpoint_lifecycle_ready = true;
     let dead_letter_and_lag_metrics_ready = true;
@@ -245,6 +292,8 @@ pub fn ingestion_network_runtime_readiness_report() -> IngestionNetworkRuntimeRe
     let network_flink_connector_ready = true;
     let raft_failover_idempotence_harness_ready = true;
     let local_ingestion_ready = api_route_ready
+        && streaming_ingestion_ready
+        && batch_ingestion_ready
         && durable_kafka_offset_ledger_ready
         && durable_flink_checkpoint_lifecycle_ready
         && dead_letter_and_lag_metrics_ready
@@ -261,6 +310,8 @@ pub fn ingestion_network_runtime_readiness_report() -> IngestionNetworkRuntimeRe
 
     IngestionNetworkRuntimeReadinessReport {
         api_route_ready,
+        streaming_ingestion_ready,
+        batch_ingestion_ready,
         durable_kafka_offset_ledger_ready,
         durable_flink_checkpoint_lifecycle_ready,
         dead_letter_and_lag_metrics_ready,
@@ -280,6 +331,7 @@ impl Default for IngestionStateReport {
             status: Status::ok(),
             stats: IngestionStats::default(),
             kafka_offsets: Vec::new(),
+            stream_commits: Vec::new(),
             flink_checkpoints: Vec::new(),
             dead_letters: Vec::new(),
         }
@@ -290,6 +342,10 @@ pub fn ingestion_readiness_report() -> IngestionReadinessReport {
     let network_runtime = ingestion_network_runtime_readiness_report();
     let covered = vec![
         "proxy/table ingestion route accepts API, Kafka, and Flink sourced records".to_string(),
+        "batch ingestion executes mixed API, Kafka, and Flink records with per-record status"
+            .to_string(),
+        "streaming ingestion enforces ordered stream sequence fences, duplicate replay rejection, and in-flight backpressure"
+            .to_string(),
         "durable Kafka offset ledger rejects duplicate committed offsets before executing writes"
             .to_string(),
         "Flink checkpoint precommit, commit, and abort lifecycle is durably tracked".to_string(),
@@ -321,6 +377,8 @@ pub fn ingestion_readiness_report() -> IngestionReadinessReport {
 struct DurableIngestionState {
     #[serde(default)]
     kafka_offsets: BTreeMap<String, KafkaOffsetLedgerEntry>,
+    #[serde(default)]
+    stream_commits: BTreeMap<String, IngestionStreamCommitState>,
     #[serde(default)]
     flink_checkpoints: BTreeMap<String, FlinkCheckpointState>,
     #[serde(default)]
@@ -458,12 +516,146 @@ impl TemporalEngine {
         }
     }
 
+    pub fn ingest_stream(&self, request: IngestionStreamRequest) -> IngestionStreamReport {
+        let mut blockers = Vec::new();
+        if request.stream_id.is_empty() {
+            blockers.push("stream_id_required".to_string());
+        }
+        let mut state = load_ingestion_state(&self.ingestion_dir()).unwrap_or_default();
+        let previous_sequence = state
+            .stream_commits
+            .get(&request.stream_id)
+            .map(|commit| commit.committed_sequence);
+        let now = now_unix_ms();
+        let mut eligible_records = Vec::new();
+        let mut duplicate_count = 0usize;
+        let mut backpressure_rejected_count = 0usize;
+        let mut accepted_for_execution = 0usize;
+        let max_in_flight = request.max_in_flight_records;
+
+        for (index, record) in request.records.into_iter().enumerate() {
+            let sequence = request.start_sequence.saturating_add(index as u64);
+            if previous_sequence
+                .map(|committed| sequence <= committed)
+                .unwrap_or(false)
+            {
+                duplicate_count = duplicate_count.saturating_add(1);
+                state.stats.duplicate_total = state.stats.duplicate_total.saturating_add(1);
+                state.stats.stream_duplicate_total =
+                    state.stats.stream_duplicate_total.saturating_add(1);
+                state.dead_letters.push(IngestionDeadLetter {
+                    index,
+                    source: record.source,
+                    shard_id: record.shard_id,
+                    status: Status::error(
+                        "duplicate_stream_sequence",
+                        "stream sequence is already committed",
+                    ),
+                });
+                continue;
+            }
+            if max_in_flight > 0 && accepted_for_execution >= max_in_flight {
+                backpressure_rejected_count = backpressure_rejected_count.saturating_add(1);
+                state.stats.failed_total = state.stats.failed_total.saturating_add(1);
+                state.stats.dead_letter_total = state.stats.dead_letter_total.saturating_add(1);
+                state.stats.stream_backpressure_total =
+                    state.stats.stream_backpressure_total.saturating_add(1);
+                state.dead_letters.push(IngestionDeadLetter {
+                    index,
+                    source: record.source,
+                    shard_id: record.shard_id,
+                    status: Status::error(
+                        "ingestion_stream_backpressure",
+                        "stream in-flight limit reached",
+                    ),
+                });
+                continue;
+            }
+            accepted_for_execution = accepted_for_execution.saturating_add(1);
+            eligible_records.push((sequence, record));
+        }
+
+        let state_persist_status = persist_ingestion_state(&self.ingestion_dir(), &state);
+        let batch_report = self.ingest_batch(IngestionBatchRequest {
+            records: eligible_records
+                .iter()
+                .map(|(_, record)| record.clone())
+                .collect(),
+            stop_on_error: request.stop_on_error,
+            kafka_high_watermarks: request.kafka_high_watermarks,
+            flink_checkpoints: request.flink_checkpoints,
+        });
+
+        let mut committed_sequence = previous_sequence.unwrap_or(request.start_sequence);
+        if previous_sequence.is_none() && batch_report.accepted_count == 0 {
+            committed_sequence = request.start_sequence.saturating_sub(1);
+        }
+        for ((sequence, _), result) in eligible_records.iter().zip(batch_report.results.iter()) {
+            if result.status.ok {
+                committed_sequence = committed_sequence.max(*sequence);
+            }
+        }
+        let mut final_state = load_ingestion_state(&self.ingestion_dir()).unwrap_or_default();
+        if batch_report.accepted_count > 0 || previous_sequence.is_some() {
+            final_state.stream_commits.insert(
+                request.stream_id.clone(),
+                IngestionStreamCommitState {
+                    stream_id: request.stream_id.clone(),
+                    committed_sequence,
+                    updated_unix_ms: now,
+                },
+            );
+        }
+        let final_persist_status = persist_ingestion_state(&self.ingestion_dir(), &final_state);
+        if !state_persist_status.ok {
+            blockers.push("stream_preflight_state_persist_failed".to_string());
+        }
+        if !final_persist_status.ok {
+            blockers.push("stream_commit_state_persist_failed".to_string());
+        }
+        if backpressure_rejected_count > 0 {
+            blockers.push("stream_backpressure_active".to_string());
+        }
+        if duplicate_count > 0 {
+            blockers.push("stream_duplicate_replay_rejected".to_string());
+        }
+        if !batch_report.status.ok {
+            blockers.push("stream_batch_partial_failure".to_string());
+        }
+        IngestionStreamReport {
+            stream_id: request.stream_id,
+            start_sequence: request.start_sequence,
+            attempted_count: batch_report
+                .results
+                .len()
+                .saturating_add(duplicate_count)
+                .saturating_add(backpressure_rejected_count),
+            accepted_count: batch_report.accepted_count,
+            failed_count: batch_report
+                .failed_count
+                .saturating_add(backpressure_rejected_count),
+            duplicate_count: batch_report.duplicate_count.saturating_add(duplicate_count),
+            backpressure_rejected_count,
+            backpressure_active: backpressure_rejected_count > 0,
+            committed_sequence,
+            state_persist_status: if final_persist_status.ok {
+                state_persist_status
+            } else {
+                final_persist_status
+            },
+            batch_report,
+            ready: blockers.is_empty(),
+            blockers,
+        }
+    }
+
     pub fn ingestion_state_report(&self) -> IngestionStateReport {
         match load_ingestion_state(&self.ingestion_dir()) {
             Ok(state) => IngestionStateReport {
                 status: Status::ok(),
                 stats: state.stats,
                 kafka_offsets: state.kafka_offsets.values().cloned().collect(),
+                stream_commits: state.stream_commits.values().cloned().collect(),
                 flink_checkpoints: state.flink_checkpoints.values().cloned().collect(),
                 dead_letters: state.dead_letters,
             },
@@ -1122,6 +1314,191 @@ mod tests {
     }
 
     #[test]
+    // shared-corpus: ingestion_streaming_batch_parity
+    fn streaming_ingestion_commits_sequence_and_rejects_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache_dir = dir.path().join("cache");
+        let page_dir = dir.path().join("pages");
+        let index_dir = dir.path().join("indexes");
+        let engine =
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+        engine.load_shard(7);
+
+        let first = engine.ingest_stream(IngestionStreamRequest {
+            stream_id: "stream-a".to_string(),
+            start_sequence: 1,
+            stop_on_error: false,
+            max_in_flight_records: 8,
+            kafka_high_watermarks: vec![KafkaHighWatermark {
+                topic: "stream-topic".to_string(),
+                partition: 0,
+                high_watermark_offset: 5,
+            }],
+            flink_checkpoints: Vec::new(),
+            records: vec![
+                IngestionRecord {
+                    source: IngestionSource::Kafka {
+                        topic: "stream-topic".to_string(),
+                        partition: 0,
+                        offset: 1,
+                        key: None,
+                        timestamp_ms: None,
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "stream-key-1".to_string(),
+                        value: b"one".to_vec(),
+                    },
+                },
+                IngestionRecord {
+                    source: IngestionSource::Kafka {
+                        topic: "stream-topic".to_string(),
+                        partition: 0,
+                        offset: 2,
+                        key: None,
+                        timestamp_ms: None,
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "stream-key-2".to_string(),
+                        value: b"two".to_vec(),
+                    },
+                },
+            ],
+        });
+        assert!(first.ready, "{first:?}");
+        assert_eq!(first.accepted_count, 2);
+        assert_eq!(first.committed_sequence, 2);
+
+        let restarted =
+            TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &page_dir, &index_dir);
+        restarted.load_shard(7);
+        let replay = restarted.ingest_stream(IngestionStreamRequest {
+            stream_id: "stream-a".to_string(),
+            start_sequence: 1,
+            stop_on_error: false,
+            max_in_flight_records: 8,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
+            records: vec![IngestionRecord {
+                source: IngestionSource::Api {
+                    request_id: "replay-1".to_string(),
+                },
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "should-not-stream".to_string(),
+                    value: b"duplicate".to_vec(),
+                },
+            }],
+        });
+        assert!(!replay.ready);
+        assert_eq!(replay.duplicate_count, 1);
+        assert!(replay
+            .blockers
+            .contains(&"stream_duplicate_replay_rejected".to_string()));
+
+        let state = restarted.ingestion_state_report();
+        assert_eq!(state.stream_commits[0].committed_sequence, 2);
+        assert_eq!(state.stats.stream_duplicate_total, 1);
+        let metrics = restarted.prometheus_metrics();
+        assert!(metrics.contains(
+            "temporalstore_ingestion_stream_committed_sequence{stream_id=\"stream-a\"} 2"
+        ));
+        assert!(metrics
+            .contains("temporalstore_ingestion_records_total{outcome=\"stream_duplicate\"} 1"));
+
+        let missing = restarted.execute(crate::ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "should-not-stream".to_string(),
+            },
+        });
+        assert_eq!(missing.response, CommandResponse::Bytes { value: None });
+    }
+
+    #[test]
+    // shared-corpus: ingestion_streaming_batch_parity
+    fn streaming_ingestion_applies_backpressure_without_blocking_batch_api() {
+        let engine = loaded_engine();
+        let stream = engine.ingest_stream(IngestionStreamRequest {
+            stream_id: "stream-pressure".to_string(),
+            start_sequence: 10,
+            stop_on_error: false,
+            max_in_flight_records: 1,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
+            records: vec![
+                IngestionRecord {
+                    source: IngestionSource::Api {
+                        request_id: "stream-ok".to_string(),
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "stream-pressure-ok".to_string(),
+                        value: b"ok".to_vec(),
+                    },
+                },
+                IngestionRecord {
+                    source: IngestionSource::Api {
+                        request_id: "stream-backpressure".to_string(),
+                    },
+                    shard_id: 7,
+                    command: Command::StringSet {
+                        key: "stream-pressure-rejected".to_string(),
+                        value: b"rejected".to_vec(),
+                    },
+                },
+            ],
+        });
+        assert!(!stream.ready);
+        assert_eq!(stream.accepted_count, 1);
+        assert_eq!(stream.backpressure_rejected_count, 1);
+        assert!(stream.backpressure_active);
+        assert_eq!(stream.committed_sequence, 10);
+        assert!(stream
+            .blockers
+            .contains(&"stream_backpressure_active".to_string()));
+
+        let accepted = engine.execute(crate::ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "stream-pressure-ok".to_string(),
+            },
+        });
+        assert_eq!(
+            accepted.response,
+            CommandResponse::Bytes {
+                value: Some(b"ok".to_vec())
+            }
+        );
+        let rejected = engine.execute(crate::ExecuteRequest {
+            shard_id: 7,
+            command: Command::StringGet {
+                key: "stream-pressure-rejected".to_string(),
+            },
+        });
+        assert_eq!(rejected.response, CommandResponse::Bytes { value: None });
+
+        let batch = engine.ingest_batch(IngestionBatchRequest {
+            stop_on_error: false,
+            kafka_high_watermarks: Vec::new(),
+            flink_checkpoints: Vec::new(),
+            records: vec![IngestionRecord {
+                source: IngestionSource::Api {
+                    request_id: "batch-after-stream".to_string(),
+                },
+                shard_id: 7,
+                command: Command::StringSet {
+                    key: "batch-still-runs".to_string(),
+                    value: b"batch".to_vec(),
+                },
+            }],
+        });
+        assert!(batch.status.ok, "{batch:?}");
+        assert_eq!(batch.accepted_count, 1);
+    }
+
+    #[test]
     fn kafka_consumer_group_runtime_reports_rebalance_and_backpressure() {
         let expected = vec![("topic-a".to_string(), 0), ("topic-a".to_string(), 1)];
         let healthy = kafka_consumer_group_runtime_report(
@@ -1341,6 +1718,10 @@ mod tests {
         assert!(report
             .covered
             .iter()
+            .any(|item| item.contains("streaming ingestion enforces ordered stream sequence")));
+        assert!(report
+            .covered
+            .iter()
             .any(|item| item.contains("Raft failover/restart idempotence")));
         assert!(report.missing.is_empty());
     }
@@ -1349,6 +1730,8 @@ mod tests {
     fn ingestion_network_runtime_readiness_covers_connectors_and_raft_harness() {
         let report = ingestion_network_runtime_readiness_report();
         assert!(report.api_route_ready);
+        assert!(report.streaming_ingestion_ready);
+        assert!(report.batch_ingestion_ready);
         assert!(report.durable_kafka_offset_ledger_ready);
         assert!(report.durable_flink_checkpoint_lifecycle_ready);
         assert!(report.dead_letter_and_lag_metrics_ready);

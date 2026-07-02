@@ -8299,6 +8299,46 @@
       ]
     },
     {
+      "name": "ingestion_streaming_batch_parity",
+      "shard_id": 35,
+      "steps": [
+        {
+          "name": "ingestion_streaming_batch_parity_contract",
+          "skip_client": true,
+          "command": {
+            "kind": "existing_test",
+            "suite": "cpp_ingestion_parity",
+            "mode": "rust_executable_cxx_static",
+            "description": "Shared C++/Rust ingestion case for streaming and batch ingestion parity: ordered stream sequence fences, replay duplicate rejection, active in-flight backpressure, batch continuation, durable stream commits, Kafka offsets, Flink checkpoint state, and Prometheus/state-report visibility.",
+            "cpp_runner_contract": "C++ ingestion runtime emits the same streaming/batch report fields: stream_id, start_sequence, committed_sequence, duplicate_count, backpressure_rejected_count, batch accepted/failed counts, Kafka offsets, Flink checkpoints, dead letters, and lag metrics.",
+            "rust_runner": "cargo test -p temporalstore-rust streaming_ingestion_ ingestion_batch_executes_api_kafka_and_flink_records --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_ingestion_ops_parity_evidence.py",
+            "required_paths": [
+              "docs/ingestion_streaming_batch_parity.md"
+            ],
+            "acceptance": {
+              "streaming": [
+                "ordered_sequence_fence",
+                "duplicate_replay_rejection",
+                "inflight_backpressure",
+                "durable_stream_commit"
+              ],
+              "batch": [
+                "mixed_api_kafka_flink_records",
+                "per_record_status",
+                "valid_record_continuation"
+              ],
+              "ops": [
+                "state_report",
+                "prometheus_metrics",
+                "dead_letter_visibility"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
       "name": "all_family_api_redis_admin_product_models",
       "shard_id": 36,
       "steps": [
@@ -11747,7 +11787,8 @@
       "storage_merged_dump_load_interruption_shared",
       "raft_process_path_log_inspection_shared",
       "client_proxy_route_churn_shared",
-      "context_resource_skill_secondary_index_shared"
+      "context_resource_skill_secondary_index_shared",
+      "ingestion_streaming_batch_parity"
     ],
     "required_command_kinds": [
       "string_set",
