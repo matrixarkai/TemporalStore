@@ -35,6 +35,15 @@ LIFECYCLE_TOOLS = {
     "feedback": "matrixark_feedback",
     "session_boundary": "matrixark_session_commit",
 }
+LIFECYCLE_ACTIONS = {
+    "before_llm": "retrieve",
+    "after_answer": "ingest_durable_outcome",
+    "after_tool": "ingest_durable_outcome",
+    "resource_added": "import_resource_or_skill",
+    "skill_added": "import_resource_or_skill",
+    "feedback": "record_accepted_rejected_refs",
+    "session_boundary": "commit_batch_extract",
+}
 
 
 def agent_envelope_schema() -> dict[str, object]:
@@ -56,6 +65,7 @@ def agent_envelope_schema() -> dict[str, object]:
             "after_answer": ["messages"],
             "after_tool": ["messages"],
             "resource_added": ["file_refs or resource_refs or raw_uri"],
+            "skill_added": ["file_refs or resource_refs or raw_uri"],
             "feedback": ["accepted_refs or rejected_refs"],
             "session_boundary": ["scope"],
         },
@@ -78,6 +88,16 @@ def agent_envelope_schema() -> dict[str, object]:
         ],
         "do_not_send": ["hidden prompt", "system prompt", "private model chain-of-thought"],
         "lifecycle_tools": dict(LIFECYCLE_TOOLS),
+        "lifecycle_actions": dict(LIFECYCLE_ACTIONS),
+        "agent_internal_model_hidden": [
+            "ContextEvent",
+            "ContextEntity",
+            "ContextSummary",
+            "ContextEmbedding",
+            "ContextIndex",
+            "ResourceChunk",
+            "SkillSection",
+        ],
     }
 
 
@@ -253,6 +273,13 @@ MatrixArk decides the route from the payload:
 - ResourceAdded/SkillAdded/raw_uri -> resource or skill import task through matrixark_ingest
 - Feedback/accepted_refs/rejected_refs -> matrixark_feedback
 - Stop/PostCompact/idle -> matrixark_session_commit and batch extraction
+
+Lifecycle actions:
+- before_llm: retrieve
+- after_answer/tool: ingest durable outcome
+- resource_added/skill_added: import resource or skill
+- feedback: record accepted/rejected refs
+- session_boundary: commit/batch extract
 
 Agents do not need to understand ContextEvent, ContextEntity, ContextSummary,
 ContextEmbedding, ContextIndex, ResourceChunk, or SkillSection internals. They

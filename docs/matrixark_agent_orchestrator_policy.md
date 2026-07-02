@@ -11,11 +11,15 @@ ContextIndex, ResourceChunk, or SkillSection internals.
 
 ## Lifecycle
 
-- Before LLM: call `matrixark_retrieve`.
-- After answer or tool result: call `matrixark_ingest` with durable outcome.
-- Resource or skill added: call `matrixark_ingest` with `raw_uri` or file ref.
-- Feedback: call `matrixark_feedback` with accepted/rejected refs.
-- Session boundary: call `matrixark_session_commit` for batch extraction.
+- Before LLM: retrieve with `matrixark_retrieve`.
+- After answer/tool: ingest durable outcome with `matrixark_ingest`.
+- Resource added: import resource/skill with `matrixark_ingest`.
+- Feedback: record accepted/rejected refs with `matrixark_feedback`.
+- Session boundary: commit/batch extract with `matrixark_session_commit`.
+
+Agents must not construct or depend on ContextEvent, ContextEntity,
+ContextSummary, ContextEmbedding, ContextIndex, ResourceChunk, or SkillSection
+records. MatrixArk owns those internals behind the MCP envelope.
 
 ## Envelope
 
@@ -36,5 +40,6 @@ Minimum useful lifecycle payloads:
 - `before_llm`: `query`, optional `scope`, optional `local_context`, optional `max_context_tokens`.
 - `after_answer` or `after_tool`: `messages` containing user/assistant/tool outcome and useful refs.
 - `resource_added`: `file_refs`, `resource_refs`, or `raw_uri`.
+- `skill_added`: `file_refs`, `resource_refs`, or `raw_uri`.
 - `feedback`: `accepted_refs` or `rejected_refs`.
 - `session_boundary`: `scope` plus optional commit reason.
