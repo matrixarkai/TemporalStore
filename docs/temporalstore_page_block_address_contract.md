@@ -213,6 +213,34 @@ append record
 -> publish append watermark
 ```
 
+Canonical report sequence:
+
+```json
+{
+  "storage_write_sequence": [
+    "append_record",
+    "route_shard_slot",
+    "choose_page",
+    "append_page_buffer",
+    "update_page_index",
+    "flush_page_block_segment",
+    "update_block_index",
+    "publish_append_watermark"
+  ]
+}
+```
+
+Required write sequence step names:
+
+- `append_record`
+- `route_shard_slot`
+- `choose_page`
+- `append_page_buffer`
+- `update_page_index`
+- `flush_page_block_segment`
+- `update_block_index`
+- `publish_append_watermark`
+
 Required behavior per step:
 
 | step | required parity behavior |
@@ -701,9 +729,20 @@ Canonical StorageManager/StoreManager lifecycle phases:
 - `storage_manager_watermark_progress_count`
 - `storage_manager_loop_ms`
 - `stream_rollover_count`
+- `segment_open_count`
+- `segment_sealed_count`
 - `storage_zone_total_bytes`
 - `storage_zone_used_bytes`
 - `storage_zone_stale_bytes`
+- `append_log_replay_records`
+- `append_log_reclaimed_records`
+- `slot_dirty_generation_count`
+- `slot_tombstone_count`
+- `slot_stale_ref_count`
+- `slot_owner_mismatch_count`
+- `page_index_rebuild_count`
+- `block_index_rebuild_count`
+- `object_index_rebuild_count`
 - `cache_admissions`
 - `cache_evictions`
 - `cache_rehydrates`
@@ -742,6 +781,8 @@ Canonical StorageManager/StoreManager lifecycle phases:
 lifecycle metric set is present in the shared contract and scale report runner.
 When given `--cpp-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
+`tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
+live C++/Rust report comparison and uses the same fail-closed contract.
 By default, it also validates
 `compat/storage_lifecycle_report_pair_corpus.json`, a synthetic C++/Rust report
 pair that proves `page_store`, `block_store`, stream/blob, and page-segment

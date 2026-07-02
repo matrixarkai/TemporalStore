@@ -69,9 +69,20 @@ REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "storage_manager_watermark_progress_count",
     "storage_manager_loop_ms",
     "stream_rollover_count",
+    "segment_open_count",
+    "segment_sealed_count",
     "storage_zone_total_bytes",
     "storage_zone_used_bytes",
     "storage_zone_stale_bytes",
+    "append_log_replay_records",
+    "append_log_reclaimed_records",
+    "slot_dirty_generation_count",
+    "slot_tombstone_count",
+    "slot_stale_ref_count",
+    "slot_owner_mismatch_count",
+    "page_index_rebuild_count",
+    "block_index_rebuild_count",
+    "object_index_rebuild_count",
     "cache_admissions",
     "cache_evictions",
     "cache_rehydrates",
@@ -150,6 +161,17 @@ REQUIRED_CONFIG_FIELDS = [
     "TS_BLOCK_INDEX_CACHE_BYTES",
 ]
 
+REQUIRED_STORAGE_WRITE_SEQUENCE = [
+    "append_record",
+    "route_shard_slot",
+    "choose_page",
+    "append_page_buffer",
+    "update_page_index",
+    "flush_page_block_segment",
+    "update_block_index",
+    "publish_append_watermark",
+]
+
 CANONICAL_PUBLIC_FIELDS = [
     "PageAddress",
     "BlockAddress",
@@ -201,7 +223,7 @@ def _extract_runner_list(name: str) -> list[str]:
 
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _dig_metrics(report: dict[str, Any]) -> dict[str, Any]:
@@ -388,10 +410,47 @@ def _validate_physical_reclaim_evidence(backend: str, metrics: dict[str, Any]) -
     return failures
 
 
+def _validate_stream_slot_index_evidence(backend: str, metrics: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    segment_open = _metric_number(metrics, "segment_open_count")
+    segment_sealed = _metric_number(metrics, "segment_sealed_count")
+    stream_rollover = _metric_number(metrics, "stream_rollover_count")
+    log_replay = _metric_number(metrics, "append_log_replay_records")
+    log_reclaimed = _metric_number(metrics, "append_log_reclaimed_records")
+    owner_mismatch = _metric_number(metrics, "slot_owner_mismatch_count")
+
+    if segment_sealed > segment_open:
+        failures.append(
+            f"{backend} segment_sealed_count cannot exceed segment_open_count: "
+            f"sealed={segment_sealed} open={segment_open}"
+        )
+    if stream_rollover > 0 and segment_open <= 0:
+        failures.append(f"{backend} stream rollover reported without segment open evidence")
+    if log_reclaimed > log_replay:
+        failures.append(
+            f"{backend} append_log_reclaimed_records cannot exceed append_log_replay_records: "
+            f"reclaimed={log_reclaimed} replay={log_replay}"
+        )
+    if owner_mismatch != 0:
+        failures.append(f"{backend} slot_owner_mismatch_count must be zero, got {owner_mismatch}")
+    for metric in [
+        "slot_dirty_generation_count",
+        "slot_tombstone_count",
+        "slot_stale_ref_count",
+        "page_index_rebuild_count",
+        "block_index_rebuild_count",
+        "object_index_rebuild_count",
+    ]:
+        if _metric_number(metrics, metric) < 0:
+            failures.append(f"{backend} {metric} must be non-negative")
+    return failures
+
+
 def validate_contract_and_runner() -> list[str]:
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
     runner_metrics = _extract_runner_list("STORAGE_LIFECYCLE_METRIC_NAMES")
+    runner_write_sequence = _extract_runner_list("STORAGE_WRITE_SEQUENCE_STEPS")
     runner_read_sequence = _extract_runner_list("STORAGE_READ_SEQUENCE_STEPS")
     runner_cold_scan_sequence = _extract_runner_list("STORAGE_COLD_SCAN_SEQUENCE_STEPS")
     runner_lifecycle_phases = _extract_runner_list("STORAGE_LIFECYCLE_PHASE_NAMES")
@@ -404,6 +463,8 @@ def validate_contract_and_runner() -> list[str]:
             failures.append(f"contract missing canonical public field `{name}`")
     if runner_metrics != REQUIRED_STORAGE_LIFECYCLE_METRICS:
         failures.append("runner:STORAGE_LIFECYCLE_METRIC_NAMES does not match the canonical lifecycle metric order")
+    if runner_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
+        failures.append("runner:STORAGE_WRITE_SEQUENCE_STEPS does not match the canonical write sequence")
     if runner_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
         failures.append("runner:STORAGE_READ_SEQUENCE_STEPS does not match the canonical read sequence")
     if runner_cold_scan_sequence != REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
@@ -423,7 +484,7 @@ def validate_contract_and_runner() -> list[str]:
             failures.append(f"contract missing lifecycle metric `{metric}`")
         if metric not in runner_metrics:
             failures.append(f"runner missing lifecycle metric `{metric}`")
-    for step in REQUIRED_STORAGE_READ_SEQUENCE + REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
+    for step in REQUIRED_STORAGE_WRITE_SEQUENCE + REQUIRED_STORAGE_READ_SEQUENCE + REQUIRED_STORAGE_COLD_SCAN_SEQUENCE:
         if f"`{step}`" not in contract_text:
             failures.append(f"contract missing storage sequence step `{step}`")
     for phase in REQUIRED_STORAGE_LIFECYCLE_PHASES:
@@ -455,6 +516,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_config = _dig_config(rust_report)
     cpp_public_shape = _normalize_public_storage_shape(cpp_report)
     rust_public_shape = _normalize_public_storage_shape(rust_report)
+    cpp_write_sequence = _dig_sequence(cpp_report, "storage_write_sequence")
+    rust_write_sequence = _dig_sequence(rust_report, "storage_write_sequence")
     cpp_read_sequence = _dig_sequence(cpp_report, "storage_read_sequence")
     rust_read_sequence = _dig_sequence(rust_report, "storage_read_sequence")
     cpp_cold_scan_sequence = _dig_sequence(cpp_report, "storage_cold_scan_sequence")
@@ -484,6 +547,10 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         if metric not in rust_metrics:
             failures.append(f"rust metrics missing `{metric}`")
 
+    if cpp_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
+        failures.append(f"cpp storage_write_sequence drift: {cpp_write_sequence!r}")
+    if rust_write_sequence != REQUIRED_STORAGE_WRITE_SEQUENCE:
+        failures.append(f"rust storage_write_sequence drift: {rust_write_sequence!r}")
     if cpp_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
         failures.append(f"cpp storage_read_sequence drift: {cpp_read_sequence!r}")
     if rust_read_sequence != REQUIRED_STORAGE_READ_SEQUENCE:
@@ -552,6 +619,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"watermark must be non-negative for `{metric}`")
     failures.extend(_validate_physical_reclaim_evidence("cpp", cpp_metrics))
     failures.extend(_validate_physical_reclaim_evidence("rust", rust_metrics))
+    failures.extend(_validate_stream_slot_index_evidence("cpp", cpp_metrics))
+    failures.extend(_validate_stream_slot_index_evidence("rust", rust_metrics))
     return failures
 
 
@@ -584,6 +653,7 @@ def main() -> int:
         return 1
 
     print("storage lifecycle parity contract passed:")
+    print("- storage_write_sequence=" + " -> ".join(REQUIRED_STORAGE_WRITE_SEQUENCE))
     print("- storage_read_sequence=" + " -> ".join(REQUIRED_STORAGE_READ_SEQUENCE))
     print("- storage_cold_scan_sequence=" + " -> ".join(REQUIRED_STORAGE_COLD_SCAN_SEQUENCE))
     print("- storage_lifecycle_phases=" + ", ".join(REQUIRED_STORAGE_LIFECYCLE_PHASES))
