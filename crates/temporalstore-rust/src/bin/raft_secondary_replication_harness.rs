@@ -1489,18 +1489,26 @@ fn wait_for_value(
 }
 
 fn read_value(node: &ProductionRaftNode, node_id: RaftNodeId, key: &str) -> ReadSummary {
-    let response: DistributedRaftCommandResponse = post_json_with_options(
-        &node.addr,
-        "/raft/read",
-        &DistributedRaftReadRequest {
-            node_id,
-            command: Command::StringGet {
-                key: key.to_string(),
-            },
+    let request = DistributedRaftReadRequest {
+        node_id,
+        command: Command::StringGet {
+            key: key.to_string(),
         },
-        request_options(),
-    )
-    .expect("read request failed");
+    };
+    let response: DistributedRaftCommandResponse = {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match post_json_with_options(&node.addr, "/raft/read", &request, request_options()) {
+                Ok(response) => break response,
+                Err(err) => {
+                    if Instant::now() >= deadline {
+                        panic!("read request failed after retry: {err}");
+                    }
+                    thread::sleep(Duration::from_millis(25));
+                }
+            }
+        }
+    };
     let value = match &response.response {
         CommandResponse::Bytes { value: Some(bytes) } => {
             Some(String::from_utf8_lossy(bytes).to_string())

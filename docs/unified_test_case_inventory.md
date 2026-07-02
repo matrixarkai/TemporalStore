@@ -219,8 +219,8 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_data_node_scale_failover_snapshot` | Exact C++ data-node Raft scale/failover/snapshot case, now including post-snapshot rescale down/up, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
 | `raft_data_node_mixed_rw_and_membership` | Exact C++ data-node mixed read/write plus membership case, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
 | `raft_data_node_leader_election_failover` | Data-node leader election and failover as an explicit shared harness case, paired with the Rust process secondary-replication harness. |
-| `raft_data_node_snapshot_restart_follower_lag` | Data-node snapshot install, restart recovery, follower lag, and catch-up as an explicit shared harness case. |
-| `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove and secondary-read visibility as an explicit shared harness case. |
+| `raft_data_node_snapshot_restart_follower_lag` | Data-node snapshot install, restart recovery, follower lag, catch-up, post-snapshot rescale, and post-rescale read survival as an explicit shared harness case. |
+| `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove, exact scale-down/up voter targets, and secondary-read visibility as an explicit shared harness case. |
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, and voter remove as an explicit shared harness case. |
 | `raft_temporal_raft_process_rollout_evidence` | Production-readiness evidence case requiring LocalModel rejection and TemporalRaft process-rollout/log-store evidence, plus membership-role acceptance in the paired matrix for witness role status, learner auto-promote, pending joint-consensus restart, and scheduler generation/token replay. |
