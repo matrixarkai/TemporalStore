@@ -777,6 +777,34 @@ pub struct ByteRaftRuntimeAdminReport {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ByteRaftLeaderElectionParityReport {
+    pub shard_id: ShardId,
+    pub leader_id: RaftNodeId,
+    pub current_term: u64,
+    pub commit_index: u64,
+    pub leader_election_ready: bool,
+    pub pre_vote_ready: bool,
+    pub leader_failover_observed: bool,
+    pub learner_add_ready: bool,
+    pub learner_catchup_ready: bool,
+    pub learner_promote_ready: bool,
+    pub learner_auto_promote_ready: bool,
+    pub membership_ready: bool,
+    pub leader_transfer_exact_once_ready: bool,
+    pub pre_vote_requests: u64,
+    pub pre_vote_accepted: u64,
+    pub pre_vote_rejected: u64,
+    pub learner_add_count: u64,
+    pub learner_catchup_count: u64,
+    pub learner_promote_count: u64,
+    pub auto_promote_count: u64,
+    pub leader_transfer_exact_once_commit_count: u64,
+    pub evidence_fields: Vec<String>,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ByteRaftLocalPeerStatus {
     pub status: RaftNodeStatus,
     pub pipeline_state: ByteRaftPeerPipelineState,
@@ -7820,6 +7848,87 @@ impl RaftCluster {
     pub fn byteraft_runtime_admin_report(&self) -> ByteRaftRuntimeAdminReport {
         let inner = self.inner.read().expect("raft cluster lock poisoned");
         inner.byteraft_runtime_admin_report()
+    }
+
+    pub fn byteraft_leader_election_parity_report(&self) -> ByteRaftLeaderElectionParityReport {
+        let status = self.status();
+        let admin = self.byteraft_runtime_admin_report();
+        let leader_election_ready =
+            admin.pre_vote_enforced && admin.pre_vote_process_evidence_observed;
+        let pre_vote_ready = admin.pre_vote_requests > 0
+            && admin.pre_vote_accepted > 0
+            && admin.pre_vote_rejected > 0;
+        let leader_failover_observed = admin.pre_vote_accepted > 0 && status.current_term > 1;
+        let learner_add_ready = admin.learner_add_present;
+        let learner_catchup_ready = admin.learner_catchup_present;
+        let learner_promote_ready = admin.learner_promote_present;
+        let learner_auto_promote_ready =
+            admin.learner_auto_promote_present && admin.membership_evidence.auto_promote_count > 0;
+        let membership_ready = learner_add_ready
+            && learner_catchup_ready
+            && learner_promote_ready
+            && learner_auto_promote_ready;
+        let leader_transfer_exact_once_ready = admin.leader_transfer_exact_once_present;
+        let mut blockers = Vec::new();
+        if !leader_election_ready {
+            blockers.push("leader_election_pre_vote_evidence_missing".to_string());
+        }
+        if !pre_vote_ready {
+            blockers.push("pre_vote_accept_and_reject_evidence_missing".to_string());
+        }
+        if !leader_failover_observed {
+            blockers.push("leader_failover_evidence_missing".to_string());
+        }
+        if !learner_add_ready {
+            blockers.push("learner_add_evidence_missing".to_string());
+        }
+        if !learner_catchup_ready {
+            blockers.push("learner_catchup_evidence_missing".to_string());
+        }
+        if !learner_promote_ready {
+            blockers.push("learner_promote_evidence_missing".to_string());
+        }
+        if !learner_auto_promote_ready {
+            blockers.push("learner_auto_promote_evidence_missing".to_string());
+        }
+        if !leader_transfer_exact_once_ready {
+            blockers.push("leader_transfer_exact_once_evidence_missing".to_string());
+        }
+
+        ByteRaftLeaderElectionParityReport {
+            shard_id: self.shard_id(),
+            leader_id: status.leader_id,
+            current_term: status.current_term,
+            commit_index: status.commit_index,
+            leader_election_ready,
+            pre_vote_ready,
+            leader_failover_observed,
+            learner_add_ready,
+            learner_catchup_ready,
+            learner_promote_ready,
+            learner_auto_promote_ready,
+            membership_ready,
+            leader_transfer_exact_once_ready,
+            pre_vote_requests: admin.pre_vote_requests,
+            pre_vote_accepted: admin.pre_vote_accepted,
+            pre_vote_rejected: admin.pre_vote_rejected,
+            learner_add_count: admin.membership_evidence.learner_add_count,
+            learner_catchup_count: admin.membership_evidence.learner_catchup_count,
+            learner_promote_count: admin.membership_evidence.learner_promote_count,
+            auto_promote_count: admin.membership_evidence.auto_promote_count,
+            leader_transfer_exact_once_commit_count: admin
+                .membership_evidence
+                .leader_transfer_exact_once_commit_count,
+            evidence_fields: vec![
+                "pre_vote_{requests,accepted,rejected}".to_string(),
+                "peer_pipeline_states[*].pre_vote_rejections".to_string(),
+                "status.{leader_id,current_term,commit_index}".to_string(),
+                "membership_evidence.{learner_add_count,learner_catchup_count,learner_promote_count,auto_promote_count}".to_string(),
+                "membership_evidence.leader_transfer_exact_once_commit_count".to_string(),
+            ],
+            ready: blockers.is_empty(),
+            blockers,
+        }
     }
 
     pub fn byteraft_local_status_report(&self) -> ByteRaftLocalStatusReport {

@@ -4909,6 +4909,78 @@ fn byteraft_admin_reports_witness_auto_promote_and_pending_joint_consensus() {
     }
 }
 
+// shared-corpus: raft_byteraft_leader_election_learner_promotion_parity
+#[test]
+fn byteraft_leader_election_and_learner_promotion_parity_report_is_ready() {
+    let cluster = RaftCluster::new_single_shard_with_config(
+        1,
+        [1, 2, 3],
+        RaftConfig {
+            election_cycle_tick: 1,
+            enable_pre_vote: true,
+            ..RaftConfig::default()
+        },
+    )
+    .unwrap();
+
+    cluster.set_alive(1, false).unwrap();
+    cluster.set_alive(3, false).unwrap();
+    assert_eq!(
+        cluster.tick_election().unwrap(),
+        RaftTickOutcome::PreVoteRejected { candidate_id: 2 }
+    );
+    cluster.set_alive(3, true).unwrap();
+    assert_eq!(
+        cluster.tick_election().unwrap(),
+        RaftTickOutcome::LeaderElected {
+            leader_id: 2,
+            term: 2,
+        }
+    );
+
+    cluster.add_learner_with_auto_promote(4, true).unwrap();
+    cluster.begin_leader_transfer(4).unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "leader-election-learner-promotion".to_string(),
+            value: b"committed-once".to_vec(),
+        })
+        .unwrap();
+
+    let report = cluster.byteraft_leader_election_parity_report();
+    assert!(report.ready, "report blockers: {:?}", report.blockers);
+    assert!(report.leader_election_ready);
+    assert!(report.pre_vote_ready);
+    assert!(report.leader_failover_observed);
+    assert!(report.learner_add_ready);
+    assert!(report.learner_catchup_ready);
+    assert!(report.learner_promote_ready);
+    assert!(report.learner_auto_promote_ready);
+    assert!(report.membership_ready);
+    assert!(report.leader_transfer_exact_once_ready);
+    assert_eq!(report.leader_id, 2);
+    assert_eq!(report.current_term, 2);
+    assert_eq!(report.pre_vote_requests, 2);
+    assert_eq!(report.pre_vote_accepted, 1);
+    assert_eq!(report.pre_vote_rejected, 1);
+    assert_eq!(report.learner_add_count, 1);
+    assert_eq!(report.learner_catchup_count, 1);
+    assert_eq!(report.learner_promote_count, 1);
+    assert_eq!(report.auto_promote_count, 1);
+    assert_eq!(report.leader_transfer_exact_once_commit_count, 1);
+    assert_eq!(
+        cluster.read_local(
+            4,
+            Command::StringGet {
+                key: "leader-election-learner-promotion".to_string(),
+            },
+        ),
+        Ok(CommandResponse::Bytes {
+            value: Some(b"committed-once".to_vec()),
+        })
+    );
+}
+
 #[test]
 fn replication_health_reports_lag_and_heartbeat_catches_up_secondary() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
