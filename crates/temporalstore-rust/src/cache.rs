@@ -1379,7 +1379,7 @@ impl MultiLayerCache {
         }
     }
 
-    #[cfg(test)]
+    #[doc(hidden)]
     pub fn clear_memory_for_test(&self) {
         let mut inner = self.inner.write().expect("cache lock poisoned");
         inner.memory.clear();

@@ -4812,6 +4812,53 @@
       ]
     },
     {
+      "name": "server_raft_rustraft_runtime_admin_route",
+      "shard_id": 41,
+      "steps": [
+        {
+          "command": {
+            "description": "RustRaft server admin route case: data-node and metaserver status routes expose RustRaft runtime status, local status, peer pipeline state, WAL first/last index, snapshot state, and transfer/election counters through the Rust-native HTTP/admin surface.",
+            "kind": "existing_test",
+            "mode": "runtime",
+            "required_paths": [
+              "crates/temporalstore-rust/src/bin/server.rs",
+              "crates/temporalstore-rust/src/bin/raft_node.rs",
+              "crates/temporalstore-rust/src/raft.rs",
+              "crates/rustraft/src/lib.rs"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust raft_status_read_index_and_transfer_leader_match_engine_control_shape metaserver_raft_status_read_index_and_transfer_leader_work --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-distributed-parity-validation --log <raft-distributed-parity.json>",
+            "suite": "cpp_data_raft_parity",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust server and raft-node admin routes emit temporalstore_unified_case_report_v1-compatible status evidence for runtime/admin route parity.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_runner_contract": "; emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, and latency_ms.",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
+          },
+          "name": "server_raft_runtime_admin_routes_expose_rustraft_status"
+        }
+      ]
+    },
+    {
       "name": "raft_rustraft_snapshot_lifecycle_depth",
       "shard_id": 42,
       "steps": [
@@ -9426,7 +9473,8 @@
             "kind": "status",
             "ok": true
           },
-          "name": "rust_cold_read_after_eviction_path"
+          "name": "rust_cold_read_after_eviction_path",
+          "skip_client": true
         }
       ]
     },
@@ -9871,6 +9919,698 @@
           },
           "name": "cache_replacement_soak_memory_disk_pressure_restart",
           "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust storage config case: public storage tuning defaults, environment variable names, and parsed knobs stay stable across the Rust-native migration contract.",
+      "family": "storage/cache",
+      "name": "storage_config_cpp_like_public_knobs",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner validates equivalent storage tuning defaults and public knob names; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "existing_test",
+            "description": "Validates context/block segment sizing, stream max blob size, compaction watermark, cold-scan cache-fill policy, and public TS_* environment variable names.",
+            "rust_test": "defaults_match_cpp_like_public_surface env_names_are_stable_for_cpp_rust_parity parses_public_knobs_from_getter",
+            "required_paths": [
+              "crates/temporalstore-rust/src/storage_config.rs",
+              "src/partition/storage/*"
+            ]
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "storage_config_defaults_env_names_and_parsed_knobs"
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Feature case for inclusive time bounds, scan-count semantics, duplicate timestamp policies, and restart-stable packed block reads.",
+      "family": "Feature",
+      "name": "feature_cpp_boundary_count_duplicate_semantics",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "feature_boundary_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:boundary",
+            "points": [
+              {
+                "timestamp_ms": 10,
+                "value": [
+                  49
+                ]
+              },
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  50
+                ]
+              },
+              {
+                "timestamp_ms": 30,
+                "value": [
+                  51
+                ]
+              },
+              {
+                "timestamp_ms": 40,
+                "value": [
+                  52
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_inclusive_bounds",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:boundary",
+            "start_ms": 20,
+            "end_ms": 30,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  50
+                ]
+              },
+              {
+                "timestamp_ms": 30,
+                "value": [
+                  51
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_count_limits_before_filtering",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:boundary",
+            "start_ms": 10,
+            "end_ms": 40,
+            "count": 2
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 10,
+                "value": [
+                  49
+                ]
+              },
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  50
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_insert_absent_new_timestamp_inserts",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "insert_if_absent",
+            "points": [
+              {
+                "timestamp_ms": 50,
+                "value": [
+                  53
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "feature_insert_absent_existing_timestamp_ignored",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "insert_if_absent",
+            "points": [
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  57,
+                  57
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_replace_existing_missing_timestamp_ignored",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "replace_existing",
+            "points": [
+              {
+                "timestamp_ms": 60,
+                "value": [
+                  54
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_replace_existing_timestamp_updates",
+          "command": {
+            "kind": "feature_append_with_policy",
+            "key": "unified:feature:boundary",
+            "policy": "replace_existing",
+            "points": [
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  55
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "integer",
+            "value": 1
+          }
+        },
+        {
+          "name": "feature_boundary_query_after_restart",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:boundary",
+            "start_ms": 10,
+            "end_ms": 60,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 10,
+                "value": [
+                  49
+                ]
+              },
+              {
+                "timestamp_ms": 20,
+                "value": [
+                  55
+                ]
+              },
+              {
+                "timestamp_ms": 30,
+                "value": [
+                  51
+                ]
+              },
+              {
+                "timestamp_ms": 40,
+                "value": [
+                  52
+                ]
+              },
+              {
+                "timestamp_ms": 50,
+                "value": [
+                  53
+                ]
+              }
+            ]
+          },
+          "restart_before": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Feature case for C++ FeatureFilter operators over protobuf row fields.",
+      "family": "Feature",
+      "name": "feature_cpp_filter_operator_semantics",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "feature_filter_operator_append_rows",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:filterops",
+            "points": [
+              {
+                "timestamp_ms": 100,
+                "value": [
+                  8,
+                  10,
+                  16,
+                  1,
+                  24,
+                  5,
+                  32,
+                  7
+                ]
+              },
+              {
+                "timestamp_ms": 110,
+                "value": [
+                  8,
+                  11,
+                  16,
+                  2,
+                  24,
+                  15,
+                  32,
+                  7
+                ]
+              },
+              {
+                "timestamp_ms": 120,
+                "value": [
+                  8,
+                  12,
+                  16,
+                  3,
+                  24,
+                  25,
+                  32,
+                  8
+                ]
+              },
+              {
+                "timestamp_ms": 130,
+                "value": [
+                  8,
+                  13,
+                  16,
+                  4,
+                  24,
+                  35,
+                  32,
+                  9
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_filter_equal",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filterops",
+            "start_ms": 100,
+            "end_ms": 130,
+            "count": 10,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "equal",
+                "value": 2
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 110,
+                "value": [
+                  8,
+                  11,
+                  16,
+                  2,
+                  24,
+                  15,
+                  32,
+                  7
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_filter_not_equal_and_less_equal",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filterops",
+            "start_ms": 100,
+            "end_ms": 130,
+            "count": 10,
+            "filters": [
+              {
+                "field": "author_id",
+                "op": "not_equal",
+                "value": 7
+              },
+              {
+                "field": "duration",
+                "op": "less_or_equal",
+                "value": 25
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 120,
+                "value": [
+                  8,
+                  12,
+                  16,
+                  3,
+                  24,
+                  25,
+                  32,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_filter_greater_and_less",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filterops",
+            "start_ms": 100,
+            "end_ms": 130,
+            "count": 10,
+            "filters": [
+              {
+                "field": "gid",
+                "op": "greater_than",
+                "value": 10
+              },
+              {
+                "field": "duration",
+                "op": "less_than",
+                "value": 30
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 110,
+                "value": [
+                  8,
+                  11,
+                  16,
+                  2,
+                  24,
+                  15,
+                  32,
+                  7
+                ]
+              },
+              {
+                "timestamp_ms": 120,
+                "value": [
+                  8,
+                  12,
+                  16,
+                  3,
+                  24,
+                  25,
+                  32,
+                  8
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "feature_filter_greater_equal",
+          "command": {
+            "kind": "feature_query_filtered",
+            "key": "unified:feature:filterops",
+            "start_ms": 100,
+            "end_ms": 130,
+            "count": 10,
+            "filters": [
+              {
+                "field": "action_type",
+                "op": "greater_or_equal",
+                "value": 3
+              }
+            ]
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 120,
+                "value": [
+                  8,
+                  12,
+                  16,
+                  3,
+                  24,
+                  25,
+                  32,
+                  8
+                ]
+              },
+              {
+                "timestamp_ms": 130,
+                "value": [
+                  8,
+                  13,
+                  16,
+                  4,
+                  24,
+                  35,
+                  32,
+                  9
+                ]
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust Feature case for aggregate neutral values, timestamp replacement behavior, delete, packed block recovery, and page-backed readiness evidence.",
+      "family": "Feature",
+      "name": "feature_cpp_aggregate_replace_delete_recovery",
+      "shard_id": 1,
+      "steps": [
+        {
+          "name": "feature_aggregate_recovery_append",
+          "command": {
+            "kind": "feature_append",
+            "key": "unified:feature:aggregate:recovery",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [
+                  49,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [
+                  50,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [
+                  45,
+                  53
+                ]
+              },
+              {
+                "timestamp_ms": 1030,
+                "value": [
+                  110,
+                  97,
+                  110
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_aggregate_sum_ignores_non_numeric_nan",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:aggregate:recovery",
+            "start_ms": 1000,
+            "end_ms": 1030,
+            "count": null,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 25
+          }
+        },
+        {
+          "name": "feature_aggregate_empty_window_neutral_zero",
+          "command": {
+            "kind": "feature_agg_query",
+            "key": "unified:feature:aggregate:recovery",
+            "start_ms": 2000,
+            "end_ms": 2010,
+            "count": null,
+            "aggregator": "sum"
+          },
+          "expect": {
+            "kind": "aggregate",
+            "value": 0
+          }
+        },
+        {
+          "name": "feature_replace_points_preserves_unmentioned_timestamps",
+          "command": {
+            "kind": "feature_replace",
+            "key": "unified:feature:aggregate:recovery",
+            "start_ms": 1005,
+            "end_ms": 1025,
+            "points": [
+              {
+                "timestamp_ms": 1015,
+                "value": [
+                  51,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1025,
+                "value": [
+                  52,
+                  48
+                ]
+              }
+            ]
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_query_after_replace_restart",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:aggregate:recovery",
+            "start_ms": 1000,
+            "end_ms": 1030,
+            "count": null
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": [
+              {
+                "timestamp_ms": 1000,
+                "value": [
+                  49,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1010,
+                "value": [
+                  50,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1015,
+                "value": [
+                  51,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1020,
+                "value": [
+                  45,
+                  53
+                ]
+              },
+              {
+                "timestamp_ms": 1025,
+                "value": [
+                  52,
+                  48
+                ]
+              },
+              {
+                "timestamp_ms": 1030,
+                "value": [
+                  110,
+                  97,
+                  110
+                ]
+              }
+            ]
+          },
+          "restart_before": true
+        },
+        {
+          "name": "feature_delete_recovery_key",
+          "command": {
+            "kind": "feature_delete",
+            "key": "unified:feature:aggregate:recovery"
+          },
+          "expect": {
+            "kind": "empty"
+          }
+        },
+        {
+          "name": "feature_query_deleted_after_restart",
+          "command": {
+            "kind": "feature_query",
+            "key": "unified:feature:aggregate:recovery",
+            "start_ms": 1000,
+            "end_ms": 1040,
+            "count": 100
+          },
+          "expect": {
+            "kind": "feature_points",
+            "points": []
+          },
+          "restart_before": true
         }
       ]
     }
@@ -10353,6 +11093,16 @@
       "ips_stats",
       "ips_snapshot_report",
       "object_store_backend"
+    ],
+    "feature_parity_cases": [
+      "feature_cpp_aggregate_replace_delete_recovery",
+      "feature_cpp_boundary_count_duplicate_semantics",
+      "feature_cpp_filter_operator_semantics",
+      "feature_nested_proto_aggregate_semantics",
+      "feature_packed_timestamped_pages",
+      "feature_policy_filter_aggregate_lifecycle",
+      "redis_feature_module_flow",
+      "sequence_cpp_feature_rows"
     ]
   },
   "description": "Shared behavioral corpus for validating Rust and C++ TemporalStore implementations with the same ordered operations and expected responses.",

@@ -1352,11 +1352,11 @@ fn handle_server_raft_route(
         ("GET", "/raft/control/rustraft_runtime_admin")
         | ("POST", "/raft/control/rustraft_runtime_admin") => json_response(
             200,
-            &state.runtime.cluster().rustraft_runtime_admin_report(),
+            &state.runtime.cluster().byteraft_runtime_admin_report(),
         ),
         ("GET", "/raft/control/rustraft_local_status")
         | ("POST", "/raft/control/rustraft_local_status") => {
-            json_response(200, &state.runtime.cluster().rustraft_local_status_report())
+            json_response(200, &state.runtime.cluster().byteraft_local_status_report())
         }
         ("POST", "/raft/apply_health") => match parse_json::<RaftApplyHealthRequest>(&request.body)
         {
