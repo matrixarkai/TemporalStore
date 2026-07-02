@@ -4962,6 +4962,25 @@ class MatrixArkLocalAdapter:
         pack["operational_visibility_policy"] = visibility_decision
         finish_retrieval_stage("audit", audit_started_perf)
         placement = retrieval_scan_stats.get("native_selected_node_locations", {}) if isinstance(retrieval_scan_stats, dict) else {}
+        candidate_cache_hit = bool(
+            isinstance(retrieval_scan_stats, dict)
+            and (
+                retrieval_scan_stats.get("cache_hit")
+                or retrieval_scan_stats.get("candidate_cache_hit")
+                or retrieval_scan_stats.get("native_placement_candidate_cache_hit")
+            )
+        )
+        index_postings_read = (
+            int(retrieval_scan_stats.get("index_postings_read") or 0)
+            if isinstance(retrieval_scan_stats, dict)
+            else 0
+        )
+        if isinstance(retrieval_scan_stats, dict) and not index_postings_read:
+            index_postings_read = int(
+                retrieval_scan_stats.get("index_postings_touched")
+                or retrieval_scan_stats.get("native_index_postings_found")
+                or 0
+            )
         pack["retrieval_metrics"] = {
             "query_plan_ms": round(float(stage_latencies_ms.get("query_understanding", 0.0)), 3),
             "node_traversal_ms": round(float(stage_latencies_ms.get("node_traversal", 0.0)), 3),
@@ -4970,16 +4989,15 @@ class MatrixArkLocalAdapter:
             "score_ms": round(float(stage_latencies_ms.get("rerank_score", 0.0)), 3),
             "pack_ms": round(float(stage_latencies_ms.get("pack", 0.0)), 3),
             "audit_ms": round(float(stage_latencies_ms.get("audit", 0.0)), 3),
+            "append_queue_wait_ms": 0.0,
+            "append_engine_ms": 0.0,
             "selected_refs": len(selected),
+            "dropped_refs": int(len(dropped_refs)),
             "scanned_records": int(retrieval_scan_stats.get("loaded_records") or retrieval_scan_stats.get("scanned_records") or len(records)) if isinstance(retrieval_scan_stats, dict) else len(records),
-            "cache_hit": bool(
-                isinstance(retrieval_scan_stats, dict)
-                and (
-                    retrieval_scan_stats.get("cache_hit")
-                    or retrieval_scan_stats.get("candidate_cache_hit")
-                    or retrieval_scan_stats.get("native_placement_candidate_cache_hit")
-                )
-            ),
+            "candidate_cache_hit": candidate_cache_hit,
+            "cache_hit": candidate_cache_hit,
+            "index_postings_read": index_postings_read,
+            "index_postings_touched": index_postings_read,
             "placement_partitions_touched": len(placement.get("locations", []) or []) if isinstance(placement, dict) else 0,
             "native_pack_assembly": False,
             "python_pack_fallback": True,

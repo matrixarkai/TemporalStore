@@ -141,6 +141,8 @@ RETRIEVAL_STAGE_METRICS = [
     "score_ms",
     "pack_ms",
     "audit_ms",
+    "append_queue_wait_ms",
+    "append_engine_ms",
 ]
 
 
@@ -278,6 +280,12 @@ def retrieval_phase0_fields(result: Json) -> Json:
         )
 
     metric_drop_counters = metrics.get("drop_counters") if isinstance(metrics.get("drop_counters"), dict) else {}
+    index_postings_read = metric_int(
+        "index_postings_read",
+        "index_postings_touched",
+        "native_index_postings_found",
+    ) or int(backend_pushdown.get("native_index_postings_found") or 0)
+    candidate_cache_hit = bool(metrics.get("candidate_cache_hit", metrics.get("cache_hit", False)))
     return {
         "selected_refs": selected_ref_count(result),
         "selected_ref_signature": selected_ref_signature(result),
@@ -285,13 +293,15 @@ def retrieval_phase0_fields(result: Json) -> Json:
         "drop_counters": metric_drop_counters or _drop_counter_summary(pack.get("dropped_refs")),
         "scanned_records": metric_int("scanned_records", "records_scanned"),
         "index_hits": index_hits,
-        "index_postings_touched": metric_int("index_postings_touched", "native_index_postings_found")
-        or int(backend_pushdown.get("native_index_postings_found") or 0),
+        "index_postings_read": index_postings_read,
+        "index_postings_touched": index_postings_read,
         "broad_scan_used": bool(metrics.get("broad_scan_used", False) or backend_pushdown.get("broad_scan_used", False)),
         "broad_scan_blocked": bool(metrics.get("broad_scan_blocked", False) or backend_pushdown.get("broad_scan_blocked", False)),
         "native_pack_assembly": bool(metrics.get("native_pack_assembly", False) or pack.get("native_context_pack", False)),
         "python_pack_fallback": bool(metrics.get("python_pack_fallback", False) or metrics.get("source") == "python_reference_pack"),
         "raw_candidate_tables_returned": bool(metrics.get("raw_candidate_tables_returned", False)),
+        "candidate_cache_hit": candidate_cache_hit,
+        "cache_hit": candidate_cache_hit,
         "candidate_count": candidate_count,
         "token_count": token_count,
         "timeout_partial": bool(result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", ""))),
@@ -315,6 +325,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "timeout_partial_count": 0,
             "drop_counters_total": {},
             "selected_ref_signatures_by_query": {},
+            "index_postings_read_avg": 0.0,
             "index_postings_touched_avg": 0.0,
             "broad_scan_used_count": 0,
             "broad_scan_blocked_count": 0,
@@ -332,7 +343,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     candidate_counts: list[float] = []
     token_counts: list[float] = []
     placement_partitions: list[float] = []
-    index_postings_touched: list[float] = []
+    index_postings_read: list[float] = []
     drop_counters_total: Json = {}
     selected_ref_signatures_by_query: Json = {}
     broad_scan_used_count = 0
@@ -387,9 +398,9 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         except (TypeError, ValueError):
             placement_partitions.append(0.0)
         try:
-            index_postings_touched.append(float(row.get("index_postings_touched") or 0.0))
+            index_postings_read.append(float(row.get("index_postings_read") or row.get("index_postings_touched") or 0.0))
         except (TypeError, ValueError):
-            index_postings_touched.append(0.0)
+            index_postings_read.append(0.0)
         if bool(row.get("broad_scan_used")):
             broad_scan_used_count += 1
         if bool(row.get("broad_scan_blocked")):
@@ -400,7 +411,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             python_pack_fallback_count += 1
         if bool(row.get("raw_candidate_tables_returned")):
             raw_candidate_tables_returned_count += 1
-        if bool(row.get("cache_hit")):
+        if bool(row.get("candidate_cache_hit", row.get("cache_hit"))):
             cache_hits += 1
         if bool(row.get("timeout_partial")):
             timeout_partials += 1
@@ -425,7 +436,8 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         "timeout_partial_count": timeout_partials,
         "drop_counters_total": drop_counters_total,
         "selected_ref_signatures_by_query": selected_ref_signatures_by_query,
-        "index_postings_touched_avg": round(statistics.fmean(index_postings_touched), 3) if index_postings_touched else 0.0,
+        "index_postings_read_avg": round(statistics.fmean(index_postings_read), 3) if index_postings_read else 0.0,
+        "index_postings_touched_avg": round(statistics.fmean(index_postings_read), 3) if index_postings_read else 0.0,
         "broad_scan_used_count": broad_scan_used_count,
         "broad_scan_blocked_count": broad_scan_blocked_count,
         "native_pack_assembly_count": native_pack_assembly_count,
@@ -492,6 +504,7 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                 "timeout_partial_count": 0,
                 "timeouts": 0,
                 "selected_ref_signatures_by_query": {},
+                "index_postings_read_avg": 0.0,
                 "index_postings_touched_avg": 0.0,
                 "broad_scan_used_count": 0,
                 "broad_scan_blocked_count": 0,
@@ -516,7 +529,8 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
             "token_count_avg": float(stage.get("token_count_avg") or 0.0),
             "timeout_partial_count": int(stage.get("timeout_partial_count") or retrieve.get("partial_context_packs") or 0),
             "timeouts": int(retrieve.get("timeout_count") or 0),
-            "index_postings_touched_avg": float(stage.get("index_postings_touched_avg") or 0.0),
+            "index_postings_read_avg": float(stage.get("index_postings_read_avg") or stage.get("index_postings_touched_avg") or 0.0),
+            "index_postings_touched_avg": float(stage.get("index_postings_touched_avg") or stage.get("index_postings_read_avg") or 0.0),
             "broad_scan_used_count": int(stage.get("broad_scan_used_count") or 0),
             "broad_scan_blocked_count": int(stage.get("broad_scan_blocked_count") or 0),
             "native_pack_assembly_count": int(stage.get("native_pack_assembly_count") or 0),
@@ -1152,8 +1166,11 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
         ("score_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "score_ms"), "lower"),
         ("pack_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "pack_ms"), "lower"),
         ("audit_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "audit_ms"), "lower"),
+        ("append_queue_wait_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "append_queue_wait_ms"), "lower"),
+        ("append_engine_p95_ms", ("retrieve", "stage_metrics", "stage_p95_ms", "append_engine_ms"), "lower"),
         ("scanned_records_avg", ("retrieve", "stage_metrics", "scanned_records_avg"), "lower"),
         ("cache_hit_rate", ("retrieve", "stage_metrics", "cache_hit_rate"), "higher"),
+        ("index_postings_read_avg", ("retrieve", "stage_metrics", "index_postings_read_avg"), "approx"),
         ("index_postings_touched_avg", ("retrieve", "stage_metrics", "index_postings_touched_avg"), "approx"),
         ("broad_scan_used_count", ("retrieve", "stage_metrics", "broad_scan_used_count"), "lower"),
         ("broad_scan_blocked_count", ("retrieve", "stage_metrics", "broad_scan_blocked_count"), "lower"),
@@ -1285,8 +1302,8 @@ def write_report(path: Path, report: Json) -> None:
             "",
             "## Retrieval Stage Metrics",
             "",
-            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | selected avg | dropped avg | scanned avg | index hits avg | postings avg | candidates avg | tokens avg | broad scan used | python pack fallback | native pack | cache hit rate | placement partitions avg |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+            "| backend | samples | query plan p95 | node traversal p95 | index prefilter p95 | candidate fetch p95 | score p95 | pack p95 | audit p95 | append queue wait p95 | append engine p95 | selected avg | dropped avg | scanned avg | index hits avg | index postings read avg | candidates avg | tokens avg | broad scan used | python pack fallback | native pack | cache hit rate | placement partitions avg |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for backend in backend_order:
@@ -1298,9 +1315,10 @@ def write_report(path: Path, report: Json) -> None:
             f"{p95.get('query_plan_ms', 0)} ms | {p95.get('node_traversal_ms', 0)} ms | "
             f"{p95.get('index_prefilter_ms', 0)} ms | {p95.get('candidate_fetch_ms', 0)} ms | "
             f"{p95.get('score_ms', 0)} ms | {p95.get('pack_ms', 0)} ms | {p95.get('audit_ms', 0)} ms | "
+            f"{p95.get('append_queue_wait_ms', 0)} ms | {p95.get('append_engine_ms', 0)} ms | "
             f"{metrics.get('selected_refs_avg', 0)} | {metrics.get('dropped_refs_avg', 0)} | "
             f"{metrics.get('scanned_records_avg', 0)} | {metrics.get('index_hits_avg', 0)} | "
-            f"{metrics.get('index_postings_touched_avg', 0)} | "
+            f"{metrics.get('index_postings_read_avg', metrics.get('index_postings_touched_avg', 0))} | "
             f"{metrics.get('candidate_count_avg', 0)} | {metrics.get('token_count_avg', 0)} | "
             f"{metrics.get('broad_scan_used_count', 0)} | {metrics.get('python_pack_fallback_count', 0)} | "
             f"{metrics.get('native_pack_assembly_count', 0)} | "
@@ -1339,7 +1357,7 @@ def write_report(path: Path, report: Json) -> None:
             lines.extend(
                 [
                     "",
-                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | postings avg | candidates avg | tokens avg | broad scan used | python pack fallback | native pack | timeouts | drop counters |",
+                    "| backend | status | selected avg | selected max | dropped avg | scanned avg | index hits avg | index postings read avg | candidates avg | tokens avg | broad scan used | python pack fallback | native pack | timeouts | drop counters |",
                     "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
                 ]
             )
@@ -1412,7 +1430,7 @@ def write_report(path: Path, report: Json) -> None:
                     f"| {backend} | {values.get('status', '')} | {values.get('selected_refs_avg', 0)} | "
                     f"{values.get('selected_refs_max', 0)} | {values.get('dropped_refs_avg', 0)} | "
                     f"{values.get('scanned_records_avg', 0)} | {values.get('index_hits_avg', 0)} | "
-                    f"{values.get('index_postings_touched_avg', 0)} | {values.get('candidate_count_avg', 0)} | "
+                    f"{values.get('index_postings_read_avg', values.get('index_postings_touched_avg', 0))} | {values.get('candidate_count_avg', 0)} | "
                     f"{values.get('token_count_avg', 0)} | {values.get('broad_scan_used_count', 0)} | "
                     f"{values.get('python_pack_fallback_count', 0)} | {values.get('native_pack_assembly_count', 0)} | "
                     f"{values.get('timeouts', 0)} | `{json.dumps(drop_counters, sort_keys=True)}` |"
