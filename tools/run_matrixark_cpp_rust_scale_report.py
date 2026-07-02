@@ -145,6 +145,16 @@ RETRIEVAL_STAGE_METRICS = [
     "append_engine_ms",
 ]
 
+SHARED_CORRECTNESS_REQUIREMENTS = [
+    "selected_ref_parity",
+    "scope_filtering",
+    "placement_filtering",
+    "compact_secondary_index_prefilter",
+    "stale_superseded_exclusion",
+    "shared_resource_skill_quota",
+    "cross_session_quota_rerank",
+]
+
 
 def retrieval_metrics_from_result(result: Json) -> Json:
     pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
@@ -280,17 +290,56 @@ def retrieval_phase0_fields(result: Json) -> Json:
         )
 
     metric_drop_counters = metrics.get("drop_counters") if isinstance(metrics.get("drop_counters"), dict) else {}
+    drop_counters = metric_drop_counters or _drop_counter_summary(pack.get("dropped_refs"))
     index_postings_read = metric_int(
         "index_postings_read",
         "index_postings_touched",
         "native_index_postings_found",
     ) or int(backend_pushdown.get("native_index_postings_found") or 0)
     candidate_cache_hit = bool(metrics.get("candidate_cache_hit", metrics.get("cache_hit", False)))
+    explicit_evidence = metrics.get("correctness_evidence") if isinstance(metrics.get("correctness_evidence"), dict) else {}
+    quota_policy = recall_policy.get("quota_policy") if isinstance(recall_policy.get("quota_policy"), dict) else {}
+    cross_session_policy = recall_policy.get("cross_session") if isinstance(recall_policy.get("cross_session"), dict) else {}
+    correctness_evidence = {
+        "scope_filtering": bool(explicit_evidence.get("scope_filtering") or drop_counters.get("scope", 0) > 0),
+        "placement_filtering": bool(
+            explicit_evidence.get("placement_filtering")
+            or drop_counters.get("placement", 0) > 0
+            or metrics.get("placement_partitions_touched")
+            or backend_pushdown.get("native_placement_locations")
+        ),
+        "compact_secondary_index_prefilter": bool(
+            explicit_evidence.get("compact_secondary_index_prefilter")
+            or index_postings_read > 0
+            or index_filter.get("matched_candidate_count")
+            or backend_pushdown.get("native_index_postings_found")
+        ),
+        "stale_superseded_exclusion": bool(
+            explicit_evidence.get("stale_superseded_exclusion")
+            or drop_counters.get("stale", 0) > 0
+            or metrics.get("superseded_excluded_count")
+            or pack.get("include_superseded_resources") is False
+        ),
+        "shared_resource_skill_quota": bool(
+            explicit_evidence.get("shared_resource_skill_quota")
+            or metrics.get("shared_resource_quota_applied")
+            or metrics.get("skill_quota_applied")
+            or quota_policy.get("shared_resources")
+            or quota_policy.get("skills")
+        ),
+        "cross_session_quota_rerank": bool(
+            explicit_evidence.get("cross_session_quota_rerank")
+            or metrics.get("cross_session_quota_applied")
+            or metrics.get("cross_session_rerank_applied")
+            or cross_session_policy.get("enabled")
+            or cross_session_policy.get("budget_ratio")
+        ),
+    }
     return {
         "selected_refs": selected_ref_count(result),
         "selected_ref_signature": selected_ref_signature(result),
         "dropped_refs": metric_int("dropped_refs", "dropped_ref_count") or _count_refs(pack.get("dropped_refs")),
-        "drop_counters": metric_drop_counters or _drop_counter_summary(pack.get("dropped_refs")),
+        "drop_counters": drop_counters,
         "scanned_records": metric_int("scanned_records", "records_scanned"),
         "index_hits": index_hits,
         "index_postings_read": index_postings_read,
@@ -302,6 +351,7 @@ def retrieval_phase0_fields(result: Json) -> Json:
         "raw_candidate_tables_returned": bool(metrics.get("raw_candidate_tables_returned", False)),
         "candidate_cache_hit": candidate_cache_hit,
         "cache_hit": candidate_cache_hit,
+        "correctness_evidence": correctness_evidence,
         "candidate_count": candidate_count,
         "token_count": token_count,
         "timeout_partial": bool(result.get("partial_context_pack") or "timeout_partial" in str(result.get("quality_warnings", ""))),
@@ -324,6 +374,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
             "token_count_avg": 0.0,
             "timeout_partial_count": 0,
             "drop_counters_total": {},
+            "correctness_evidence": {},
             "selected_ref_signatures_by_query": {},
             "index_postings_read_avg": 0.0,
             "index_postings_touched_avg": 0.0,
@@ -346,6 +397,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
     index_postings_read: list[float] = []
     drop_counters_total: Json = {}
     selected_ref_signatures_by_query: Json = {}
+    correctness_evidence_total: Json = {name: False for name in SHARED_CORRECTNESS_REQUIREMENTS if name != "selected_ref_parity"}
     broad_scan_used_count = 0
     broad_scan_blocked_count = 0
     native_pack_assembly_count = 0
@@ -389,6 +441,9 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
                 drop_counters_total[key] = int(drop_counters_total.get(key, 0) or 0) + int(value or 0)
             except (TypeError, ValueError):
                 continue
+        evidence = row.get("correctness_evidence") if isinstance(row.get("correctness_evidence"), dict) else {}
+        for key in correctness_evidence_total:
+            correctness_evidence_total[key] = bool(correctness_evidence_total.get(key) or evidence.get(key))
         query_id = row.get("query_id")
         signature = row.get("selected_ref_signature")
         if query_id is not None and isinstance(signature, list):
@@ -435,6 +490,7 @@ def summarize_retrieval_metrics(rows: list[Json]) -> Json:
         "token_count_avg": round(statistics.fmean(token_counts), 3) if token_counts else 0.0,
         "timeout_partial_count": timeout_partials,
         "drop_counters_total": drop_counters_total,
+        "correctness_evidence": correctness_evidence_total,
         "selected_ref_signatures_by_query": selected_ref_signatures_by_query,
         "index_postings_read_avg": round(statistics.fmean(index_postings_read), 3) if index_postings_read else 0.0,
         "index_postings_touched_avg": round(statistics.fmean(index_postings_read), 3) if index_postings_read else 0.0,
@@ -503,6 +559,7 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                 "token_count_avg": 0.0,
                 "timeout_partial_count": 0,
                 "timeouts": 0,
+                "correctness_evidence": {},
                 "selected_ref_signatures_by_query": {},
                 "index_postings_read_avg": 0.0,
                 "index_postings_touched_avg": 0.0,
@@ -531,6 +588,7 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
             "timeouts": int(retrieve.get("timeout_count") or 0),
             "index_postings_read_avg": float(stage.get("index_postings_read_avg") or stage.get("index_postings_touched_avg") or 0.0),
             "index_postings_touched_avg": float(stage.get("index_postings_touched_avg") or stage.get("index_postings_read_avg") or 0.0),
+            "correctness_evidence": stage.get("correctness_evidence") if isinstance(stage.get("correctness_evidence"), dict) else {},
             "broad_scan_used_count": int(stage.get("broad_scan_used_count") or 0),
             "broad_scan_blocked_count": int(stage.get("broad_scan_blocked_count") or 0),
             "native_pack_assembly_count": int(stage.get("native_pack_assembly_count") or 0),
@@ -578,6 +636,19 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
             )
         else:
             selected_for_drift[name] = selected_avg
+        evidence = backend_values[name].get("correctness_evidence", {})
+        if isinstance(evidence, dict):
+            for requirement in SHARED_CORRECTNESS_REQUIREMENTS:
+                if requirement == "selected_ref_parity":
+                    continue
+                if not bool(evidence.get(requirement)):
+                    failures.append(
+                        {
+                            "backend": name,
+                            "reason": "missing_correctness_evidence",
+                            "requirement": requirement,
+                        }
+                    )
     if len(selected_for_drift) >= 2:
         selected_values = list(selected_for_drift.values())
         denominator = max(max(selected_values), 1.0)
@@ -619,8 +690,28 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                     "examples": mismatches[:5],
                 }
             )
+        else:
+            for values in backend_values.values():
+                if isinstance(values, dict):
+                    evidence = values.setdefault("correctness_evidence", {})
+                    if isinstance(evidence, dict):
+                        evidence["selected_ref_parity"] = True
+    elif len(signature_sources) == 1:
+        for values in backend_values.values():
+            if isinstance(values, dict):
+                evidence = values.setdefault("correctness_evidence", {})
+                if isinstance(evidence, dict):
+                    evidence["selected_ref_parity"] = False
+        failures.append(
+            {
+                "backend": "cross_backend",
+                "reason": "missing_selected_ref_parity_peer",
+                "requirement": "selected_ref_parity",
+            }
+        )
     return {
         "status": "failed" if failures else "passed",
+        "shared_correctness_requirements": SHARED_CORRECTNESS_REQUIREMENTS,
         "minimum_selected_refs": min_selected_refs,
         "max_selected_ref_drift_ratio": max_drift_ratio,
         "selected_ref_drift_ratio": round(drift_ratio, 6) if drift_ratio is not None else None,
@@ -1347,6 +1438,7 @@ def write_report(path: Path, report: Json) -> None:
                 "",
                 f"- status: `{phase0.get('status')}`",
                 f"- phase: `{phase0.get('phase')}`",
+                f"- shared requirements: `{', '.join(phase0.get('shared_correctness_requirements', SHARED_CORRECTNESS_REQUIREMENTS))}`",
                 f"- minimum selected refs: `{phase0.get('minimum_selected_refs')}`",
                 f"- max selected-ref drift ratio: `{phase0.get('max_selected_ref_drift_ratio')}`",
                 f"- selected-ref drift ratio: `{phase0.get('selected_ref_drift_ratio')}`",
@@ -1367,11 +1459,27 @@ def write_report(path: Path, report: Json) -> None:
                 lines.append(
                     f"| {backend} | {values.get('status', '')} | {values.get('selected_refs_avg', 0)} | {values.get('selected_refs_max', 0)} | "
                     f"{values.get('dropped_refs_avg', 0)} | {values.get('scanned_records_avg', 0)} | "
-                    f"{values.get('index_hits_avg', 0)} | {values.get('index_postings_touched_avg', 0)} | "
+                    f"{values.get('index_hits_avg', 0)} | {values.get('index_postings_read_avg', values.get('index_postings_touched_avg', 0))} | "
                     f"{values.get('candidate_count_avg', 0)} | {values.get('token_count_avg', 0)} | "
                     f"{values.get('broad_scan_used_count', 0)} | {values.get('python_pack_fallback_count', 0)} | "
                     f"{values.get('native_pack_assembly_count', 0)} | {values.get('timeouts', 0)} | "
                     f"`{json.dumps(drop_counters, sort_keys=True)}` |"
+                )
+            lines.extend(
+                [
+                    "",
+                    "| backend | selected-ref parity | scope filter | placement filter | compact index | stale/superseded | shared quota | cross-session rerank |",
+                    "|---|---|---|---|---|---|---|---|",
+                ]
+            )
+            for backend in backend_values:
+                values = backend_values.get(backend, {}) if isinstance(backend_values.get(backend), dict) else {}
+                evidence = values.get("correctness_evidence", {}) if isinstance(values.get("correctness_evidence"), dict) else {}
+                lines.append(
+                    f"| {backend} | {bool(evidence.get('selected_ref_parity'))} | {bool(evidence.get('scope_filtering'))} | "
+                    f"{bool(evidence.get('placement_filtering'))} | {bool(evidence.get('compact_secondary_index_prefilter'))} | "
+                    f"{bool(evidence.get('stale_superseded_exclusion'))} | {bool(evidence.get('shared_resource_skill_quota'))} | "
+                    f"{bool(evidence.get('cross_session_quota_rerank'))} |"
                 )
         if phase0.get("failures"):
             lines.extend(["", "| failure | backend | details |", "|---|---|---|"])
