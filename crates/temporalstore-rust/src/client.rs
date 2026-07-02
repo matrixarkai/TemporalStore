@@ -380,6 +380,29 @@ pub struct ClientPreflightReport {
     pub degraded_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientDirectSdkParityReport {
+    pub rust_native_migration_contract_ready: bool,
+    pub typed_table_client_ready: bool,
+    pub cpp_partition_set_route_cache_ready: bool,
+    pub partition_member_version_ready: bool,
+    pub topology_sync_ready: bool,
+    pub meta_syncer_ready: bool,
+    pub retry_budget_ready: bool,
+    pub route_invalidation_ready: bool,
+    pub placement_hooks_ready: bool,
+    pub location_affine_secondary_reads_ready: bool,
+    pub primary_only_writes_ready: bool,
+    pub direct_sdk_command_families: Vec<String>,
+    pub cpp_partition_set_count: usize,
+    pub cpp_partition_member_count: usize,
+    pub missing_route_count: usize,
+    pub max_topology_version: u64,
+    pub meta_sync_generation: u64,
+    pub ready: bool,
+    pub blockers: Vec<String>,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientCppPartitionSetReport {
     pub table_id: u64,
@@ -724,6 +747,122 @@ impl TemporalStoreClient {
 
     pub fn migration_compatibility_report(&self) -> ClientMigrationCompatibilityReport {
         ClientMigrationCompatibilityReport::default()
+    }
+
+    pub fn direct_sdk_parity_report(&self) -> ClientDirectSdkParityReport {
+        let migration = self.migration_compatibility_report();
+        let replacement = &migration.production_replacement_contract;
+        let partition_sets = self.cpp_partition_set_report();
+        let topology = self.topology_cache_report();
+        let meta_sync = self.meta_sync_report();
+        let cpp_partition_set_count = partition_sets.len();
+        let cpp_partition_member_count = partition_sets
+            .iter()
+            .map(|partition_set| partition_set.members.len())
+            .sum::<usize>();
+        let missing_route_count = partition_sets
+            .iter()
+            .map(|partition_set| partition_set.missing_route_count)
+            .sum::<usize>();
+        let cpp_partition_set_route_cache_ready = cpp_partition_set_count > 0
+            && cpp_partition_member_count > 0
+            && missing_route_count == 0;
+        let partition_member_version_ready = partition_sets.iter().all(|partition_set| {
+            partition_set.partition_count == partition_set.shard_count as usize
+                && partition_set.topology_version > 0
+                && partition_set.members.iter().all(|member| {
+                    member.route_ready
+                        && member.topology_version == partition_set.topology_version
+                        && member.start_slot <= member.end_slot
+                })
+        });
+        let topology_sync_ready = replacement.topology_sync_tested
+            && topology.route_count >= cpp_partition_member_count
+            && topology.max_topology_version > 0
+            && topology.unknown_topology_version_routes == 0;
+        let meta_syncer_ready = meta_sync.table_count > 0
+            && meta_sync.synced_table_count == meta_sync.table_count
+            && meta_sync.error_table_count == 0
+            && meta_sync.total_sync_generation > 0;
+        let retry_budget_ready = replacement.retry_budget_tested
+            && self.inner.options.max_read_retries >= 1
+            && self.inner.options.max_write_retries == 0;
+        let route_invalidation_ready = topology_sync_ready
+            && topology.ttl_expired_routes == 0
+            && topology.stale_route_count == 0;
+        let placement = self.deployment_placement_policy("direct-sdk-parity");
+        let placement_hooks_ready =
+            replacement.placement_hooks_preserved && placement.placement_hook_ready;
+        let location_affine_secondary_reads_ready = placement_hooks_ready
+            && placement.require_location_affinity
+            && placement.replica_read_policy == ReplicaReadPolicy::RoundRobinReplica;
+        let primary_only_writes_ready = partition_sets.iter().all(|partition_set| {
+            partition_set
+                .members
+                .iter()
+                .all(|member| member.primary_addr.is_some())
+        });
+        let rust_native_migration_contract_ready = migration.rust_native_http_ready
+            && migration.rust_native_tonic_ready
+            && replacement.http_json_contract_tested
+            && replacement.resp_contract_tested
+            && replacement.tonic_contract_tested
+            && !migration.legacy_cplusplus_wire_in_scope;
+        let typed_table_client_ready =
+            migration.typed_table_client_ready && replacement.typed_table_client_tested;
+
+        let mut blockers = Vec::new();
+        for (ready, label) in [
+            (
+                rust_native_migration_contract_ready,
+                "rust_native_migration_contract_missing",
+            ),
+            (typed_table_client_ready, "typed_table_client_missing"),
+            (
+                cpp_partition_set_route_cache_ready,
+                "cpp_partition_set_route_cache_missing",
+            ),
+            (
+                partition_member_version_ready,
+                "partition_member_version_missing",
+            ),
+            (topology_sync_ready, "topology_sync_missing"),
+            (meta_syncer_ready, "meta_syncer_missing"),
+            (retry_budget_ready, "retry_budget_missing"),
+            (route_invalidation_ready, "route_invalidation_missing"),
+            (placement_hooks_ready, "placement_hooks_missing"),
+            (
+                location_affine_secondary_reads_ready,
+                "location_affine_secondary_reads_missing",
+            ),
+            (primary_only_writes_ready, "primary_only_writes_missing"),
+        ] {
+            if !ready {
+                blockers.push(label.to_string());
+            }
+        }
+
+        ClientDirectSdkParityReport {
+            rust_native_migration_contract_ready,
+            typed_table_client_ready,
+            cpp_partition_set_route_cache_ready,
+            partition_member_version_ready,
+            topology_sync_ready,
+            meta_syncer_ready,
+            retry_budget_ready,
+            route_invalidation_ready,
+            placement_hooks_ready,
+            location_affine_secondary_reads_ready,
+            primary_only_writes_ready,
+            direct_sdk_command_families: replacement.supported_command_families.clone(),
+            cpp_partition_set_count,
+            cpp_partition_member_count,
+            missing_route_count,
+            max_topology_version: topology.max_topology_version,
+            meta_sync_generation: meta_sync.total_sync_generation,
+            ready: blockers.is_empty(),
+            blockers,
+        }
     }
 
     pub fn sync_table_topology(

@@ -9279,7 +9279,7 @@
         {
           "command": {
             "cpp_runner_contract": "C++ shared runner emits matching temporalstore_unified_case_report_v1 fields for this case.",
-            "description": "Shared client route-cache case for C++ partition-set/member/version topology, stale route invalidation, and topology-version guarded refresh.",
+            "description": "Shared client direct SDK route-cache case for C++ partition-set/member/version topology, MetaSyncer state, retry-budget defaults, placement hooks, primary-write routing, location-affine secondary reads, stale route invalidation, and topology-version guarded refresh. Rust emits ClientDirectSdkParityReport evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
             "required_paths": [],
