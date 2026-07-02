@@ -4422,7 +4422,7 @@
       "steps": [
         {
           "command": {
-            "cpp_reference": "src/extension/context/test.cc",
+            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
             "description": "Shared C++/Rust Context case translated from C++ WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -4705,7 +4705,7 @@
               "temporalstore-rust"
             ],
             "cxx_reference_paths": [
-              "tools/matrixark_mcp_server.py"
+              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
             ],
             "description": "Shared MatrixArk MCP server can select temporalstore-direct for C++ or temporalstore-rust for Rust; the Rust backend provides the record-log put/get/hset/hget boundary expected by the shared server.",
             "kind": "existing_test",
@@ -5062,6 +5062,64 @@
             "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
           },
           "name": "prevote_election_prohibition_transfer_and_offline_timeout"
+        }
+      ]
+    },
+    {
+      "name": "raft_byteraft_leader_election_learner_promotion_parity",
+      "shard_id": 99,
+      "steps": [
+        {
+          "command": {
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "suite": "cpp_data_raft_parity",
+            "description": "ByteRaft-style leader election and learner promotion parity: observe no-quorum pre-vote rejection, healed-quorum leader election, learner add/catch-up/promote, auto-promote, and exact-once transfer evidence in one report.",
+            "acceptance": {
+              "pre_vote_rejected": true,
+              "pre_vote_accepted": true,
+              "leader_failover_observed": true,
+              "learner_add": true,
+              "learner_catchup": true,
+              "learner_promote": true,
+              "learner_auto_promote": true,
+              "leader_transfer_exact_once": true
+            },
+            "required_paths": [
+              "docs/raft_byteraft_leader_election_parity.md",
+              "crates/temporalstore-rust/src/raft.rs",
+              "crates/temporalstore-rust/src/raft/tests.rs",
+              "src/partition/storage/data_raft_consensus.cc",
+              "byteraft"
+            ],
+            "rust_runner": "cargo test -p temporalstore-rust byteraft_leader_election_and_learner_promotion_parity_report_is_ready --lib -- --test-threads=1",
+            "rust_validator": "python3 tools/validate_aws_validation_log.py --job temporalstore-raft-leader-election-parity-validation --log <raft-leader-election-parity.json>",
+            "report_contract": {
+              "schema": "temporalstore_unified_case_report_v1",
+              "required_fields": [
+                "schema",
+                "producer",
+                "generated_at_ms",
+                "cases"
+              ],
+              "case_fields": [
+                "name",
+                "status",
+                "steps"
+              ],
+              "step_fields": [
+                "name",
+                "status",
+                "output",
+                "latency_ms"
+              ]
+            },
+            "rust_report_contract": "Rust emits ByteRaftLeaderElectionParityReport with leader_election_ready, pre_vote_ready, learner_*_ready, learner_auto_promote_ready, leader_transfer_exact_once_ready, evidence fields, and blockers.",
+            "cpp_runner_contract": "C++ ByteRaft adapter emits temporalstore_unified_case_report_v1 with matching case/step names, output evidence, latency_ms, and the same leader/pre-vote/failover/learner-promotion/election evidence fields from data-raft tests or marks the missing field as a static blocker.",
+            "comparator": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report <rust-report.json> --cpp-report <cpp-report.json> --require-schema temporalstore_unified_case_report_v1 --require-field cases --require-field producer --require-field generated_at_ms",
+            "cpp_report_adapter": "compat/cpp_unified_case_report_adapter.h"
+          },
+          "name": "leader_election_prevote_and_learner_promotion_report"
         }
       ]
     },
@@ -11730,6 +11788,7 @@
       "raft_rustraft_snapshot_lifecycle_depth",
       "raft_rustraft_replication_backpressure",
       "raft_rustraft_election_controls",
+      "raft_byteraft_leader_election_learner_promotion_parity",
       "raft_rustraft_packet_loss_fault_harness",
       "raft_rustraft_slow_wal_fsync_fault_harness",
       "raft_rustraft_snapshot_during_membership_fault_harness",
@@ -11942,6 +12001,7 @@
       "raft_byteraft_process_rollout_multiplane_report_contract",
       "raft_byteraft_failover_both_planes_report_contract",
       "raft_byteraft_membership_add_remove_under_load_report_contract",
+      "raft_byteraft_leader_election_learner_promotion_parity",
       "raft_byteraft_secondary_lag_catchup_report_contract",
       "raft_byteraft_snapshot_restart_after_compaction_report_contract"
     ],

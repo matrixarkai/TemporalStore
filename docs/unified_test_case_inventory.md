@@ -231,6 +231,7 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `raft_rustraft_snapshot_lifecycle_depth` | RustRaft-derived snapshot trigger policy, chunked install, stale/corrupt rejection, progress, restart recovery, and rollback reporting. |
 | `raft_rustraft_replication_backpressure` | RustRaft-derived oversized-log, in-flight append, backpressure, reordered append gap handling, stale-term rejection, packet-loss recovery, reorder timeout/drop metrics, and apply-batch behavior. |
 | `raft_rustraft_election_controls` | RustRaft-derived partitioned pre-vote, election prohibition after learner promotion, transfer timeout under active writes, and offline peer timeout controls. |
+| `raft_byteraft_leader_election_learner_promotion_parity` | ByteRaft-style leader-election parity case requiring no-quorum pre-vote rejection, healed-quorum leader election, learner add/catch-up/promote, learner auto-promote, and exact-once leader-transfer commit evidence. |
 | `raft_rustraft_packet_loss_fault_harness` | Packet-loss/partition-heal fault scenario: majority continues and healed followers catch up. |
 | `raft_rustraft_slow_wal_fsync_fault_harness` | Slow WAL fsync/backpressure scenario: committed writes survive and pressure is reported. |
 | `raft_rustraft_snapshot_during_membership_fault_harness` | Snapshot during membership change preserves snapshot floor, membership generation, and restart recovery. |
