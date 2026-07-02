@@ -28,14 +28,45 @@
         "page_segment_id": "segment_id"
       }
     },
+    "storage_read_sequence": [
+      "logical_key_timestamp_range",
+      "page_index_lookup",
+      "page_address_list",
+      "block_index_lookup",
+      "page_read",
+      "decode_records"
+    ],
+    "storage_cold_scan_sequence": [
+      "timestamp_page_index_scan",
+      "no_cache_page_read",
+      "bounded_decode",
+      "no_hot_cache_promotion"
+    ],
+    "storage_lifecycle_phases": [
+      "prepare",
+      "reclaim",
+      "evict",
+      "expire",
+      "page_gc",
+      "block_gc",
+      "compaction",
+      "index_gc",
+      "delayed_destroy",
+      "follower_cursor_safety",
+      "watermark_progress"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
       "storage_manager_evict_count": 1,
       "storage_manager_expire_count": 1,
       "storage_manager_page_gc_count": 1,
+      "storage_manager_block_gc_count": 1,
       "storage_manager_compaction_count": 1,
       "storage_manager_index_gc_count": 1,
+      "storage_manager_delayed_destroy_count": 1,
+      "storage_manager_follower_cursor_safety_count": 1,
+      "storage_manager_watermark_progress_count": 1,
       "storage_manager_loop_ms": 4,
       "stream_rollover_count": 1,
       "storage_zone_total_bytes": 10485760,
@@ -82,14 +113,45 @@
         "stream_blob": "Segment"
       }
     },
+    "storage_read_sequence": [
+      "logical_key_timestamp_range",
+      "page_index_lookup",
+      "page_address_list",
+      "block_index_lookup",
+      "page_read",
+      "decode_records"
+    ],
+    "storage_cold_scan_sequence": [
+      "timestamp_page_index_scan",
+      "no_cache_page_read",
+      "bounded_decode",
+      "no_hot_cache_promotion"
+    ],
+    "storage_lifecycle_phases": [
+      "prepare",
+      "reclaim",
+      "evict",
+      "expire",
+      "page_gc",
+      "block_gc",
+      "compaction",
+      "index_gc",
+      "delayed_destroy",
+      "follower_cursor_safety",
+      "watermark_progress"
+    ],
     "storage_lifecycle_metrics": {
       "storage_manager_prepare_count": 1,
       "storage_manager_reclaim_count": 1,
       "storage_manager_evict_count": 1,
       "storage_manager_expire_count": 1,
       "storage_manager_page_gc_count": 1,
+      "storage_manager_block_gc_count": 1,
       "storage_manager_compaction_count": 1,
       "storage_manager_index_gc_count": 1,
+      "storage_manager_delayed_destroy_count": 1,
+      "storage_manager_follower_cursor_safety_count": 1,
+      "storage_manager_watermark_progress_count": 1,
       "storage_manager_loop_ms": 5,
       "stream_rollover_count": 1,
       "storage_zone_total_bytes": 10485760,

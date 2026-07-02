@@ -267,6 +267,30 @@ logical key/timestamp range
 -> apply tombstone/generation filters
 ```
 
+Canonical report sequence:
+
+```json
+{
+  "storage_read_sequence": [
+    "logical_key_timestamp_range",
+    "page_index_lookup",
+    "page_address_list",
+    "block_index_lookup",
+    "page_read",
+    "decode_records"
+  ]
+}
+```
+
+Required read sequence step names:
+
+- `logical_key_timestamp_range`
+- `page_index_lookup`
+- `page_address_list`
+- `block_index_lookup`
+- `page_read`
+- `decode_records`
+
 Required behavior:
 
 - Point reads may use `ObjectIndex` to resolve the current logical object chain,
@@ -290,6 +314,26 @@ timestamp range
 -> bounded decode
 -> no hot-cache promotion
 ```
+
+Canonical report sequence:
+
+```json
+{
+  "storage_cold_scan_sequence": [
+    "timestamp_page_index_scan",
+    "no_cache_page_read",
+    "bounded_decode",
+    "no_hot_cache_promotion"
+  ]
+}
+```
+
+Required cold scan sequence step names:
+
+- `timestamp_page_index_scan`
+- `no_cache_page_read`
+- `bounded_decode`
+- `no_hot_cache_promotion`
 
 Required behavior:
 
@@ -588,13 +632,31 @@ artifacts.
 Stream, zone, eviction, GC, reclaim, compaction, and StorageManager reports must
 also use one shared lifecycle metric vocabulary:
 
+Canonical StorageManager/StoreManager lifecycle phases:
+
+- `prepare`
+- `reclaim`
+- `evict`
+- `expire`
+- `page_gc`
+- `block_gc`
+- `compaction`
+- `index_gc`
+- `delayed_destroy`
+- `follower_cursor_safety`
+- `watermark_progress`
+
 - `storage_manager_prepare_count`
 - `storage_manager_reclaim_count`
 - `storage_manager_evict_count`
 - `storage_manager_expire_count`
 - `storage_manager_page_gc_count`
+- `storage_manager_block_gc_count`
 - `storage_manager_compaction_count`
 - `storage_manager_index_gc_count`
+- `storage_manager_delayed_destroy_count`
+- `storage_manager_follower_cursor_safety_count`
+- `storage_manager_watermark_progress_count`
 - `storage_manager_loop_ms`
 - `stream_rollover_count`
 - `storage_zone_total_bytes`
