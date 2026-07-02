@@ -214,12 +214,12 @@ remains a static source/harness surface gate until native C++ workflow runners a
 | `cpp_data_raft_multinode_scale_harness_parity_surfaces` | Multi-node Raft scale harness surfaces. |
 | `cpp_raft_production_stress_gate_parity_surfaces` | Production/stress Raft gate surfaces. |
 | `cpp_metaserver_raft_harness_parity_surfaces` | Metaserver Raft harness surfaces. |
-| `storage_data_raft_replication_gtest` | Exact C++ data-Raft replication unit case, paired with the Rust distributed Raft harness. |
+| `storage_data_raft_replication_gtest` | Exact C++ data-Raft replication unit case, paired with the Rust distributed Raft harness and explicit shared-store snapshot/replay evidence. |
 | `raft_metaserver_membership_failover_snapshot` | Exact C++ metaserver Raft membership/failover/snapshot case, now including scheduler generation/token coupling, post-failover replacement, scale-down, and route-read evidence, paired with the Rust `metaserver_raft_harness` JSON gate. |
 | `raft_data_node_scale_failover_snapshot` | Exact C++ data-node Raft scale/failover/snapshot case, now including post-snapshot rescale down/up, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
 | `raft_data_node_mixed_rw_and_membership` | Exact C++ data-node mixed read/write plus membership case, paired with Rust distributed and secondary-replication harnesses plus the combined data-node/metaserver Raft parity gate. |
 | `raft_data_node_leader_election_failover` | Data-node leader election and failover as an explicit shared harness case, paired with the Rust process secondary-replication harness. |
-| `raft_data_node_snapshot_restart_follower_lag` | Data-node snapshot install, restart recovery, follower lag, catch-up, post-snapshot rescale, and post-rescale read survival as an explicit shared harness case. |
+| `raft_data_node_snapshot_restart_follower_lag` | Data-node snapshot install, shared-store snapshot/replay evidence, restart recovery, follower lag, catch-up, post-snapshot rescale, and post-rescale read survival as an explicit shared harness case. |
 | `raft_data_node_membership_secondary_reads` | Data-node membership add/promote/remove, exact scale-down/up voter targets, and secondary-read visibility as an explicit shared harness case. |
 | `raft_metaserver_leader_snapshot_restart` | Metaserver leader/failover, snapshot install, and restart recovery as an explicit shared harness case. |
 | `raft_metaserver_membership_add_promote_remove` | Metaserver learner add, catch-up, promote, leader transfer, voter remove, and stale scheduler generation/token rejection as an explicit shared harness case. |

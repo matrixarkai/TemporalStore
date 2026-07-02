@@ -31,6 +31,22 @@ def validate_raft(job, summary):
         summary["external_snapshot_read"]["value"] == "from-external-snapshot",
         f"{job}: external snapshot read mismatch",
     )
+    shared_store = summary.get("shared_store_path_evidence")
+    require(shared_store is not None, f"{job}: shared-store path evidence missing")
+    for field in [
+        "publish_status_ok",
+        "bootstrap_status_ok",
+        "target_read_ok",
+        "shared_store_snapshot_roundtrip_validated",
+        "shared_store_replay_after_raft_write_validated",
+        "raft_and_shared_store_paths_coupled",
+        "ready",
+    ]:
+        require(shared_store[field], f"{job}: shared-store evidence field {field} is false")
+    require(
+        shared_store["target_read_value"] == "from-external-snapshot",
+        f"{job}: shared-store target read mismatch",
+    )
     replica_values = [read.get("value") for read in summary["replica_reads"]]
     require(replica_values and replica_values[0], f"{job}: no replica read values: {replica_values}")
     require(
@@ -48,6 +64,7 @@ def validate_raft(job, summary):
         "scale_up_target_voters_validated",
         "post_snapshot_rescale_validated",
         "post_rescale_reads_validated",
+        "shared_store_path_validated",
     ]:
         require(runtime_semantics[field], f"{job}: RustRaft runtime semantics field {field} is false")
     for node in summary["nodes"]:
