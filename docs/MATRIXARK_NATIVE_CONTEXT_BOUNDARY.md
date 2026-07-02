@@ -80,6 +80,33 @@ Backend status:
 
 `TemporalStoreTestCorpus/runners/cpp/cpp_unified_context_contract.cc` is the C++ contract runner. It now validates resource manifests, skill manifests, skill sections, token-budgeted skill retrieval, context summaries/embeddings, events, entities, indexes, compression, and ContextPack audit behavior against shared JSON cases.
 
+## C++ Native Retrieve-Pack Surface
+
+The C++ context extension now exposes `RETRIEVE_CONTEXT_PACK` as the native
+ContextPack boundary. The first implementation is correctness-first:
+
+- input: tenant, start node, scope hash, time window, optional L0/L1 query
+  vector, optional compact secondary-index filters, token budget, and selected
+  ref cap;
+- execution: choose placement nodes, read compact index postings when provided,
+  fetch timestamp-keyed events from the selected node partitions, score with
+  importance/confidence plus optional temporal decay and index boost, then pack
+  selected refs under the token budget;
+- output: compact selected event refs plus native telemetry fields including
+  selected/dropped refs, scanned records, index postings read, candidate fetch
+  count, placement partitions touched, broad-scan status, drop counters, and
+  per-stage latency fields.
+
+Broad prefix scan remains fallback/debug only. Normal C++ retrieval should move
+through this native API before any latency claim is treated as meaningful.
+
+The direct C++ SDK now also exports the path through
+`TemporalStoreClient::MatrixArkRetrieveContextPack` and the C ABI symbol
+`temporalstore_matrixark_retrieve_context_pack`. The Python MatrixArk adapter
+can therefore dispatch one compact native request with scope, placement node,
+timing, quota, and fallback-policy hints, then receive a compact ContextPack
+plus telemetry instead of materializing broad candidate tables in Python.
+
 ## Validation
 
 ```bash
