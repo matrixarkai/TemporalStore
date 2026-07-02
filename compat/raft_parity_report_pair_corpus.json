@@ -153,33 +153,39 @@
         "stale_leader_observed": false
       },
       "behavior_evidence": {
-        "leader_election": {
+        "append_replication": {
           "status": "passed",
-          "leader_id": 11,
-          "term": 7
-        },
-        "write_replication": {
-          "status": "passed",
-          "commit_index": 4096,
-          "applied_index": 4096
-        },
-        "slot_assignment": {
-          "status": "passed",
-          "assigned_slots": [
-            1,
-            2,
-            3
+          "leader_append_index": 4096,
+          "replicated_to": [
+            11,
+            12,
+            13
           ]
         },
-        "primary_placement": {
+        "quorum_write": {
           "status": "passed",
-          "primary_node_id": 11
+          "quorum_size": 2,
+          "ack_count": 3
         },
-        "topology_readiness": {
+        "async_sync_apply": {
           "status": "passed",
-          "topology_ready": true
+          "async_applied_index": 4096,
+          "sync_applied_index": 4096
         },
-        "membership_add_remove": {
+        "follower_visibility": {
+          "status": "passed",
+          "visible_on_followers": [
+            12,
+            13
+          ],
+          "max_visibility_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "replica_add_remove": {
           "status": "passed",
           "added": [
             14
@@ -188,23 +194,28 @@
             12
           ]
         },
-        "follower_catch_up": {
+        "learner_promotion": {
           "status": "passed",
-          "max_lag": 0
+          "learner_id": 14,
+          "promoted_to_voter": true
         },
-        "leader_failover": {
-          "status": "passed",
-          "old_leader_id": 12,
-          "new_leader_id": 11
-        },
-        "restart_recovery": {
-          "status": "passed",
-          "commit_index_after_restart": 4096
-        },
-        "snapshot_restore": {
+        "snapshot_install": {
           "status": "passed",
           "snapshot_index": 3072,
-          "checksum_match": true
+          "installed_on": [
+            12,
+            13
+          ]
+        },
+        "apply_lag_recovery": {
+          "status": "passed",
+          "max_lag_before": 128,
+          "max_lag_after": 0
+        },
+        "read_after_write_under_leader_change": {
+          "status": "passed",
+          "write_index": 4096,
+          "read_index_after_failover": 4096
         }
       }
     },
@@ -416,33 +427,39 @@
         "stale_leader_observed": false
       },
       "behavior_evidence": {
-        "leader_election": {
+        "append_replication": {
           "status": "passed",
-          "leader_id": 11,
-          "term": 7
-        },
-        "write_replication": {
-          "status": "passed",
-          "commit_index": 4096,
-          "applied_index": 4096
-        },
-        "slot_assignment": {
-          "status": "passed",
-          "assigned_slots": [
-            1,
-            2,
-            3
+          "leader_append_index": 4096,
+          "replicated_to": [
+            11,
+            12,
+            13
           ]
         },
-        "primary_placement": {
+        "quorum_write": {
           "status": "passed",
-          "primary_node_id": 11
+          "quorum_size": 2,
+          "ack_count": 3
         },
-        "topology_readiness": {
+        "async_sync_apply": {
           "status": "passed",
-          "topology_ready": true
+          "async_applied_index": 4096,
+          "sync_applied_index": 4096
         },
-        "membership_add_remove": {
+        "follower_visibility": {
+          "status": "passed",
+          "visible_on_followers": [
+            12,
+            13
+          ],
+          "max_visibility_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "replica_add_remove": {
           "status": "passed",
           "added": [
             14
@@ -451,23 +468,28 @@
             12
           ]
         },
-        "follower_catch_up": {
+        "learner_promotion": {
           "status": "passed",
-          "max_lag": 0
+          "learner_id": 14,
+          "promoted_to_voter": true
         },
-        "leader_failover": {
-          "status": "passed",
-          "old_leader_id": 12,
-          "new_leader_id": 11
-        },
-        "restart_recovery": {
-          "status": "passed",
-          "commit_index_after_restart": 4096
-        },
-        "snapshot_restore": {
+        "snapshot_install": {
           "status": "passed",
           "snapshot_index": 3072,
-          "checksum_match": true
+          "installed_on": [
+            12,
+            13
+          ]
+        },
+        "apply_lag_recovery": {
+          "status": "passed",
+          "max_lag_before": 128,
+          "max_lag_after": 0
+        },
+        "read_after_write_under_leader_change": {
+          "status": "passed",
+          "write_index": 4096,
+          "read_index_after_failover": 4096
         }
       }
     },
