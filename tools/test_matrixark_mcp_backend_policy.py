@@ -13,11 +13,11 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 
 
 
@@ -285,6 +285,73 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn(("event_ingestion", 10000), open_cases)
         self.assertIn(("event_ingestion", 100000), open_cases)
         self.assertIn(("resource_imports", "large_pdf"), open_cases)
+
+    def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
+        report = {
+            "config": {
+                "events": 1000,
+                "messages_per_ingest": 20,
+                "retrieve_workers": 4,
+                "retrieve_queries": 16,
+                "max_context_tokens": 12000,
+                "storage_options": {"storage_family": "shared_store"},
+            },
+            "comparison": {"phase0_correctness": {"status": "failed"}},
+            "backends": {
+                "cpp": {
+                    "status": "passed",
+                    "retrieve": {
+                        "stage_metrics": {
+                            "selected_refs_max": 0,
+                            "broad_scan_used_count": 1,
+                            "python_pack_fallback_count": 1,
+                            "stage_p95_ms": {"audit_ms": 9},
+                        }
+                    },
+                },
+                "rust": {
+                    "status": "passed",
+                    "retrieve": {"stage_metrics": {"selected_refs_max": 2, "stage_p95_ms": {"audit_ms": 0}}},
+                },
+            },
+        }
+
+        gate = production_policy_gate(report)
+
+        self.assertEqual(gate["status"], "failed")
+        blocker_names = {item["name"] for item in gate["blockers"]}
+        self.assertIn("correctness_before_latency", blocker_names)
+        self.assertIn("cpp_selected_refs_non_empty", blocker_names)
+        self.assertIn("cpp_placement_index_driven", blocker_names)
+
+    def test_production_policy_gate_passes_native_index_driven_context_path(self) -> None:
+        metrics = {
+            "selected_refs_max": 3,
+            "broad_scan_used_count": 0,
+            "python_pack_fallback_count": 0,
+            "raw_candidate_tables_returned_count": 0,
+            "stage_p95_ms": {"audit_ms": 0},
+        }
+        report = {
+            "config": {
+                "events": 1000,
+                "messages_per_ingest": 20,
+                "retrieve_workers": 4,
+                "retrieve_queries": 16,
+                "max_context_tokens": 12000,
+                "storage_options": {"storage_family": "shared_store"},
+            },
+            "comparison": {"phase0_correctness": {"status": "passed"}},
+            "backends": {
+                "cpp": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+                "rust": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+            },
+        }
+
+        gate = production_policy_gate(report)
+
+        self.assertEqual(gate["status"], "passed")
+        self.assertEqual(gate["blockers"], [])
 
     def test_context_pack_visibility_full_audit_uses_async_audit_hook(self) -> None:
         adapter = _AuditCaptureAdapter(Path("/tmp/matrixark-audit-capture.jsonl"))
