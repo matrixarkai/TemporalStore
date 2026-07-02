@@ -178,6 +178,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
         self._records_written_total = 0
         self._records_read_total = 0
+        self._append_queue_wait_ms_total = 0.0
+        self._append_queue_wait_count = 0
+        self._append_engine_ms_total = 0.0
+        self._append_engine_count = 0
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -207,6 +211,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._records_written_total = 0
         if not hasattr(self, "_records_read_total"):
             self._records_read_total = 0
+        if not hasattr(self, "_append_queue_wait_ms_total"):
+            self._append_queue_wait_ms_total = 0.0
+        if not hasattr(self, "_append_queue_wait_count"):
+            self._append_queue_wait_count = 0
+        if not hasattr(self, "_append_engine_ms_total"):
+            self._append_engine_ms_total = 0.0
+        if not hasattr(self, "_append_engine_count"):
+            self._append_engine_count = 0
         if not hasattr(self, "_backend_ready"):
             self._backend_ready = False
         if not hasattr(self, "_records_cache"):
@@ -258,6 +270,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._direct_write_flushed_batches = 0
         if not hasattr(self, "_direct_write_dead_letter_batches"):
             self._direct_write_dead_letter_batches = 0
+
+    def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
+        self._ensure_backend_metric_fields()
+        with self._metrics_lock:
+            self._append_queue_wait_ms_total += max(0.0, float(elapsed_ms))
+            self._append_queue_wait_count += 1
+
+    def _observe_append_engine(self, elapsed_ms: float) -> None:
+        self._ensure_backend_metric_fields()
+        with self._metrics_lock:
+            self._append_engine_ms_total += max(0.0, float(elapsed_ms))
+            self._append_engine_count += 1
+
+    def _append_queue_wait_ms_avg(self) -> float:
+        count = int(getattr(self, "_append_queue_wait_count", 0) or 0)
+        return float(getattr(self, "_append_queue_wait_ms_total", 0.0) or 0.0) / count if count else 0.0
+
+    def _append_engine_ms_avg(self) -> float:
+        count = int(getattr(self, "_append_engine_count", 0) or 0)
+        return float(getattr(self, "_append_engine_ms_total", 0.0) or 0.0) / count if count else 0.0
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
         self._ensure_backend_metric_fields()
@@ -356,6 +388,12 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "# HELP matrixark_backend_write_queue_dead_letter_batches_total MatrixArk durable direct write queue batches moved to dead letter.",
                     "# TYPE matrixark_backend_write_queue_dead_letter_batches_total counter",
                     f'matrixark_backend_write_queue_dead_letter_batches_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0)}',
+                    "# HELP matrixark_backend_append_queue_wait_ms MatrixArk append queue wait time average in milliseconds.",
+                    "# TYPE matrixark_backend_append_queue_wait_ms gauge",
+                    f'matrixark_backend_append_queue_wait_ms{{backend="{backend}"}} {round(self._append_queue_wait_ms_avg(), 3)}',
+                    "# HELP matrixark_backend_append_engine_ms MatrixArk append engine execution time average in milliseconds.",
+                    "# TYPE matrixark_backend_append_engine_ms gauge",
+                    f'matrixark_backend_append_engine_ms{{backend="{backend}"}} {round(self._append_engine_ms_avg(), 3)}',
                 ]
             )
             return "\n".join(lines) + "\n"
@@ -384,6 +422,10 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "write_queue_enqueued_batches": int(getattr(self, "_direct_write_enqueued_batches", 0) or 0),
                 "write_queue_flushed_batches": int(getattr(self, "_direct_write_flushed_batches", 0) or 0),
                 "write_queue_dead_letter_batches": int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0),
+                "append_queue_wait_ms": round(self._append_queue_wait_ms_avg(), 3),
+                "append_queue_wait_count": int(getattr(self, "_append_queue_wait_count", 0) or 0),
+                "append_engine_ms": round(self._append_engine_ms_avg(), 3),
+                "append_engine_count": int(getattr(self, "_append_engine_count", 0) or 0),
                 "entry_count_cache": self._entry_count_cache,
                 "records_cache_ready": self._records_cache is not None,
                 "commands_total": self._commands_total,
@@ -864,15 +906,18 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         item: Any = list(records)
         if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
             item = {"queue_mode": "temporalstore", "field": self._enqueue_direct_write_durable(records)}
+        wait_started_perf = time.perf_counter()
         try:
             self._direct_write_queue.put(item, timeout=self._direct_write_queue_put_timeout_s)
         except queue.Full as exc:
+            self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
             if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
                 _mcp_debug_log("matrixark durable direct write queue accepted batch but local worker queue is full; batch will be recovered by drain")
                 self._direct_write_enqueued_records += len(records)
                 self._direct_write_enqueued_batches += 1
                 return
             raise MatrixArkError("direct TemporalStore write queue is full") from exc
+        self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
         self._direct_write_enqueued_records += len(records)
         self._direct_write_enqueued_batches += 1
 
@@ -1050,7 +1095,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     self._records_cache.extend(records)
                     self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 self._update_latest_entity_cache(records)
-                self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
+                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+                self._observe_append_engine(elapsed_ms)
+                self._observe_backend_command(elapsed_ms, records_written=len(records))
                 return
 
             sequence = count
@@ -1087,7 +1134,9 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
             self._prune_retrieval_candidate_cache(sequence)
             self._update_latest_entity_cache(records)
-            self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
+            elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
+            self._observe_append_engine(elapsed_ms)
+            self._observe_backend_command(elapsed_ms, records_written=len(records))
 
     def append_audit(self, record: Json) -> None:
         if self._audit_mode == "drop":
@@ -1759,7 +1808,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "telemetry": True,
                 "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
                 "placement_partitions_touched": True,
-                "index_postings_touched": True,
+                "index_postings_read": True,
                 "candidate_cache_hit": True,
                 "candidate_cache_key_shape": True,
                 "native_pack_assembly": True,
@@ -1816,6 +1865,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             pack_ms = float(native_telemetry.get("pack_ms") or native_stage_metrics.get("pack_ms") or 0.0)
             if not pack_ms:
                 pack_ms = total_native_ms
+            index_postings_read = int(
+                native_telemetry.get("index_postings_read")
+                or native_telemetry.get("index_postings_touched")
+                or native_telemetry.get("native_index_postings_found")
+                or 0
+            )
+            candidate_cache_hit = bool(
+                native_telemetry.get("candidate_cache_hit", native_telemetry.get("cache_hit", False))
+            )
             retrieval_metrics = {
                 "query_plan_ms": round(float(native_telemetry.get("query_plan_ms") or native_stage_metrics.get("query_plan_ms") or 0.0), 3),
                 "node_traversal_ms": round(float(native_telemetry.get("node_traversal_ms") or native_stage_metrics.get("node_traversal_ms") or 0.0), 3),
@@ -1824,11 +1882,16 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "score_ms": round(float(native_telemetry.get("score_ms") or native_stage_metrics.get("score_ms") or 0.0), 3),
                 "pack_ms": round(pack_ms, 3),
                 "audit_ms": round(float(native_telemetry.get("audit_ms") or native_stage_metrics.get("audit_ms") or 0.0), 3),
+                "append_queue_wait_ms": round(float(native_telemetry.get("append_queue_wait_ms") or self._append_queue_wait_ms_avg()), 3),
+                "append_engine_ms": round(float(native_telemetry.get("append_engine_ms") or self._append_engine_ms_avg()), 3),
                 "selected_refs": int(native_telemetry.get("selected_refs") or selected_count),
+                "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0),
                 "scanned_records": int(native_telemetry.get("scanned_records") or 0),
-                "cache_hit": bool(native_telemetry.get("cache_hit", False)),
+                "candidate_cache_hit": candidate_cache_hit,
+                "cache_hit": candidate_cache_hit,
                 "placement_partitions_touched": int(native_telemetry.get("placement_partitions_touched") or 0),
-                "index_postings_touched": int(native_telemetry.get("index_postings_touched") or native_telemetry.get("native_index_postings_found") or 0),
+                "index_postings_read": index_postings_read,
+                "index_postings_touched": index_postings_read,
                 "candidate_cache_key_shape": str(native_telemetry.get("candidate_cache_key_shape") or "scope_key+node_hash+record_type+append_watermark+resource_version_watermark"),
                 "native_pack_assembly": True,
                 "python_pack_fallback": False,
@@ -1855,6 +1918,14 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 }
             if native_drop_counters:
                 retrieval_metrics["drop_counters"] = native_drop_counters
+                if not int(retrieval_metrics.get("dropped_refs") or 0):
+                    dropped_total = 0
+                    for value in native_drop_counters.values():
+                        try:
+                            dropped_total += int(value or 0)
+                        except (TypeError, ValueError):
+                            continue
+                    retrieval_metrics["dropped_refs"] = dropped_total
             pack["retrieval_metrics"] = retrieval_metrics
             pack["recall_policy"].setdefault(
                 "backend_retrieval_pushdown",

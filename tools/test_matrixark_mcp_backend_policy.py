@@ -133,14 +133,18 @@ class _NativeContextPackClient:
                 "node_traversal_ms": 2.5,
                 "index_prefilter_ms": 3.5,
                 "candidate_fetch_ms": 4.5,
-                "score_ms": 5.5,
-                "pack_ms": 6.5,
-                "audit_ms": 0.0,
-                "selected_refs": 1,
-                "scanned_records": 7,
-                "cache_hit": True,
-                "placement_partitions_touched": 2,
-                "drop_counters": {
+                    "score_ms": 5.5,
+                    "pack_ms": 6.5,
+                    "audit_ms": 0.0,
+                    "append_queue_wait_ms": 0.25,
+                    "append_engine_ms": 0.75,
+                    "selected_refs": 1,
+                    "dropped_refs": 21,
+                    "scanned_records": 7,
+                    "candidate_cache_hit": True,
+                    "placement_partitions_touched": 2,
+                    "index_postings_read": 9,
+                    "drop_counters": {
                     "scope": 1,
                     "placement": 2,
                     "index_filter": 3,
@@ -340,9 +344,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "score_ms": 5,
                     "pack_ms": 6,
                     "audit_ms": 0.5,
+                    "append_queue_wait_ms": 0.25,
+                    "append_engine_ms": 0.75,
                     "selected_refs": 2,
+                    "dropped_refs": 1,
                     "scanned_records": 10,
-                    "cache_hit": True,
+                    "candidate_cache_hit": True,
+                    "index_postings_read": 3,
                     "placement_partitions_touched": 1,
                 }
             ]
@@ -358,7 +366,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         result = comparison(base, base)
 
         self.assertEqual(stage_metrics["stage_p95_ms"]["pack_ms"], 6.0)
+        self.assertEqual(stage_metrics["stage_p95_ms"]["append_queue_wait_ms"], 0.25)
+        self.assertEqual(stage_metrics["stage_p95_ms"]["append_engine_ms"], 0.75)
+        self.assertEqual(stage_metrics["index_postings_read_avg"], 3.0)
         self.assertTrue(any(row["metric"] == "pack_p95_ms" for row in result["rows"]))
+        self.assertTrue(any(row["metric"] == "append_engine_p95_ms" for row in result["rows"]))
         self.assertTrue(any(row["metric"] == "cache_hit_rate" for row in result["rows"]))
         self.assertTrue(result["status_labels"]["feature_correct"])
         self.assertTrue(result["status_labels"]["performance_candidate"])
@@ -931,6 +943,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(request["required_output"]["retrieval_metrics"])
         self.assertEqual(result["retrieval_metrics"]["query_plan_ms"], 1.5)
         self.assertEqual(result["retrieval_metrics"]["placement_partitions_touched"], 2)
+        self.assertEqual(result["retrieval_metrics"]["index_postings_read"], 9)
+        self.assertTrue(result["retrieval_metrics"]["candidate_cache_hit"])
+        self.assertEqual(result["retrieval_metrics"]["append_queue_wait_ms"], 0.25)
+        self.assertEqual(result["retrieval_metrics"]["append_engine_ms"], 0.75)
+        self.assertEqual(result["retrieval_metrics"]["dropped_refs"], 21)
         self.assertTrue(result["retrieval_metrics"]["native_pack_assembly"])
         self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])
         self.assertFalse(result["retrieval_metrics"]["raw_candidate_tables_returned"])
