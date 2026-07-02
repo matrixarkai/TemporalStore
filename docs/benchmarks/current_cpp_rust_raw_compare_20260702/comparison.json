@@ -1,0 +1,1417 @@
+{
+  "backends": {
+    "cpp": {
+      "backend": "cpp",
+      "backend_metrics": {
+        "skipped": true
+      },
+      "effective_storage_tuning": {
+        "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+        "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+        "TS_COLD_SCAN_NO_CACHE_FILL": true,
+        "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+        "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+        "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+        "TS_STORAGE_ZONE_SIZE": 10485760,
+        "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+        "effective_block_segment_target_bytes": 10485760
+      },
+      "errors": {
+        "read": [],
+        "write": []
+      },
+      "fallback_flags": {
+        "backend_startup_failed": false,
+        "hash_embedding_fallback": false,
+        "memory_fallback": false,
+        "native_metrics_missing": true,
+        "partial_context_pack": false,
+        "topology_not_ready": false
+      },
+      "ingest": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "qps": 0.0,
+        "timeout_count": 0
+      },
+      "ingest_messages": {
+        "message_qps": 0.0,
+        "messages": 0,
+        "messages_per_ingest": 0
+      },
+      "raw_storage": {
+        "errors": {
+          "read": [],
+          "write": []
+        },
+        "read": {
+          "avg_ms": 35.851,
+          "batch_size": 25,
+          "batches": 2,
+          "elapsed_s": 0.038,
+          "errors": 0,
+          "max_ms": 36.403,
+          "ok": 50,
+          "ops": 50,
+          "p50_ms": 35.3,
+          "p95_ms": 36.403,
+          "p99_ms": 36.403,
+          "qps": 1315.825,
+          "records": 50
+        },
+        "write": {
+          "avg_ms": 550.405,
+          "batch_size": 50,
+          "elapsed_s": 0.594,
+          "errors": 0,
+          "max_ms": 591.936,
+          "ok": 2,
+          "ops": 2,
+          "p50_ms": 508.874,
+          "p95_ms": 591.936,
+          "p99_ms": 591.936,
+          "qps": 3.368,
+          "record_qps": 168.418,
+          "records": 100
+        }
+      },
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-direct",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "manual",
+        "status": "ready",
+        "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:cpp",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:cpp",
+          "table": "deploy_table",
+          "warmup_field": "3726718:1782994385704:3944562213743375720",
+          "warmup_key": "matrixark:scale:current_cpp_rust_raw_compare:cpp:readiness"
+        },
+        "warmup_key": "matrixark:scale:current_cpp_rust_raw_compare:cpp:readiness"
+      },
+      "retrieve": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "partial_context_packs": 0,
+        "qps": 0.0,
+        "selected_refs_avg": 0.0,
+        "selected_refs_max": 0,
+        "stage_metrics": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "cache_hit_rate": 0.0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "fallback_flags_total": {},
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "placement_partitions_touched_avg": 0.0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "samples": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "selected_refs_min": 0,
+          "stage_avg_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "stage_p95_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "timeout_count": 0,
+          "timeout_partial_count": 0,
+          "token_count_avg": 0.0
+        },
+        "timeout_count": 0
+      },
+      "status": "passed",
+      "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:cpp",
+      "summary_refresh": {
+        "skipped": true
+      },
+      "worker": {
+        "command": [
+          "/usr/bin/python3",
+          "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/push-feature-parity-worktree/tools/run_matrixark_cpp_rust_scale_report.py",
+          "--backend-worker",
+          "cpp",
+          "--backend-worker-output",
+          "docs/benchmarks/current_cpp_rust_raw_compare_20260702/cpp.json",
+          "--run-id",
+          "current_cpp_rust_raw_compare",
+          "--events",
+          "10",
+          "--raw-ops",
+          "100",
+          "--raw-read-ops",
+          "50",
+          "--raw-batch-size",
+          "50",
+          "--raw-read-batch-size",
+          "25",
+          "--raw-workers",
+          "2",
+          "--messages-per-ingest",
+          "5",
+          "--ingest-workers",
+          "1",
+          "--retrieve-queries",
+          "0",
+          "--retrieve-workers",
+          "1",
+          "--max-context-tokens",
+          "12000",
+          "--metaserver",
+          "127.0.0.1:18000",
+          "--namespace",
+          "deploy_ns",
+          "--table",
+          "deploy_table",
+          "--storage-prefix",
+          "matrixark:scale",
+          "--cpp-lib",
+          "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+          "--rust-cli",
+          "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "--python-ref-store",
+          "",
+          "--request-timeout-ms",
+          "60000",
+          "--io-timeout-ms",
+          "60000",
+          "--readiness-timeout-ms",
+          "60000",
+          "--ingest-deadline-ms",
+          "60000",
+          "--retrieve-deadline-ms",
+          "10000",
+          "--phase0-min-selected-refs",
+          "1",
+          "--phase0-max-selected-ref-drift-ratio",
+          "0.35",
+          "--skip-context-pipeline"
+        ],
+        "elapsed_s": 3.51,
+        "returncode": 0,
+        "stderr_tail": "",
+        "stdout_tail": ""
+      }
+    },
+    "rust": {
+      "backend": "rust",
+      "backend_metrics": {
+        "skipped": true
+      },
+      "effective_storage_tuning": {
+        "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+        "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+        "TS_COLD_SCAN_NO_CACHE_FILL": true,
+        "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+        "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+        "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+        "TS_STORAGE_ZONE_SIZE": 10485760,
+        "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+        "effective_block_segment_target_bytes": 10485760
+      },
+      "errors": {
+        "read": [],
+        "write": []
+      },
+      "fallback_flags": {
+        "backend_startup_failed": false,
+        "hash_embedding_fallback": false,
+        "memory_fallback": false,
+        "native_metrics_missing": true,
+        "partial_context_pack": false,
+        "topology_not_ready": false
+      },
+      "ingest": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "qps": 0.0,
+        "timeout_count": 0
+      },
+      "ingest_messages": {
+        "message_qps": 0.0,
+        "messages": 0,
+        "messages_per_ingest": 0
+      },
+      "raw_storage": {
+        "errors": {
+          "read": [],
+          "write": []
+        },
+        "read": {
+          "avg_ms": 19.058,
+          "batch_size": 25,
+          "batches": 2,
+          "elapsed_s": 0.027,
+          "errors": 0,
+          "max_ms": 25.119,
+          "ok": 50,
+          "ops": 50,
+          "p50_ms": 12.997,
+          "p95_ms": 25.119,
+          "p99_ms": 25.119,
+          "qps": 1885.554,
+          "records": 50
+        },
+        "write": {
+          "avg_ms": 374.581,
+          "batch_size": 50,
+          "elapsed_s": 0.498,
+          "errors": 0,
+          "max_ms": 495.08,
+          "ok": 2,
+          "ops": 2,
+          "p50_ms": 254.083,
+          "p95_ms": 495.08,
+          "p99_ms": 495.08,
+          "qps": 4.014,
+          "record_qps": 200.721,
+          "records": 100
+        }
+      },
+      "readiness": {
+        "access": {
+          "account_id": "acct_local",
+          "agent_name": "local_agent",
+          "api_key_id": "dev",
+          "mode": "dev",
+          "role": "dev_admin",
+          "scope_key": "t=4848243343181226175|u=647902544814218759|",
+          "session_hash": 0,
+          "tenant_hash": 4848243343181226175,
+          "tenant_id": "tenant_local_agent",
+          "user_hash": 647902544814218759,
+          "user_id": "root"
+        },
+        "attempt_log": [],
+        "attempts": 1,
+        "backend": "temporalstore-rust",
+        "checks": {
+          "mcp_process_started": true,
+          "metaserver_reachable": {
+            "address": "127.0.0.1:18000",
+            "ok": true
+          },
+          "namespace_table_opened": true,
+          "slot_coverage_verified_by_warmup_hset_hget": true
+        },
+        "metaserver": "127.0.0.1:18000",
+        "probe": true,
+        "reason": "manual",
+        "status": "ready",
+        "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:rust",
+        "topology": {
+          "metaserver": "127.0.0.1:18000",
+          "namespace": "deploy_ns",
+          "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:rust",
+          "table": "deploy_table",
+          "warmup_field": "3726776:1782994388575:3944562213743375720",
+          "warmup_key": "matrixark:scale:current_cpp_rust_raw_compare:rust:readiness"
+        },
+        "warmup_key": "matrixark:scale:current_cpp_rust_raw_compare:rust:readiness"
+      },
+      "retrieve": {
+        "avg_ms": 0.0,
+        "elapsed_s": 0.0,
+        "errors": 0,
+        "max_ms": 0.0,
+        "ok": 0,
+        "ops": 0,
+        "p50_ms": 0.0,
+        "p95_ms": 0.0,
+        "p99_ms": 0.0,
+        "partial_context_packs": 0,
+        "qps": 0.0,
+        "selected_refs_avg": 0.0,
+        "selected_refs_max": 0,
+        "stage_metrics": {
+          "broad_scan_blocked_count": 0,
+          "broad_scan_used_count": 0,
+          "cache_hit_rate": 0.0,
+          "candidate_count_avg": 0.0,
+          "correctness_evidence": {},
+          "drop_counters_total": {},
+          "dropped_refs_avg": 0.0,
+          "fallback_flags_total": {},
+          "index_hits_avg": 0.0,
+          "index_postings_read_avg": 0.0,
+          "index_postings_touched_avg": 0.0,
+          "native_pack_assembly_count": 0,
+          "placement_partitions_touched_avg": 0.0,
+          "python_pack_fallback_count": 0,
+          "raw_candidate_tables_returned_count": 0,
+          "samples": 0,
+          "scanned_records_avg": 0.0,
+          "selected_ref_signatures_by_query": {},
+          "selected_refs_avg": 0.0,
+          "selected_refs_max": 0,
+          "selected_refs_min": 0,
+          "stage_avg_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "stage_p95_ms": {
+            "append_engine_ms": 0.0,
+            "append_queue_wait_ms": 0.0,
+            "audit_ms": 0.0,
+            "candidate_fetch_ms": 0.0,
+            "index_prefilter_ms": 0.0,
+            "node_traversal_ms": 0.0,
+            "pack_ms": 0.0,
+            "query_plan_ms": 0.0,
+            "score_ms": 0.0
+          },
+          "timeout_count": 0,
+          "timeout_partial_count": 0,
+          "token_count_avg": 0.0
+        },
+        "timeout_count": 0
+      },
+      "status": "passed",
+      "storage_prefix": "matrixark:scale:current_cpp_rust_raw_compare:rust",
+      "summary_refresh": {
+        "skipped": true
+      },
+      "worker": {
+        "command": [
+          "/usr/bin/python3",
+          "/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/push-feature-parity-worktree/tools/run_matrixark_cpp_rust_scale_report.py",
+          "--backend-worker",
+          "rust",
+          "--backend-worker-output",
+          "docs/benchmarks/current_cpp_rust_raw_compare_20260702/rust.json",
+          "--run-id",
+          "current_cpp_rust_raw_compare",
+          "--events",
+          "10",
+          "--raw-ops",
+          "100",
+          "--raw-read-ops",
+          "50",
+          "--raw-batch-size",
+          "50",
+          "--raw-read-batch-size",
+          "25",
+          "--raw-workers",
+          "2",
+          "--messages-per-ingest",
+          "5",
+          "--ingest-workers",
+          "1",
+          "--retrieve-queries",
+          "0",
+          "--retrieve-workers",
+          "1",
+          "--max-context-tokens",
+          "12000",
+          "--metaserver",
+          "127.0.0.1:18000",
+          "--namespace",
+          "deploy_ns",
+          "--table",
+          "deploy_table",
+          "--storage-prefix",
+          "matrixark:scale",
+          "--cpp-lib",
+          "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+          "--rust-cli",
+          "/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log",
+          "--python-ref-store",
+          "",
+          "--request-timeout-ms",
+          "60000",
+          "--io-timeout-ms",
+          "60000",
+          "--readiness-timeout-ms",
+          "60000",
+          "--ingest-deadline-ms",
+          "60000",
+          "--retrieve-deadline-ms",
+          "10000",
+          "--phase0-min-selected-refs",
+          "1",
+          "--phase0-max-selected-ref-drift-ratio",
+          "0.35",
+          "--skip-context-pipeline"
+        ],
+        "elapsed_s": 2.537,
+        "returncode": 0,
+        "stderr_tail": "",
+        "stdout_tail": ""
+      }
+    }
+  },
+  "comparison": {
+    "perf_parity": {
+      "blockers": [],
+      "correctness_failures": [],
+      "max_latency_ratio": 2.0,
+      "min_qps_ratio": 0.8,
+      "passed": true
+    },
+    "phase0_correctness": {
+      "reason": "context pipeline disabled",
+      "status": "skipped"
+    },
+    "rows": [
+      {
+        "cpp": 168.418,
+        "direction": "higher",
+        "metric": "raw_write_record_qps",
+        "parity_passed": true,
+        "parity_threshold": ">= 134.7344",
+        "percent_delta": 19.18,
+        "rust": 200.721,
+        "rust_minus_cpp": 32.303,
+        "rust_to_cpp_ratio": 1.191803
+      },
+      {
+        "cpp": 591.936,
+        "direction": "lower",
+        "metric": "raw_write_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 1183.872",
+        "percent_delta": -16.363,
+        "rust": 495.08,
+        "rust_minus_cpp": -96.856,
+        "rust_to_cpp_ratio": 0.836374
+      },
+      {
+        "cpp": 1315.825,
+        "direction": "higher",
+        "metric": "raw_read_qps",
+        "parity_passed": true,
+        "parity_threshold": ">= 1052.66",
+        "percent_delta": 43.298,
+        "rust": 1885.554,
+        "rust_minus_cpp": 569.729,
+        "rust_to_cpp_ratio": 1.432982
+      },
+      {
+        "cpp": 36.403,
+        "direction": "lower",
+        "metric": "raw_read_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 72.806",
+        "percent_delta": -30.997,
+        "rust": 25.119,
+        "rust_minus_cpp": -11.284,
+        "rust_to_cpp_ratio": 0.690026
+      },
+      {
+        "cpp": 0.0,
+        "direction": "higher",
+        "metric": "message_qps",
+        "parity_passed": true,
+        "parity_threshold": ">= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p50_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "ingest_p99_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "ingest_timeout_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "higher",
+        "metric": "retrieve_qps",
+        "parity_passed": true,
+        "parity_threshold": ">= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p50_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "retrieve_p99_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "retrieve_timeout_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "partial_context_packs",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "selected_refs_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "dropped_refs_avg",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "index_hits_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "candidate_count_avg",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "token_count_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "query_plan_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "node_traversal_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "index_prefilter_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "candidate_fetch_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "score_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "pack_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "audit_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "append_queue_wait_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "append_engine_p95_ms",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "native_timeout_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "lower",
+        "metric": "scanned_records_avg",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "higher",
+        "metric": "cache_hit_rate",
+        "parity_passed": true,
+        "parity_threshold": ">= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "index_postings_read_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "index_postings_touched_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "broad_scan_used_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "broad_scan_blocked_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "higher",
+        "metric": "native_pack_assembly_count",
+        "parity_passed": true,
+        "parity_threshold": ">= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "python_pack_fallback_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "raw_candidate_tables_returned_count",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0.0,
+        "direction": "approx",
+        "metric": "placement_partitions_touched_avg",
+        "parity_passed": true,
+        "parity_threshold": "abs(delta) <= 1.0",
+        "percent_delta": 0.0,
+        "rust": 0.0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "memory_fallback",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "hash_embedding_fallback",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 0,
+        "direction": "lower",
+        "metric": "partial_pack_fallback",
+        "parity_passed": true,
+        "parity_threshold": "<= 0.0",
+        "percent_delta": 0.0,
+        "rust": 0,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      },
+      {
+        "cpp": 1,
+        "direction": "lower",
+        "metric": "native_metrics_missing",
+        "parity_passed": true,
+        "parity_threshold": "<= 2.0",
+        "percent_delta": 0.0,
+        "rust": 1,
+        "rust_minus_cpp": 0.0,
+        "rust_to_cpp_ratio": 1.0
+      }
+    ],
+    "rust_vs_cpp_parity": {
+      "feature_parity": {
+        "criteria": [
+          "selected_ref_parity",
+          "scope_filtering",
+          "placement_filtering",
+          "compact_secondary_index_prefilter",
+          "stale_superseded_exclusion",
+          "shared_resource_skill_quota",
+          "cross_session_quota_rerank"
+        ],
+        "failures": [],
+        "passed": false,
+        "source": "phase0_correctness",
+        "status": "skipped"
+      },
+      "performance_parity": {
+        "blockers": [],
+        "max_latency_ratio": 2.0,
+        "min_qps_ratio": 0.8,
+        "passed": true,
+        "required_same_config": [
+          "dataset",
+          "storage_mode",
+          "topology",
+          "token_budget",
+          "batch_size",
+          "embedding_model",
+          "reader_model",
+          "judge_model"
+        ],
+        "status": "passed"
+      },
+      "production_performance_parity": {
+        "definition": "feature parity passed and live same-config performance parity metrics are within configured thresholds",
+        "passed": false,
+        "status": "failed"
+      }
+    },
+    "status": "passed",
+    "status_labels": {
+      "feature_correct": true,
+      "performance_candidate": true,
+      "production_performance_parity": false
+    }
+  },
+  "config": {
+    "allow_phase0_correctness_failure": false,
+    "batch_size": 5,
+    "dataset": "matrixark-scale-synthetic",
+    "effective_storage_tuning": {
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "effective_block_segment_target_bytes": 10485760
+    },
+    "embedding_model": "hashing-local",
+    "embedding_provider": "hash",
+    "events": 10,
+    "ingest_workers": 1,
+    "judge_model": "matrixark-deterministic-judge",
+    "judge_provider": "deterministic",
+    "max_context_tokens": 12000,
+    "messages_per_ingest": 5,
+    "metaserver": "127.0.0.1:18000",
+    "namespace": "deploy_ns",
+    "perf_max_latency_ratio": 2.0,
+    "perf_min_qps_ratio": 0.8,
+    "phase0_max_selected_ref_drift_ratio": 0.35,
+    "phase0_min_selected_refs": 1,
+    "phase_contextmemory_features": [
+      "resources",
+      "skills",
+      "cross_session_retrieval",
+      "compact_indexes",
+      "audit_light_telemetry"
+    ],
+    "phase_name": "current",
+    "phase_resource_imports": [
+      "large_pdf",
+      "large_csv",
+      "repo_directory"
+    ],
+    "phase_retrieve_workers": [
+      4,
+      8,
+      16,
+      32
+    ],
+    "phase_scale_events": [
+      1000,
+      10000,
+      100000
+    ],
+    "python_ref_store": "",
+    "raw_batch_size": 50,
+    "raw_ops": 100,
+    "raw_read_batch_size": 25,
+    "raw_read_ops": 50,
+    "raw_workers": 2,
+    "reader_model": "matrixark-deterministic-reader",
+    "reader_provider": "deterministic",
+    "require_perf_parity": false,
+    "require_phase_scale_matrix": false,
+    "required_page_block_metrics": [
+      "page_index_lookup_count",
+      "page_index_lookup_ms",
+      "page_index_cache_hit_rate",
+      "block_index_lookup_count",
+      "block_index_lookup_ms",
+      "block_index_cache_hit_rate",
+      "page_reads",
+      "page_writes",
+      "block_reads",
+      "block_writes",
+      "bytes_read",
+      "bytes_written",
+      "compaction_reclaimed_bytes",
+      "cold_scan_no_cache_reads",
+      "hot_cache_promotions",
+      "append_watermark",
+      "compaction_watermark"
+    ],
+    "retrieve_queries": 0,
+    "retrieve_workers": 1,
+    "rust_record_log_root": "docs/benchmarks/current_cpp_rust_raw_compare_20260702/rust_record_log_root",
+    "skip_context_pipeline": true,
+    "storage_options": {
+      "oplog_mode": "async",
+      "replication_mode": "shared_store",
+      "storage_family": "shared_store",
+      "storage_mode": "multi_node",
+      "write_mode": "async"
+    },
+    "table": "deploy_table",
+    "topology": {
+      "metaserver": "127.0.0.1:18000",
+      "namespace": "deploy_ns",
+      "table": "deploy_table"
+    }
+  },
+  "generated_at_ms": 1782994383026,
+  "phase_scale_matrix": {
+    "checks": {
+      "contextmemory_pipeline": [
+        {
+          "case": "resources",
+          "status": "open"
+        },
+        {
+          "case": "skills",
+          "status": "open"
+        },
+        {
+          "case": "cross_session_retrieval",
+          "status": "open"
+        },
+        {
+          "case": "compact_indexes",
+          "status": "open"
+        },
+        {
+          "case": "audit_light_telemetry",
+          "status": "open"
+        }
+      ],
+      "event_ingestion": [
+        {
+          "case": 1000,
+          "status": "open"
+        },
+        {
+          "case": 10000,
+          "status": "open"
+        },
+        {
+          "case": 100000,
+          "status": "open"
+        }
+      ],
+      "resource_imports": [
+        {
+          "case": "large_pdf",
+          "status": "open"
+        },
+        {
+          "case": "large_csv",
+          "status": "open"
+        },
+        {
+          "case": "repo_directory",
+          "status": "open"
+        }
+      ],
+      "retrieve_workers": [
+        {
+          "case": 4,
+          "status": "open"
+        },
+        {
+          "case": 8,
+          "status": "open"
+        },
+        {
+          "case": 16,
+          "status": "open"
+        },
+        {
+          "case": 32,
+          "status": "open"
+        }
+      ]
+    },
+    "evidence": {
+      "completed_contextmemory_features": [],
+      "completed_events": [
+        10
+      ],
+      "completed_resource_imports": [],
+      "completed_retrieve_workers": [
+        1
+      ],
+      "current_run": {
+        "events": 10,
+        "retrieve_workers": 1,
+        "skip_context_pipeline": true
+      }
+    },
+    "full_contextmemory_pipeline": {
+      "description": "large PDF/CSV/repo resource imports plus resources, skills, cross-session retrieval, compact indexes, and audit-light telemetry",
+      "required_features": [
+        "resources",
+        "skills",
+        "cross_session_retrieval",
+        "compact_indexes",
+        "audit_light_telemetry"
+      ],
+      "required_resource_imports": [
+        "large_pdf",
+        "large_csv",
+        "repo_directory"
+      ],
+      "status": "incomplete"
+    },
+    "open_required_cases": [
+      {
+        "case": 1000,
+        "group": "event_ingestion"
+      },
+      {
+        "case": 10000,
+        "group": "event_ingestion"
+      },
+      {
+        "case": 100000,
+        "group": "event_ingestion"
+      },
+      {
+        "case": 4,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": 8,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": 16,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": 32,
+        "group": "retrieve_workers"
+      },
+      {
+        "case": "large_pdf",
+        "group": "resource_imports"
+      },
+      {
+        "case": "large_csv",
+        "group": "resource_imports"
+      },
+      {
+        "case": "repo_directory",
+        "group": "resource_imports"
+      },
+      {
+        "case": "resources",
+        "group": "contextmemory_pipeline"
+      },
+      {
+        "case": "skills",
+        "group": "contextmemory_pipeline"
+      },
+      {
+        "case": "cross_session_retrieval",
+        "group": "contextmemory_pipeline"
+      },
+      {
+        "case": "compact_indexes",
+        "group": "contextmemory_pipeline"
+      },
+      {
+        "case": "audit_light_telemetry",
+        "group": "contextmemory_pipeline"
+      }
+    ],
+    "phase": "current",
+    "require_gate": false,
+    "status": "incomplete"
+  },
+  "production_policy": {
+    "blockers": [
+      {
+        "detail": "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+        "name": "correctness_before_latency",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp selected_refs_max=0.0",
+        "name": "cpp_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "rust selected_refs_max=0.0",
+        "name": "rust_selected_refs_non_empty",
+        "status": "failed"
+      }
+    ],
+    "checks": [
+      {
+        "detail": "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+        "name": "correctness_before_latency",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp selected_refs_max=0.0",
+        "name": "cpp_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "cpp broad_scan_used_count=0; broad scan is fallback/debug only.",
+        "name": "cpp_placement_index_driven",
+        "status": "passed"
+      },
+      {
+        "detail": "cpp python_pack_fallback_count=0, raw_candidate_tables_returned_count=0.",
+        "name": "cpp_native_pack_or_dispatcher_only",
+        "status": "passed"
+      },
+      {
+        "detail": "cpp audit_p95_ms=0.0; rich audit/debug must be async/sampled by default.",
+        "name": "cpp_audit_not_hot_path_blocking",
+        "status": "passed"
+      },
+      {
+        "detail": "rust selected_refs_max=0.0",
+        "name": "rust_selected_refs_non_empty",
+        "status": "failed"
+      },
+      {
+        "detail": "rust broad_scan_used_count=0; broad scan is fallback/debug only.",
+        "name": "rust_placement_index_driven",
+        "status": "passed"
+      },
+      {
+        "detail": "rust python_pack_fallback_count=0, raw_candidate_tables_returned_count=0.",
+        "name": "rust_native_pack_or_dispatcher_only",
+        "status": "passed"
+      },
+      {
+        "detail": "rust audit_p95_ms=0.0; rich audit/debug must be async/sampled by default.",
+        "name": "rust_audit_not_hot_path_blocking",
+        "status": "passed"
+      },
+      {
+        "detail": "Performance parity requires the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust.",
+        "name": "same_dataset_storage_topology_budget_batch_models",
+        "status": "passed"
+      }
+    ],
+    "policy": [
+      "Correctness beats latency: do not tune C++ performance until selected refs are non-empty and logically equivalent to Rust/Python.",
+      "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
+      "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
+      "Audit/debug records do not block hot retrieval by default.",
+      "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust."
+    ],
+    "status": "failed"
+  },
+  "run_id": "current_cpp_rust_raw_compare"
+}
