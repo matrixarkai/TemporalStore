@@ -77,6 +77,9 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
   of this value and `TS_BLOCK_SEGMENT_TARGET_BYTES`.
 - `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
 - `TS_COLD_SCAN_NO_CACHE_FILL`: default cold-scan behavior for lifecycle work.
+- `TS_PAGE_INDEX_CACHE_BYTES`: page-index cache budget for serving/range lookups.
+- `TS_BLOCK_INDEX_CACHE_BYTES`: block-index cache budget for physical address
+  lookups.
 
 The block store consumes the segment/blob knobs directly for append rolling, and
 context packed pages consume `TS_CONTEXT_PAGE_TARGET_BYTES`. The remaining knobs

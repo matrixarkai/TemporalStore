@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -13,11 +14,11 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from tools.run_matrixark_cpp_rust_scale_report import comparison, effective_storage_tuning_from_env, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from run_matrixark_cpp_rust_scale_report import comparison, effective_storage_tuning_from_env, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
 
 
 
@@ -327,6 +328,52 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn(("resource_imports", "large_pdf"), open_cases)
         self.assertEqual(gate["full_contextmemory_pipeline"]["status"], "incomplete")
 
+    def test_scale_report_effective_storage_tuning_reads_public_knobs(self) -> None:
+        names = [
+            "TS_CONTEXT_PAGE_TARGET_BYTES",
+            "TS_BLOCK_SEGMENT_TARGET_BYTES",
+            "TS_STORAGE_ZONE_SIZE",
+            "TS_STREAM_MAX_BLOB_SIZE",
+            "TS_COMPACTION_WATERMARK_BYTES",
+            "TS_COLD_SCAN_NO_CACHE_FILL",
+            "TS_PAGE_INDEX_CACHE_BYTES",
+            "TS_BLOCK_INDEX_CACHE_BYTES",
+            "TEMPORALSTORE_STORAGE_ZONE_SIZE",
+            "TEMPORALSTORE_STREAM_MAX_BLOB_SIZE",
+        ]
+        old_env = {name: os.environ.get(name) for name in names}
+        try:
+            os.environ.update(
+                {
+                    "TS_CONTEXT_PAGE_TARGET_BYTES": "131072",
+                    "TS_BLOCK_SEGMENT_TARGET_BYTES": "1073741824",
+                    "TS_STORAGE_ZONE_SIZE": "33554432",
+                    "TS_STREAM_MAX_BLOB_SIZE": "67108864",
+                    "TS_COMPACTION_WATERMARK_BYTES": "536870912",
+                    "TS_COLD_SCAN_NO_CACHE_FILL": "false",
+                    "TS_PAGE_INDEX_CACHE_BYTES": "2097152",
+                    "TS_BLOCK_INDEX_CACHE_BYTES": "4194304",
+                }
+            )
+
+            tuning = effective_storage_tuning_from_env()
+
+            self.assertEqual(tuning["TS_CONTEXT_PAGE_TARGET_BYTES"], 131072)
+            self.assertEqual(tuning["TS_BLOCK_SEGMENT_TARGET_BYTES"], 1073741824)
+            self.assertEqual(tuning["TS_STORAGE_ZONE_SIZE"], 33554432)
+            self.assertEqual(tuning["TS_STREAM_MAX_BLOB_SIZE"], 67108864)
+            self.assertEqual(tuning["TS_COMPACTION_WATERMARK_BYTES"], 536870912)
+            self.assertFalse(tuning["TS_COLD_SCAN_NO_CACHE_FILL"])
+            self.assertEqual(tuning["TS_PAGE_INDEX_CACHE_BYTES"], 2097152)
+            self.assertEqual(tuning["TS_BLOCK_INDEX_CACHE_BYTES"], 4194304)
+            self.assertEqual(tuning["effective_block_segment_target_bytes"], 67108864)
+        finally:
+            for name, value in old_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
             "config": {
@@ -345,6 +392,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "reader_model": "matrixark-deterministic-reader",
                 "judge_provider": "deterministic",
                 "judge_model": "matrixark-deterministic-judge",
+                "effective_storage_tuning": {
+                    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+                    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+                    "TS_STORAGE_ZONE_SIZE": 10485760,
+                    "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+                    "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+                    "TS_COLD_SCAN_NO_CACHE_FILL": True,
+                    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+                    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+                    "effective_block_segment_target_bytes": 10485760,
+                },
             },
             "comparison": {"phase0_correctness": {"status": "failed"}},
             "backends": {
@@ -399,6 +457,17 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "reader_model": "matrixark-deterministic-reader",
                 "judge_provider": "deterministic",
                 "judge_model": "matrixark-deterministic-judge",
+                "effective_storage_tuning": {
+                    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+                    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+                    "TS_STORAGE_ZONE_SIZE": 10485760,
+                    "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+                    "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+                    "TS_COLD_SCAN_NO_CACHE_FILL": True,
+                    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+                    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+                    "effective_block_segment_target_bytes": 10485760,
+                },
             },
             "comparison": {"phase0_correctness": {"status": "passed"}},
             "backends": {

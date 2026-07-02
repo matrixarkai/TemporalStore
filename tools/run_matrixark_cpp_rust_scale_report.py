@@ -166,6 +166,17 @@ DEFAULT_PHASE_CONTEXTMEMORY_FEATURES = [
     "audit_light_telemetry",
 ]
 
+STORAGE_TUNING_DEFAULTS: Json = {
+    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1 << 30,
+    "TS_STORAGE_ZONE_SIZE": 10 * 1024 * 1024,
+    "TS_STREAM_MAX_BLOB_SIZE": 10 * 1024 * 1024,
+    "TS_COMPACTION_WATERMARK_BYTES": 256 * 1024 * 1024,
+    "TS_COLD_SCAN_NO_CACHE_FILL": True,
+    "TS_PAGE_INDEX_CACHE_BYTES": 64 * 1024 * 1024,
+    "TS_BLOCK_INDEX_CACHE_BYTES": 64 * 1024 * 1024,
+}
+
 
 def _parse_int_csv(raw: str, default: list[int]) -> list[int]:
     if not raw:
@@ -187,6 +198,47 @@ def _parse_str_csv(raw: str, default: list[str]) -> list[str]:
         return list(default)
     values = [item.strip() for item in str(raw).replace(";", ",").split(",") if item.strip()]
     return values or list(default)
+
+
+def _parse_bool_env(raw: str | None, default: bool) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    value = str(raw).strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def effective_storage_tuning_from_env() -> Json:
+    values: Json = {}
+    for name, default in STORAGE_TUNING_DEFAULTS.items():
+        raw = os.environ.get(name)
+        if isinstance(default, bool):
+            values[name] = _parse_bool_env(raw, default)
+            continue
+        try:
+            values[name] = int(raw) if raw is not None and str(raw).strip() else int(default)
+        except (TypeError, ValueError):
+            values[name] = int(default)
+
+    # C++ deployment scripts still accept legacy TEMPORALSTORE_* overrides.
+    try:
+        if os.environ.get("TEMPORALSTORE_STORAGE_ZONE_SIZE"):
+            values["TS_STORAGE_ZONE_SIZE"] = int(os.environ["TEMPORALSTORE_STORAGE_ZONE_SIZE"])
+    except (TypeError, ValueError):
+        pass
+    try:
+        if os.environ.get("TEMPORALSTORE_STREAM_MAX_BLOB_SIZE"):
+            values["TS_STREAM_MAX_BLOB_SIZE"] = int(os.environ["TEMPORALSTORE_STREAM_MAX_BLOB_SIZE"])
+    except (TypeError, ValueError):
+        pass
+    values["effective_block_segment_target_bytes"] = min(
+        int(values["TS_BLOCK_SEGMENT_TARGET_BYTES"]),
+        int(values["TS_STREAM_MAX_BLOB_SIZE"]),
+    )
+    return values
 
 
 def retrieval_metrics_from_result(result: Json) -> Json:
@@ -938,6 +990,7 @@ def run_raw_storage(backend: str, args: argparse.Namespace, run_id: str, *, clie
 
 def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
     prefix = f"{args.storage_prefix}:{run_id}:{backend}"
+    effective_storage_tuning = effective_storage_tuning_from_env()
     adapter = make_adapter(backend, args, prefix)
     server = MatrixArkMcpServer(adapter, access_mode="dev")
     # This runner measures ingestion/retrieval/storage latency. Admin/context
@@ -959,6 +1012,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "backend": backend,
                 "status": "topology_not_ready",
                 "storage_prefix": prefix,
+                "effective_storage_tuning": effective_storage_tuning,
                 "readiness": readiness,
                 "ingest": {**summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0), "timeout_count": 0},
                 "retrieve": {
@@ -987,6 +1041,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
                 "backend": backend,
                 "status": "passed" if not raw_storage.get("errors", {}).get("write") and not raw_storage.get("errors", {}).get("read") else "failed",
                 "storage_prefix": prefix,
+                "effective_storage_tuning": effective_storage_tuning,
                 "readiness": readiness,
                 "raw_storage": raw_storage,
                 "ingest": {**summarize_latencies([], total_ops=0, elapsed_s=0.0, errors=0), "timeout_count": 0},
@@ -1101,6 +1156,7 @@ def run_backend(backend: str, args: argparse.Namespace, run_id: str) -> Json:
             "backend": backend,
             "status": "passed" if not ingest_errors and not retrieve_errors else "failed",
             "storage_prefix": prefix,
+            "effective_storage_tuning": effective_storage_tuning,
             "readiness": readiness,
             "raw_storage": raw_storage,
             "ingest": {
@@ -1616,13 +1672,14 @@ def production_policy_gate(report: Json) -> Json:
         "reader_model",
         "judge_provider",
         "judge_model",
+        "effective_storage_tuning",
     ]
     add_check(
         "same_dataset_storage_topology_budget_batch_models",
         all(field in config for field in same_config_fields),
         (
             "Performance parity requires the same dataset, storage mode, topology, token budget, "
-            "batch size, embedding model, reader, and judge for C++ and Rust."
+            "batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust."
         ),
     )
 
@@ -1636,7 +1693,7 @@ def production_policy_gate(report: Json) -> Json:
             "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
             "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
             "Audit/debug records do not block hot retrieval by default.",
-            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, and judge for C++ and Rust.",
+            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust.",
         ],
     }
 
@@ -1670,6 +1727,33 @@ def write_report(path: Path, report: Json) -> None:
             f"{ingest.get('p50_ms', 0)} ms | {ingest.get('p95_ms', 0)} ms | {ingest.get('p99_ms', 0)} ms | "
             f"{retrieve.get('qps', 0)} | {retrieve.get('p50_ms', 0)} ms | {retrieve.get('p95_ms', 0)} ms | "
             f"{retrieve.get('p99_ms', 0)} ms | {errors} | {retrieve.get('partial_context_packs', 0)} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Effective Storage Tuning",
+            "",
+            "| backend | context page target | block segment target | storage zone | stream max blob | compaction watermark | cold scan no-cache | page index cache | block index cache | effective block segment |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
+    config_tuning = report.get("config", {}).get("effective_storage_tuning", {})
+    for backend in backend_order:
+        item = report["backends"].get(backend, {})
+        tuning = item.get("effective_storage_tuning") if isinstance(item.get("effective_storage_tuning"), dict) else config_tuning
+        if not isinstance(tuning, dict):
+            tuning = {}
+        lines.append(
+            f"| {backend} | "
+            f"{tuning.get('TS_CONTEXT_PAGE_TARGET_BYTES', '')} | "
+            f"{tuning.get('TS_BLOCK_SEGMENT_TARGET_BYTES', '')} | "
+            f"{tuning.get('TS_STORAGE_ZONE_SIZE', '')} | "
+            f"{tuning.get('TS_STREAM_MAX_BLOB_SIZE', '')} | "
+            f"{tuning.get('TS_COMPACTION_WATERMARK_BYTES', '')} | "
+            f"{tuning.get('TS_COLD_SCAN_NO_CACHE_FILL', '')} | "
+            f"{tuning.get('TS_PAGE_INDEX_CACHE_BYTES', '')} | "
+            f"{tuning.get('TS_BLOCK_INDEX_CACHE_BYTES', '')} | "
+            f"{tuning.get('effective_block_segment_target_bytes', '')} |"
         )
     lines.extend(["", "## Raw Storage", "", "| backend | write record QPS | write batch p95 | read QPS | read p95 | write errors | read errors |", "|---|---:|---:|---:|---:|---:|---:|"])
     for backend in backend_order:
@@ -2040,6 +2124,7 @@ def main() -> int:
                 "table": parsed.table,
             },
             "storage_options": parsed.storage_options,
+            "effective_storage_tuning": effective_storage_tuning_from_env(),
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
             "skip_context_pipeline": parsed.skip_context_pipeline,
