@@ -1015,6 +1015,34 @@ pub struct RaftReadSafetyRuntimeState {
     pub healed_follower_catchup_observed: u64,
 }
 
+impl RaftReadSafetyRuntimeState {
+    fn record_rustraft_runtime_decision(&mut self, decision: &RustRaftReadSafetyRuntimeDecision) {
+        if decision.stale_leader_lease_rejected {
+            self.stale_leader_lease_rejected = self.stale_leader_lease_rejected.saturating_add(1);
+        }
+        if decision.lagging_follower_read_rejected {
+            self.lagging_follower_read_rejected =
+                self.lagging_follower_read_rejected.saturating_add(1);
+        }
+        if decision.stale_follower_write_rejected {
+            self.stale_follower_write_rejected =
+                self.stale_follower_write_rejected.saturating_add(1);
+        }
+        if decision.minority_partition_read_rejected {
+            self.minority_partition_read_rejected =
+                self.minority_partition_read_rejected.saturating_add(1);
+        }
+        if decision.minority_partition_write_rejected {
+            self.minority_partition_write_rejected =
+                self.minority_partition_write_rejected.saturating_add(1);
+        }
+        if decision.healed_follower_catchup_observed {
+            self.healed_follower_catchup_observed =
+                self.healed_follower_catchup_observed.saturating_add(1);
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct RaftWalEnvelope {
     sequence: u64,
@@ -7478,30 +7506,6 @@ impl RaftCluster {
                 .saturating_add(1);
         }
         let status = inner.status();
-        if !status.leader_lease_valid {
-            inner.read_safety_state.stale_leader_lease_rejected = inner
-                .read_safety_state
-                .stale_leader_lease_rejected
-                .saturating_add(1);
-            if !status.has_majority {
-                inner.read_safety_state.minority_partition_read_rejected = inner
-                    .read_safety_state
-                    .minority_partition_read_rejected
-                    .saturating_add(1);
-            }
-            inner.read_safety_state.read_index_rejected = inner
-                .read_safety_state
-                .read_index_rejected
-                .saturating_add(1);
-            if lease_read {
-                inner.read_safety_state.lease_read_rejected = inner
-                    .read_safety_state
-                    .lease_read_rejected
-                    .saturating_add(1);
-            }
-            inner.persist_configured_wal()?;
-            return Err(RaftError::LeaderUnavailable);
-        }
         let Some(node) = inner.nodes.get(&node_id) else {
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
@@ -7516,28 +7520,27 @@ impl RaftCluster {
             inner.persist_configured_wal()?;
             return Err(RaftError::NodeNotFound(node_id));
         };
-        if !node.alive || !node.replica_role.can_serve_data() {
-            inner.read_safety_state.read_index_rejected = inner
-                .read_safety_state
-                .read_index_rejected
-                .saturating_add(1);
-            if lease_read {
-                inner.read_safety_state.lease_read_rejected = inner
-                    .read_safety_state
-                    .lease_read_rejected
-                    .saturating_add(1);
-            }
-            inner.persist_configured_wal()?;
-            return Err(RaftError::NodeNotFound(node_id));
-        }
-        if node.commit_index < status.commit_index {
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: if lease_read {
+                RustRaftReadSafetyOperation::LeaseRead
+            } else {
+                RustRaftReadSafetyOperation::ReadIndex
+            },
+            node_id,
+            leader_id: inner.leader_id,
+            node_alive: node.alive,
+            role_can_serve_data: node.replica_role.can_serve_data(),
+            leader_lease_valid: status.leader_lease_valid,
+            has_majority: status.has_majority,
+            node_commit_index: node.commit_index,
+            leader_commit_index: status.commit_index,
+            max_stale_index_lag: 0,
+        });
+        if !decision.allowed {
             let replica_commit_index = node.commit_index;
-            if node_id != inner.leader_id && node.alive {
-                inner.read_safety_state.lagging_follower_read_rejected = inner
-                    .read_safety_state
-                    .lagging_follower_read_rejected
-                    .saturating_add(1);
-            }
+            inner
+                .read_safety_state
+                .record_rustraft_runtime_decision(&decision);
             inner.read_safety_state.read_index_rejected = inner
                 .read_safety_state
                 .read_index_rejected
@@ -7549,22 +7552,25 @@ impl RaftCluster {
                     .saturating_add(1);
             }
             inner.persist_configured_wal()?;
-            return Err(RaftError::ReplicaLagging {
-                replica_id: node_id,
-                replica_commit_index,
-                leader_commit_index: status.commit_index,
-            });
+            return match decision.reason.as_str() {
+                "stale_leader_lease" | "minority_partition" => Err(RaftError::LeaderUnavailable),
+                "replica_lagging" => Err(RaftError::ReplicaLagging {
+                    replica_id: node_id,
+                    replica_commit_index,
+                    leader_commit_index: status.commit_index,
+                }),
+                _ => Err(RaftError::NodeNotFound(node_id)),
+            };
+        }
+        if decision.healed_follower_catchup_observed {
+            inner
+                .read_safety_state
+                .record_rustraft_runtime_decision(&decision);
         }
         inner.read_safety_state.read_index_accepted = inner
             .read_safety_state
             .read_index_accepted
             .saturating_add(1);
-        if node_id != inner.leader_id {
-            inner.read_safety_state.healed_follower_catchup_observed = inner
-                .read_safety_state
-                .healed_follower_catchup_observed
-                .saturating_add(1);
-        }
         if lease_read {
             inner.read_safety_state.lease_read_accepted = inner
                 .read_safety_state
@@ -7666,46 +7672,46 @@ impl RaftCluster {
                     inner.persist_configured_wal()?;
                     return Err(RaftError::NodeNotFound(node_id));
                 };
-                if !node_alive || !can_serve_data {
-                    inner.read_safety_state.bounded_stale_read_rejected = inner
-                        .read_safety_state
-                        .bounded_stale_read_rejected
-                        .saturating_add(1);
-                    inner.persist_configured_wal()?;
-                    return Err(RaftError::NodeNotFound(node_id));
-                }
-                if status.commit_index.saturating_sub(node_commit_index)
-                    > policy.bounded_stale_max_index_lag
-                {
-                    let replica_commit_index = node_commit_index;
-                    inner.read_safety_state.bounded_stale_read_rejected = inner
-                        .read_safety_state
-                        .bounded_stale_read_rejected
-                        .saturating_add(1);
-                    if node_id != inner.leader_id {
-                        inner.read_safety_state.lagging_follower_read_rejected = inner
-                            .read_safety_state
-                            .lagging_follower_read_rejected
-                            .saturating_add(1);
-                    }
-                    inner.persist_configured_wal()?;
-                    return Err(RaftError::ReplicaLagging {
-                        replica_id: node_id,
-                        replica_commit_index,
+                let decision =
+                    rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+                        operation: RustRaftReadSafetyOperation::BoundedStaleRead,
+                        node_id,
+                        leader_id: inner.leader_id,
+                        node_alive,
+                        role_can_serve_data: can_serve_data,
+                        leader_lease_valid: status.leader_lease_valid,
+                        has_majority: status.has_majority,
+                        node_commit_index,
                         leader_commit_index: status.commit_index,
+                        max_stale_index_lag: policy.bounded_stale_max_index_lag,
                     });
+                if !decision.allowed {
+                    let replica_commit_index = node_commit_index;
+                    inner
+                        .read_safety_state
+                        .record_rustraft_runtime_decision(&decision);
+                    inner.read_safety_state.bounded_stale_read_rejected = inner
+                        .read_safety_state
+                        .bounded_stale_read_rejected
+                        .saturating_add(1);
+                    inner.persist_configured_wal()?;
+                    return match decision.reason.as_str() {
+                        "replica_lagging" => Err(RaftError::ReplicaLagging {
+                            replica_id: node_id,
+                            replica_commit_index,
+                            leader_commit_index: status.commit_index,
+                        }),
+                        _ => Err(RaftError::NodeNotFound(node_id)),
+                    };
                 }
-                let read_index = node_commit_index;
+                let read_index = decision.read_index;
                 inner.read_safety_state.bounded_stale_read_accepted = inner
                     .read_safety_state
                     .bounded_stale_read_accepted
                     .saturating_add(1);
-                if node_id != inner.leader_id && read_index == status.commit_index {
-                    inner.read_safety_state.healed_follower_catchup_observed = inner
-                        .read_safety_state
-                        .healed_follower_catchup_observed
-                        .saturating_add(1);
-                }
+                inner
+                    .read_safety_state
+                    .record_rustraft_runtime_decision(&decision);
                 inner.persist_configured_wal()?;
                 Ok(ReadIndexResponse {
                     leader_id: status.leader_id,
@@ -7777,21 +7783,29 @@ impl RaftCluster {
     pub fn check_write_authority(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let status = inner.status();
-        if node_id == inner.leader_id && status.has_majority {
+        let node_commit_index = inner
+            .nodes
+            .get(&node_id)
+            .map(|node| node.commit_index)
+            .unwrap_or_default();
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: RustRaftReadSafetyOperation::Write,
+            node_id,
+            leader_id: inner.leader_id,
+            node_alive: true,
+            role_can_serve_data: true,
+            leader_lease_valid: status.leader_lease_valid,
+            has_majority: status.has_majority,
+            node_commit_index,
+            leader_commit_index: status.commit_index,
+            max_stale_index_lag: 0,
+        });
+        if decision.allowed {
             Ok(())
         } else {
-            if node_id != inner.leader_id {
-                inner.read_safety_state.stale_follower_write_rejected = inner
-                    .read_safety_state
-                    .stale_follower_write_rejected
-                    .saturating_add(1);
-            }
-            if !status.has_majority {
-                inner.read_safety_state.minority_partition_write_rejected = inner
-                    .read_safety_state
-                    .minority_partition_write_rejected
-                    .saturating_add(1);
-            }
+            inner
+                .read_safety_state
+                .record_rustraft_runtime_decision(&decision);
             inner.persist_configured_wal()?;
             Err(RaftError::NotLeader { node_id })
         }
