@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "name": "temporalstore-raft-parity-report-pair-corpus",
-  "description": "Synthetic C++/Rust report pair proving the shared Raft public contract and top-level report shape.",
+  "name": "raft_data_node_parity_report_pair",
+  "description": "Synthetic C++/Rust report pair for validate_raft_data_node_parity.",
   "cpp": {
     "schema_version": 1,
     "raft_public_contract": {
@@ -348,7 +348,7 @@
       }
     },
     "report_summary": {
-      "command": "validate_raft_cpp_rust_parity",
+      "command": "validate_raft_data_node_parity",
       "backend": "cpp",
       "storage_mode": "raft sync",
       "metaserver_status": "ready",
@@ -711,7 +711,7 @@
       }
     },
     "report_summary": {
-      "command": "validate_raft_cpp_rust_parity",
+      "command": "validate_raft_data_node_parity",
       "backend": "rust",
       "storage_mode": "raft sync",
       "metaserver_status": "ready",
