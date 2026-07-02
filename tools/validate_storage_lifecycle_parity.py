@@ -161,6 +161,23 @@ REQUIRED_CONFIG_FIELDS = [
     "TS_BLOCK_INDEX_CACHE_BYTES",
 ]
 
+REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS = [
+    "effective_storage_tuning",
+    "public_storage_contract",
+    "storage_read_sequence",
+    "storage_cold_scan_sequence",
+    "storage_lifecycle_phases",
+    "storage_lifecycle_metrics",
+    "storage_cache_layers",
+    "storage_cache_semantics",
+    "storage_reclaim_semantics",
+]
+
+OPTIONAL_CANONICAL_TOP_LEVEL_KEYS = [
+    "storage_write_sequence",
+    "storage_reclaim_scope",
+]
+
 REQUIRED_STORAGE_WRITE_SEQUENCE = [
     "append_record",
     "route_shard_slot",
@@ -461,6 +478,7 @@ def validate_contract_and_runner() -> list[str]:
     runner_cache_layers = _extract_runner_list("STORAGE_CACHE_LAYER_NAMES")
     runner_cache_semantics = _extract_runner_list("STORAGE_CACHE_SEMANTICS")
     runner_cache_metrics = _extract_runner_list("STORAGE_CACHE_METRIC_NAMES")
+    runner_top_level_keys = _extract_runner_list("STORAGE_LIFECYCLE_TOP_LEVEL_KEYS")
     for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
         if f"`{name}`" not in contract_text:
             failures.append(f"contract missing canonical public field `{name}`")
@@ -482,6 +500,9 @@ def validate_contract_and_runner() -> list[str]:
         failures.append("runner:STORAGE_CACHE_SEMANTICS does not match the canonical cache semantics")
     if runner_cache_metrics != REQUIRED_STORAGE_CACHE_METRICS:
         failures.append("runner:STORAGE_CACHE_METRIC_NAMES does not match the canonical cache metrics")
+    expected_top_level = REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS + OPTIONAL_CANONICAL_TOP_LEVEL_KEYS
+    if runner_top_level_keys != expected_top_level:
+        failures.append("runner:STORAGE_LIFECYCLE_TOP_LEVEL_KEYS does not match the canonical report shape")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         if f"`{metric}`" not in contract_text:
             failures.append(f"contract missing lifecycle metric `{metric}`")
@@ -535,6 +556,14 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_cache_layers = _dig_cache_layers(rust_report)
     cpp_cache_semantics = _dig_cache_semantics(cpp_report)
     rust_cache_semantics = _dig_cache_semantics(rust_report)
+
+    for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
+        for key in REQUIRED_LIFECYCLE_TOP_LEVEL_KEYS:
+            if key not in report:
+                failures.append(f"{backend} report missing required top-level `{key}`")
+        for key in OPTIONAL_CANONICAL_TOP_LEVEL_KEYS:
+            if key not in report:
+                failures.append(f"{backend} report missing canonical top-level `{key}`")
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:

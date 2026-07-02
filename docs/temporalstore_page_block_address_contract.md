@@ -784,6 +784,22 @@ Canonical StorageManager/StoreManager lifecycle phases:
 lifecycle metric set is present in the shared contract and scale report runner.
 When given `--cpp-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
+
+Canonical lifecycle reports must expose the same top-level shape for C++ and
+Rust before comparison tools accept them:
+
+- `effective_storage_tuning`
+- `public_storage_contract`
+- `storage_read_sequence`
+- `storage_cold_scan_sequence`
+- `storage_lifecycle_phases`
+- `storage_lifecycle_metrics`
+- `storage_cache_layers`
+- `storage_cache_semantics`
+- `storage_reclaim_semantics`
+- `storage_write_sequence`
+- `storage_reclaim_scope`
+
 `tools/compare_storage_lifecycle_reports.py` is the operator-facing wrapper for
 live C++/Rust report comparison and uses the same fail-closed contract.
 By default, it also validates
