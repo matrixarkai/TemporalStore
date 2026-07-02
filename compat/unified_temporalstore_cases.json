@@ -9537,6 +9537,342 @@
           "name": "rust_resource_skill_secondary_index_restart"
         }
       ]
+    },
+    {
+      "description": "Shared C++/Rust storage index case: slot/object/block ownership is the primary authority and logical model maps are derived accelerators.",
+      "family": "storage/cache",
+      "name": "storage_slot_object_block_index_authority_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_slot_object_block_index_authority",
+            "description": "Writes string/hash/set/timestamped/context objects, rebuilds logical views from slot/object/block index authority, and verifies cold reads by block address.",
+            "rust_test": "slot_object_block_index_is_primary_authority_and_rebuilds_model_views",
+            "required_paths": [
+              "src/partition/index/index.h",
+              "src/partition/index/slot_node.h",
+              "src/partition/index/page_index.h"
+            ],
+            "expect_authority_fields": [
+              "slot_id",
+              "object_id",
+              "block_segment_id",
+              "block_id",
+              "routing_slot",
+              "dirty_generation",
+              "model_id"
+            ],
+            "expect_reconciled_views": [
+              "strings",
+              "hashes",
+              "sets",
+              "timestamped",
+              "context"
+            ]
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "slot_object_block_authority_reconciles_model_views",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust SlotStore case: slot layout transitions cover empty, single-object, single-block-object, multi-block-object, and multi-object states.",
+      "family": "storage/cache",
+      "name": "storage_slot_layout_transitions_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_slot_layout_transitions",
+            "description": "Exercises growth, delete/tombstone, compaction, dump/load, and restart while checking C++ SlotNode-like layout transitions.",
+            "rust_test": "slot_store_layout_transitions_survive_growth_delete_compaction_dump_load_restart",
+            "required_paths": [
+              "src/partition/index/slot_node.h",
+              "src/partition/storage/object_manager.*"
+            ],
+            "expect_layout_states": [
+              "empty",
+              "single_object",
+              "single_block_object",
+              "multi_block_object",
+              "multi_object"
+            ],
+            "expect_flags": [
+              "dirty",
+              "deleted",
+              "loading",
+              "in_memory",
+              "ttl_expired"
+            ]
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "slot_layout_transitions_growth_delete_compact_dump_restart",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust block-address case: cold reads resolve through memory miss, disk cache, block store, shared-store replay, and memory refill.",
+      "family": "storage/cache",
+      "name": "storage_block_address_fallback_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_block_address_fallback",
+            "description": "Evicts hot objects, verifies memory miss, then reads by block address from disk/page-compatible block store or shared-store replay and refills memory.",
+            "rust_test": "cold_index_page_address_reads_from_disk_cache_or_block_store_and_refills_memory",
+            "required_paths": [
+              "src/partition/storage/cache*",
+              "src/partition/storage/object_manager.*"
+            ],
+            "expect_fallback_order": [
+              "memory_miss",
+              "disk_cache_lookup",
+              "block_store_read",
+              "shared_store_replay_optional",
+              "memory_refill"
+            ],
+            "expect_no_logical_data_loss": true
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "block_address_cache_disk_shared_store_fallback",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust stream/segment case: active/sealed/delayed-destroy/purged segment lifecycle survives manifest rebuild and corruption handling.",
+      "family": "storage/cache",
+      "name": "storage_stream_segment_manifest_rebuild_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_stream_segment_manifest_rebuild",
+            "description": "Covers the C++ zone/stream concept using Rust block segment naming: active, sealed, delayed destroy, purged, missing manifest rebuild, partial segment, and corrupt segment reporting.",
+            "rust_test": "missing_extent_manifest_rebuilds_from_existing_segments",
+            "required_paths": [
+              "src/partition/storage/zone*",
+              "src/partition/storage/stream*"
+            ],
+            "expect_segment_states": [
+              "active",
+              "sealed",
+              "delayed_destroy",
+              "purged"
+            ],
+            "expect_rebuild_inputs": [
+              "segment_files",
+              "manifest",
+              "delayed_destroy_manifest"
+            ],
+            "expect_corruption_reports": [
+              "missing_manifest",
+              "partial_segment",
+              "corrupt_block_envelope"
+            ]
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "stream_segment_manifest_rebuild_and_corruption_handling",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust compaction case: model-aware block compaction handles tombstones, stale density, object-block packing, and cold block rewrites.",
+      "family": "storage/cache",
+      "name": "storage_model_aware_block_compaction_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_model_aware_block_compaction",
+            "description": "Compacts string/hash/set/timestamped/context/Risk layouts with tombstone and stale-block-density thresholds, then verifies indexes point to new blocks and stale blocks are reclaimable.",
+            "rust_test": "model_layout_compaction_rewrites_live_refs_and_marks_stale_blocks_reclaimable",
+            "required_paths": [
+              "src/partition/storage/compaction*",
+              "src/partition/index/page_index.h"
+            ],
+            "expect_models": [
+              "string",
+              "hash",
+              "set",
+              "timestamped",
+              "context",
+              "risk"
+            ],
+            "expect_triggers": [
+              "tombstone_density",
+              "stale_block_density",
+              "object_block_packing",
+              "cold_block_rewrite"
+            ],
+            "expect_index_rewrite": true
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "model_aware_block_compaction_rewrites_indexes_and_reclaims_stale_blocks",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust GC plus eviction case: reclaim refuses retained dependencies and cold reads still succeed after active eviction.",
+      "family": "storage/cache",
+      "name": "storage_gc_eviction_cold_reads_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_gc_eviction_cold_reads",
+            "description": "Runs weighted eviction and GC under pressure; GC refuses live refs, dump manifests, checkpoints, follower cursors, Raft snapshots, and delayed-destroy grace, then verifies evicted cold reads refill.",
+            "rust_test": "storage_manager_gc_and_eviction_preserve_cold_reads_under_pressure",
+            "required_paths": [
+              "src/partition/storage/storage_manager*",
+              "src/partition/storage/cache*"
+            ],
+            "expect_retention_blockers": [
+              "live_refs",
+              "dump_manifests",
+              "checkpoints",
+              "follower_cursors",
+              "raft_snapshots",
+              "delayed_destroy_grace"
+            ],
+            "expect_eviction_modes": [
+              "weighted_slot_object",
+              "dump_before_evict",
+              "delete_drop_when_configured"
+            ],
+            "expect_cold_read_recovery": true
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "gc_eviction_retention_blockers_and_cold_read_recovery",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust WAL/index-GC case: reclaim floors are slot-generation aware and recovery works after truncation.",
+      "family": "storage/cache",
+      "name": "storage_wal_index_gc_reclaim_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_wal_index_gc_reclaim",
+            "description": "Reclaims WAL/index-log only after durable slot dump and retention floors, commits dirty slots before index-GC, restarts, and verifies recovery boundary plus logical reads.",
+            "rust_test": "storage_manager_wal_index_gc_reclaims_only_after_slot_generation_floors",
+            "required_paths": [
+              "src/partition/storage/op_logger*",
+              "src/partition/storage/storage_manager*"
+            ],
+            "expect_reclaim_floors": [
+              "slot_dump_generation",
+              "follower_cursor",
+              "checkpoint",
+              "raft_snapshot_floor"
+            ],
+            "expect_index_gc_triggers": [
+              "index_log_bytes",
+              "usage_ratio",
+              "max_entries_per_round"
+            ],
+            "expect_restart_recovery": true
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "wal_index_gc_slot_generation_reclaim_and_recovery",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust cache case: long-running replacement-policy soak validates memory/disk pressure, writeback/backpressure, latency metrics, and restart recovery.",
+      "family": "storage/cache",
+      "name": "storage_cache_replacement_soak_shared",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "suite": "cpp_storage_parity",
+            "mode": "rust_executable_cxx_static",
+            "report_schema": "temporalstore_unified_case_report_v1",
+            "cpp_runner_contract": "C++ runner emits the same case id, status, observed fields, latency, and mismatch list; until native execution is wired this remains a static C++ surface gate.",
+            "kind": "storage_cache_replacement_soak",
+            "description": "Runs memory and disk cache pressure with pinned handles, placement semantics, async writeback/backpressure, latency histograms, eviction/refill, and restart recovery.",
+            "rust_test": "cache_replacement_policy_soak_under_memory_disk_pressure_and_restart",
+            "required_paths": [
+              "src/partition/storage/cache*",
+              "src/partition/storage/mtcache*"
+            ],
+            "expect_cache_features": [
+              "pinned_handles",
+              "dram_ssd_placement",
+              "async_writeback_backpressure",
+              "read_refill_writeback_eviction_latency_histograms"
+            ],
+            "expect_restart_recovery": true,
+            "expect_remaining_optional_blocker": "direct mtcache/cachelib-equivalent integration remains optional unless exact C++ cache implementation parity is required"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "cache_replacement_soak_memory_disk_pressure_restart",
+          "skip_client": true
+        }
+      ]
     }
   ],
   "coverage": {
@@ -9553,11 +9889,22 @@
     "cpp_adapter_coverage": [
       {
         "blocker": "Native C++ storage/cache corpus runner is not wired yet; static C++ object/page/slot/storage harness paths remain required.",
-        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD='<cpp-storage-corpus-runner> {corpus}' python3 tools/run_temporalstore_unified_tests.py --cpp --require-cpp-native",
+        "expected_runner_command": "TS_CPP_UNIFIED_NATIVE_CMD=cpp-storage-corpus-runner python3 tools/run_temporalstore_unified_tests.py --cpp --corpus {corpus} --require-cpp-native",
         "family": "storage/cache",
         "status": "temporary_static_surface_gate",
         "suites": [
           "cpp_storage_parity"
+        ],
+        "comparison_command": "python3 tools/compare_unified_cpp_rust_case_reports.py --rust-report rust-report.json --cpp-report cpp-report.json",
+        "next_executable_families": [
+          "slot/object/block index authority",
+          "slot layout transitions",
+          "block-address fallback",
+          "stream segment manifest rebuild",
+          "model-aware block compaction",
+          "GC plus eviction cold reads",
+          "WAL/index-GC reclaim",
+          "cache replacement soak"
         ]
       },
       {
