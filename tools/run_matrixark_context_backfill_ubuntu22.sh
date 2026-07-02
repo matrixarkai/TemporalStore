@@ -9,6 +9,13 @@ MODE="${MODE:-shadow}"
 DRY_RUN="${DRY_RUN:-1}"
 RESUME="${RESUME:-1}"
 BATCH_SIZE="${BATCH_SIZE:-256}"
+PARTIAL="${PARTIAL:-0}"
+PARTIAL_RECORD_TYPES="${PARTIAL_RECORD_TYPES:-}"
+PARTIAL_TENANT_IDS="${PARTIAL_TENANT_IDS:-}"
+PARTIAL_USER_IDS="${PARTIAL_USER_IDS:-}"
+PARTIAL_SESSION_IDS="${PARTIAL_SESSION_IDS:-}"
+PARTIAL_FILTER_JSON="${PARTIAL_FILTER_JSON:-}"
+PARTIAL_REQUIRE_BOUNDED="${PARTIAL_REQUIRE_BOUNDED:-1}"
 METASERVER="${METASERVER:-${MATRIXARK_METASERVER:-127.0.0.1:65000}}"
 NAMESPACE="${NAMESPACE:-${MATRIXARK_NAMESPACE:-matrixark}}"
 TABLE="${TABLE:-${MATRIXARK_TABLE:-context}}"
@@ -23,6 +30,13 @@ exec python3 "${ROOT}/tools/matrixark_context_backfill.py" \
   --mode "${MODE}" \
   --job-id "${JOB_ID}" \
   --batch-size "${BATCH_SIZE}" \
+  --partial "${PARTIAL}" \
+  --partial-record-types "${PARTIAL_RECORD_TYPES}" \
+  --partial-tenant-ids "${PARTIAL_TENANT_IDS}" \
+  --partial-user-ids "${PARTIAL_USER_IDS}" \
+  --partial-session-ids "${PARTIAL_SESSION_IDS}" \
+  --partial-filter-json "${PARTIAL_FILTER_JSON}" \
+  --partial-require-bounded "${PARTIAL_REQUIRE_BOUNDED}" \
   --dry-run "${DRY_RUN}" \
   --resume "${RESUME}" \
   --prometheus-output "${PROM_OUTPUT}" \
