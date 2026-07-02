@@ -63,8 +63,13 @@ struct MetaSchedulerExecutionCoverage {
     under_replicated_repair_ready: bool,
     stale_dead_server_repair_ready: bool,
     load_reload_unload_ready: bool,
+    post_failover_replacement_ready: bool,
+    post_failover_scale_down_ready: bool,
+    post_replacement_route_read_ready: bool,
+    post_scale_down_route_read_ready: bool,
     cooldown_and_safe_mode_ready: bool,
     scheduler_task_replay_ready: bool,
+    scheduler_generation_token_ready: bool,
     membership_change_ready: bool,
     durable_data_raft_membership_ready: bool,
     stale_scheduler_token_rejection_ready: bool,
@@ -282,6 +287,10 @@ fn main() {
         &temporal_raft_process_rollout,
         &meta_owned_data_raft_membership,
         &data_node_process_rollout,
+        &membership_replace_after_failover,
+        post_replace_route_read.as_deref(),
+        &membership_scale_down_after_replace,
+        post_scale_down_route_read.as_deref(),
     );
     let final_process_path_readiness = raft_process_path_readiness_report_from_reports(
         &data_node_process_rollout,
@@ -369,6 +378,10 @@ fn scheduler_execution_coverage_report(
     meta_rollout: &TemporalRaftMetaProcessRolloutReport,
     membership: &MetaOwnedDataRaftMembershipReport,
     data_rollout: &TemporalRaftDataNodeProcessRolloutReport,
+    membership_replace_after_failover: &MetaMembershipSummary,
+    post_replace_route_read: Option<&str>,
+    membership_scale_down_after_replace: &MetaMembershipSummary,
+    post_scale_down_route_read: Option<&str>,
 ) -> MetaSchedulerExecutionCoverage {
     let networked_multi_process_raft_ready = meta_rollout.ready && data_rollout.ready;
     let missing_primary_repair_ready = membership.workflow.final_leader_id > 0;
@@ -376,9 +389,24 @@ fn scheduler_execution_coverage_report(
     let stale_dead_server_repair_ready = membership.failover_validated;
     let load_reload_unload_ready =
         meta_rollout.generated_scheduler_tasks > 0 && meta_rollout.scheduler_task_replay_validated;
+    let post_failover_replacement_ready = membership_replace_after_failover.voters
+        == vec![10, 12, 13]
+        && membership_replace_after_failover
+            .voters
+            .contains(&membership_replace_after_failover.leader_id);
+    let post_failover_scale_down_ready = membership_scale_down_after_replace.voters == vec![10, 13]
+        && membership_scale_down_after_replace
+            .voters
+            .contains(&membership_scale_down_after_replace.leader_id);
+    let post_replacement_route_read_ready = post_replace_route_read == Some("meta-after-replace");
+    let post_scale_down_route_read_ready =
+        post_scale_down_route_read == Some("meta-after-second-scale-down");
     let cooldown_and_safe_mode_ready = true;
     let scheduler_task_replay_ready = meta_rollout.scheduler_task_replay_validated
         && membership.persisted_through_meta_raft_replay;
+    let scheduler_generation_token_ready = membership.scheduler_generation_token_coupling_observed
+        && membership.stale_generation_rejection_observed
+        && membership.membership_generation_replayed_from_meta_raft;
     let membership_change_ready = membership.workflow.learner_added
         && membership.workflow.catch_up_verified
         && membership.workflow.promoted_to_voter
@@ -394,8 +422,13 @@ fn scheduler_execution_coverage_report(
         && under_replicated_repair_ready
         && stale_dead_server_repair_ready
         && load_reload_unload_ready
+        && post_failover_replacement_ready
+        && post_failover_scale_down_ready
+        && post_replacement_route_read_ready
+        && post_scale_down_route_read_ready
         && cooldown_and_safe_mode_ready
         && scheduler_task_replay_ready
+        && scheduler_generation_token_ready
         && membership_change_ready
         && durable_data_raft_membership_ready
         && stale_scheduler_token_rejection_ready;
@@ -405,8 +438,13 @@ fn scheduler_execution_coverage_report(
         under_replicated_repair_ready,
         stale_dead_server_repair_ready,
         load_reload_unload_ready,
+        post_failover_replacement_ready,
+        post_failover_scale_down_ready,
+        post_replacement_route_read_ready,
+        post_scale_down_route_read_ready,
         cooldown_and_safe_mode_ready,
         scheduler_task_replay_ready,
+        scheduler_generation_token_ready,
         membership_change_ready,
         durable_data_raft_membership_ready,
         stale_scheduler_token_rejection_ready,
@@ -416,8 +454,12 @@ fn scheduler_execution_coverage_report(
             "under_replicated_shard_repair".to_string(),
             "stale_dead_server_repair".to_string(),
             "load_reload_unload_lifecycle".to_string(),
+            "post_failover_replacement".to_string(),
+            "post_failover_scale_down".to_string(),
+            "post_membership_route_read".to_string(),
             "cooldown_safe_mode".to_string(),
             "scheduler_task_retry_replay".to_string(),
+            "scheduler_generation_token_coupling".to_string(),
             "learner_add_catchup_promote".to_string(),
             "leader_transfer_voter_remove".to_string(),
             "stale_scheduler_token_generation_rejection".to_string(),
