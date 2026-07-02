@@ -61,6 +61,19 @@ REQUIRED_RAFT_TOP_LEVEL_KEYS = [
     "parity_status",
 ]
 
+REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS = [
+    "raft_backend_identity",
+    "metaserver_raft",
+    "data_node_raft",
+    "membership_events",
+    "leader_election_events",
+    "replication_metrics",
+    "failover_metrics",
+    "snapshot_restore_metrics",
+    "readiness",
+    "parity_status",
+]
+
 REQUIRED_RAFT_SUBSYSTEM_KEYS = [
     "raft_group_id",
     "leader_id",
@@ -90,10 +103,19 @@ def _validate_contract_doc() -> list[str]:
 
 def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
+    if set(cpp_report.keys()) != set(rust_report.keys()):
+        failures.append(
+            "C++/Rust top-level report shape drift: "
+            f"cpp_only={sorted(set(cpp_report.keys()) - set(rust_report.keys()))} "
+            f"rust_only={sorted(set(rust_report.keys()) - set(cpp_report.keys()))}"
+        )
     for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
         for key in REQUIRED_RAFT_TOP_LEVEL_KEYS:
             if key not in report:
                 failures.append(f"{backend} report missing top-level `{key}`")
+        for key in REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS:
+            if key not in report:
+                failures.append(f"{backend} report missing operational top-level `{key}`")
         contract = report.get("raft_public_contract")
         if not isinstance(contract, dict):
             failures.append(f"{backend} report missing object `raft_public_contract`")
@@ -163,7 +185,8 @@ def main() -> int:
 
     print("raft C++/Rust Phase 0 shared contract passed:")
     print("- types=" + ", ".join(CANONICAL_RAFT_TYPES))
-    print("- top_level_shape=" + ", ".join(REQUIRED_RAFT_TOP_LEVEL_KEYS))
+    print("- operational_top_level_shape=" + ", ".join(REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS))
+    print("- metadata_top_level_shape=schema_version, raft_public_contract")
     print("- subsystem_shape=" + ", ".join(REQUIRED_RAFT_SUBSYSTEM_KEYS))
     return 0
 

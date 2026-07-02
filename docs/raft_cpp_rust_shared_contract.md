@@ -25,12 +25,10 @@ Reports and public APIs use these names exactly:
 Implementation-specific names may remain private, but comparison artifacts must
 normalize into these public names.
 
-## Canonical Report Shape
+## Canonical Operational Report Shape
 
-C++ and Rust reports must expose the same top-level keys:
+C++ and Rust reports must expose the same operational top-level keys:
 
-- `schema_version`
-- `raft_public_contract`
 - `raft_backend_identity`
 - `metaserver_raft`
 - `data_node_raft`
@@ -41,6 +39,13 @@ C++ and Rust reports must expose the same top-level keys:
 - `snapshot_restore_metrics`
 - `readiness`
 - `parity_status`
+
+Reports also include metadata top-level keys:
+
+- `schema_version`
+- `raft_public_contract`
+
+The full C++ and Rust top-level key sets must match exactly.
 
 ## Required Subsystem Shape
 
