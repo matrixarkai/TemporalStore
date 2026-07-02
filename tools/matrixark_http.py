@@ -137,17 +137,20 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                 raise MatrixArkError("HTTP JSON body must be an object")
             return parsed
 
+        def _write_auth_required(self, tool_name: str = "http") -> None:
+            self._write_json(
+                401,
+                {
+                    "status": "error",
+                    "tool": tool_name,
+                    "error": "MatrixArk cloud HTTP API requires bearer API key or trusted gateway authentication",
+                },
+            )
+
         def _call_tool_route(self, tool_name: str, args: Json) -> None:
             try:
                 if self.cloud_mode and not _http_has_auth(self.headers, args):
-                    self._write_json(
-                        401,
-                        {
-                            "status": "error",
-                            "tool": tool_name,
-                            "error": "MatrixArk cloud HTTP API requires bearer API key or trusted gateway authentication",
-                        },
-                    )
+                    self._write_auth_required(tool_name)
                     return
                 _http_api_key(self.headers, args)
                 result = server.call_tool(tool_name, args)
@@ -177,6 +180,10 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
                 self._call_tool_route(HTTP_TOOL_ROUTES[parsed.path], _http_query_args(parsed))
                 return
             if parsed.path == "/api/tools":
+                args: Json = {}
+                if self.cloud_mode and not _http_has_auth(self.headers, args):
+                    self._write_auth_required("tools")
+                    return
                 self._write_json(200, {"status": "ok", "tools": sorted(HTTP_TOOL_ROUTES.values())})
                 return
             super().do_GET()

@@ -371,6 +371,9 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 "account_id": "acct_signup",
                 "tenant_id": "tenant_signup",
                 "matrixark_user_id": "alice",
+                "access_token": "secret-access-token-value",
+                "refresh_token": "secret-refresh-token-value",
+                "id_token": "secret-id-token-value",
             },
         )
         self.assertEqual("sso_callback_mapped", callback["status"])
@@ -380,6 +383,12 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         record_dump = str(records)
         self.assertNotIn("id_token", record_dump)
         self.assertNotIn("access_token", record_dump)
+        self.assertNotIn("secret-access-token-value", record_dump)
+        self.assertNotIn("secret-refresh-token-value", record_dump)
+        self.assertNotIn("secret-id-token-value", record_dump)
+        self.assertNotIn("secret-access-token-value", str(callback))
+        self.assertNotIn("secret-refresh-token-value", str(callback))
+        self.assertNotIn("secret-id-token-value", str(callback))
         self.assertNotIn(first_key, record_dump)
         audits = server.call_tool("matrixark_admin_audit", {"api_key": first_key, "account_id": "acct_signup", "tenant_id": "tenant_signup"})["audit_logs"]
         actions = [row.get("action") for row in audits]
@@ -529,7 +538,19 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
                 except HTTPError as exc:
                     return exc.code, json.loads(exc.read().decode("utf-8")), exc.headers.get("Access-Control-Allow-Origin", "")
 
+            def get(path: str, headers: dict | None = None) -> tuple[int, dict, str]:
+                req = Request(base_url + path, headers=headers or {}, method="GET")
+                try:
+                    with urlopen(req, timeout=10) as response:
+                        return response.status, json.loads(response.read().decode("utf-8")), response.headers.get("Access-Control-Allow-Origin", "")
+                except HTTPError as exc:
+                    return exc.code, json.loads(exc.read().decode("utf-8")), exc.headers.get("Access-Control-Allow-Origin", "")
+
             try:
+                status, body, origin = get("/api/tools")
+                self.assertEqual(401, status)
+                self.assertEqual("https://console.matrixark.test", origin)
+
                 status, body, origin = post("/api/management_portal", {"arguments": {}})
                 self.assertEqual(401, status)
                 self.assertEqual("https://console.matrixark.test", origin)

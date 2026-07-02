@@ -48,6 +48,19 @@ def _matrixark_env_truthy(name: str) -> bool:
 
 
 MATRIXARK_MYSQL_COMPATIBLE_METADATA_BACKENDS = {"mysql", "matrixkv_sql", "bytekv_sql"}
+MATRIXARK_OAUTH_TOKEN_FIELDS = {
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "raw_id_token",
+    "oauth_token",
+    "oauth_refresh_token",
+    "token",
+}
+
+
+def strip_oauth_token_fields(args: Json) -> Json:
+    return {key: value for key, value in args.items() if key not in MATRIXARK_OAUTH_TOKEN_FIELDS}
 
 
 class MatrixArkSqlMetadataStore(MatrixArkMetadataStore):
@@ -1623,6 +1636,7 @@ class MatrixArkAccessManager:
         first, then passes the verified subject here for MatrixArk account/user
         mapping and context-scope creation.
         """
+        args = strip_oauth_token_fields(args)
 
         provider = safe_identifier(require_string(args, "provider"), default="sso")
         scope = optional_object(args, "scope")
@@ -1747,6 +1761,7 @@ class MatrixArkAccessManager:
         MatrixArk receives only stable identity metadata and never stores raw
         OAuth access tokens, refresh tokens, or ID-token bytes.
         """
+        args = strip_oauth_token_fields(args)
 
         provider = safe_identifier(require_string(args, "provider"), default="sso")
         allowed_providers = {"google", "gmail", "github", "okta", "azure_ad", "azuread", "oidc"}
