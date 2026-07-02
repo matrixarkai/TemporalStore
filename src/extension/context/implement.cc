@@ -2,9 +2,11 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <set>
 #include <sstream>
 #include <string>
@@ -229,6 +231,44 @@ struct ScoredContextEvent {
     ContextEvent event;
     float decayed_score = 0.0f;
 };
+
+struct NativeContextCandidate {
+    ContextEvent event;
+    uint64_t node_hash = 0;
+    float score = 0.0f;
+    std::set<std::string> matched_index_names;
+};
+
+uint64_t NowSteadyMs() {
+    return static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+}
+
+uint64_t ElapsedSinceMs(uint64_t start_ms) {
+    const uint64_t now_ms = NowSteadyMs();
+    return now_ms >= start_ms ? now_ms - start_ms : 0;
+}
+
+uint32_t EstimateTokens(const std::string& text) {
+    uint32_t tokens = 0;
+    bool in_token = false;
+    for (unsigned char c : text) {
+        if (std::isspace(c)) {
+            in_token = false;
+        } else if (!in_token) {
+            in_token = true;
+            ++tokens;
+        }
+    }
+    return std::max<uint32_t>(1, tokens);
+}
+
+std::string CandidateKey(uint64_t node_hash, uint64_t event_time_ms, uint64_t event_id_hash) {
+    return std::to_string(node_hash) + ":" + std::to_string(event_time_ms) + ":" +
+           std::to_string(event_id_hash);
+}
 
 Status ValidateRange(uint64_t start_time_ms, uint64_t end_time_ms) {
     if (end_time_ms <= start_time_ms) {
@@ -1068,6 +1108,390 @@ Status QueryIndex(ExecuteEnv* env, const QueryIndexRequest& request, QueryIndexR
     return Status::OK();
 }
 REGISTER_FUNCTION(CONTEXT, QUERY_INDEX, QueryIndex, Read);
+
+Status ValidateRetrieveContextPackRequest(const RetrieveContextPackRequest& request) {
+    Status status = ValidateTenant(request.tenant_hash());
+    if (!status.ok()) {
+        return status;
+    }
+    if (request.start_node_hash() == 0 || request.start_time_ms() == 0 ||
+        request.end_time_ms() == 0) {
+        return Status::InvalidArgument("start node and time range are required");
+    }
+    status = ValidateRange(request.start_time_ms(), request.end_time_ms());
+    if (!status.ok()) {
+        return status;
+    }
+    if (request.as_of_ms() != 0) {
+        status = ValidateTimelineTimestamp(request.as_of_ms());
+        if (!status.ok()) {
+            return status;
+        }
+    }
+    status = ValidateLimit(request.max_selected_refs());
+    if (!status.ok()) {
+        return status;
+    }
+    status = ValidateLimit(request.max_candidate_nodes());
+    if (!status.ok()) {
+        return status;
+    }
+    status = ValidateScore("min_score", request.min_score());
+    if (!status.ok()) {
+        return status;
+    }
+    if (request.decay_half_life_ms() > kMaxDecayHalfLifeMs) {
+        return Status::InvalidArgument("decay_half_life_ms exceeds maximum");
+    }
+    if (static_cast<uint32_t>(request.index_filters_size()) > kMaxFilterValues) {
+        return Status::InvalidArgument("too many index filters");
+    }
+    if (static_cast<uint32_t>(request.query_vector_size()) > kMaxEmbeddingDim) {
+        return Status::InvalidArgument("query vector dimension exceeds maximum");
+    }
+    for (float value : request.query_vector()) {
+        if (!std::isfinite(value)) {
+            return Status::InvalidArgument("query vector contains non-finite value");
+        }
+    }
+    for (const auto& filter : request.index_filters()) {
+        status = ValidateIndexName(filter.index_name());
+        if (!status.ok()) {
+            return status;
+        }
+        if (filter.index_value_hash() == 0) {
+            return Status::InvalidArgument("index filter value hash is required");
+        }
+        status = ValidateRange(filter.start_time_ms() == 0 ? request.start_time_ms()
+                                                           : filter.start_time_ms(),
+                               filter.end_time_ms() == 0 ? request.end_time_ms()
+                                                         : filter.end_time_ms());
+        if (!status.ok()) {
+            return status;
+        }
+    }
+    return Status::OK();
+}
+
+Status LoadEventByIndexRef(ExecuteEnv* env, uint64_t tenant_hash, const IndexRef& ref,
+                           ContextEvent* event, bool* found) {
+    *found = false;
+    if (ref.primary_node_hash() == 0 || ref.primary_event_time_ms() == 0 ||
+        ref.event_id_hash() == 0) {
+        return Status::OK();
+    }
+    const std::string key = EventKey(tenant_hash, ref.primary_node_hash());
+    ObjectHandle<model::ContextEventModel> object;
+    Status status = env->GetObject(key, &object);
+    if (status.IsNotFound()) {
+        return Status::OK();
+    }
+    if (!status.ok()) {
+        return status;
+    }
+    const uint64_t timeline_key = TimelineKey(ref.primary_event_time_ms(),
+                                              ref.event_id_hash());
+    object->OrSet().Query(timeline_key, timeline_key + 1, 1,
+                          [event, found](const uint64_t,
+                                         const std::string& value) {
+                              ContextEvent parsed;
+                              if (parsed.ParseFromString(value)) {
+                                  *event = std::move(parsed);
+                                  *found = true;
+                              }
+                          });
+    return Status::OK();
+}
+
+Status CollectCandidateNodes(ExecuteEnv* env, const RetrieveContextPackRequest& request,
+                             std::set<uint64_t>* selected_node_hashes,
+                             NativeRetrieveTelemetry* telemetry) {
+    selected_node_hashes->insert(request.start_node_hash());
+    if (request.query_vector_size() == 0) {
+        const uint64_t start_ms = NowSteadyMs();
+        const uint32_t max_depth = request.max_depth() == 0 ? 2 : request.max_depth();
+        const uint32_t child_limit =
+            TraversalLimit(request.max_children_scored_per_parent(),
+                           kDefaultTraversalChildren, kMaxChildrenScoredPerParent);
+        std::vector<uint64_t> frontier;
+        frontier.push_back(request.start_node_hash());
+        for (uint32_t depth = 0; depth < max_depth && !frontier.empty(); ++depth) {
+            std::vector<uint64_t> next_frontier;
+            for (uint64_t parent_hash : frontier) {
+                std::vector<ContextChildRef> children;
+                Status status = QueryChildrenInternal(env, request.tenant_hash(), parent_hash,
+                                                      child_limit, &children, nullptr);
+                if (!status.ok()) {
+                    return status;
+                }
+                for (const auto& child : children) {
+                    if (selected_node_hashes->insert(child.child_hash()).second) {
+                        next_frontier.push_back(child.child_hash());
+                    }
+                    if (static_cast<uint32_t>(selected_node_hashes->size()) >=
+                        TraversalLimit(request.max_candidate_nodes(),
+                                       kDefaultTraversalCandidates, kMaxLimit)) {
+                        break;
+                    }
+                }
+                if (static_cast<uint32_t>(selected_node_hashes->size()) >=
+                    TraversalLimit(request.max_candidate_nodes(),
+                                   kDefaultTraversalCandidates, kMaxLimit)) {
+                    break;
+                }
+            }
+            frontier.swap(next_frontier);
+        }
+        telemetry->set_node_traversal_ms(ElapsedSinceMs(start_ms));
+        return Status::OK();
+    }
+    const uint64_t start_ms = NowSteadyMs();
+    TraverseContextTreeRequest traverse_request;
+    traverse_request.set_tenant_hash(request.tenant_hash());
+    traverse_request.set_start_node_hash(request.start_node_hash());
+    for (float value : request.query_vector()) {
+        traverse_request.add_query_vector(value);
+    }
+    traverse_request.set_max_depth(request.max_depth());
+    traverse_request.set_top_k_per_depth(request.top_k_per_depth());
+    traverse_request.set_max_children_scored_per_parent(
+        request.max_children_scored_per_parent());
+    traverse_request.set_max_candidate_nodes(request.max_candidate_nodes());
+    traverse_request.set_leaf_only(request.leaf_only());
+    TraverseContextTreeResponse traverse_response;
+    Status status = TraverseContextTree(env, traverse_request, &traverse_response);
+    if (!status.ok()) {
+        return status;
+    }
+    for (const auto& node : traverse_response.nodes()) {
+        selected_node_hashes->insert(node.node_hash());
+    }
+    telemetry->set_node_traversal_ms(ElapsedSinceMs(start_ms));
+    return Status::OK();
+}
+
+Status AddCandidateFromEvent(const ContextEvent& event, uint64_t node_hash,
+                             const std::string& matched_index_name,
+                             std::map<std::string, NativeContextCandidate>* candidates) {
+    const std::string key =
+        CandidateKey(node_hash, EventPrimaryTime(event), event.event_id_hash());
+    NativeContextCandidate& candidate = (*candidates)[key];
+    if (candidate.event.event_id_hash() == 0) {
+        candidate.event = event;
+        candidate.node_hash = node_hash;
+    }
+    if (!matched_index_name.empty()) {
+        candidate.matched_index_names.insert(matched_index_name);
+    }
+    return Status::OK();
+}
+
+Status CollectIndexCandidates(ExecuteEnv* env, const RetrieveContextPackRequest& request,
+                              const std::set<uint64_t>& selected_node_hashes,
+                              std::map<std::string, NativeContextCandidate>* candidates,
+                              NativeRetrieveTelemetry* telemetry) {
+    const uint64_t start_ms = NowSteadyMs();
+    for (const auto& filter : request.index_filters()) {
+        QueryIndexRequest index_request;
+        index_request.set_tenant_hash(request.tenant_hash());
+        index_request.set_index_name(filter.index_name());
+        index_request.set_index_value_hash(filter.index_value_hash());
+        index_request.set_scope_hash(request.scope_hash());
+        index_request.set_start_time_ms(filter.start_time_ms() == 0 ? request.start_time_ms()
+                                                                    : filter.start_time_ms());
+        index_request.set_end_time_ms(filter.end_time_ms() == 0 ? request.end_time_ms()
+                                                                : filter.end_time_ms());
+        index_request.set_limit(filter.limit());
+        QueryIndexResponse index_response;
+        Status status = QueryIndex(env, index_request, &index_response);
+        if (!status.ok()) {
+            return status;
+        }
+        telemetry->set_index_postings_read(telemetry->index_postings_read() +
+                                           index_response.refs_size());
+        for (const auto& ref : index_response.refs()) {
+            if (!selected_node_hashes.empty() &&
+                selected_node_hashes.find(ref.primary_node_hash()) ==
+                    selected_node_hashes.end()) {
+                telemetry->set_dropped_by_placement(telemetry->dropped_by_placement() + 1);
+                continue;
+            }
+            ContextEvent event;
+            bool found = false;
+            status = LoadEventByIndexRef(env, request.tenant_hash(), ref, &event, &found);
+            if (!status.ok()) {
+                return status;
+            }
+            telemetry->set_candidate_fetch_count(telemetry->candidate_fetch_count() + 1);
+            if (!found) {
+                telemetry->set_dropped_by_missing_record(
+                    telemetry->dropped_by_missing_record() + 1);
+                continue;
+            }
+            status = AddCandidateFromEvent(event, ref.primary_node_hash(), filter.index_name(),
+                                           candidates);
+            if (!status.ok()) {
+                return status;
+            }
+        }
+    }
+    telemetry->set_index_prefilter_ms(ElapsedSinceMs(start_ms));
+    return Status::OK();
+}
+
+Status CollectNodeEventCandidates(ExecuteEnv* env, const RetrieveContextPackRequest& request,
+                                  const std::set<uint64_t>& selected_node_hashes,
+                                  std::map<std::string, NativeContextCandidate>* candidates,
+                                  NativeRetrieveTelemetry* telemetry) {
+    const uint64_t start_ms = NowSteadyMs();
+    const uint32_t per_node_limit = TraversalLimit(request.max_candidate_nodes(),
+                                                   kDefaultTraversalCandidates, kMaxLimit);
+    for (uint64_t node_hash : selected_node_hashes) {
+        QueryEventsRequest events_request;
+        events_request.set_tenant_hash(request.tenant_hash());
+        events_request.set_node_hash(node_hash);
+        events_request.set_start_time_ms(request.start_time_ms());
+        events_request.set_end_time_ms(request.end_time_ms());
+        events_request.set_limit(per_node_limit);
+        events_request.set_as_of_ms(request.as_of_ms() == 0 ? request.end_time_ms()
+                                                            : request.as_of_ms());
+        events_request.set_decay_half_life_ms(request.decay_half_life_ms());
+        events_request.set_min_decayed_score(request.min_score());
+        events_request.set_rank_by_decayed_score(request.decay_half_life_ms() != 0);
+        QueryEventsResponse events_response;
+        Status status = QueryEvents(env, events_request, &events_response);
+        if (!status.ok()) {
+            return status;
+        }
+        telemetry->set_scanned_records(telemetry->scanned_records() +
+                                       events_response.events_size());
+        for (const auto& event : events_response.events()) {
+            status = AddCandidateFromEvent(event, node_hash, "", candidates);
+            if (!status.ok()) {
+                return status;
+            }
+        }
+    }
+    telemetry->set_candidate_fetch_ms(ElapsedSinceMs(start_ms));
+    return Status::OK();
+}
+
+float NativeCandidateScore(const RetrieveContextPackRequest& request,
+                           const NativeContextCandidate& candidate) {
+    QueryEventsRequest score_request;
+    score_request.set_end_time_ms(request.end_time_ms());
+    score_request.set_as_of_ms(request.as_of_ms() == 0 ? request.end_time_ms()
+                                                       : request.as_of_ms());
+    score_request.set_decay_half_life_ms(request.decay_half_life_ms());
+    const float decayed = DecayedEventScore(score_request, candidate.event);
+    const float index_boost = candidate.matched_index_names.empty() ? 0.0f : 0.15f;
+    return std::min(1.0f, decayed + index_boost);
+}
+
+Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& request,
+                           RetrieveContextPackResponse* response) {
+    Status status = ValidateRetrieveContextPackRequest(request);
+    if (!status.ok()) {
+        return status;
+    }
+    NativeRetrieveTelemetry* telemetry = response->mutable_telemetry();
+    const uint64_t query_plan_start_ms = NowSteadyMs();
+    telemetry->set_broad_scan_used(false);
+    telemetry->set_broad_scan_blocked(!request.allow_broad_scan_fallback());
+    telemetry->set_candidate_cache_hit(false);
+
+    std::set<uint64_t> selected_node_hashes;
+    status = CollectCandidateNodes(env, request, &selected_node_hashes, telemetry);
+    if (!status.ok()) {
+        return status;
+    }
+    telemetry->set_placement_partitions_touched(
+        static_cast<uint32_t>(selected_node_hashes.size()));
+    telemetry->set_query_plan_ms(ElapsedSinceMs(query_plan_start_ms));
+
+    std::map<std::string, NativeContextCandidate> candidates;
+    status = CollectIndexCandidates(env, request, selected_node_hashes, &candidates,
+                                    telemetry);
+    if (!status.ok()) {
+        return status;
+    }
+    if (request.index_filters_size() == 0) {
+        status = CollectNodeEventCandidates(env, request, selected_node_hashes, &candidates,
+                                            telemetry);
+        if (!status.ok()) {
+            return status;
+        }
+    }
+
+    const uint64_t score_start_ms = NowSteadyMs();
+    std::vector<NativeContextCandidate> scored_candidates;
+    scored_candidates.reserve(candidates.size());
+    for (auto& pair : candidates) {
+        NativeContextCandidate candidate = std::move(pair.second);
+        candidate.score = NativeCandidateScore(request, candidate);
+        if (candidate.score < request.min_score()) {
+            telemetry->set_dropped_by_score_threshold(
+                telemetry->dropped_by_score_threshold() + 1);
+            continue;
+        }
+        scored_candidates.push_back(std::move(candidate));
+    }
+    std::sort(scored_candidates.begin(), scored_candidates.end(),
+              [](const NativeContextCandidate& left, const NativeContextCandidate& right) {
+                  if (left.score != right.score) {
+                      return left.score > right.score;
+                  }
+                  if (EventPrimaryTime(left.event) != EventPrimaryTime(right.event)) {
+                      return EventPrimaryTime(left.event) > EventPrimaryTime(right.event);
+                  }
+                  return left.event.event_id_hash() < right.event.event_id_hash();
+              });
+    telemetry->set_score_ms(ElapsedSinceMs(score_start_ms));
+
+    const uint64_t pack_start_ms = NowSteadyMs();
+    const uint32_t max_refs = TraversalLimit(request.max_selected_refs(), 20, kMaxLimit);
+    const uint32_t max_tokens = request.max_context_tokens() == 0 ? 4096
+                                                                 : request.max_context_tokens();
+    uint32_t used_tokens = 0;
+    for (const auto& candidate : scored_candidates) {
+        if (static_cast<uint32_t>(response->selected_refs_size()) >= max_refs) {
+            telemetry->set_dropped_by_token_budget(
+                telemetry->dropped_by_token_budget() + 1);
+            continue;
+        }
+        const uint32_t tokens = EstimateTokens(candidate.event.text());
+        if (used_tokens + tokens > max_tokens) {
+            telemetry->set_dropped_by_token_budget(
+                telemetry->dropped_by_token_budget() + 1);
+            continue;
+        }
+        ContextPackRef* ref = response->add_selected_refs();
+        ref->set_ref_type("event");
+        ref->set_ref_hash(candidate.event.event_id_hash());
+        ref->set_node_hash(candidate.node_hash);
+        ref->set_event_time_ms(EventPrimaryTime(candidate.event));
+        ref->set_score(candidate.score);
+        ref->set_token_estimate(tokens);
+        ref->set_text(candidate.event.text());
+        for (const auto& index_name : candidate.matched_index_names) {
+            ref->add_matched_index_names(index_name);
+        }
+        used_tokens += tokens;
+    }
+    telemetry->set_selected_refs(response->selected_refs_size());
+    telemetry->set_dropped_refs(static_cast<uint32_t>(scored_candidates.size()) -
+                                response->selected_refs_size() +
+                                telemetry->dropped_by_missing_record() +
+                                telemetry->dropped_by_placement() +
+                                telemetry->dropped_by_score_threshold());
+    telemetry->set_pack_ms(ElapsedSinceMs(pack_start_ms));
+    telemetry->set_audit_ms(0);
+    if (response->selected_refs_size() == 0) {
+        response->add_warnings("native_context_pack_selected_refs_empty");
+    }
+    return Status::OK();
+}
+REGISTER_FUNCTION(CONTEXT, RETRIEVE_CONTEXT_PACK, RetrieveContextPack, Read);
 
 Status WritePackAudit(ExecuteEnv* env, const WritePackAuditRequest& request,
                       WritePackAuditResponse* response) {

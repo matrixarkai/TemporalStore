@@ -702,6 +702,173 @@ TEST_F(ContextModuleTest, WriteExtractedEventCanDisableDefaultIndexes) {
     }
 }
 
+TEST_F(ContextModuleTest, RetrieveContextPackUsesCompactIndexPostings) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kNode = 8896;
+    constexpr uint64_t kScope = 3001;
+    constexpr uint64_t kIngestionTime = 1781500000000ULL;
+    constexpr uint64_t kEventId = 446;
+    constexpr uint64_t kApprovedStatus = 601;
+
+    {
+        context::WriteExtractedEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.96);
+        event->set_importance(0.88);
+        event->set_text("Finance approved the Project Aurora GPU procurement request.");
+        auto* indexes = request.mutable_indexes();
+        indexes->set_scope_hash(kScope);
+        indexes->set_status_hash(kApprovedStatus);
+
+        context::WriteExtractedEventResponse response;
+        Execute(context::WRITE_EXTRACTED_EVENT, "ctx-native-pack-index-write", request,
+                &response);
+        ASSERT_GE(response.written_index_count(), 1);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kNode);
+    request.set_scope_hash(kScope);
+    request.set_start_time_ms(kIngestionTime - 1);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_as_of_ms(kIngestionTime + 1);
+    request.set_max_context_tokens(64);
+    request.set_max_selected_refs(4);
+    request.set_min_score(0.1);
+    auto* filter = request.add_index_filters();
+    filter->set_index_name("status");
+    filter->set_index_value_hash(kApprovedStatus);
+    filter->set_start_time_ms(kIngestionTime - 1);
+    filter->set_end_time_ms(kIngestionTime + 1);
+    filter->set_limit(10);
+
+    context::RetrieveContextPackResponse response;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-pack-index", request, &response);
+    ASSERT_EQ(response.selected_refs_size(), 1);
+    ASSERT_EQ(response.selected_refs(0).ref_type(), "event");
+    ASSERT_EQ(response.selected_refs(0).ref_hash(), kEventId);
+    ASSERT_EQ(response.selected_refs(0).node_hash(), kNode);
+    ASSERT_EQ(response.selected_refs(0).matched_index_names_size(), 1);
+    ASSERT_EQ(response.selected_refs(0).matched_index_names(0), "status");
+    ASSERT_EQ(response.telemetry().selected_refs(), 1);
+    ASSERT_EQ(response.telemetry().index_postings_read(), 1);
+    ASSERT_EQ(response.telemetry().candidate_fetch_count(), 1);
+    ASSERT_FALSE(response.telemetry().broad_scan_used());
+    ASSERT_TRUE(response.telemetry().broad_scan_blocked());
+    ASSERT_GT(response.telemetry().placement_partitions_touched(), 0);
+}
+
+TEST_F(ContextModuleTest, RetrieveContextPackReportsPlacementDrops) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kNode = 8897;
+    constexpr uint64_t kOtherNode = 8898;
+    constexpr uint64_t kScope = 3001;
+    constexpr uint64_t kIngestionTime = 1781500000000ULL;
+    constexpr uint64_t kEventId = 447;
+    constexpr uint64_t kApprovedStatus = 601;
+
+    {
+        context::WriteExtractedEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kOtherNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.96);
+        event->set_importance(0.88);
+        event->set_text("This approval belongs to another placement node.");
+        auto* indexes = request.mutable_indexes();
+        indexes->set_scope_hash(kScope);
+        indexes->set_status_hash(kApprovedStatus);
+
+        context::WriteExtractedEventResponse response;
+        Execute(context::WRITE_EXTRACTED_EVENT, "ctx-native-pack-placement-write", request,
+                &response);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kNode);
+    request.set_scope_hash(kScope);
+    request.set_start_time_ms(kIngestionTime - 1);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_max_context_tokens(64);
+    request.set_max_selected_refs(4);
+    auto* filter = request.add_index_filters();
+    filter->set_index_name("status");
+    filter->set_index_value_hash(kApprovedStatus);
+    filter->set_start_time_ms(kIngestionTime - 1);
+    filter->set_end_time_ms(kIngestionTime + 1);
+    filter->set_limit(10);
+
+    context::RetrieveContextPackResponse response;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-pack-placement", request, &response);
+    ASSERT_EQ(response.selected_refs_size(), 0);
+    ASSERT_EQ(response.telemetry().dropped_by_placement(), 1);
+    ASSERT_EQ(response.telemetry().selected_refs(), 0);
+    ASSERT_FALSE(response.telemetry().broad_scan_used());
+    ASSERT_EQ(response.warnings_size(), 1);
+}
+
+TEST_F(ContextModuleTest, RetrieveContextPackTraversesChildrenWithoutQueryVector) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kParentNode = 8899;
+    constexpr uint64_t kChildNode = 8900;
+    constexpr uint64_t kIngestionTime = 1781500000100ULL;
+    constexpr uint64_t kEventId = 448;
+
+    {
+        context::UpsertChildRefRequest request;
+        request.set_tenant_hash(kTenant);
+        auto* ref = request.mutable_ref();
+        ref->set_parent_hash(kParentNode);
+        ref->set_child_hash(kChildNode);
+        ref->set_updated_at_ms(kIngestionTime);
+        context::UpsertChildRefResponse response;
+        Execute(context::UPSERT_CHILD_REF, "ctx-native-pack-child-ref", request, &response);
+    }
+
+    {
+        context::WriteEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kChildNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.9);
+        event->set_importance(0.8);
+        event->set_text("Child conversation node contains the retrieval evidence.");
+        context::WriteEventResponse response;
+        Execute(context::WRITE_EVENT, "ctx-native-pack-child-event", request, &response);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kParentNode);
+    request.set_start_time_ms(kIngestionTime - 1);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_max_depth(2);
+    request.set_max_candidate_nodes(8);
+    request.set_max_context_tokens(64);
+    request.set_max_selected_refs(4);
+
+    context::RetrieveContextPackResponse response;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-pack-child", request, &response);
+    ASSERT_EQ(response.selected_refs_size(), 1);
+    ASSERT_EQ(response.selected_refs(0).ref_hash(), kEventId);
+    ASSERT_EQ(response.selected_refs(0).node_hash(), kChildNode);
+    ASSERT_GE(response.telemetry().placement_partitions_touched(), 2);
+    ASSERT_FALSE(response.telemetry().broad_scan_used());
+}
+
 TEST_F(ContextModuleTest, FirstWriteOnlyKeepsOriginalEventPayload) {
     constexpr uint64_t kTenant = 1001;
     constexpr uint64_t kNode = 8891;

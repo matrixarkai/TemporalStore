@@ -28,6 +28,7 @@ enum Function {
     COMPRESS_EVENTS = 22;
     WRITE_EXTRACTED_EVENT = 23;
     QUERY_NODE_CONTEXT = 24;
+    RETRIEVE_CONTEXT_PACK = 25;
 }
 
 enum InternalContextIndex {
@@ -243,6 +244,79 @@ message QueryIndexRequest {
 message QueryIndexResponse {
     string object_key = 1;
     repeated IndexRef refs = 2;
+}
+
+message ContextIndexFilter {
+    string index_name = 1;
+    uint64 index_value_hash = 2;
+    uint64 start_time_ms = 3;
+    uint64 end_time_ms = 4;
+    uint32 limit = 5;
+}
+
+message ContextPackRef {
+    string ref_type = 1;
+    uint64 ref_hash = 2;
+    uint64 node_hash = 3;
+    uint64 event_time_ms = 4;
+    float score = 5;
+    uint32 token_estimate = 6;
+    string text = 7;
+    repeated string matched_index_names = 8;
+}
+
+message NativeRetrieveTelemetry {
+    uint32 selected_refs = 1;
+    uint32 dropped_refs = 2;
+    uint32 scanned_records = 3;
+    uint32 index_postings_read = 4;
+    uint32 candidate_fetch_count = 5;
+    uint32 placement_partitions_touched = 6;
+    bool candidate_cache_hit = 7;
+    bool broad_scan_used = 8;
+    bool broad_scan_blocked = 9;
+    uint32 dropped_by_scope = 10;
+    uint32 dropped_by_placement = 11;
+    uint32 dropped_by_index_filter = 12;
+    uint32 dropped_by_stale_version = 13;
+    uint32 dropped_by_score_threshold = 14;
+    uint32 dropped_by_token_budget = 15;
+    uint32 dropped_by_missing_record = 16;
+    uint64 query_plan_ms = 17;
+    uint64 node_traversal_ms = 18;
+    uint64 index_prefilter_ms = 19;
+    uint64 candidate_fetch_ms = 20;
+    uint64 score_ms = 21;
+    uint64 pack_ms = 22;
+    uint64 audit_ms = 23;
+}
+
+message RetrieveContextPackRequest {
+    uint64 tenant_hash = 1;
+    uint64 start_node_hash = 2;
+    uint64 scope_hash = 3;
+    repeated float query_vector = 4;
+    uint64 start_time_ms = 5;
+    uint64 end_time_ms = 6;
+    uint64 as_of_ms = 7;
+    uint32 max_context_tokens = 8;
+    uint32 max_selected_refs = 9;
+    float min_score = 10;
+    uint64 decay_half_life_ms = 11;
+    uint32 max_depth = 12;
+    uint32 top_k_per_depth = 13;
+    uint32 max_children_scored_per_parent = 14;
+    uint32 max_candidate_nodes = 15;
+    bool leaf_only = 16;
+    repeated ContextIndexFilter index_filters = 17;
+    bool allow_broad_scan_fallback = 18;
+}
+
+message RetrieveContextPackResponse {
+    repeated ContextPackRef selected_refs = 1;
+    NativeRetrieveTelemetry telemetry = 2;
+    bool partial = 3;
+    repeated string warnings = 4;
 }
 
 message WritePackAuditRequest {

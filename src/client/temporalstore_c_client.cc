@@ -435,6 +435,29 @@ int temporalstore_matrixark_batch_append_records(temporalstore_client_t* client,
     return Finish(status, error_message);
 }
 
+int temporalstore_matrixark_retrieve_context_pack(temporalstore_client_t* client,
+                                                  const char* request_json,
+                                                  char** response_json,
+                                                  char** error_message) {
+    if (response_json == nullptr) {
+        return Finish(NullError("response_json"), error_message);
+    }
+    *response_json = nullptr;
+    bcache2::Status status = CheckClient(client);
+    std::string out;
+    if (status.ok()) {
+        status = client->impl->MatrixArkRetrieveContextPack(
+            request_json ? request_json : "", &out);
+    }
+    if (status.ok()) {
+        *response_json = CopyCString(out);
+        if (*response_json == nullptr) {
+            status = bcache2::Status::ResourceExhausted("failed to allocate response_json");
+        }
+    }
+    return Finish(status, error_message);
+}
+
 int temporalstore_smembers(temporalstore_client_t* client, const char* key,
                            temporalstore_string_array_t* members, char** error_message) {
     if (members == nullptr) {

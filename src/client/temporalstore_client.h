@@ -168,6 +168,8 @@ class TemporalStoreClient {
     Status MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
                                        const std::string& count_key = "",
                                        const std::string& count_value = "");
+    Status MatrixArkRetrieveContextPack(const std::string& request_json,
+                                        std::string* response_json);
 
     Status SAdd(const std::string& key, const std::string& member);
     Status SMembers(const std::string& key, std::vector<std::string>* members);

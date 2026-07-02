@@ -1,8 +1,10 @@
 #include "client/temporalstore_client.h"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <mutex>
 #include <shared_mutex>
 #include <sstream>
@@ -15,6 +17,7 @@
 #include "common/controller.h"
 #include "common/sync_closure.h"
 #include "extension/feature/interface.pb.h"
+#include "extension/context/interface.pb.h"
 #include "extension/hash/interface.pb.h"
 #include "extension/ips/interface.pb.h"
 #include "extension/modules.pb.h"
@@ -44,6 +47,434 @@ Status ValidateOutput(const void* output, const char* name) {
         return Status::InvalidArgument(std::string(name) + " is null");
     }
     return Status::OK();
+}
+
+std::string JsonEscape(const std::string& value) {
+    std::ostringstream os;
+    for (unsigned char ch : value) {
+        switch (ch) {
+        case '"':
+            os << "\\\"";
+            break;
+        case '\\':
+            os << "\\\\";
+            break;
+        case '\b':
+            os << "\\b";
+            break;
+        case '\f':
+            os << "\\f";
+            break;
+        case '\n':
+            os << "\\n";
+            break;
+        case '\r':
+            os << "\\r";
+            break;
+        case '\t':
+            os << "\\t";
+            break;
+        default:
+            if (ch < 0x20) {
+                os << "\\u00";
+                const char* digits = "0123456789abcdef";
+                os << digits[(ch >> 4) & 0xF] << digits[ch & 0xF];
+            } else {
+                os << static_cast<char>(ch);
+            }
+            break;
+        }
+    }
+    return os.str();
+}
+
+size_t FindJsonValueStart(const std::string& json, const std::string& field) {
+    const std::string needle = "\"" + field + "\"";
+    const size_t name_pos = json.find(needle);
+    if (name_pos == std::string::npos) {
+        return std::string::npos;
+    }
+    const size_t colon_pos = json.find(':', name_pos + needle.size());
+    if (colon_pos == std::string::npos) {
+        return std::string::npos;
+    }
+    size_t pos = colon_pos + 1;
+    while (pos < json.size() && std::isspace(static_cast<unsigned char>(json[pos]))) {
+        ++pos;
+    }
+    return pos;
+}
+
+bool ParseJsonUint64(const std::string& json, const std::string& field, uint64_t* value) {
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || value == nullptr) {
+        return false;
+    }
+    size_t pos = start;
+    const bool quoted = pos < json.size() && json[pos] == '"';
+    if (quoted) {
+        ++pos;
+    }
+    char* end = nullptr;
+    const uint64_t parsed = std::strtoull(json.c_str() + pos, &end, 10);
+    if (end == json.c_str() + pos) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
+
+bool ParseJsonDouble(const std::string& json, const std::string& field, double* value) {
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || value == nullptr) {
+        return false;
+    }
+    size_t pos = start;
+    if (pos < json.size() && json[pos] == '"') {
+        ++pos;
+    }
+    char* end = nullptr;
+    const double parsed = std::strtod(json.c_str() + pos, &end);
+    if (end == json.c_str() + pos) {
+        return false;
+    }
+    *value = parsed;
+    return true;
+}
+
+bool ParseJsonBool(const std::string& json, const std::string& field, bool* value) {
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || value == nullptr) {
+        return false;
+    }
+    if (json.compare(start, 4, "true") == 0) {
+        *value = true;
+        return true;
+    }
+    if (json.compare(start, 5, "false") == 0) {
+        *value = false;
+        return true;
+    }
+    uint64_t numeric = 0;
+    if (ParseJsonUint64(json, field, &numeric)) {
+        *value = numeric != 0;
+        return true;
+    }
+    return false;
+}
+
+bool ParseJsonString(const std::string& json, const std::string& field, std::string* value) {
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || value == nullptr || start >= json.size() ||
+        json[start] != '"') {
+        return false;
+    }
+    std::string out;
+    for (size_t pos = start + 1; pos < json.size(); ++pos) {
+        const char ch = json[pos];
+        if (ch == '"') {
+            *value = out;
+            return true;
+        }
+        if (ch == '\\' && pos + 1 < json.size()) {
+            const char escaped = json[++pos];
+            switch (escaped) {
+            case '"':
+            case '\\':
+            case '/':
+                out.push_back(escaped);
+                break;
+            case 'b':
+                out.push_back('\b');
+                break;
+            case 'f':
+                out.push_back('\f');
+                break;
+            case 'n':
+                out.push_back('\n');
+                break;
+            case 'r':
+                out.push_back('\r');
+                break;
+            case 't':
+                out.push_back('\t');
+                break;
+            default:
+                out.push_back(escaped);
+                break;
+            }
+        } else {
+            out.push_back(ch);
+        }
+    }
+    return false;
+}
+
+void ParseJsonFloatArray(const std::string& json, const std::string& field,
+                         google::protobuf::RepeatedField<float>* values) {
+    if (values == nullptr) {
+        return;
+    }
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || start >= json.size() || json[start] != '[') {
+        return;
+    }
+    size_t pos = start + 1;
+    while (pos < json.size() && json[pos] != ']') {
+        while (pos < json.size() &&
+               (std::isspace(static_cast<unsigned char>(json[pos])) || json[pos] == ',')) {
+            ++pos;
+        }
+        char* end = nullptr;
+        const double parsed = std::strtod(json.c_str() + pos, &end);
+        if (end == json.c_str() + pos) {
+            break;
+        }
+        values->Add(static_cast<float>(parsed));
+        pos = static_cast<size_t>(end - json.c_str());
+    }
+}
+
+std::vector<std::string> ExtractJsonObjectsFromArray(const std::string& json,
+                                                     const std::string& field) {
+    std::vector<std::string> objects;
+    const size_t start = FindJsonValueStart(json, field);
+    if (start == std::string::npos || start >= json.size() || json[start] != '[') {
+        return objects;
+    }
+    int depth = 0;
+    size_t object_start = std::string::npos;
+    bool in_string = false;
+    bool escaped = false;
+    for (size_t pos = start + 1; pos < json.size(); ++pos) {
+        const char ch = json[pos];
+        if (in_string) {
+            if (escaped) {
+                escaped = false;
+            } else if (ch == '\\') {
+                escaped = true;
+            } else if (ch == '"') {
+                in_string = false;
+            }
+            continue;
+        }
+        if (ch == '"') {
+            in_string = true;
+            continue;
+        }
+        if (ch == '{') {
+            if (depth == 0) {
+                object_start = pos;
+            }
+            ++depth;
+        } else if (ch == '}') {
+            --depth;
+            if (depth == 0 && object_start != std::string::npos) {
+                objects.push_back(json.substr(object_start, pos - object_start + 1));
+                object_start = std::string::npos;
+            }
+        } else if (ch == ']' && depth == 0) {
+            break;
+        }
+    }
+    return objects;
+}
+
+void ApplyNativeRetrieveDefaults(const std::string& json,
+                                 ::bcache2::context::RetrieveContextPackRequest* request) {
+    uint64_t uint_value = 0;
+    double double_value = 0.0;
+    bool bool_value = false;
+    if (ParseJsonUint64(json, "tenant_hash", &uint_value)) {
+        request->set_tenant_hash(uint_value);
+    }
+    if (ParseJsonUint64(json, "start_node_hash", &uint_value) ||
+        ParseJsonUint64(json, "node_hash", &uint_value)) {
+        request->set_start_node_hash(uint_value);
+    }
+    if (ParseJsonUint64(json, "scope_hash", &uint_value)) {
+        request->set_scope_hash(uint_value);
+    }
+    if (ParseJsonUint64(json, "start_time_ms", &uint_value)) {
+        request->set_start_time_ms(uint_value);
+    }
+    if (ParseJsonUint64(json, "end_time_ms", &uint_value) ||
+        ParseJsonUint64(json, "reference_time_ms", &uint_value)) {
+        request->set_end_time_ms(uint_value);
+    }
+    if (ParseJsonUint64(json, "as_of_ms", &uint_value) ||
+        ParseJsonUint64(json, "reference_time_ms", &uint_value)) {
+        request->set_as_of_ms(uint_value);
+    }
+    if (ParseJsonUint64(json, "max_context_tokens", &uint_value)) {
+        request->set_max_context_tokens(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "max_selected_refs", &uint_value)) {
+        request->set_max_selected_refs(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonDouble(json, "min_score", &double_value)) {
+        request->set_min_score(static_cast<float>(double_value));
+    }
+    if (ParseJsonUint64(json, "decay_half_life_ms", &uint_value)) {
+        request->set_decay_half_life_ms(uint_value);
+    }
+    if (ParseJsonUint64(json, "max_depth", &uint_value)) {
+        request->set_max_depth(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "top_k_per_depth", &uint_value) ||
+        ParseJsonUint64(json, "top_k_per_layer", &uint_value)) {
+        request->set_top_k_per_depth(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "max_children_scored_per_parent", &uint_value)) {
+        request->set_max_children_scored_per_parent(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "max_candidate_nodes", &uint_value)) {
+        request->set_max_candidate_nodes(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonBool(json, "leaf_only", &bool_value)) {
+        request->set_leaf_only(bool_value);
+    }
+    if (ParseJsonBool(json, "allow_broad_scan_fallback", &bool_value)) {
+        request->set_allow_broad_scan_fallback(bool_value);
+    }
+    ParseJsonFloatArray(json, "query_vector", request->mutable_query_vector());
+    if (request->start_time_ms() == 0) {
+        request->set_start_time_ms(1);
+    }
+    if (request->end_time_ms() == 0) {
+        request->set_end_time_ms(request->start_time_ms());
+    }
+    if (request->as_of_ms() == 0) {
+        request->set_as_of_ms(request->end_time_ms());
+    }
+
+    for (const std::string& object : ExtractJsonObjectsFromArray(json, "index_filters")) {
+        auto* filter = request->add_index_filters();
+        std::string index_name;
+        if (ParseJsonString(object, "index_name", &index_name)) {
+            filter->set_index_name(index_name);
+        }
+        if (ParseJsonUint64(object, "index_value_hash", &uint_value)) {
+            filter->set_index_value_hash(uint_value);
+        }
+        if (ParseJsonUint64(object, "start_time_ms", &uint_value)) {
+            filter->set_start_time_ms(uint_value);
+        }
+        if (ParseJsonUint64(object, "end_time_ms", &uint_value)) {
+            filter->set_end_time_ms(uint_value);
+        }
+        if (ParseJsonUint64(object, "limit", &uint_value)) {
+            filter->set_limit(static_cast<uint32_t>(uint_value));
+        }
+    }
+}
+
+std::string RenderContextPackResponseJson(
+    const std::string& request_json,
+    const ::bcache2::context::RetrieveContextPackResponse& response) {
+    const auto& telemetry = response.telemetry();
+    std::ostringstream os;
+    std::string scope_key;
+    ParseJsonString(request_json, "scope_key", &scope_key);
+    os << "{";
+    os << "\"native_context_pack\":true,";
+    os << "\"context_pack_assembly\":\"native_cpp_direct\",";
+    os << "\"selected_refs\":[";
+    for (int i = 0; i < response.selected_refs_size(); ++i) {
+        const auto& ref = response.selected_refs(i);
+        if (i != 0) {
+            os << ",";
+        }
+        os << "{";
+        os << "\"ref_type\":\"" << JsonEscape(ref.ref_type()) << "\",";
+        os << "\"ref_hash\":" << ref.ref_hash() << ",";
+        os << "\"node_hash\":" << ref.node_hash() << ",";
+        os << "\"event_time_ms\":" << ref.event_time_ms() << ",";
+        os << "\"score\":" << ref.score() << ",";
+        os << "\"token_estimate\":" << ref.token_estimate() << ",";
+        os << "\"text\":\"" << JsonEscape(ref.text()) << "\"";
+        if (ref.matched_index_names_size() > 0) {
+            os << ",\"matched_index_names\":[";
+            for (int j = 0; j < ref.matched_index_names_size(); ++j) {
+                if (j != 0) {
+                    os << ",";
+                }
+                os << "\"" << JsonEscape(ref.matched_index_names(j)) << "\"";
+            }
+            os << "]";
+        }
+        os << "}";
+    }
+    os << "],";
+    os << "\"remote_context_refs\":[";
+    for (int i = 0; i < response.selected_refs_size(); ++i) {
+        const auto& ref = response.selected_refs(i);
+        if (i != 0) {
+            os << ",";
+        }
+        os << "{";
+        os << "\"type\":\"" << JsonEscape(ref.ref_type()) << "\",";
+        os << "\"ref_hash\":" << ref.ref_hash() << ",";
+        os << "\"node_hash\":" << ref.node_hash() << ",";
+        os << "\"score\":" << ref.score() << ",";
+        os << "\"tokens\":" << ref.token_estimate() << ",";
+        os << "\"content\":\"" << JsonEscape(ref.text()) << "\"";
+        os << "}";
+    }
+    os << "],";
+    os << "\"retrieval_metrics\":{";
+    os << "\"query_plan_ms\":" << telemetry.query_plan_ms() << ",";
+    os << "\"node_traversal_ms\":" << telemetry.node_traversal_ms() << ",";
+    os << "\"index_prefilter_ms\":" << telemetry.index_prefilter_ms() << ",";
+    os << "\"candidate_fetch_ms\":" << telemetry.candidate_fetch_ms() << ",";
+    os << "\"score_ms\":" << telemetry.score_ms() << ",";
+    os << "\"pack_ms\":" << telemetry.pack_ms() << ",";
+    os << "\"audit_ms\":" << telemetry.audit_ms() << ",";
+    os << "\"append_queue_wait_ms\":0,";
+    os << "\"append_engine_ms\":0,";
+    os << "\"selected_refs\":" << telemetry.selected_refs() << ",";
+    os << "\"dropped_refs\":" << telemetry.dropped_refs() << ",";
+    os << "\"scanned_records\":" << telemetry.scanned_records() << ",";
+    os << "\"index_postings_read\":" << telemetry.index_postings_read() << ",";
+    os << "\"candidate_fetch_count\":" << telemetry.candidate_fetch_count() << ",";
+    os << "\"candidate_cache_hit\":" << (telemetry.candidate_cache_hit() ? "true" : "false") << ",";
+    os << "\"placement_partitions_touched\":" << telemetry.placement_partitions_touched() << ",";
+    os << "\"broad_scan_used\":" << (telemetry.broad_scan_used() ? "true" : "false") << ",";
+    os << "\"broad_scan_blocked\":" << (telemetry.broad_scan_blocked() ? "true" : "false") << ",";
+    os << "\"native_pack_assembly\":true,";
+    os << "\"python_pack_fallback\":false,";
+    os << "\"candidate_cache_key_shape\":\"scope_key+node_hash+record_type+append_watermark+resource_version_watermark\",";
+    os << "\"drop_counters\":{";
+    os << "\"scope\":" << telemetry.dropped_by_scope() << ",";
+    os << "\"placement\":" << telemetry.dropped_by_placement() << ",";
+    os << "\"index_filter\":" << telemetry.dropped_by_index_filter() << ",";
+    os << "\"stale\":" << telemetry.dropped_by_stale_version() << ",";
+    os << "\"score_threshold\":" << telemetry.dropped_by_score_threshold() << ",";
+    os << "\"token_budget\":" << telemetry.dropped_by_token_budget() << ",";
+    os << "\"missing_record\":" << telemetry.dropped_by_missing_record();
+    os << "}";
+    os << "},";
+    os << "\"drop_counters\":{";
+    os << "\"scope\":" << telemetry.dropped_by_scope() << ",";
+    os << "\"placement\":" << telemetry.dropped_by_placement() << ",";
+    os << "\"index_filter\":" << telemetry.dropped_by_index_filter() << ",";
+    os << "\"stale\":" << telemetry.dropped_by_stale_version() << ",";
+    os << "\"score_threshold\":" << telemetry.dropped_by_score_threshold() << ",";
+    os << "\"token_budget\":" << telemetry.dropped_by_token_budget() << ",";
+    os << "\"missing_record\":" << telemetry.dropped_by_missing_record();
+    os << "},";
+    os << "\"partial\":" << (response.partial() ? "true" : "false") << ",";
+    os << "\"quality_warnings\":[";
+    for (int i = 0; i < response.warnings_size(); ++i) {
+        if (i != 0) {
+            os << ",";
+        }
+        os << "\"" << JsonEscape(response.warnings(i)) << "\"";
+    }
+    os << "],";
+    os << "\"scope_key\":\"" << JsonEscape(scope_key) << "\"";
+    os << "}";
+    return os.str();
 }
 
 bool IsRetryable(const Status& status) {
@@ -499,6 +930,48 @@ Status TemporalStoreClient::MatrixArkBatchAppendRecords(const std::vector<HashEn
         }
         return Status::OK();
     });
+}
+
+Status TemporalStoreClient::MatrixArkRetrieveContextPack(const std::string& request_json,
+                                                         std::string* response_json) {
+    RETURN_IF_STATUS_ERROR(CheckInitialized());
+    RETURN_IF_STATUS_ERROR(ValidateNotEmpty(request_json, "request_json"));
+    RETURN_IF_STATUS_ERROR(ValidateOutput(response_json, "response_json"));
+    RETURN_IF_STATUS_ERROR(
+        ValidateSize(request_json.size(), impl_->options.max_value_bytes, "request_json"));
+
+    ::bcache2::context::RetrieveContextPackRequest request;
+    ApplyNativeRetrieveDefaults(request_json, &request);
+    if (request.tenant_hash() == 0) {
+        return Status::InvalidArgument(
+            "matrixark native context pack requires tenant_hash");
+    }
+    if (request.start_node_hash() == 0) {
+        return Status::InvalidArgument(
+            "matrixark native context pack requires start_node_hash");
+    }
+
+    std::string scope_key;
+    ParseJsonString(request_json, "scope_key", &scope_key);
+    std::ostringstream route;
+    route << "context:";
+    if (!scope_key.empty()) {
+        route << scope_key;
+    } else if (request.scope_hash() != 0) {
+        route << request.scope_hash();
+    } else {
+        route << request.tenant_hash();
+    }
+    route << ":node=" << request.start_node_hash();
+
+    ::bcache2::context::RetrieveContextPackResponse response;
+    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::CONTEXT,
+                                             ::bcache2::context::RETRIEVE_CONTEXT_PACK,
+                                             route.str(), request, &response, false));
+    *response_json = RenderContextPackResponseJson(request_json, response);
+    RETURN_IF_STATUS_ERROR(
+        ValidateSize(response_json->size(), impl_->options.max_value_bytes, "response_json"));
+    return Status::OK();
 }
 
 Status TemporalStoreClient::SAdd(const std::string& key, const std::string& member) {
