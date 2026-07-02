@@ -167,6 +167,32 @@ class _NativeContextPackClient:
         }
 
 
+class _FailingNativeContextPackClient:
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.read_all_calls = 0
+
+    def get_string(self, key: str) -> str:
+        if key.endswith(":record_count"):
+            return "7"
+        return ""
+
+    def batch_hget(self, entries) -> list[dict]:
+        self.read_all_calls += 1
+        return []
+
+    def matrixark_retrieve_context_pack(self, request) -> dict:
+        if self.mode == "raise":
+            raise RuntimeError("native offline")
+        if self.mode == "raw_tables":
+            return {
+                "context_pack_id": "bad-native-pack",
+                "selected_refs": [],
+                "candidate_records": [{"record_type": "context_event", "text": "raw table"}],
+            }
+        return {"unexpected": True}
+
+
 class _AuditCaptureAdapter(mcp_local.MatrixArkLocalAdapter):
     def __post_init__(self) -> None:
         self.appended: list[dict] = []
@@ -1147,6 +1173,76 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertNotIn("selected_refs", result)
         self.assertEqual(result["retrieval_metrics"]["score_ms"], 5.5)
         self.assertEqual(result["retrieval_metrics"]["scanned_records"], 7)
+
+    def test_native_retrieve_failure_blocks_python_broad_scan_by_default(self) -> None:
+        client = _FailingNativeContextPackClient("raise")
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "include_retrieval_metrics": True,
+            }
+        )
+
+        self.assertEqual(result["context_pack_assembly"], "native_context_pack_blocked")
+        self.assertEqual(result["retrieval_metrics"]["native_api"], "matrixark_retrieve_context_pack")
+        self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])
+        self.assertFalse(result["retrieval_metrics"]["broad_scan_used"])
+        self.assertTrue(result["retrieval_metrics"]["broad_scan_blocked"])
+        self.assertEqual(result["retrieval_metrics"]["scanned_records"], 0)
+        self.assertEqual(client.read_all_calls, 0)
+        self.assertIn("quality_warnings", result)
+
+    def test_native_retrieve_raw_candidate_tables_are_rejected_without_python_pack(self) -> None:
+        client = _FailingNativeContextPackClient("raw_tables")
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = None
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+            }
+        )
+
+        self.assertEqual(result["context_pack_assembly"], "native_context_pack_blocked")
+        self.assertTrue(result["retrieval_metrics"]["raw_candidate_tables_returned"])
+        self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])
+        self.assertFalse(result["retrieval_metrics"]["broad_scan_used"])
+        self.assertEqual(client.read_all_calls, 0)
+
+    def test_native_retrieve_explicit_debug_fallback_can_leave_native_pack_path(self) -> None:
+        client = _FailingNativeContextPackClient("raise")
+        adapter = mcp.MatrixArkTemporalStoreDirectAdapter.__new__(mcp.MatrixArkTemporalStoreDirectAdapter)
+        adapter._client = client
+        adapter._storage_prefix = "matrixark:test:native-pack"
+        adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+        adapter._index_key = f"{adapter._storage_prefix}:record_index"
+        adapter._count_key = f"{adapter._storage_prefix}:record_count"
+        adapter._entry_count_cache = 0
+
+        result = adapter.retrieve(
+            {
+                "query": "Who approved the GPU budget?",
+                "scope": {"tenant_hash": 11, "user_hash": 22, "session_hash": 33},
+                "allow_python_pack_fallback": True,
+            }
+        )
+
+        self.assertNotEqual(result.get("context_pack_assembly"), "native_context_pack_blocked")
 
     def test_direct_retrieval_candidate_cache_is_shared_across_adapters(self) -> None:
         records = [

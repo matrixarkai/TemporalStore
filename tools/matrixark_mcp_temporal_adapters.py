@@ -40,10 +40,12 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
+    from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
 def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
@@ -1730,6 +1732,58 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 records.append(decoded)
         return records
 
+    def _native_context_pack_fallback_blocker(self, args: Json, *, reason: str) -> Json:
+        scope = optional_object(args, "scope")
+        query = str(args.get("query") or "")
+        context_pack_id = str(stable_hash(f"native-blocked:{query}:{canonical_scope_key(scope)}:{now_ms()}"))
+        pack: Json = {
+            "context_pack_id": context_pack_id,
+            "status": "timeout_partial",
+            "native_context_pack": False,
+            "context_pack_assembly": "native_context_pack_blocked",
+            "query_embedding_model": embedding_model_name(),
+            "embedding_execution_mode": embedding_execution_mode_name(),
+            "embedding_fallback_used": embedding_fallback_used(),
+            "remote_context_refs": [],
+            "groups": [],
+            "quality_warnings": [
+                {
+                    "code": "native_backend_contract_blocked",
+                    "message": "Native matrixark_retrieve_context_pack was available but did not return a valid compact ContextPack; Python broad scan and hot-path pack fallback are disabled for production retrieval.",
+                    "reason": reason,
+                }
+            ],
+            "retrieval_metrics": {
+                "backend": self._backend_label(),
+                "native_api": "matrixark_retrieve_context_pack",
+                "native_pack_assembly": False,
+                "python_pack_fallback": False,
+                "raw_candidate_tables_returned": False,
+                "broad_scan_used": False,
+                "broad_scan_blocked": True,
+                "broad_scan_policy": "explicit_fallback_or_debug_only",
+                "fallback_reason": reason,
+                "selected_refs": 0,
+                "dropped_refs": 0,
+                "scanned_records": 0,
+                "index_postings_read": 0,
+                "placement_partitions_touched": 0,
+                "candidate_cache_hit": False,
+            },
+            "recall_policy": {
+                "backend_retrieval_pushdown": {
+                    "backend": self._backend_label(),
+                    "execution_mode": "native_context_pack_blocked",
+                    "python_materialized_records": 0,
+                    "broad_scan_blocked": True,
+                    "fallback_reason": reason,
+                }
+            },
+        }
+        if bool(args.get("include_retrieval_metrics")):
+            pack["include_retrieval_metrics"] = True
+        return pack
+
     def _try_native_context_pack(self, args: Json) -> Json | None:
         if os.environ.get("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", "").strip().lower() in {"1", "true", "yes"}:
             return None
@@ -1823,18 +1877,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         except TypeError:
             response = native_retrieve(json.dumps(request, sort_keys=True, separators=(",", ":")))
         except Exception as exc:
-            _mcp_debug_log(f"matrixark native context pack failed; falling back to Python reference packer: {exc}")
+            _mcp_debug_log(f"matrixark native context pack failed: {exc}")
+            if not native_retrieve_fallback_allowed(args):
+                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_error:{exc}")
             return None
         try:
             pack = json.loads(response) if isinstance(response, str) else response
         except Exception as exc:
-            _mcp_debug_log(f"matrixark native context pack returned invalid JSON; falling back: {exc}")
+            _mcp_debug_log(f"matrixark native context pack returned invalid JSON: {exc}")
+            if not native_retrieve_fallback_allowed(args):
+                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_invalid_json:{exc}")
             return None
         if not isinstance(pack, dict):
+            if not native_retrieve_fallback_allowed(args):
+                return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_not_object")
             return None
         selected_refs = pack.get("selected_refs", [])
         groups = pack.get("groups", [])
         if not isinstance(selected_refs, list) and not isinstance(groups, (list, dict)):
+            if not native_retrieve_fallback_allowed(args):
+                return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_missing_refs_or_groups")
             return None
         raw_candidate_tables = (
             pack.get("candidate_records")
@@ -1843,7 +1905,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             or pack.get("raw_candidate_tables")
         )
         if raw_candidate_tables:
-            _mcp_debug_log("matrixark native context pack returned raw candidate tables; falling back to reference packer")
+            _mcp_debug_log("matrixark native context pack returned raw candidate tables")
+            if not native_retrieve_fallback_allowed(args):
+                blocker = self._native_context_pack_fallback_blocker(args, reason="native_context_pack_returned_raw_candidate_tables")
+                blocker["retrieval_metrics"]["raw_candidate_tables_returned"] = True
+                return blocker
             return None
         pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
         pack.setdefault("context_pack_assembly", "native_cpp_direct")
