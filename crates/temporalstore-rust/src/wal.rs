@@ -3,6 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -22,6 +23,104 @@ pub struct WriteAheadLogRecord {
     pub shard_id: ShardId,
     pub sequence: u64,
     pub command: Command,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<WriteAheadLogRecordMetadata>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WriteAheadLogRecordMetadata {
+    pub version: u32,
+    pub timestamp_ms: u64,
+    pub items: Vec<WriteAheadLogItemMetadata>,
+}
+
+impl WriteAheadLogRecordMetadata {
+    pub fn single_command(command: &Command) -> Self {
+        Self {
+            version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+            timestamp_ms: current_time_ms(),
+            items: vec![WriteAheadLogItemMetadata::from_command(command)],
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WriteAheadLogItemMetadata {
+    pub item_kind: WriteAheadLogItemKind,
+    pub model: WriteAheadLogModel,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slot_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<u64>,
+    #[serde(default)]
+    pub deleted: bool,
+    #[serde(default)]
+    pub meta_log: bool,
+    #[serde(default)]
+    pub block_log: bool,
+}
+
+impl WriteAheadLogItemMetadata {
+    pub fn from_command(command: &Command) -> Self {
+        let object_key = command_object_key(command);
+        let slot_id = object_key.as_deref().map(command_slot_id);
+        let item_kind = command_item_kind(command);
+        Self {
+            item_kind,
+            model: command_model(command),
+            object_key,
+            slot_id,
+            object_id: None,
+            block_id: None,
+            ttl_ms: command_ttl_ms(command),
+            deleted: matches!(
+                command,
+                Command::CommonDelete { .. }
+                    | Command::StringDelete { .. }
+                    | Command::HashDelete { .. }
+                    | Command::SetRemove { .. }
+                    | Command::FeatureDelete { .. }
+            ),
+            meta_log: matches!(
+                command,
+                Command::CommonExpire { .. } | Command::CommonTtl { .. }
+            ),
+            block_log: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteAheadLogItemKind {
+    Kv,
+    Block,
+    Ttl,
+    DeleteObject,
+    Query,
+    Admin,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteAheadLogModel {
+    Common,
+    String,
+    Hash,
+    Set,
+    Feature,
+    Sequence,
+    Ips,
+    Risk,
+    Context,
+    Admin,
+    Unknown,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,9 +128,13 @@ pub struct WriteAheadLogStats {
     pub writes: u64,
     pub reads: u64,
     pub scans: u64,
+    pub flushes: u64,
+    pub syncs: u64,
     pub bytes_written: u64,
     pub bytes_read: u64,
     pub last_sequence: u64,
+    pub last_flushed_sequence: u64,
+    pub persistent_bytes: u64,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,6 +147,42 @@ pub struct WriteAheadLogGcReport {
     pub bytes_before: u64,
     pub bytes_after: u64,
 }
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteAheadLogFlushReport {
+    pub shard_id: ShardId,
+    pub path: PathBuf,
+    pub last_sequence: u64,
+    pub persistent_bytes: u64,
+    pub synced: bool,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteAheadLogAppendReport {
+    pub shard_id: ShardId,
+    pub requested_sequence: u64,
+    pub current_sequence: u64,
+    pub appended: bool,
+    pub offset: u64,
+    pub size: u64,
+    pub persistent_bytes: u64,
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WriteAheadLogInfo {
+    pub shard_id: ShardId,
+    pub path: PathBuf,
+    pub legacy_path_active: bool,
+    pub start_sequence: u64,
+    pub current_sequence: u64,
+    pub records: usize,
+    pub length_bytes: u64,
+    pub persistent_length_bytes: u64,
+    pub last_flushed_sequence: u64,
+    pub format_version: u32,
+}
+
+pub const WRITE_AHEAD_LOG_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone)]
 pub struct LocalWriteAheadLogStore {
@@ -100,22 +239,51 @@ impl LocalWriteAheadLogStore {
         let record = WriteAheadLogRecord {
             shard_id,
             sequence: next_sequence,
+            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
             command,
         };
-        let mut bytes = serde_json::to_vec(&record)?;
-        bytes.push(b'\n');
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(write_ahead_log_path(&inner.root, shard_id))?;
-        file.write_all(&bytes)?;
-        file.flush()?;
-        file.sync_data()?;
-        inner.stats.writes += 1;
-        inner.stats.bytes_written += bytes.len() as u64;
-        inner.stats.last_sequence = next_sequence;
+        let report = append_record_locked(&mut inner, &record, true)?;
+        inner.stats.last_sequence = report.current_sequence;
+        inner.stats.last_flushed_sequence = report.current_sequence;
         inner.last_sequence_by_shard.insert(shard_id, next_sequence);
         Ok(record)
+    }
+
+    pub fn append_replayed_record(
+        &self,
+        record: WriteAheadLogRecord,
+    ) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let last_sequence = match inner.last_sequence_by_shard.get(&record.shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                let sequence = last_wal_sequence_at(&inner.root, record.shard_id)?;
+                inner
+                    .last_sequence_by_shard
+                    .insert(record.shard_id, sequence);
+                sequence
+            }
+        };
+        if record.sequence <= last_sequence {
+            let path = write_ahead_log_path(&inner.root, record.shard_id);
+            return Ok(WriteAheadLogAppendReport {
+                shard_id: record.shard_id,
+                requested_sequence: record.sequence,
+                current_sequence: last_sequence,
+                appended: false,
+                offset: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+                size: 0,
+                persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
+            });
+        }
+        let report = append_record_locked(&mut inner, &record, true)?;
+        inner
+            .last_sequence_by_shard
+            .insert(record.shard_id, record.sequence);
+        inner.stats.last_sequence = record.sequence;
+        inner.stats.last_flushed_sequence = record.sequence;
+        Ok(report)
     }
 
     pub fn read_range(
@@ -169,6 +337,37 @@ impl LocalWriteAheadLogStore {
         inner.stats.scans += 1;
         inner.stats.bytes_read += total;
         Ok(records)
+    }
+
+    pub fn flush(&self, shard_id: ShardId) -> Result<WriteAheadLogFlushReport, WriteAheadLogError> {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        fs::create_dir_all(&inner.root)?;
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let last_sequence = last_wal_sequence_at(&inner.root, shard_id)?;
+        if !path.exists() {
+            return Ok(WriteAheadLogFlushReport {
+                shard_id,
+                path,
+                last_sequence,
+                persistent_bytes: 0,
+                synced: false,
+            });
+        }
+        let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        file.sync_all()?;
+        sync_parent_dir(&path)?;
+        let persistent_bytes = path.metadata()?.len();
+        inner.stats.flushes += 1;
+        inner.stats.syncs += 1;
+        inner.stats.last_flushed_sequence = last_sequence;
+        inner.stats.persistent_bytes = persistent_bytes;
+        Ok(WriteAheadLogFlushReport {
+            shard_id,
+            path,
+            last_sequence,
+            persistent_bytes,
+            synced: true,
+        })
     }
 
     pub fn gc_before_sequence(
@@ -231,10 +430,58 @@ impl LocalWriteAheadLogStore {
 
     pub fn stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let path = write_ahead_log_path(&inner.root, shard_id);
         WriteAheadLogStats {
             last_sequence: last_wal_sequence_at(&inner.root, shard_id).unwrap_or_default(),
+            persistent_bytes: path.metadata().map(|metadata| metadata.len()).unwrap_or(0),
             ..inner.stats
         }
+    }
+
+    pub fn info(&self, shard_id: ShardId) -> Result<WriteAheadLogInfo, WriteAheadLogError> {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        let path = write_ahead_log_path(&inner.root, shard_id);
+        let legacy_path_active = path == legacy_oplog_path(&inner.root, shard_id);
+        if !path.exists() {
+            return Ok(WriteAheadLogInfo {
+                shard_id,
+                path,
+                legacy_path_active,
+                format_version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                ..WriteAheadLogInfo::default()
+            });
+        }
+        let _ = last_wal_sequence_at(&inner.root, shard_id)?;
+        let file = File::open(&path)?;
+        let reader = BufReader::new(file);
+        let mut start_sequence = 0_u64;
+        let mut current_sequence = 0_u64;
+        let mut records = 0_usize;
+        for line in reader.lines() {
+            let line = line?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record: WriteAheadLogRecord = serde_json::from_str(&line)?;
+            if start_sequence == 0 {
+                start_sequence = record.sequence;
+            }
+            current_sequence = current_sequence.max(record.sequence);
+            records += 1;
+        }
+        let length_bytes = path.metadata()?.len();
+        Ok(WriteAheadLogInfo {
+            shard_id,
+            path,
+            legacy_path_active,
+            start_sequence,
+            current_sequence,
+            records,
+            length_bytes,
+            persistent_length_bytes: length_bytes,
+            last_flushed_sequence: inner.stats.last_flushed_sequence.max(current_sequence),
+            format_version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+        })
     }
 }
 
@@ -256,6 +503,40 @@ fn write_ahead_log_path(root: &Path, shard_id: ShardId) -> PathBuf {
 
 fn legacy_oplog_path(root: &Path, shard_id: ShardId) -> PathBuf {
     root.join(format!("shard-{shard_id}.oplog.jsonl"))
+}
+
+fn append_record_locked(
+    inner: &mut WriteAheadLogInner,
+    record: &WriteAheadLogRecord,
+    sync: bool,
+) -> Result<WriteAheadLogAppendReport, WriteAheadLogError> {
+    let path = write_ahead_log_path(&inner.root, record.shard_id);
+    let offset = path.metadata().map(|metadata| metadata.len()).unwrap_or(0);
+    let mut bytes = serde_json::to_vec(record)?;
+    bytes.push(b'\n');
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
+    file.write_all(&bytes)?;
+    if sync {
+        file.flush()?;
+        file.sync_data()?;
+        sync_parent_dir(&path)?;
+        inner.stats.flushes += 1;
+        inner.stats.syncs += 1;
+        inner.stats.last_flushed_sequence = record.sequence;
+    }
+    let persistent_bytes = path.metadata()?.len();
+    inner.stats.writes += 1;
+    inner.stats.bytes_written += bytes.len() as u64;
+    inner.stats.persistent_bytes = persistent_bytes;
+    Ok(WriteAheadLogAppendReport {
+        shard_id: record.shard_id,
+        requested_sequence: record.sequence,
+        current_sequence: record.sequence,
+        appended: true,
+        offset,
+        size: bytes.len() as u64,
+        persistent_bytes,
+    })
 }
 
 fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAheadLogError> {
@@ -294,6 +575,114 @@ fn last_wal_sequence_at(root: &Path, shard_id: ShardId) -> Result<u64, WriteAhea
         sync_parent_dir(&path)?;
     }
     Ok(last)
+}
+
+fn current_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default()
+}
+
+fn command_variant_name(command: &Command) -> Option<String> {
+    let value = serde_json::to_value(command).ok()?;
+    let object = value.as_object()?;
+    object
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string)
+}
+
+fn command_payload(command: &Command) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let value = serde_json::to_value(command).ok()?;
+    let object = value.as_object()?;
+    let mut payload = object.clone();
+    payload.remove("kind");
+    Some(payload)
+}
+
+fn command_object_key(command: &Command) -> Option<String> {
+    let payload = command_payload(command)?;
+    if let Some(key) = payload.get("key").and_then(|value| value.as_str()) {
+        return Some(key.to_string());
+    }
+    let tenant = payload.get("tenant_hash").and_then(|value| value.as_u64());
+    let node = payload
+        .get("node_hash")
+        .or_else(|| payload.get("parent_hash"))
+        .or_else(|| payload.get("start_node_hash"))
+        .and_then(|value| value.as_u64());
+    match (tenant, node) {
+        (Some(tenant), Some(node)) => Some(format!("context:{tenant}:{node}")),
+        (Some(tenant), None) => Some(format!("context:{tenant}")),
+        _ => None,
+    }
+}
+
+fn command_ttl_ms(command: &Command) -> Option<u64> {
+    let payload = command_payload(command)?;
+    payload.get("ttl_ms").and_then(|value| value.as_u64())
+}
+
+fn command_slot_id(key: &str) -> u64 {
+    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+    const FNV_PRIME: u64 = 0x100000001b3;
+    let mut hash = FNV_OFFSET;
+    for byte in key.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash & 0x3fff
+}
+
+fn command_model(command: &Command) -> WriteAheadLogModel {
+    let Some(name) = command_variant_name(command) else {
+        return WriteAheadLogModel::Unknown;
+    };
+    if name.starts_with("common_") {
+        WriteAheadLogModel::Common
+    } else if name.starts_with("string_") {
+        WriteAheadLogModel::String
+    } else if name.starts_with("hash_") {
+        WriteAheadLogModel::Hash
+    } else if name.starts_with("set_") {
+        WriteAheadLogModel::Set
+    } else if name.starts_with("feature_") {
+        WriteAheadLogModel::Feature
+    } else if name.starts_with("sequence_") {
+        WriteAheadLogModel::Sequence
+    } else if name.starts_with("ips_") {
+        WriteAheadLogModel::Ips
+    } else if name.starts_with("risk_") {
+        WriteAheadLogModel::Risk
+    } else if name.starts_with("context_") {
+        WriteAheadLogModel::Context
+    } else {
+        WriteAheadLogModel::Unknown
+    }
+}
+
+fn command_item_kind(command: &Command) -> WriteAheadLogItemKind {
+    let Some(name) = command_variant_name(command) else {
+        return WriteAheadLogItemKind::Admin;
+    };
+    if name.contains("delete") || name.contains("remove") {
+        WriteAheadLogItemKind::DeleteObject
+    } else if name.contains("expire") || name.ends_with("ttl") {
+        WriteAheadLogItemKind::Ttl
+    } else if name.contains("get")
+        || name.contains("query")
+        || name.contains("count")
+        || name.contains("stat")
+        || name.contains("debug")
+        || name.contains("manager")
+        || name.contains("members")
+        || name.contains("exists")
+    {
+        WriteAheadLogItemKind::Query
+    } else {
+        WriteAheadLogItemKind::Kv
+    }
 }
 
 fn sync_parent_dir(path: &Path) -> std::io::Result<()> {
@@ -465,6 +854,7 @@ mod tests {
         let record = WriteAheadLogRecord {
             shard_id: 7,
             sequence: 1,
+            metadata: None,
             command: Command::StringSet {
                 key: "legacy".to_string(),
                 value: b"v".to_vec(),
@@ -491,5 +881,104 @@ mod tests {
         assert_eq!(appended.sequence, 2);
         assert!(legacy_path.exists());
         assert!(!dir.path().join("shard-7.wal.jsonl").exists());
+    }
+
+    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    #[test]
+    fn wal_record_metadata_tracks_cpp_style_log_item_shape() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let record = store
+            .append(
+                11,
+                Command::StringSetEx {
+                    key: "profile:7".to_string(),
+                    value: b"alice".to_vec(),
+                    ttl_ms: 30_000,
+                },
+            )
+            .unwrap();
+
+        let metadata = record.metadata.expect("metadata");
+        assert_eq!(metadata.version, WRITE_AHEAD_LOG_FORMAT_VERSION);
+        assert_eq!(metadata.items.len(), 1);
+        let item = &metadata.items[0];
+        assert_eq!(item.item_kind, WriteAheadLogItemKind::Kv);
+        assert_eq!(item.model, WriteAheadLogModel::String);
+        assert_eq!(item.object_key.as_deref(), Some("profile:7"));
+        assert_eq!(item.ttl_ms, Some(30_000));
+        assert!(item.slot_id.is_some());
+        assert!(!item.deleted);
+        assert!(!item.meta_log);
+    }
+
+    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    #[test]
+    fn append_replayed_record_is_idempotent_and_flushes_like_stream_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let command = Command::HashSet {
+            key: "h".to_string(),
+            field: "f".to_string(),
+            value: b"v".to_vec(),
+        };
+        let replayed = WriteAheadLogRecord {
+            shard_id: 3,
+            sequence: 8,
+            metadata: Some(WriteAheadLogRecordMetadata::single_command(&command)),
+            command,
+        };
+
+        let first = store.append_replayed_record(replayed.clone()).unwrap();
+        assert!(first.appended);
+        assert_eq!(first.current_sequence, 8);
+        assert!(first.size > 0);
+        assert!(first.persistent_bytes >= first.size);
+        let duplicate = store.append_replayed_record(replayed).unwrap();
+        assert!(!duplicate.appended);
+        assert_eq!(duplicate.current_sequence, 8);
+        assert_eq!(store.scan(3, 0, u64::MAX, u64::MAX).unwrap().len(), 1);
+        let stats = store.stats(3);
+        assert_eq!(stats.last_sequence, 8);
+        assert_eq!(stats.last_flushed_sequence, 8);
+        assert!(stats.flushes >= 1);
+        assert!(stats.syncs >= 1);
+    }
+
+    // shared-corpus: storage_wal_oplog_structure_api_flush_parity
+    #[test]
+    fn flush_and_info_report_persistent_wal_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        store
+            .append(
+                4,
+                Command::SetAdd {
+                    key: "s".to_string(),
+                    member: b"m1".to_vec(),
+                },
+            )
+            .unwrap();
+        store
+            .append(
+                4,
+                Command::SetAdd {
+                    key: "s".to_string(),
+                    member: b"m2".to_vec(),
+                },
+            )
+            .unwrap();
+
+        let flush = store.flush(4).unwrap();
+        assert!(flush.synced);
+        assert_eq!(flush.last_sequence, 2);
+        assert!(flush.persistent_bytes > 0);
+        let info = store.info(4).unwrap();
+        assert_eq!(info.start_sequence, 1);
+        assert_eq!(info.current_sequence, 2);
+        assert_eq!(info.records, 2);
+        assert_eq!(info.persistent_length_bytes, flush.persistent_bytes);
+        assert_eq!(info.format_version, WRITE_AHEAD_LOG_FORMAT_VERSION);
+        assert!(!info.legacy_path_active);
     }
 }

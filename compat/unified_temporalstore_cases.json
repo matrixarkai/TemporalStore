@@ -3086,6 +3086,33 @@
       ]
     },
     {
+      "description": "Shared WAL/oplog parity case for C++ OpLogger and Rust WAL: versioned item metadata, replay idempotence, explicit flush/commit boundary, and persistent status.",
+      "family": "storage/cache",
+      "name": "storage_wal_oplog_structure_api_flush_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "C++ OpLogger exposes versioned OpLog LogItem metadata, AppendReplayedLog idempotence, Commit flush durability, stream length/persistent length, start/current sequence, and truncate/replay APIs.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/op_logger.cc",
+              "src/partition/storage/op_logger.h"
+            ],
+            "rust_test": "wal_record_metadata_tracks_cpp_style_log_item_shape;append_replayed_record_is_idempotent_and_flushes_like_stream_commit;flush_and_info_report_persistent_wal_boundaries",
+            "suite": "cpp_storage_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "storage_wal_oplog_metadata_replay_flush_status",
+          "skip_client": true
+        }
+      ]
+    },
+    {
       "name": "storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [

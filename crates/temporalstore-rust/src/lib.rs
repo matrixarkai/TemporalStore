@@ -47,7 +47,12 @@ pub mod page_store {
 
 #[allow(deprecated)]
 pub mod oplog {
-    pub use crate::wal::{LocalOplogStore, OplogError, OplogGcReport, OplogRecord, OplogStats};
+    pub use crate::wal::{
+        LocalOplogStore, OplogError, OplogGcReport, OplogRecord, OplogStats,
+        WriteAheadLogAppendReport, WriteAheadLogFlushReport, WriteAheadLogInfo,
+        WriteAheadLogItemKind, WriteAheadLogItemMetadata, WriteAheadLogModel,
+        WriteAheadLogRecordMetadata, WRITE_AHEAD_LOG_FORMAT_VERSION,
+    };
 }
 
 pub use block_store::{
@@ -247,6 +252,8 @@ pub use wal::{
     WalStats,
 };
 pub use wal::{
-    LocalWriteAheadLogStore, WriteAheadLogError, WriteAheadLogGcReport, WriteAheadLogRecord,
-    WriteAheadLogStats,
+    LocalWriteAheadLogStore, WriteAheadLogAppendReport, WriteAheadLogError,
+    WriteAheadLogFlushReport, WriteAheadLogGcReport, WriteAheadLogInfo, WriteAheadLogItemKind,
+    WriteAheadLogItemMetadata, WriteAheadLogModel, WriteAheadLogRecord,
+    WriteAheadLogRecordMetadata, WriteAheadLogStats, WRITE_AHEAD_LOG_FORMAT_VERSION,
 };
