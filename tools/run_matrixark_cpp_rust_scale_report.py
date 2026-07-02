@@ -1441,6 +1441,98 @@ def phase_scale_matrix_gate(report: Json, args: argparse.Namespace) -> Json:
     }
 
 
+def _backend_stage_metrics(report: Json, backend: str) -> Json:
+    metrics = (
+        report.get("backends", {})
+        .get(backend, {})
+        .get("retrieve", {})
+        .get("stage_metrics", {})
+    )
+    return metrics if isinstance(metrics, dict) else {}
+
+
+def production_policy_gate(report: Json) -> Json:
+    """Report the non-negotiable production parity rules beside perf metrics."""
+    comparison_report = report.get("comparison", {}) if isinstance(report.get("comparison"), dict) else {}
+    phase0 = (
+        comparison_report.get("phase0_correctness", {})
+        if isinstance(comparison_report.get("phase0_correctness"), dict)
+        else {}
+    )
+    config = report.get("config", {}) if isinstance(report.get("config"), dict) else {}
+    checks: list[Json] = []
+
+    def add_check(name: str, passed: bool, detail: str) -> None:
+        checks.append({"name": name, "status": "passed" if passed else "failed", "detail": detail})
+
+    feature_correct = phase0.get("status") == "passed"
+    add_check(
+        "correctness_before_latency",
+        feature_correct,
+        "Selected refs must be non-empty and logically equivalent across C++/Rust/Python before latency is considered.",
+    )
+
+    for backend in ("cpp", "rust"):
+        metrics = _backend_stage_metrics(report, backend)
+        backend_status = report.get("backends", {}).get(backend, {}).get("status")
+        selected_max = float(metrics.get("selected_refs_max") or metrics.get("selected_refs_avg") or 0)
+        add_check(
+            f"{backend}_selected_refs_non_empty",
+            backend_status != "passed" or selected_max > 0,
+            f"{backend} selected_refs_max={selected_max}",
+        )
+        broad_scan_count = int(metrics.get("broad_scan_used_count") or 0)
+        add_check(
+            f"{backend}_placement_index_driven",
+            backend_status != "passed" or broad_scan_count == 0,
+            f"{backend} broad_scan_used_count={broad_scan_count}; broad scan is fallback/debug only.",
+        )
+        python_pack_count = int(metrics.get("python_pack_fallback_count") or 0)
+        raw_candidate_count = int(metrics.get("raw_candidate_tables_returned_count") or 0)
+        add_check(
+            f"{backend}_native_pack_or_dispatcher_only",
+            backend_status != "passed" or (python_pack_count == 0 and raw_candidate_count == 0),
+            (
+                f"{backend} python_pack_fallback_count={python_pack_count}, "
+                f"raw_candidate_tables_returned_count={raw_candidate_count}."
+            ),
+        )
+        audit_p95 = float((metrics.get("stage_p95_ms") or {}).get("audit_ms") or 0)
+        add_check(
+            f"{backend}_audit_not_hot_path_blocking",
+            backend_status != "passed" or audit_p95 <= 5.0,
+            f"{backend} audit_p95_ms={audit_p95}; rich audit/debug must be async/sampled by default.",
+        )
+
+    same_config_fields = [
+        "events",
+        "messages_per_ingest",
+        "retrieve_workers",
+        "retrieve_queries",
+        "max_context_tokens",
+        "storage_options",
+    ]
+    add_check(
+        "same_run_config_for_cpp_and_rust",
+        all(field in config for field in same_config_fields),
+        "Performance parity requires the same dataset, storage mode, topology, token budget, batch size, and model config.",
+    )
+
+    blockers = [check for check in checks if check.get("status") != "passed"]
+    return {
+        "status": "passed" if not blockers else "failed",
+        "checks": checks,
+        "blockers": blockers,
+        "policy": [
+            "Correctness beats latency: do not tune C++ performance until selected refs are non-empty and logically equivalent to Rust/Python.",
+            "Python remains API/auth/model orchestration only; serving-critical scan/filter/pack/write work belongs in C++/Rust.",
+            "Normal retrieval is placement-key and compact-index driven; broad scan is fallback/debug only.",
+            "Audit/debug records do not block hot retrieval by default.",
+            "Performance parity uses the same dataset, storage mode, topology, token budget, batch size, and model config for C++ and Rust.",
+        ],
+    }
+
+
 def write_report(path: Path, report: Json) -> None:
     backend_order = [backend for backend in ("cpp", "rust", "python_ref") if backend in report.get("backends", {})]
     lines = [
@@ -1547,6 +1639,26 @@ def write_report(path: Path, report: Json) -> None:
             for row in rows:
                 if isinstance(row, dict):
                     lines.append(f"| {group} | {row.get('case')} | {row.get('status')} |")
+    policy = report.get("production_policy", {})
+    if isinstance(policy, dict):
+        lines.extend(
+            [
+                "",
+                "## Production Parity Policy Gate",
+                "",
+                f"- status: `{policy.get('status')}`",
+                f"- blockers: `{len(policy.get('blockers', []))}`",
+                "",
+                "| rule | status | detail |",
+                "|---|---|---|",
+            ]
+        )
+        for check in policy.get("checks", []):
+            if isinstance(check, dict):
+                lines.append(f"| {check.get('name')} | {check.get('status')} | {check.get('detail')} |")
+        lines.extend(["", "### Policy", ""])
+        for item in policy.get("policy", []):
+            lines.append(f"- {item}")
     if comp.get("status") in {"passed", "failed"}:
         phase0 = comp.get("phase0_correctness", {})
         lines.extend(
@@ -1816,6 +1928,7 @@ def main() -> int:
     parsed.python_ref_result = report["backends"].get("python_ref")
     report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"), parsed)
     report["phase_scale_matrix"] = phase_scale_matrix_gate(report, parsed)
+    report["production_policy"] = production_policy_gate(report)
     (artifact_dir / "comparison.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     write_report(artifact_dir / "comparison.md", report)
     print(
@@ -1824,6 +1937,7 @@ def main() -> int:
                 "artifact_dir": str(artifact_dir),
                 "comparison": report["comparison"],
                 "phase_scale_matrix": report["phase_scale_matrix"],
+                "production_policy": report["production_policy"],
             },
             indent=2,
             sort_keys=True,
@@ -1833,10 +1947,13 @@ def main() -> int:
     parity_passed = bool(report.get("comparison", {}).get("perf_parity", {}).get("passed", True))
     phase0_failed = report.get("comparison", {}).get("phase0_correctness", {}).get("status") == "failed"
     phase_scale_failed = report.get("phase_scale_matrix", {}).get("status") == "failed"
+    production_policy_failed = report.get("production_policy", {}).get("status") == "failed"
     if phase0_failed and not parsed.allow_phase0_correctness_failure:
         return 3
     if phase_scale_failed:
         return 4
+    if parsed.require_perf_parity and production_policy_failed:
+        return 5
     if parsed.require_perf_parity and not parity_passed:
         return 2
     return 0 if backends_passed else 1
