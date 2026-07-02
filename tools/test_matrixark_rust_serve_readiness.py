@@ -103,10 +103,21 @@ class MatrixArkRustServeReadinessTest(unittest.TestCase):
                 self.assertIn('matrixark_backend_audit_buffered_records{backend="rust"}', metrics)
                 self.assertIn('matrixark_backend_audit_flush_failures_total{backend="rust"}', metrics)
                 client_metrics = client.metrics_snapshot()
-                self.assertEqual(client_metrics.get("gateway_mode"), "long_lived_stdio_gateway")
+                self.assertEqual(client_metrics.get("gateway_mode"), "rust_direct_sdk_bridge")
+                self.assertEqual(client_metrics.get("sdk_mode"), "rust_direct_sdk_via_long_lived_bridge")
                 self.assertEqual(client_metrics.get("transport"), "stdio")
+                self.assertGreaterEqual(client_metrics.get("read_pool_size", 0), 1)
+                self.assertEqual(
+                    client_metrics.get("read_pool_enabled"),
+                    client_metrics.get("read_pool_size", 0) > 1,
+                )
+                self.assertEqual(
+                    client_metrics.get("max_inflight"),
+                    client_metrics.get("read_pool_size", 0) + 1,
+                )
                 self.assertFalse(client_metrics.get("process_per_operation_enabled"))
                 self.assertEqual(client_metrics.get("single_shot_mode"), "debug_only")
+                self.assertTrue(client_metrics.get("direct_sdk_bridge"))
                 self.assertTrue(client_metrics.get("supports_health"))
                 self.assertTrue(client_metrics.get("supports_readiness"))
                 self.assertTrue(client_metrics.get("supports_metrics"))

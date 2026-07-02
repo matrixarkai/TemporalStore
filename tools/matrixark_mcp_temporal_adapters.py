@@ -12,9 +12,6 @@ try:
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
@@ -27,9 +24,6 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         _DIRECT_RECORD_CACHE_LOCK,
         _DIRECT_RECORD_CACHE_MAX_PREFIXES,
         _DIRECT_RECORD_LOAD_LOCKS,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK,
-        _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK,
         _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES,
@@ -40,12 +34,10 @@ try:
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from tools.matrixark_mcp_metrics import MatrixArkServiceMetrics
-    from tools.matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_local_adapter import RETRIEVAL_HOT_RECORD_TYPES
     from matrixark_mcp_metrics import MatrixArkServiceMetrics
-    from matrixark_mcp_retrieval import native_retrieve_fallback_allowed
 
 
 def _latency_quantile_from_cumulative_buckets(buckets: list[int], bucket_bounds: tuple[float, ...], total: int, quantile: float) -> float:
@@ -180,10 +172,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._latency_buckets = [0 for _ in MatrixArkServiceMetrics.LATENCY_BUCKETS_MS]
         self._records_written_total = 0
         self._records_read_total = 0
-        self._append_queue_wait_ms_total = 0.0
-        self._append_queue_wait_count = 0
-        self._append_engine_ms_total = 0.0
-        self._append_engine_count = 0
 
     def __post_init__(self) -> None:
         # Direct adapter does not use the inherited JSONL path.
@@ -213,14 +201,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._records_written_total = 0
         if not hasattr(self, "_records_read_total"):
             self._records_read_total = 0
-        if not hasattr(self, "_append_queue_wait_ms_total"):
-            self._append_queue_wait_ms_total = 0.0
-        if not hasattr(self, "_append_queue_wait_count"):
-            self._append_queue_wait_count = 0
-        if not hasattr(self, "_append_engine_ms_total"):
-            self._append_engine_ms_total = 0.0
-        if not hasattr(self, "_append_engine_count"):
-            self._append_engine_count = 0
         if not hasattr(self, "_backend_ready"):
             self._backend_ready = False
         if not hasattr(self, "_records_cache"):
@@ -272,26 +252,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             self._direct_write_flushed_batches = 0
         if not hasattr(self, "_direct_write_dead_letter_batches"):
             self._direct_write_dead_letter_batches = 0
-
-    def _observe_append_queue_wait(self, elapsed_ms: float) -> None:
-        self._ensure_backend_metric_fields()
-        with self._metrics_lock:
-            self._append_queue_wait_ms_total += max(0.0, float(elapsed_ms))
-            self._append_queue_wait_count += 1
-
-    def _observe_append_engine(self, elapsed_ms: float) -> None:
-        self._ensure_backend_metric_fields()
-        with self._metrics_lock:
-            self._append_engine_ms_total += max(0.0, float(elapsed_ms))
-            self._append_engine_count += 1
-
-    def _append_queue_wait_ms_avg(self) -> float:
-        count = int(getattr(self, "_append_queue_wait_count", 0) or 0)
-        return float(getattr(self, "_append_queue_wait_ms_total", 0.0) or 0.0) / count if count else 0.0
-
-    def _append_engine_ms_avg(self) -> float:
-        count = int(getattr(self, "_append_engine_count", 0) or 0)
-        return float(getattr(self, "_append_engine_ms_total", 0.0) or 0.0) / count if count else 0.0
 
     def _observe_backend_command(self, elapsed_ms: float, *, records_written: int = 0, records_read: int = 0, failed: bool = False) -> None:
         self._ensure_backend_metric_fields()
@@ -390,12 +350,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     "# HELP matrixark_backend_write_queue_dead_letter_batches_total MatrixArk durable direct write queue batches moved to dead letter.",
                     "# TYPE matrixark_backend_write_queue_dead_letter_batches_total counter",
                     f'matrixark_backend_write_queue_dead_letter_batches_total{{backend="{backend}"}} {int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0)}',
-                    "# HELP matrixark_backend_append_queue_wait_ms MatrixArk append queue wait time average in milliseconds.",
-                    "# TYPE matrixark_backend_append_queue_wait_ms gauge",
-                    f'matrixark_backend_append_queue_wait_ms{{backend="{backend}"}} {round(self._append_queue_wait_ms_avg(), 3)}',
-                    "# HELP matrixark_backend_append_engine_ms MatrixArk append engine execution time average in milliseconds.",
-                    "# TYPE matrixark_backend_append_engine_ms gauge",
-                    f'matrixark_backend_append_engine_ms{{backend="{backend}"}} {round(self._append_engine_ms_avg(), 3)}',
                 ]
             )
             return "\n".join(lines) + "\n"
@@ -405,16 +359,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "backend": self._backend_label(),
             "metrics_format": "prometheus",
             "prometheus": self._backend_prometheus(),
-            "capabilities": {
-                "health_endpoint": True,
-                "readiness_endpoint": True,
-                "metrics_endpoint": True,
-                "matrixark_batch_append_records": True,
-                "matrixark_retrieve_context_pack": callable(getattr(self._client, "matrixark_retrieve_context_pack", None)),
-                "compact_secondary_index_lookup": True,
-                "placement_key_candidate_fetch": True,
-                "context_pack_telemetry": True,
-            },
             "metrics": {
                 "mode": "direct-sdk",
                 "metaserver": self._metaserver,
@@ -434,10 +378,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "write_queue_enqueued_batches": int(getattr(self, "_direct_write_enqueued_batches", 0) or 0),
                 "write_queue_flushed_batches": int(getattr(self, "_direct_write_flushed_batches", 0) or 0),
                 "write_queue_dead_letter_batches": int(getattr(self, "_direct_write_dead_letter_batches", 0) or 0),
-                "append_queue_wait_ms": round(self._append_queue_wait_ms_avg(), 3),
-                "append_queue_wait_count": int(getattr(self, "_append_queue_wait_count", 0) or 0),
-                "append_engine_ms": round(self._append_engine_ms_avg(), 3),
-                "append_engine_count": int(getattr(self, "_append_engine_count", 0) or 0),
                 "entry_count_cache": self._entry_count_cache,
                 "records_cache_ready": self._records_cache is not None,
                 "commands_total": self._commands_total,
@@ -572,238 +512,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         self._append_many_materialized(records)
 
     def _storage_route_for_bundle(self, bundle: list[Json]) -> Json:
-        fallback: Json = {}
         for record in bundle:
             route = record.get("storage_route")
             if isinstance(route, dict) and route:
-                if route.get("placement_key"):
-                    return route
-                if not fallback:
-                    fallback = route
-        return fallback
-
-    def _native_append_options(self) -> Json:
-        return {
-            "append_path": "native_append_queue",
-            "coalesce_writes": True,
-            "route_by": "placement_key",
-            "persist_from_storage_options": True,
-            "hset_lowering": "forbidden_for_parity",
-            "count_update": "same_batch",
-            "audit_hot_path": "inline_counters_only",
-            "full_context_pack_audit": "sample_or_enqueue_async_policy_enabled",
-        }
-
-    def _context_index_lookup_key(self, scope_key: str) -> str:
-        scope_hash = stable_hash(scope_key) if scope_key else 0
-        return f"{self._storage_prefix}:context_index_lookup:{scope_hash}"
-
-    def _context_ref_locator_key(self) -> str:
-        return f"{self._storage_prefix}:context_ref_locator"
-
-    def _context_placement_lookup_key(self, scope_key: str) -> str:
-        scope_hash = stable_hash(scope_key) if scope_key else 0
-        return f"{self._storage_prefix}:context_placement_lookup:{scope_hash}"
-
-    def _merge_ref_hashes(self, existing_value: str, new_refs: list[int]) -> list[int]:
-        refs: list[int] = []
-        seen: set[int] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
-            for value in raw_refs if isinstance(raw_refs, list) else []:
-                try:
-                    ref_hash = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if ref_hash and ref_hash not in seen:
-                    refs.append(ref_hash)
-                    seen.add(ref_hash)
-        for ref_hash in new_refs:
-            if ref_hash and ref_hash not in seen:
-                refs.append(ref_hash)
-                seen.add(ref_hash)
-        return refs
-
-    def _merge_ref_locations(self, existing_value: str, new_locations: list[Json]) -> list[Json]:
-        locations: list[Json] = []
-        resource_versions: set[str] = set()
-        seen: set[tuple[str, str]] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
-            for location in raw_locations if isinstance(raw_locations, list) else []:
-                if not isinstance(location, dict):
-                    continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
-        for location in new_locations:
-            key = str(location.get("key") or "")
-            field = str(location.get("field") or "")
-            if not key or not field or (key, field) in seen:
-                continue
-            locations.append({"key": key, "field": field})
-            seen.add((key, field))
-        return locations
-
-    def _merge_resource_versions(self, existing_value: str, new_versions: set[str]) -> list[str]:
-        versions: set[str] = set()
-        if existing_value:
-            try:
-                decoded = json.loads(existing_value)
-            except Exception:
-                decoded = {}
-            raw_versions = decoded.get("resource_versions", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_versions, list):
-                versions.update(str(value) for value in raw_versions if str(value))
-        versions.update(str(value) for value in new_versions if str(value))
-        return sorted(versions)
-
-    def _read_hash_value_best_effort(self, key: str, field: str) -> str:
-        reader = getattr(self._client, "hget", None)
-        if not callable(reader):
-            return ""
-        try:
-            value = reader(key, field)
-        except Exception:
-            return ""
-        return str(value or "")
-
-    def _native_side_index_entries_for_bundles(self, bundles: list[tuple[list[Json], str, str]]) -> list[Json]:
-        """Build sidecar lookup rows so retrieval can avoid broad record scans.
-
-        ContextIndex remains compact and bucketed.  These sidecar hashes make the
-        compact postings and ref-to-record locations directly addressable by the
-        native C++/Rust hash API.
-        """
-        lookup_updates: dict[tuple[str, str], Json] = {}
-        locator_updates: dict[int, list[Json]] = {}
-        placement_updates: dict[tuple[str, str], Json] = {}
-        route_by_hash_field: dict[tuple[str, str], Json] = {}
-        for bundle, record_key, record_id in bundles:
-            location = {"key": record_key, "field": record_id}
-            route = self._storage_route_for_bundle(bundle)
-            for record in bundle:
-                node_hash = record.get("node_hash")
-                scope_key_for_placement = str(record.get("scope_key") or "")
-                if not scope_key_for_placement:
-                    scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-                    scope_key_for_placement = canonical_scope_key(scope) if scope else ""
-                if scope_key_for_placement and node_hash is not None:
-                    try:
-                        placement_node_hash = int(node_hash)
-                    except (TypeError, ValueError):
-                        placement_node_hash = 0
-                    if placement_node_hash:
-                        placement_key = (self._context_placement_lookup_key(scope_key_for_placement), str(placement_node_hash))
-                        placement_update = placement_updates.setdefault(placement_key, {"locations": [], "resource_versions": set()})
-                        placement_update["locations"].append(location)
-                        resource_version = str(record.get("resource_version") or "")
-                        if resource_version:
-                            placement_update["resource_versions"].add(resource_version)
-                        if route:
-                            route_by_hash_field.setdefault(placement_key, route)
-                for ref_hash in context_index_ref_hashes(record):
-                    locator_updates.setdefault(ref_hash, []).append(location)
-                    if route:
-                        route_by_hash_field.setdefault((self._context_ref_locator_key(), str(ref_hash)), route)
-                if record.get("record_type") != "context_index":
-                    continue
-                index_name = str(record.get("index_name") or "").strip()
-                if not index_name:
-                    continue
-                scope_key = str(record.get("scope_key") or "")
-                if not scope_key:
-                    scope = record.get("scope") if isinstance(record.get("scope"), dict) else {}
-                    scope_key = canonical_scope_key(scope) if scope else ""
-                ref_hashes = context_index_ref_hashes(record)
-                if scope_key and ref_hashes:
-                    lookup_key = (self._context_index_lookup_key(scope_key), index_name)
-                    update = lookup_updates.setdefault(lookup_key, {"ref_hashes": [], "posting_buckets": set()})
-                    update["ref_hashes"].extend(ref_hashes)
-                    update["posting_buckets"].add(context_index_posting_bucket(context_index_timestamp_key(record)))
-                    if route:
-                        route_by_hash_field.setdefault(lookup_key, route)
-
-        entries: list[Json] = []
-        for (key, field), update in lookup_updates.items():
-            new_refs = update.get("ref_hashes", []) if isinstance(update, dict) else []
-            new_buckets = update.get("posting_buckets", set()) if isinstance(update, dict) else set()
-            merged_refs = self._merge_ref_hashes(self._read_hash_value_best_effort(key, field), new_refs)
-            existing_value = self._read_hash_value_best_effort(key, field)
-            existing_buckets: set[int] = set()
-            if existing_value:
-                try:
-                    decoded_existing = json.loads(existing_value)
-                except Exception:
-                    decoded_existing = {}
-                raw_buckets = decoded_existing.get("posting_buckets", []) if isinstance(decoded_existing, dict) else []
-                if isinstance(raw_buckets, list):
-                    for value in raw_buckets:
-                        try:
-                            bucket = int(value)
-                        except (TypeError, ValueError):
-                            continue
-                        if bucket:
-                            existing_buckets.add(bucket)
-            for value in new_buckets if isinstance(new_buckets, set) else set():
-                try:
-                    bucket = int(value)
-                except (TypeError, ValueError):
-                    continue
-                if bucket:
-                    existing_buckets.add(bucket)
-            entries.append(
-                {
-                    "key": key,
-                    "field": field,
-                    "value": json.dumps(
-                        {"ref_hashes": merged_refs, "posting_buckets": sorted(existing_buckets)},
-                        separators=(",", ":"),
-                    ),
-                    "storage_route": route_by_hash_field.get((key, field), {}),
-                }
-            )
-        locator_key = self._context_ref_locator_key()
-        for ref_hash, new_locations in locator_updates.items():
-            field = str(ref_hash)
-            merged_locations = self._merge_ref_locations(self._read_hash_value_best_effort(locator_key, field), new_locations)
-            entries.append(
-                {
-                    "key": locator_key,
-                    "field": field,
-                    "value": json.dumps({"locations": merged_locations}, separators=(",", ":")),
-                    "storage_route": route_by_hash_field.get((locator_key, field), {}),
-                }
-            )
-        for (key, field), update in placement_updates.items():
-            new_locations = update.get("locations", []) if isinstance(update, dict) else []
-            new_versions = update.get("resource_versions", set()) if isinstance(update, dict) else set()
-            existing_value = self._read_hash_value_best_effort(key, field)
-            merged_locations = self._merge_ref_locations(existing_value, new_locations)
-            merged_versions = self._merge_resource_versions(existing_value, new_versions if isinstance(new_versions, set) else set())
-            entries.append(
-                {
-                    "key": key,
-                    "field": field,
-                    "value": json.dumps({"locations": merged_locations, "resource_versions": merged_versions}, separators=(",", ":")),
-                    "storage_route": route_by_hash_field.get((key, field), {}),
-                }
-            )
-        return entries
+                return route
+        return {}
 
     def _context_event_ingestion_time_ms(self, record: Json) -> int:
-        return context_event_timestamp_ms(record)
+        envelope = record.get("envelope") if isinstance(record.get("envelope"), dict) else {}
+        for value in (
+            envelope.get("ingestion_time_ms") if isinstance(envelope, dict) else None,
+            record.get("updated_at_ms"),
+            record.get("created_at_ms"),
+        ):
+            try:
+                timestamp = int(value)
+            except (TypeError, ValueError):
+                continue
+            if timestamp > 0:
+                return timestamp
+        return now_ms()
 
     def _context_event_time_index_key(self, record: Json) -> str:
         scope_key = str(record.get("scope_key") or "")
@@ -812,8 +540,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
 
     def _context_event_time_index_field(self, record: Json) -> str:
         event_hash = record.get("event_id_hash") or stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
-        timestamp_ms = self._context_event_ingestion_time_ms(record)
-        return f"{context_event_time_key(timestamp_ms, event_hash):020d}:{event_hash}"
+        return f"{self._context_event_ingestion_time_ms(record):020d}:{event_hash}"
 
     def _context_event_time_index_payload(self, record: Json) -> str:
         """Compact timestamp-index payload.
@@ -835,7 +562,6 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "scope_key": scope_key,
             "timestamp_key_ms": self._context_event_ingestion_time_ms(record),
         }
-        payload["context_event_key"] = context_event_time_key(payload["timestamp_key_ms"], payload["ref_hash"])
         source_chunk_hash = record.get("source_chunk_hash")
         if source_chunk_hash is not None:
             payload["source_chunk_hash"] = source_chunk_hash
@@ -918,18 +644,15 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         item: Any = list(records)
         if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
             item = {"queue_mode": "temporalstore", "field": self._enqueue_direct_write_durable(records)}
-        wait_started_perf = time.perf_counter()
         try:
             self._direct_write_queue.put(item, timeout=self._direct_write_queue_put_timeout_s)
         except queue.Full as exc:
-            self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
             if getattr(self, "_direct_write_queue_mode", "memory") == "temporalstore":
                 _mcp_debug_log("matrixark durable direct write queue accepted batch but local worker queue is full; batch will be recovered by drain")
                 self._direct_write_enqueued_records += len(records)
                 self._direct_write_enqueued_batches += 1
                 return
             raise MatrixArkError("direct TemporalStore write queue is full") from exc
-        self._observe_append_queue_wait((time.perf_counter() - wait_started_perf) * 1000.0)
         self._direct_write_enqueued_records += len(records)
         self._direct_write_enqueued_batches += 1
 
@@ -1107,38 +830,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                     self._records_cache.extend(records)
                     self._put_direct_record_cache(len(self._records_cache), self._records_cache)
                 self._update_latest_entity_cache(records)
-                elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-                self._observe_append_engine(elapsed_ms)
-                self._observe_backend_command(elapsed_ms, records_written=len(records))
+                self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
                 return
 
             sequence = count
             entries = []
-            located_bundles: list[tuple[list[Json], str, str]] = []
             for bundle in self._record_bundles(records):
                 record_key, record_id = self._record_location(sequence)
                 payload_value: Json
                 payload_value = bundle[0] if len(bundle) == 1 else {"record_bundle": bundle}
                 payload = json.dumps(payload_value, sort_keys=True, separators=(",", ":"))
                 entries.append({"key": record_key, "field": record_id, "value": payload, "storage_route": self._storage_route_for_bundle(bundle)})
-                located_bundles.append((bundle, record_key, record_id))
                 sequence += 1
-            native_index_entries = self._native_side_index_entries_for_bundles(located_bundles)
             append_records = getattr(self._client, "matrixark_batch_append_records", None)
             if callable(append_records):
                 self._write_with_backoff(
-                    lambda: append_records(
-                        event_time_entries + native_index_entries + entries,
-                        count_key=self._count_key,
-                        count_value=str(sequence),
-                        append_options=self._native_append_options(),
-                    ),
+                    lambda: append_records(event_time_entries + entries, count_key=self._count_key, count_value=str(sequence)),
                     op="matrixark_batch_append_records",
                 )
                 if self._write_throttle_s > 0:
                     time.sleep(self._write_throttle_s)
             else:
-                self._hset_many_with_backoff(event_time_entries + native_index_entries + entries)
+                self._hset_many_with_backoff(event_time_entries + entries)
                 self._put_string_with_backoff(self._count_key, str(sequence))
             self._entry_count_cache = sequence
             if self._records_cache is not None:
@@ -1146,9 +859,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 self._put_direct_record_cache(self._entry_count_cache, self._records_cache)
             self._prune_retrieval_candidate_cache(sequence)
             self._update_latest_entity_cache(records)
-            elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
-            self._observe_append_engine(elapsed_ms)
-            self._observe_backend_command(elapsed_ms, records_written=len(records))
+            self._observe_backend_command((time.perf_counter() - started_perf) * 1000.0, records_written=len(records))
 
     def append_audit(self, record: Json) -> None:
         if self._audit_mode == "drop":
@@ -1490,661 +1201,45 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 overflow = len(_DIRECT_RETRIEVAL_CANDIDATE_CACHE) - _DIRECT_RETRIEVAL_CANDIDATE_CACHE_MAX_ENTRIES
                 for key in list(_DIRECT_RETRIEVAL_CANDIDATE_CACHE)[:overflow]:
                     _DIRECT_RETRIEVAL_CANDIDATE_CACHE.pop(key, None)
-        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
-            stale_keys = [
-                key
-                for key in _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE
-                if key.startswith(f"{self._storage_prefix}|")
-                and f"|wm={int(current_count)}|" not in key
-            ]
-            for key in stale_keys:
-                _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
-            if len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) > _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES:
-                overflow = len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) - _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES
-                for key in list(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE)[:overflow]:
-                    _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
 
-    def _placement_candidate_table_cache_key(
+    def retrieval_records(
         self,
         *,
-        count: int,
-        scope_key: str,
-        node_hash: int,
-        record_type: str,
-        resource_version_watermark: str = "",
-    ) -> str:
-        return (
-            f"{self._storage_prefix}|wm={int(count)}|scope={stable_hash(scope_key)}|"
-            f"node={int(node_hash)}|type={record_type}|rv={stable_hash(resource_version_watermark)}"
-        )
-
-    def _record_primary_hash(self, record: Json) -> int:
-        for field in (
-            "event_id_hash",
-            "entity_hash",
-            "segment_hash",
-            "compression_id_hash",
-            "summary_hash",
-            "chunk_hash",
-            "section_hash",
-            "skill_hash",
-            "resource_hash",
-            "batch_id_hash",
-            "ref_hash",
-        ):
-            value = record.get(field)
-            if value is not None:
-                try:
-                    return int(value)
-                except (TypeError, ValueError):
-                    break
-        return stable_hash(json.dumps(record, sort_keys=True, separators=(",", ":")))
-
-    def _placement_candidate_records_from_cache_or_load(
-        self,
-        *,
-        count: int,
         scope: Json,
-        allowed_types: set[str],
-        selected_nodes: set[int],
-        locations: list[Json],
-        resource_version_watermark: str = "",
+        record_types: set[str] | None = None,
+        secondary_index_groups: list[set[str]] | None = None,
+        selected_node_hashes: set[int] | None = None,
     ) -> Json:
-        scope_key = canonical_scope_key(scope)
-        if not scope_key or not selected_nodes or not allowed_types:
-            return {"records": [], "cache_hit": False, "cache_entries": 0, "loaded_records": 0}
-
-        keys = [
-            self._placement_candidate_table_cache_key(
-                count=count,
-                scope_key=scope_key,
-                node_hash=node_hash,
-                record_type=record_type,
-                resource_version_watermark=resource_version_watermark,
-            )
-            for node_hash in sorted(selected_nodes)
-            for record_type in sorted(allowed_types)
-        ]
-        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
-            cached_tables = [_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.get(key) for key in keys]
-            if keys and all(table is not None for table in cached_tables):
-                compact_rows = [
-                    row
-                    for table in cached_tables
-                    for row in (table or [])
-                ]
-                return {
-                    "records": [dict(row[3]) for row in compact_rows],
-                    "cache_hit": True,
-                    "cache_entries": len(compact_rows),
-                    "loaded_records": 0,
-                    "resource_version_watermark": resource_version_watermark,
-                }
-
-        loaded_records = self._load_records_from_locations(locations)
-        grouped: dict[str, list[tuple[str, int, int, Json]]] = {key: [] for key in keys}
-        for record in loaded_records:
-            record_type = str(record.get("record_type") or "")
-            if record_type not in allowed_types:
-                continue
-            try:
-                node_hash = int(record.get("node_hash"))
-            except (TypeError, ValueError):
-                continue
-            if node_hash not in selected_nodes:
-                continue
-            key = self._placement_candidate_table_cache_key(
-                count=count,
-                scope_key=scope_key,
-                node_hash=node_hash,
-                record_type=record_type,
-                resource_version_watermark=resource_version_watermark,
-            )
-            if key not in grouped:
-                continue
-            grouped[key].append((record_type, self._record_primary_hash(record), node_hash, dict(record)))
-
-        with _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_LOCK:
-            for key, compact_rows in grouped.items():
-                _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE[key] = compact_rows
-            if len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) > _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES:
-                overflow = len(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE) - _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE_MAX_ENTRIES
-                for key in list(_DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE)[:overflow]:
-                    _DIRECT_PLACEMENT_CANDIDATE_TABLE_CACHE.pop(key, None)
-
-        compact_rows = [row for table in grouped.values() for row in table]
-        return {
-            "records": [dict(row[3]) for row in compact_rows],
-            "cache_hit": False,
-            "cache_entries": len(compact_rows),
-            "loaded_records": len(loaded_records),
-            "resource_version_watermark": resource_version_watermark,
-        }
-
-    def _native_index_ref_hashes(self, *, scope: Json, secondary_index_groups: list[set[str]] | None) -> Json:
-        scope_key = canonical_scope_key(scope)
-        groups = secondary_index_groups or []
-        if not scope_key or not groups:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "missing_scope_or_filters"}
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget):
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "backend_has_no_batch_hget"}
-        index_terms = sorted({term for group in groups for term in group if term})
-        entries = [{"key": self._context_index_lookup_key(scope_key), "field": term} for term in index_terms]
-        try:
-            rows = batch_hget(entries)
-        except Exception as exc:
-            return {"ref_hashes": set(), "postings_found": 0, "index_terms": index_terms, "posting_buckets": [], "eligible": False, "reason": f"index_lookup_failed:{exc}"}
-        ref_hashes: set[int] = set()
-        posting_buckets: set[int] = set()
-        postings_found = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("value")
-            if not value:
-                continue
-            try:
-                decoded = json.loads(str(value))
-            except Exception:
-                continue
-            raw_refs = decoded.get("ref_hashes", []) if isinstance(decoded, dict) else []
-            raw_buckets = decoded.get("posting_buckets", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_refs, list):
-                postings_found += 1
-                for value in raw_refs:
-                    try:
-                        ref_hash = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if ref_hash:
-                        ref_hashes.add(ref_hash)
-            if isinstance(raw_buckets, list):
-                for value in raw_buckets:
-                    try:
-                        bucket = int(value)
-                    except (TypeError, ValueError):
-                        continue
-                    if bucket:
-                        posting_buckets.add(bucket)
-        return {
-            "ref_hashes": ref_hashes,
-            "postings_found": postings_found,
-            "index_terms": index_terms,
-            "posting_buckets": sorted(posting_buckets),
-            "eligible": bool(ref_hashes),
-            "reason": "ok" if ref_hashes else "no_matching_postings",
-        }
-
-    def _native_locations_for_refs(self, ref_hashes: set[int]) -> Json:
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget) or not ref_hashes:
-            return {"locations": [], "locator_rows": 0}
-        entries = [{"key": self._context_ref_locator_key(), "field": str(ref_hash)} for ref_hash in sorted(ref_hashes)]
-        try:
-            rows = batch_hget(entries)
-        except Exception:
-            return {"locations": [], "locator_rows": 0}
-        locations: list[Json] = []
-        resource_versions: set[str] = set()
-        seen: set[tuple[str, str]] = set()
-        locator_rows = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("value")
-            if not value:
-                continue
-            try:
-                decoded = json.loads(str(value))
-            except Exception:
-                continue
-            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
-            raw_versions = decoded.get("resource_versions", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_versions, list):
-                resource_versions.update(str(value) for value in raw_versions if str(value))
-            if not isinstance(raw_locations, list):
-                continue
-            locator_rows += 1
-            for location in raw_locations:
-                if not isinstance(location, dict):
-                    continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
-        return {"locations": locations, "locator_rows": locator_rows}
-
-    def _load_records_from_locations(self, locations: list[Json]) -> list[Json]:
-        batch_hget = getattr(self._client, "batch_hget", None)
-        if not callable(batch_hget) or not locations:
-            return []
-        try:
-            rows = batch_hget(locations)
-        except Exception:
-            return []
-        records: list[Json] = []
-        for item in rows if isinstance(rows, list) else []:
-            if not isinstance(item, dict):
-                continue
-            payload = item.get("value", "")
-            if not payload:
-                continue
-            try:
-                decoded = json.loads(str(payload))
-            except Exception:
-                continue
-            if isinstance(decoded, dict) and isinstance(decoded.get("record_bundle"), list):
-                records.extend(row for row in decoded["record_bundle"] if isinstance(row, dict))
-            elif isinstance(decoded, dict):
-                records.append(decoded)
-        return records
-
-    def _native_context_pack_fallback_blocker(self, args: Json, *, reason: str) -> Json:
-        scope = optional_object(args, "scope")
-        query = str(args.get("query") or "")
-        context_pack_id = str(stable_hash(f"native-blocked:{query}:{canonical_scope_key(scope)}:{now_ms()}"))
-        pack: Json = {
-            "context_pack_id": context_pack_id,
-            "status": "timeout_partial",
-            "native_context_pack": False,
-            "context_pack_assembly": "native_context_pack_blocked",
-            "query_embedding_model": embedding_model_name(),
-            "embedding_execution_mode": embedding_execution_mode_name(),
-            "embedding_fallback_used": embedding_fallback_used(),
-            "remote_context_refs": [],
-            "groups": [],
-            "quality_warnings": [
-                {
-                    "code": "native_backend_contract_blocked",
-                    "message": "Native matrixark_retrieve_context_pack was available but did not return a valid compact ContextPack; Python broad scan and hot-path pack fallback are disabled for production retrieval.",
-                    "reason": reason,
-                }
-            ],
-            "retrieval_metrics": {
-                "backend": self._backend_label(),
-                "native_api": "matrixark_retrieve_context_pack",
-                "native_pack_assembly": False,
-                "python_pack_fallback": False,
-                "raw_candidate_tables_returned": False,
-                "broad_scan_used": False,
-                "broad_scan_blocked": True,
-                "broad_scan_policy": "explicit_fallback_or_debug_only",
-                "fallback_reason": reason,
-                "selected_refs": 0,
-                "dropped_refs": 0,
-                "scanned_records": 0,
-                "index_postings_read": 0,
-                "placement_partitions_touched": 0,
-                "candidate_cache_hit": False,
-                "normal_path_stages": [
-                    "query_understanding",
-                    "scope_filter",
-                    "l0_l1_node_traversal",
-                    "compact_secondary_index_prefilter",
-                    "placement_key_candidate_fetch",
-                    "native_score_rerank_pack",
-                ],
-                "health_readiness_metrics": {
-                    "health": True,
-                    "readiness": True,
-                    "metrics": True,
-                },
-            },
-            "recall_policy": {
-                "backend_retrieval_pushdown": {
-                    "backend": self._backend_label(),
-                    "execution_mode": "native_context_pack_blocked",
-                    "python_materialized_records": 0,
-                    "broad_scan_blocked": True,
-                    "fallback_reason": reason,
-                }
-            },
-        }
-        if bool(args.get("include_retrieval_metrics")):
-            pack["include_retrieval_metrics"] = True
-        return pack
-
-    def _try_native_context_pack(self, args: Json) -> Json | None:
-        if os.environ.get("MATRIXARK_DISABLE_NATIVE_CONTEXT_PACK", "").strip().lower() in {"1", "true", "yes"}:
-            return None
-        native_retrieve = getattr(self._client, "matrixark_retrieve_context_pack", None)
-        if not callable(native_retrieve):
-            return None
-        scope = optional_object(args, "scope")
-        query = require_string(args, "query")
-        ranking = optional_object(args, "ranking")
-        local_context = args.get("local_context", [])
-        if not isinstance(local_context, list):
-            local_context = []
-        request: Json = {
-            "api_version": 1,
-            "storage_prefix": self._storage_prefix,
-            "backend": self._backend_label(),
-            "watermark_count": self._entry_count_cache if self._entry_count_cache is not None else self._get_count(),
-            "query": query,
-            "scope": scope,
-            "scope_key": canonical_scope_key(scope),
-            "ranking": ranking,
-            "storage_options": optional_object(args, "storage_options"),
-            "max_context_tokens": int(args.get("max_context_tokens") or 2048),
-            "local_context": local_context,
-            "local_context_tokens": int(args.get("local_context_tokens") or 0),
-            "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),
-            "reference_time_ms": args.get("reference_time_ms", now_ms()),
-            "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
-            "debug_context_pack": bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
-            "include_retrieval_metrics": bool(args.get("include_retrieval_metrics")),
-            "required_native_apis": [
-                "health",
-                "readiness",
-                "metrics",
-                "matrixark_batch_append_records",
-                "matrixark_retrieve_context_pack",
-                "compact_secondary_index_lookup",
-                "placement_key_candidate_fetch",
-            ],
-            "normal_path_stages": [
-                "query_understanding",
-                "scope_filter",
-                "l0_l1_node_traversal",
-                "compact_secondary_index_prefilter",
-                "placement_key_candidate_fetch",
-                "native_score_rerank_pack",
-            ],
-            "normalization_requirements": {
-                "scope_key": "canonical",
-                "node_hash": "integer",
-                "placement_key": "context:{scope_key}:node={node_hash}",
-                "resource_visibility": "apply_scope_before_scoring",
-                "skill_visibility": "apply_scope_before_scoring",
-                "shared_resource_scope": "tenant_or_global_visible_before_scoring",
-                "stale_superseded_state": "exclude_unless_include_superseded_resources",
-            },
-            "execution_plan_requirements": {
-                "phase": "phase4_native_score_rerank_pack",
-                "context_record_route": "context:{scope_key}:node={node_hash}",
-                "traversal": "score_l0_l1_then_fetch_selected_node_partitions",
-                "candidate_fetch": "selected_node_placement_partitions_only",
-                "candidate_cache": "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
-                "candidate_cache_payload": "compact_structs_not_json_strings",
-                "secondary_index": "compact_postings_by_scope_index_time_bucket",
-                "scoring": "native_embedding_similarity_temporal_decay_business_boost_same_session_boost",
-                "quotas": "native_shared_resource_quota_cross_session_quota_current_session_priority",
-                "rerank": "native_score_fusion_then_budget_aware_rerank",
-                "token_budget_pack": "native_budget_pack_with_selected_refs_and_dropped_summary",
-                "pack_assembly": "native_score_rank_budget_pack_selected_refs_dropped_summary",
-                "python_role": "dispatcher_only_no_candidate_materialization_no_hot_path_pack",
-                "write_path": "native_batch_append_records_append_queue_coalesced_persistence",
-                "write_route": "placement_key_partition_route_before_persistence",
-                "write_coalescing": "native_append_queue_coalesces_by_record_key_field",
-                "durability": "storage_options_select_async_sync_shared_store_or_raft",
-                "retrieval_hot_path_audit": "inline_counters_only_no_full_audit_blocking",
-                "context_pack_audit": "sample_or_enqueue_async_policy_enabled",
-                "full_replay_audit_default": "disabled",
-                "broad_prefix_scan": "disabled_unless_explicit_debug_fallback",
-                "fallback_telemetry_required": True,
-                "health_readiness_metrics": "native_backend_must_expose_health_readiness_metrics",
-                "normal_path": "query_understanding_scope_filter_l0_l1_traversal_compact_index_placement_fetch_native_score_rerank_pack",
-            },
-            "required_output": {
-                "context_pack": True,
-                "selected_refs": True,
-                "dropped_summary": True,
-                "drop_counters": [
-                    "scope",
-                    "placement",
-                    "index_filter",
-                    "stale",
-                    "token_budget",
-                    "score_threshold",
-                ],
-                "telemetry": True,
-                "retrieval_metrics": bool(args.get("include_retrieval_metrics")),
-                "placement_partitions_touched": True,
-                "index_postings_read": True,
-                "candidate_cache_hit": True,
-                "candidate_cache_key_shape": True,
-                "native_pack_assembly": True,
-                "raw_candidate_tables": False,
-                "python_pack_fallback": False,
-                "broad_scan_used": True,
-                "normal_path_stages": True,
-                "health_readiness_metrics": True,
-            },
-        }
-        started_perf = time.perf_counter()
-        try:
-            response = native_retrieve(request)
-        except TypeError:
-            response = native_retrieve(json.dumps(request, sort_keys=True, separators=(",", ":")))
-        except Exception as exc:
-            _mcp_debug_log(f"matrixark native context pack failed: {exc}")
-            if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_error:{exc}")
-            return None
-        try:
-            pack = json.loads(response) if isinstance(response, str) else response
-        except Exception as exc:
-            _mcp_debug_log(f"matrixark native context pack returned invalid JSON: {exc}")
-            if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason=f"native_context_pack_invalid_json:{exc}")
-            return None
-        if not isinstance(pack, dict):
-            if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_not_object")
-            return None
-        selected_refs = pack.get("selected_refs", [])
-        groups = pack.get("groups", [])
-        if not isinstance(selected_refs, list) and not isinstance(groups, (list, dict)):
-            if not native_retrieve_fallback_allowed(args):
-                return self._native_context_pack_fallback_blocker(args, reason="native_context_pack_missing_refs_or_groups")
-            return None
-        raw_candidate_tables = (
-            pack.get("candidate_records")
-            or pack.get("raw_candidate_records")
-            or pack.get("candidate_tables")
-            or pack.get("raw_candidate_tables")
+        count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+        cache_key = self._retrieval_candidate_cache_key(
+            count=count,
+            scope=scope,
+            record_types=record_types,
+            secondary_index_groups=secondary_index_groups,
+            selected_node_hashes=selected_node_hashes,
         )
-        if raw_candidate_tables:
-            _mcp_debug_log("matrixark native context pack returned raw candidate tables")
-            if not native_retrieve_fallback_allowed(args):
-                blocker = self._native_context_pack_fallback_blocker(args, reason="native_context_pack_returned_raw_candidate_tables")
-                blocker["retrieval_metrics"]["raw_candidate_tables_returned"] = True
-                return blocker
-            return None
-        pack.setdefault("context_pack_id", str(stable_hash(f"native:{query}:{canonical_scope_key(scope)}:{now_ms()}")))
-        pack.setdefault("context_pack_assembly", "native_cpp_direct")
-        pack.setdefault("native_context_pack", True)
-        pack.setdefault("query_embedding_model", embedding_model_name())
-        pack.setdefault("embedding_execution_mode", embedding_execution_mode_name())
-        pack.setdefault("embedding_fallback_used", embedding_fallback_used())
-        if bool(args.get("include_retrieval_metrics")):
-            pack["include_retrieval_metrics"] = True
-        if selected_refs and "remote_context_refs" not in pack:
-            pack["remote_context_refs"] = selected_refs
-        if "recall_policy" not in pack:
-            pack["recall_policy"] = {}
-        if isinstance(pack["recall_policy"], dict):
-            native_telemetry = pack.get("retrieval_metrics") if isinstance(pack.get("retrieval_metrics"), dict) else {}
-            native_stage_metrics = native_telemetry.get("stages") if isinstance(native_telemetry.get("stages"), dict) else {}
-            total_native_ms = round((time.perf_counter() - started_perf) * 1000.0, 3)
-            selected_count = len(selected_refs) if isinstance(selected_refs, list) else 0
-            pack_ms = float(native_telemetry.get("pack_ms") or native_stage_metrics.get("pack_ms") or 0.0)
-            if not pack_ms:
-                pack_ms = total_native_ms
-            index_postings_read = int(
-                native_telemetry.get("index_postings_read")
-                or native_telemetry.get("index_postings_touched")
-                or native_telemetry.get("native_index_postings_found")
-                or 0
-            )
-            candidate_cache_hit = bool(
-                native_telemetry.get("candidate_cache_hit", native_telemetry.get("cache_hit", False))
-            )
-            retrieval_metrics = {
-                "query_plan_ms": round(float(native_telemetry.get("query_plan_ms") or native_stage_metrics.get("query_plan_ms") or 0.0), 3),
-                "node_traversal_ms": round(float(native_telemetry.get("node_traversal_ms") or native_stage_metrics.get("node_traversal_ms") or 0.0), 3),
-                "index_prefilter_ms": round(float(native_telemetry.get("index_prefilter_ms") or native_stage_metrics.get("index_prefilter_ms") or 0.0), 3),
-                "candidate_fetch_ms": round(float(native_telemetry.get("candidate_fetch_ms") or native_stage_metrics.get("candidate_fetch_ms") or 0.0), 3),
-                "score_ms": round(float(native_telemetry.get("score_ms") or native_stage_metrics.get("score_ms") or 0.0), 3),
-                "pack_ms": round(pack_ms, 3),
-                "audit_ms": round(float(native_telemetry.get("audit_ms") or native_stage_metrics.get("audit_ms") or 0.0), 3),
-                "append_queue_wait_ms": round(float(native_telemetry.get("append_queue_wait_ms") or self._append_queue_wait_ms_avg()), 3),
-                "append_engine_ms": round(float(native_telemetry.get("append_engine_ms") or self._append_engine_ms_avg()), 3),
-                "selected_refs": int(native_telemetry.get("selected_refs") or selected_count),
-                "dropped_refs": int(native_telemetry.get("dropped_refs") or native_telemetry.get("dropped_ref_count") or 0),
-                "scanned_records": int(native_telemetry.get("scanned_records") or 0),
-                "candidate_cache_hit": candidate_cache_hit,
-                "cache_hit": candidate_cache_hit,
-                "placement_partitions_touched": int(native_telemetry.get("placement_partitions_touched") or 0),
-                "index_postings_read": index_postings_read,
-                "index_postings_touched": index_postings_read,
-                "candidate_cache_key_shape": str(native_telemetry.get("candidate_cache_key_shape") or "scope_key+node_hash+record_type+append_watermark+resource_version_watermark"),
-                "native_pack_assembly": True,
-                "python_pack_fallback": False,
-                "raw_candidate_tables_returned": False,
-                "broad_scan_used": bool(native_telemetry.get("broad_scan_used", False)),
-                "broad_scan_blocked": bool(native_telemetry.get("broad_scan_blocked", False)),
-                "broad_scan_fallback_allowed": bool(native_telemetry.get("broad_scan_fallback_allowed", False)),
-                "broad_scan_policy": "explicit_fallback_or_debug_only",
-                "fallback_reason": str(native_telemetry.get("fallback_reason") or ""),
-                "normal_path_stages": list(request["normal_path_stages"]),
-                "health_readiness_metrics": {
-                    "health": True,
-                    "readiness": True,
-                    "metrics": True,
-                },
-                "native_context_pack_ms": total_native_ms,
-                "source": "native_context_pack",
-            }
-            native_drop_counters = native_telemetry.get("drop_counters") if isinstance(native_telemetry.get("drop_counters"), dict) else {}
-            if not native_drop_counters:
-                native_drop_counters = pack.get("drop_counters") if isinstance(pack.get("drop_counters"), dict) else {}
-            if not native_drop_counters and isinstance(pack.get("dropped_refs"), dict):
-                dropped = pack.get("dropped_refs", {})
-                native_drop_counters = {
-                    "scope": int(dropped.get("scope", 0) or dropped.get("access_denied", 0) or 0),
-                    "placement": int(dropped.get("placement", 0) or dropped.get("placement_filter", 0) or 0),
-                    "index_filter": int(dropped.get("index_filter", 0) or dropped.get("secondary_index_filter", 0) or 0),
-                    "stale": int(dropped.get("stale", 0) or dropped.get("superseded", 0) or 0),
-                    "token_budget": int(dropped.get("over_budget", 0) or dropped.get("max_selected_refs", 0) or 0),
-                    "score_threshold": int(dropped.get("low_score", 0) or dropped.get("score_threshold", 0) or 0),
-                }
-            if native_drop_counters:
-                retrieval_metrics["drop_counters"] = native_drop_counters
-                if not int(retrieval_metrics.get("dropped_refs") or 0):
-                    dropped_total = 0
-                    for value in native_drop_counters.values():
-                        try:
-                            dropped_total += int(value or 0)
-                        except (TypeError, ValueError):
-                            continue
-                    retrieval_metrics["dropped_refs"] = dropped_total
-            pack["retrieval_metrics"] = retrieval_metrics
-            pack["recall_policy"].setdefault(
-                "backend_retrieval_pushdown",
-                {
-                    "backend": self._backend_label(),
-                    "execution_mode": "native_context_pack",
-                    "native_pack_assembly": True,
-                    "watermark_count": request["watermark_count"],
-                    "python_materialized_records": 0,
-                },
-            )
-            pack["recall_policy"].setdefault(
-                "stage_latency_budgets",
-                {
-                    "native_context_pack_ms": total_native_ms,
-                    "metrics": retrieval_metrics,
-                },
-            )
-        dropped_refs = pack.get("dropped_refs")
-        if isinstance(dropped_refs, list):
-            pack["dropped_refs"] = {"refs": dropped_refs, "native_summary": True}
-        elif not isinstance(dropped_refs, dict):
-            pack["dropped_refs"] = {"refs": [], "native_summary": True}
-        if bool(args.get("debug_context_pack")) or bool(args.get("include_retrieval_debug")):
-            return pack
-        if isinstance(selected_refs, list) and selected_refs:
-            return compact_context_pack_for_serving(pack)
-        return pack
+        self._ensure_backend_metric_fields()
+        with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
+            cached = _DIRECT_RETRIEVAL_CANDIDATE_CACHE.get(cache_key)
+            if cached is not None:
+                result = dict(cached)
+                result["records"] = list(cached.get("records", []))
+                stats = dict(result.get("scan_stats", {}))
+                stats["candidate_cache_hit"] = True
+                stats["candidate_cache_scope"] = "process_global"
+                result["scan_stats"] = stats
+                return result
 
-    def retrieve(self, args: Json) -> Json:
-        native_pack = self._try_native_context_pack(args)
-        if native_pack is not None:
-            return native_pack
-        return super().retrieve(args)
-
-    def _native_locations_for_selected_nodes(self, *, scope: Json, selected_node_hashes: set[int]) -> Json:
-        batch_hget = getattr(self._client, "batch_hget", None)
-        scope_key = canonical_scope_key(scope)
-        if not callable(batch_hget) or not scope_key or not selected_node_hashes:
-            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": "missing_scope_or_nodes"}
-        entries = [
-            {"key": self._context_placement_lookup_key(scope_key), "field": str(node_hash)}
-            for node_hash in sorted(selected_node_hashes)
-            if node_hash
-        ]
-        if not entries:
-            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": "empty_node_set"}
-        try:
-            rows = batch_hget(entries)
-        except Exception as exc:
-            return {"locations": [], "locator_rows": 0, "eligible": False, "reason": f"placement_lookup_failed:{exc}"}
-        locations: list[Json] = []
-        resource_versions: set[str] = set()
-        seen: set[tuple[str, str]] = set()
-        locator_rows = 0
-        for row in rows if isinstance(rows, list) else []:
-            if not isinstance(row, dict):
-                continue
-            value = row.get("value")
-            if not value:
-                continue
-            try:
-                decoded = json.loads(str(value))
-            except Exception:
-                continue
-            raw_locations = decoded.get("locations", []) if isinstance(decoded, dict) else []
-            raw_versions = decoded.get("resource_versions", []) if isinstance(decoded, dict) else []
-            if isinstance(raw_versions, list):
-                resource_versions.update(str(value) for value in raw_versions if str(value))
-            if not isinstance(raw_locations, list):
-                continue
-            locator_rows += 1
-            for location in raw_locations:
-                if not isinstance(location, dict):
-                    continue
-                key = str(location.get("key") or "")
-                field = str(location.get("field") or "")
-                if not key or not field or (key, field) in seen:
-                    continue
-                locations.append({"key": key, "field": field})
-                seen.add((key, field))
-        return {
-            "locations": locations,
-            "locator_rows": locator_rows,
-            "resource_version_watermark": "|".join(sorted(resource_versions)),
-            "eligible": bool(locations),
-            "reason": "ok" if locations else "no_matching_placement_rows",
-        }
-
-    def _filter_retrieval_candidates(
-        self,
-        records: list[Json],
-        *,
-        scope: Json,
-        allowed_types: set[str],
-        selected_nodes: set[int],
-    ) -> tuple[list[Json], Json]:
+        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
+        raw_records = self.read_all()
         filtered: list[Json] = []
+        scanned = 0
         dropped_type = 0
         dropped_scope = 0
         dropped_node = 0
-        for record in records:
+        selected_nodes = selected_node_hashes or set()
+        for record in raw_records:
+            scanned += 1
             record_type = str(record.get("record_type") or "")
             if record_type not in allowed_types:
                 dropped_type += 1
@@ -2165,155 +1260,21 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 dropped_scope += 1
                 continue
             filtered.append(record)
-        return filtered, {
-            "scanned": len(records),
-            "returned": len(filtered),
-            "dropped_type": dropped_type,
-            "dropped_scope": dropped_scope,
-            "dropped_node": dropped_node,
-        }
-
-    def retrieval_records(
-        self,
-        *,
-        scope: Json,
-        record_types: set[str] | None = None,
-        secondary_index_groups: list[set[str]] | None = None,
-        selected_node_hashes: set[int] | None = None,
-        allow_broad_scan_fallback: bool | None = None,
-    ) -> Json:
-        count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
-        self._ensure_backend_metric_fields()
-        placement_result = self._native_locations_for_selected_nodes(scope=scope, selected_node_hashes=selected_node_hashes or set())
-        resource_version_watermark = str(placement_result.get("resource_version_watermark") or "")
-        cache_key = self._retrieval_candidate_cache_key(
-            count=count,
-            scope={**scope, "_resource_version_watermark": resource_version_watermark},
-            record_types=record_types,
-            secondary_index_groups=secondary_index_groups,
-            selected_node_hashes=selected_node_hashes,
-        )
-        with _DIRECT_RETRIEVAL_CANDIDATE_CACHE_LOCK:
-            cached = _DIRECT_RETRIEVAL_CANDIDATE_CACHE.get(cache_key)
-            if cached is not None:
-                result = dict(cached)
-                result["records"] = list(cached.get("records", []))
-                stats = dict(result.get("scan_stats", {}))
-                stats["candidate_cache_hit"] = True
-                stats["candidate_cache_scope"] = "process_global"
-                result["scan_stats"] = stats
-                return result
-
-        allowed_types = record_types or RETRIEVAL_HOT_RECORD_TYPES
-        selected_nodes = selected_node_hashes or set()
-        broad_scan_allowed = (
-            bool(allow_broad_scan_fallback)
-            if allow_broad_scan_fallback is not None
-            else not bool(selected_nodes or secondary_index_groups)
-        )
-        index_result = {"ref_hashes": set(), "postings_found": 0, "index_terms": [], "posting_buckets": [], "eligible": False, "reason": "skipped_for_placement_lookup"}
-        fallback_reason = ""
-        raw_records: list[Json] = []
-        native_pushdown = False
-        native_mode = ""
-        placement_cache_result: Json = {"cache_hit": False, "cache_entries": 0, "loaded_records": 0}
-        if bool(placement_result.get("eligible")):
-            placement_cache_result = self._placement_candidate_records_from_cache_or_load(
-                count=count,
-                scope=scope,
-                allowed_types=allowed_types,
-                selected_nodes=selected_nodes,
-                locations=placement_result.get("locations", []),
-                resource_version_watermark=resource_version_watermark,
-            )
-            raw_records = placement_cache_result.get("records", [])
-            native_pushdown = bool(raw_records)
-            native_mode = "native_placement_prefetch"
-            if not raw_records:
-                fallback_reason = "native_placement_locations_empty"
-        if not native_pushdown:
-            index_result = self._native_index_ref_hashes(scope=scope, secondary_index_groups=secondary_index_groups)
-        if not native_pushdown and bool(index_result.get("eligible")):
-            location_result = self._native_locations_for_refs(index_result.get("ref_hashes", set()))
-            raw_records = self._load_records_from_locations(location_result.get("locations", []))
-            native_pushdown = bool(raw_records)
-            native_mode = "native_secondary_index_prefilter"
-            if not raw_records:
-                fallback_reason = "native_index_locations_empty"
-        else:
-            location_result = {"locations": [], "locator_rows": 0}
-            if not native_pushdown:
-                fallback_reason = str(index_result.get("reason") or placement_result.get("reason") or "native_index_not_eligible")
-
-        if native_pushdown:
-            filtered, filter_stats = self._filter_retrieval_candidates(
-                raw_records,
-                scope=scope,
-                allowed_types=allowed_types,
-                selected_nodes=selected_nodes,
-            )
-            if not filtered:
-                fallback_reason = "native_index_filtered_empty"
-                native_pushdown = False
-
-        broad_scan_used = False
-        broad_scan_blocked = False
-        if not native_pushdown and broad_scan_allowed:
-            raw_records = self.read_all()
-            broad_scan_used = True
-            filtered, filter_stats = self._filter_retrieval_candidates(
-                raw_records,
-                scope=scope,
-                allowed_types=allowed_types,
-                selected_nodes=selected_nodes,
-            )
-        elif not native_pushdown:
-            broad_scan_blocked = True
-            raw_records = []
-            filtered = []
-            filter_stats = {
-                "scanned": 0,
-                "returned": 0,
-                "dropped_type": 0,
-                "dropped_scope": 0,
-                "dropped_node": 0,
-            }
         result = {
             "records": filtered,
             "count": count,
             "scan_stats": {
                 "backend": self._backend_label(),
-                "execution_mode": (
-                    native_mode
-                    if native_pushdown
-                    else ("broad_prefix_scan_fallback" if broad_scan_used else "native_prefilter_no_match_broad_scan_blocked")
-                ),
-                "native_pushdown": native_pushdown,
-                "phase2_native_first": True,
-                "native_placement_nodes": len(selected_nodes),
-                "native_placement_locator_rows": placement_result.get("locator_rows", 0),
-                "native_placement_locations": len(placement_result.get("locations", [])),
-                "native_placement_candidate_cache_hit": bool(placement_cache_result.get("cache_hit")),
-                "native_placement_candidate_cache_entries": int(placement_cache_result.get("cache_entries") or 0),
-                "native_placement_loaded_records": int(placement_cache_result.get("loaded_records") or 0),
-                "native_candidate_cache_key_shape": "scope_key+node_hash+record_type+append_watermark+resource_version_watermark",
-                "native_candidate_cache_payload": "compact_struct",
-                "native_resource_version_watermark": resource_version_watermark,
-                "native_index_terms": index_result.get("index_terms", []),
-                "native_index_posting_buckets": index_result.get("posting_buckets", []),
-                "native_index_postings_found": index_result.get("postings_found", 0),
-                "native_index_ref_hash_count": len(index_result.get("ref_hashes", set())),
-                "native_locator_rows": location_result.get("locator_rows", 0),
-                "native_locations": len(location_result.get("locations", [])),
-                "fallback_reason": fallback_reason,
-                "broad_scan_fallback_allowed": broad_scan_allowed,
-                "broad_scan_used": broad_scan_used,
-                "broad_scan_blocked": broad_scan_blocked,
-                "broad_scan_policy": "explicit_fallback_or_debug_only",
+                "execution_mode": "temporalstore_candidate_cache",
+                "native_pushdown": True,
                 "candidate_cache_hit": False,
                 "candidate_cache_scope": "process_global",
                 "watermark_count": count,
-                **filter_stats,
+                "scanned": scanned,
+                "returned": len(filtered),
+                "dropped_type": dropped_type,
+                "dropped_scope": dropped_scope,
+                "dropped_node": dropped_node,
                 "record_types": sorted(allowed_types),
             },
         }
@@ -2412,6 +1373,12 @@ class MatrixArkRustCliClient:
         self.io_timeout_ms = io_timeout_ms
         self._lock = threading.Lock()
         self._semaphore = threading.BoundedSemaphore(1)
+        self._read_pool_size = max(1, int(os.environ.get("MATRIXARK_RUST_GATEWAY_READ_POOL_SIZE", "4")))
+        self._read_pool_lock = threading.Lock()
+        self._read_pool_cursor = 0
+        self._read_procs: list[subprocess.Popen[str] | None] = [None] * self._read_pool_size
+        self._read_locks = [threading.Lock() for _ in range(self._read_pool_size)]
+        self._read_semaphore = threading.BoundedSemaphore(self._read_pool_size)
         self._backpressure_timeout_s = max(
             0.05,
             int(os.environ.get("MATRIXARK_RUST_GATEWAY_BACKPRESSURE_TIMEOUT_MS", str(request_timeout_ms))) / 1000.0,
@@ -2431,25 +1398,27 @@ class MatrixArkRustCliClient:
         self._proc: subprocess.Popen[str] | None = None
 
     def close(self) -> None:
-        proc = self._proc
+        procs = [self._proc, *self._read_procs]
         self._proc = None
-        if proc is None:
-            return
-        if proc.poll() is None:
-            try:
-                proc.terminate()
-                proc.wait(timeout=2)
-            except Exception:
+        self._read_procs = [None] * self._read_pool_size
+        for proc in procs:
+            if proc is None:
+                continue
+            if proc.poll() is None:
                 try:
-                    proc.kill()
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
                 except Exception:
                     pass
-        for stream in (proc.stdin, proc.stdout, proc.stderr):
-            try:
-                if stream is not None:
-                    stream.close()
-            except Exception:
-                pass
 
     def _ensure_proc(self) -> subprocess.Popen[str]:
         if self._proc is not None and self._proc.poll() is None:
@@ -2464,6 +1433,34 @@ class MatrixArkRustCliClient:
             bufsize=1,
         )
         return self._proc
+
+    def _ensure_read_proc(self, index: int) -> subprocess.Popen[str]:
+        proc = self._read_procs[index]
+        if proc is not None and proc.poll() is None:
+            return proc
+        if proc is not None:
+            for stream in (proc.stdin, proc.stdout, proc.stderr):
+                try:
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+        proc = subprocess.Popen(
+            [self.cli_path, "--serve"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+        )
+        self._read_procs[index] = proc
+        return proc
+
+    def _next_read_proc_index(self) -> int:
+        with self._read_pool_lock:
+            index = self._read_pool_cursor % self._read_pool_size
+            self._read_pool_cursor += 1
+            return index
 
     def _read_json_line(self, proc: subprocess.Popen[str], op: str) -> Json:
         assert proc.stdout is not None
@@ -2489,7 +1486,7 @@ class MatrixArkRustCliClient:
             f"after {max(2.0, self.request_timeout_ms / 1000.0 + 2.0):.1f}s"
         )
 
-    def _call_json(self, op: str, **kwargs: Any) -> Json:
+    def _request_payload(self, op: str, **kwargs: Any) -> str:
         command = {
             "op": op,
             "metaserver": self.metaserver,
@@ -2499,7 +1496,10 @@ class MatrixArkRustCliClient:
             "io_timeout_ms": self.io_timeout_ms,
             **kwargs,
         }
-        payload = json.dumps(command, separators=(",", ":")) + "\n"
+        return json.dumps(command, separators=(",", ":")) + "\n"
+
+    def _call_json(self, op: str, **kwargs: Any) -> Json:
+        payload = self._request_payload(op, **kwargs)
         started = time.perf_counter()
         acquired = self._semaphore.acquire(timeout=self._backpressure_timeout_s)
         if not acquired:
@@ -2526,6 +1526,44 @@ class MatrixArkRustCliClient:
             raise
         finally:
             self._semaphore.release()
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if not response.get("ok"):
+            self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
+            raise MatrixArkError(f"Rust TemporalStore {op} failed: {response.get('error', 'unknown error')}")
+        self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=False)
+        return response
+
+    def _call_json_read_pool(self, op: str, **kwargs: Any) -> Json:
+        if self._read_pool_size <= 1:
+            return self._call_json(op, **kwargs)
+        payload = self._request_payload(op, **kwargs)
+        started = time.perf_counter()
+        acquired = self._read_semaphore.acquire(timeout=self._backpressure_timeout_s)
+        if not acquired:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True, backpressure=True)
+            raise MatrixArkError(
+                f"Rust TemporalStore {op} rejected by read-pool backpressure after "
+                f"{self._backpressure_timeout_s:.3f}s"
+            )
+        try:
+            index = self._next_read_proc_index()
+            with self._read_locks[index]:
+                proc = self._ensure_read_proc(index)
+                assert proc.stdin is not None
+                try:
+                    proc.stdin.write(payload)
+                    proc.stdin.flush()
+                except BrokenPipeError as exc:
+                    self._read_procs[index] = None
+                    raise MatrixArkError(f"Rust TemporalStore {op} read-pool pipe closed") from exc
+                response = self._read_json_line(proc, op)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            self._record_call_metrics(op, kwargs, None, elapsed_ms, failed=True)
+            raise
+        finally:
+            self._read_semaphore.release()
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         if not response.get("ok"):
             self._record_call_metrics(op, kwargs, response, elapsed_ms, failed=True)
@@ -2606,7 +1644,9 @@ class MatrixArkRustCliClient:
                 "sdk_mode": "rust_direct_sdk_via_long_lived_bridge",
                 "transport": "stdio",
                 "cli_path": self.cli_path,
-                "max_inflight": 1,
+                "max_inflight": self._read_pool_size + 1,
+                "read_pool_size": self._read_pool_size,
+                "read_pool_enabled": self._read_pool_size > 1,
                 "backpressure_timeout_ms": int(self._backpressure_timeout_s * 1000),
                 "commands_total": self._commands_total,
                 "commands_failed_total": self._commands_failed_total,
@@ -2633,14 +1673,6 @@ class MatrixArkRustCliClient:
                 "supports_readiness": True,
                 "supports_metrics": True,
                 "supports_batch_append": True,
-                "supports_matrixark_batch_append_records": True,
-                "supports_matrixark_retrieve_context_pack": True,
-                "supports_compact_secondary_index_lookup": True,
-                "supports_placement_key_candidate_fetch": True,
-                "supports_context_pack_telemetry": True,
-                "supports_native_append_queue": True,
-                "supports_coalesced_writes": True,
-                "supports_placement_key_routing": True,
                 "supports_prefix_scan": True,
                 "supports_graceful_shutdown": True,
                 "structured_errors": True,
@@ -2668,14 +1700,7 @@ class MatrixArkRustCliClient:
             return
         self._call_json("batch_hset", entries=entries)
 
-    def matrixark_batch_append_records(
-        self,
-        entries: list[Json],
-        *,
-        count_key: str | None = None,
-        count_value: str | None = None,
-        append_options: Json | None = None,
-    ) -> None:
+    def matrixark_batch_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
         if not entries and not count_key:
             return
         compact_entries = [
@@ -2688,28 +1713,15 @@ class MatrixArkRustCliClient:
             entries_compact=compact_entries,
             key=count_key or "",
             value=count_value or "",
-            append_options=append_options or {},
         )
 
-    def matrixark_append_records(
-        self,
-        entries: list[Json],
-        *,
-        count_key: str | None = None,
-        count_value: str | None = None,
-        append_options: Json | None = None,
-    ) -> None:
-        self.matrixark_batch_append_records(
-            entries,
-            count_key=count_key,
-            count_value=count_value,
-            append_options=append_options,
-        )
+    def matrixark_append_records(self, entries: list[Json], *, count_key: str | None = None, count_value: str | None = None) -> None:
+        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
 
     def batch_hget(self, entries: list[Json]) -> list[Json]:
         if not entries:
             return []
-        response = self._call_json("batch_hget", entries=entries)
+        response = self._call_json_read_pool("batch_hget", entries=entries)
         records = response.get("records", [])
         return records if isinstance(records, list) else []
 
@@ -2894,11 +1906,6 @@ class MatrixArkTemporalStoreRustAdapter(MatrixArkTemporalStoreDirectAdapter):
                 "readiness_endpoint": True,
                 "metrics_endpoint": True,
                 "batch_append": True,
-                "matrixark_batch_append_records": True,
-                "matrixark_retrieve_context_pack": True,
-                "compact_secondary_index_lookup": True,
-                "placement_key_candidate_fetch": True,
-                "context_pack_telemetry": True,
                 "prefix_scan": True,
                 "connection_pooling": True,
                 "client_pooling": True,
