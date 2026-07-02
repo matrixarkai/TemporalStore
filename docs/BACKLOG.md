@@ -1309,6 +1309,14 @@ Completed since the last backlog update:
       - public reports, metrics, and parity tests should use the canonical
         names from that contract instead of backend-specific `page_store` vs
         `block_store` naming;
+      - migration strategy:
+        - Phase 1 documents the shared schema and compatibility aliases for old
+          report fields;
+        - Phase 2 renames report outputs to canonical fields while preserving
+          old report parsing through `compatibility_aliases` and adapter
+          normalization;
+        - parity gates compare canonical fields only and warn on alias usage
+          until the compatibility window closes.
       - add shared C++/Rust cases for address encode/decode, stable ordering,
         timestamp range lookup, object lookup, page split, compaction rewrite,
         tombstone-before-reclaim, restart index rebuild, and no-cache cold
