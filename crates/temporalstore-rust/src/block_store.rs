@@ -403,8 +403,36 @@ pub struct BlockStoreSegmentReport {
     pub first_routing_slot: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_routing_slot: Option<u32>,
+    #[serde(default)]
+    pub page_index_count: u64,
+    #[serde(default)]
+    pub page_index_entries: Vec<BlockStorePageIndexReport>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub first_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlockStorePageIndexReport {
+    pub page_segment_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extent_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_id: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_id: Option<u64>,
+    pub page_size: u64,
+    pub stored_size: u64,
+    pub dirty: bool,
+    pub deleted: bool,
+    pub page_in_log: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_slot: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1649,6 +1677,12 @@ pub type PageStoreZoneSummary = BlockStoreExtentSummary;
     note = "use BlockStoreSegmentReport; page naming remains only for legacy compatibility"
 )]
 pub type PageStoreSegmentReport = BlockStoreSegmentReport;
+
+#[deprecated(
+    since = "0.1.0",
+    note = "use BlockStorePageIndexReport; page naming remains only for legacy compatibility"
+)]
+pub type PageStorePageIndexReport = BlockStorePageIndexReport;
 
 #[deprecated(
     since = "0.1.0",
@@ -3012,6 +3046,27 @@ mod tests {
         assert_eq!(reports[0].first_error_offset, None);
         assert_eq!(reports[0].first_page_id, first.page_id);
         assert_eq!(reports[0].last_page_id, second.page_id);
+        assert_eq!(reports[0].page_index_count, 2);
+        assert_eq!(reports[0].page_index_entries.len(), 2);
+        assert_eq!(
+            reports[0].page_index_entries[0].page_segment_id,
+            first.page_segment_id
+        );
+        assert_eq!(reports[0].page_index_entries[0].offset, first.offset);
+        assert_eq!(reports[0].page_index_entries[0].length, first.length);
+        assert_eq!(reports[0].page_index_entries[0].page_id, first.page_id);
+        assert_eq!(
+            reports[0].page_index_entries[0].page_size,
+            first_payload.len() as u64
+        );
+        assert!(reports[0].page_index_entries[0].stored_size < first_payload.len() as u64);
+        assert!(!reports[0].page_index_entries[0].dirty);
+        assert!(!reports[0].page_index_entries[0].deleted);
+        assert!(!reports[0].page_index_entries[0].page_in_log);
+        assert_eq!(reports[0].page_index_entries[0].checksum, first.sha256);
+        assert_eq!(reports[0].page_index_entries[1].offset, second.offset);
+        assert_eq!(reports[0].page_index_entries[1].length, second.length);
+        assert_eq!(reports[0].page_index_entries[1].page_id, second.page_id);
         assert_eq!(reports[0].first_error, None);
     }
 
@@ -3037,6 +3092,27 @@ mod tests {
         assert_eq!(reports[0].routing_slot_count, 2);
         assert_eq!(reports[0].first_routing_slot, Some(7));
         assert_eq!(reports[0].last_routing_slot, Some(11));
+        assert_eq!(reports[0].page_index_count, 3);
+        assert_eq!(
+            reports[0]
+                .page_index_entries
+                .iter()
+                .filter_map(|entry| entry.object_id)
+                .collect::<Vec<_>>(),
+            vec![100, 101, 100]
+        );
+        assert_eq!(
+            reports[0]
+                .page_index_entries
+                .iter()
+                .filter_map(|entry| entry.routing_slot)
+                .collect::<Vec<_>>(),
+            vec![7, 11, 7]
+        );
+        assert!(reports[0]
+            .page_index_entries
+            .iter()
+            .all(|entry| !entry.dirty && !entry.deleted && !entry.page_in_log));
         assert_eq!(
             reports[0].readable_prefix_physical_bytes,
             reports[0].physical_bytes

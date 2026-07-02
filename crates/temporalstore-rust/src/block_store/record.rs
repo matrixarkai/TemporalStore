@@ -3,7 +3,10 @@ use std::io::Cursor;
 
 use sha2::{Digest, Sha256};
 
-use super::{BlockAddress, BlockStoreError, BlockStoreOptions, BlockStoreSegmentReport};
+use super::{
+    BlockAddress, BlockStoreError, BlockStoreOptions, BlockStorePageIndexReport,
+    BlockStoreSegmentReport,
+};
 
 pub(super) const PAGE_RECORD_MAGIC: &[u8; 8] = b"TSPAGE01";
 pub(super) const PAGE_RECORD_VERSION: u8 = 6;
@@ -638,6 +641,23 @@ pub(super) fn inspect_segment(segment: &[u8], page_segment_id: u64) -> BlockStor
                 report.logical_bytes = report
                     .logical_bytes
                     .saturating_add(decoded.logical_len as u64);
+                report.page_index_entries.push(BlockStorePageIndexReport {
+                    page_segment_id,
+                    offset: address.offset,
+                    length: address.length,
+                    extent_id: header.extent_id,
+                    object_id: header.object_id,
+                    model_id: None,
+                    page_id: header.page_id,
+                    page_size: decoded.logical_len as u64,
+                    stored_size: header.stored_len as u64,
+                    dirty: false,
+                    deleted: decoded.logical_len == 0,
+                    page_in_log: false,
+                    routing_slot: header.routing_slot,
+                    checksum: Some(sha256_hex(&decoded.payload)),
+                });
+                report.page_index_count = report.page_index_entries.len() as u64;
                 if decoded.compression == PageRecordCompression::Zstd {
                     report.compressed_records = report.compressed_records.saturating_add(1);
                 }
