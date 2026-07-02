@@ -1,7 +1,7 @@
 {
   "partial": false,
   "questions_completed": 20,
-  "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/locomo_q20/locomo_q20_20260623_171007.report.json",
-  "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/locomo_q20/locomo_q20_20260623_171007.result.json",
+  "report_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/locomo_q20/locomo_q20_20260623_171007.report.json",
+  "result_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_171003/locomo_q20/locomo_q20_20260623_171007.result.json",
   "updated_at_ms": 1782259829254
 }

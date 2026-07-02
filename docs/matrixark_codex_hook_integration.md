@@ -56,7 +56,7 @@ one named session.
 For this repo, Codex hooks should use the C++ TemporalStore path by default:
 
 ```bash
-/root/src/github-services/TemporalStore/tools/matrixark_codex_cpp_hook.sh \
+<repo>/tools/matrixark_codex_cpp_hook.sh \
   --event UserPromptSubmit \
   --account-id acct_codex \
   --tenant-id tenant_codex \
@@ -71,7 +71,7 @@ MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
-TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 MATRIXARK_EMBEDDING_PROVIDER=oss
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1
 MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder
@@ -178,7 +178,7 @@ For a trusted project-local setup, create `.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
             "timeout": 30,
             "statusMessage": "Ingesting prompt into MatrixArk"
           }
@@ -190,7 +190,7 @@ For a trusted project-local setup, create `.codex/hooks.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
+            "command": "python3 <repo>/tools/matrixark_codex_hook.py --event Stop --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute",
             "timeout": 30,
             "statusMessage": "Ingesting final Codex turn signal into MatrixArk"
           }
@@ -206,8 +206,8 @@ On Windows, use `commandWindows` if Codex runs hooks through PowerShell/CMD:
 ```json
 {
   "type": "command",
-  "command": "python3 /root/src/github-services/TemporalStore/tools/matrixark_codex_hook.py --event UserPromptSubmit",
-  "commandWindows": "wsl -d Ubuntu2204Deeproute -- bash -lc 'cd /root/src/github-services/TemporalStore && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
+  "command": "python3 <repo>/tools/matrixark_codex_hook.py --event UserPromptSubmit",
+  "commandWindows": "wsl -d Ubuntu2204LocalUser -- bash -lc 'cd <repo> && python3 tools/matrixark_codex_hook.py --event UserPromptSubmit --event-log /tmp/matrixark-codex-hook.jsonl --account-id acct_codex --tenant-id tenant_codex --user-id deeproute'",
   "timeout": 30
 }
 ```
@@ -226,7 +226,7 @@ export MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 export MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 export MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 export MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:codex-hook
-export TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+export TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 ```
 
 Then run the same hook command. The hook will persist Codex-derived context

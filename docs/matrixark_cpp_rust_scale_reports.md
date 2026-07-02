@@ -6,7 +6,7 @@ MatrixArk now has a canonical scale comparison runner for C++ and Rust TemporalS
 
 ```bash
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_cpp_rust_scale_report.py \
-  --consumer-repo /root/src/github-services/TemporalStore \
+  --consumer-repo <repo> \
   --artifact-dir /tmp/matrixark-cpp-rust-scale \
   --events 120 \
   --queries 30 \

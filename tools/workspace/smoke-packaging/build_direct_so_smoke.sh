@@ -51,4 +51,5 @@ gcc -Isrc /tmp/temporalstore-direct-so-src/direct_so_smoke.c -Loutput-ubuntu22/r
 ldd /tmp/temporalstore-direct-so-src/direct_so_smoke | grep -E 'libbcache2|not found' || true
 tar -C /tmp/temporalstore-direct-so-src -czf /tmp/temporalstore-direct-so-smoke.tar.gz direct_so_smoke
 ls -lh /tmp/temporalstore-direct-so-smoke.tar.gz
-cp /tmp/temporalstore-direct-so-smoke.tar.gz /mnt/c/Users/'Vincent Jiang'/Documents/Codex/2026-05-10/bytekv-in-local-vs-etcd/local_build/BCache2-build-sandbox/infra/aws/temporalstore-test/temporalstore-direct-so-smoke.tar.gz
+OUTPUT_DIR="${TEMPORALSTORE_SMOKE_OUTPUT_DIR:-/tmp}"
+cp /tmp/temporalstore-direct-so-smoke.tar.gz "${OUTPUT_DIR}/temporalstore-direct-so-smoke.tar.gz"

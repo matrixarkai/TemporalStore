@@ -605,7 +605,7 @@
   "worker": {
     "command": [
       "/usr/bin/python3",
-      "/mnt/c/Users/Deeproute/Documents/Codex/temporalstore-main-push-native-index/tools/run_matrixark_cpp_rust_scale_report.py",
+      "<workspace>/Codex/temporalstore-main-push-native-index/tools/run_matrixark_cpp_rust_scale_report.py",
       "--backend-worker",
       "python_ref",
       "--backend-worker-output",
@@ -643,7 +643,7 @@
       "--storage-prefix",
       "matrixark:scale",
       "--cpp-lib",
-      "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so",
+      "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so",
       "--rust-cli",
       "target/release/matrixark_record_log",
       "--python-ref-store",

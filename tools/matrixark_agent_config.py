@@ -12,7 +12,7 @@ import argparse
 import json
 
 
-DEFAULT_REPO_ROOT = "/root/src/github-services/TemporalStore"
+DEFAULT_REPO_ROOT = "."
 DEFAULT_LAUNCHER = "tools/matrixark_mcp_cpp_server.sh"
 
 

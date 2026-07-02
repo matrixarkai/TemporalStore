@@ -68,8 +68,7 @@ copy_noodle() {
     candidates+=("${MTCACHE_NOODLE_SRC_DIR}")
   fi
   candidates+=(
-    "/mnt/c/Users/Vincent Jiang/Downloads/ES_C++/minimum/src"
-    "/mnt/c/Users/Vincent/Downloads/ES_C++/minimum/src"
+    "<local-downloads>/ES_C++/minimum/src"
   )
 
   for src in "${candidates[@]}"; do

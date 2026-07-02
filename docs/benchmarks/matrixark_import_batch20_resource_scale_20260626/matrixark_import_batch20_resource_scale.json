@@ -1,9 +1,9 @@
 {
   "artifacts": {
-    "event_log_local_only": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
-    "raw_runner_report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.json",
-    "raw_runner_report_md": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.md",
-    "stdout": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/stdout.txt"
+    "event_log_local_only": "<repo>/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.jsonl",
+    "raw_runner_report_json": "<repo>/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.json",
+    "raw_runner_report_md": "<repo>/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/matrixark_retrieve_resource_scale.md",
+    "stdout": "<repo>/docs/benchmarks/matrixark_import_batch20_resource_scale_20260626/stdout.txt"
   },
   "backend": "local-jsonl",
   "batch_extraction": {

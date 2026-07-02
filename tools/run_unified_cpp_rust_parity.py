@@ -60,9 +60,9 @@ def default_cpp_repo() -> str | None:
     override = os.environ.get("TS_CPP_REPO")
     if override:
         return override
-    if os.name == "nt" and wsl_path_exists("/root/src/github-services/TemporalStore"):
-        return "wsl:/root/src/github-services/TemporalStore"
-    candidate = Path("/root/src/github-services/TemporalStore")
+    if os.name == "nt" and wsl_path_exists("<repo>"):
+        return "wsl:<repo>"
+    candidate = Path("<repo>")
     return str(candidate) if candidate.exists() else None
 
 

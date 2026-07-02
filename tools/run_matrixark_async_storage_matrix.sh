@@ -271,7 +271,7 @@ lines.extend([
     "## Reproduce",
     "",
     "```bash",
-    "cd /root/src/github-services/TemporalStore",
+    "cd <repo>",
     "BUILD_TYPE=Release \\",
     "DATASET=locomo \\",
     "DATA_PATH=/root/matrixark_benchmarks/data/locomo10.json \\",

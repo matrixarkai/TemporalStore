@@ -5,12 +5,12 @@ project hook approval UI.
 
 ## Local Codex Config
 
-Add this server to `C:\Users\Deeproute\.codex\config.toml`:
+Add this server to `<workspace>\.codex\config.toml`:
 
 ```toml
 [mcp_servers.matrixark]
 command = &#x27;wsl.exe&#x27;
-args = [ &#x27;--cd&#x27;, &#x27;/root/src/github-services/TemporalStore&#x27;, &#x27;-e&#x27;, &#x27;bash&#x27;, &#x27;-lc&#x27;, &#x27;exec tools/matrixark_mcp_cpp_server.sh&#x27; ]
+args = [ &#x27;--cd&#x27;, &#x27;<repo>&#x27;, &#x27;-e&#x27;, &#x27;bash&#x27;, &#x27;-lc&#x27;, &#x27;exec tools/matrixark_mcp_cpp_server.sh&#x27; ]
 startup_timeout_sec = 120
 ```
 
@@ -18,7 +18,7 @@ The local config on this machine has already been updated and a backup was
 saved at:
 
 ```text
-C:\Users\Deeproute\.codex\config.toml.bak-matrixark-mcp
+<workspace>\.codex\config.toml.bak-matrixark-mcp
 ```
 
 Restart Codex Desktop after editing `config.toml` so it reloads MCP servers.
@@ -33,7 +33,7 @@ MATRIXARK_TEMPORALSTORE_METASERVER=127.0.0.1:18000
 MATRIXARK_TEMPORALSTORE_NAMESPACE=deploy_ns
 MATRIXARK_TEMPORALSTORE_TABLE=deploy_table
 MATRIXARK_TEMPORALSTORE_PREFIX=matrixark:mcp:codex
-TEMPORALSTORE_LIB=/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
+TEMPORALSTORE_LIB=<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
 MATRIXARK_EMBEDDING_PROVIDER=oss
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1
 MATRIXARK_UNDERSTANDING_PROVIDER=oss_encoder
@@ -71,7 +71,7 @@ From PowerShell:
 ```powershell
 $req = &#x27;{&quot;jsonrpc&quot;:&quot;2.0&quot;,&quot;id&quot;:1,&quot;method&quot;:&quot;tools/list&quot;,&quot;params&quot;:{}}&#x27; + &quot;`n&quot;
 Set-Content -NoNewline -Encoding ascii &quot;$env:TEMP\matrixark-mcp-smoke.jsonl&quot; $req
-wsl --cd /root/src/github-services/TemporalStore -e bash -lc &#x27;timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json &lt; /mnt/c/Users/Deeproute/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 500&#x27;
+wsl --cd <repo> -e bash -lc &#x27;timeout 30s tools/matrixark_mcp_cpp_server.sh --line-json &lt; <workspace>/AppData/Local/Temp/matrixark-mcp-smoke.jsonl | head -c 500&#x27;
 ```
 
 Expected output starts with:

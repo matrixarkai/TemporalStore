@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euxo pipefail
 
-SOURCE_DIR="/mnt/c/Users/Vincent Jiang/Downloads/bytekv-master/bytekv-master"
+SOURCE_DIR="<local-downloads>/bytekv-master/bytekv-master"
 cd "${SOURCE_DIR}"
 
 scripts/gen_commit_id "${SOURCE_DIR}" || true

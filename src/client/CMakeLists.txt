@@ -10,7 +10,7 @@ if (CYGWIN)
 else()
     add_library(bcache2-shared SHARED ${HDRS} ${SRCS})
 endif()
-target_link_directories(bcache2-shared PRIVATE /root/src/cmake-glue/lib)
+target_link_directories(bcache2-shared PRIVATE ${PROJECT_SOURCE_DIR}/.local/cmake-glue/lib)
 target_link_libraries(bcache2-shared
     common
     bcache2_proto

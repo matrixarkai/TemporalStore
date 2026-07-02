@@ -76,7 +76,7 @@ Keep the existing `matrixark` MCP server on C++ as the default. Add Rust as a se
 ```toml
 [mcp_servers.matrixark_rust]
 command = "wsl.exe"
-args = ["--cd", "/root/src/github-services/TemporalStore", "-e", "bash", "-lc", "exec tools/matrixark_mcp_rust_server.sh"]
+args = ["--cd", "<repo>", "-e", "bash", "-lc", "exec tools/matrixark_mcp_rust_server.sh"]
 startup_timeout_sec = 180
 enabled = false
 ```

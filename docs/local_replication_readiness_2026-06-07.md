@@ -28,7 +28,7 @@ client write
 Command:
 
 ```bash
-cd /root/src/temporalstore
+cd <repo>
 RESULT_DIR=/tmp/temporalstore-readiness-20260607T152830Z \
 FORCE_BUILD=0 \
 BUILD_JOBS=2 \

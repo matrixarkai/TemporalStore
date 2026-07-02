@@ -1,12 +1,12 @@
 {
   "artifacts": {
-    "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.context_packs.jsonl",
-    "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.hypotheses.jsonl",
-    "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.judge.jsonl",
-    "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.progress.json",
-    "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.report.json",
-    "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.report.md",
-    "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.result.json"
+    "context_pack_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.context_packs.jsonl",
+    "hypotheses_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.hypotheses.jsonl",
+    "judge_jsonl": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.judge.jsonl",
+    "progress_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.progress.json",
+    "report_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.report.json",
+    "report_markdown": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.report.md",
+    "result_json": "<repo>/docs/benchmarks/matrixark_raft_dataset_slice_20260623_170921/locomo_q5/locomo_q5_20260623_170925.result.json"
   },
   "dataset": {
     "answerable_questions_run": 5,

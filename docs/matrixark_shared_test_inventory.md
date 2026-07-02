@@ -10,7 +10,7 @@ Generated with:
 
 ```bash
 cd third_party/TemporalStoreTestCorpus
-python3 tools/count_test_inventory.py --consumer-repo /root/src/github-services/TemporalStore --json
+python3 tools/count_test_inventory.py --consumer-repo <repo> --json
 ```
 
 | Category | Count | Notes |
@@ -25,17 +25,17 @@ python3 tools/count_test_inventory.py --consumer-repo /root/src/github-services/
 Run shared tests from the shared repo and point them at the consumer repo:
 
 ```bash
-cd /root/src/github-services/TemporalStoreTestCorpus
-TEMPORALSTORE_CONSUMER_REPO=/root/src/github-services/TemporalStore \
-PYTHONPATH=/root/src/github-services/TemporalStore \
+cd <TemporalStoreTestCorpus>
+TEMPORALSTORE_CONSUMER_REPO=<repo> \
+PYTHONPATH=<repo> \
 python3 tools/test_matrixark_mcp_server.py
 ```
 
 The same pattern applies to shared benchmark/parity runners such as:
 
 ```bash
-TEMPORALSTORE_CONSUMER_REPO=/root/src/github-services/TemporalStore \
-PYTHONPATH=/root/src/github-services/TemporalStore \
+TEMPORALSTORE_CONSUMER_REPO=<repo> \
+PYTHONPATH=<repo> \
 python3 tools/run_matrixark_context_storage_benchmark.py --backend local --events 40 --queries 4 --ingest-mode batch --batch-size 20
 ```
 

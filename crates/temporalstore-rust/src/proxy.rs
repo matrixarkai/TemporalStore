@@ -1332,11 +1332,11 @@ impl ProxyService {
         ProxyMetricsParityReport {
             status: Status::ok(),
             compared_cpp_files: vec![
-                "/root/src/github-services/TemporalStore/src/common/metrics.h".to_string(),
-                "/root/src/github-services/TemporalStore/src/common/metrics.cc".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.cc".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/service.cc".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/flags.cc".to_string(),
+                "<repo>/src/common/metrics.h".to_string(),
+                "<repo>/src/common/metrics.cc".to_string(),
+                "<repo>/src/proxy/heartbeat.cc".to_string(),
+                "<repo>/src/proxy/service.cc".to_string(),
+                "<repo>/src/proxy/flags.cc".to_string(),
             ],
             rust_prometheus_families: proxy_metrics_families()
                 .into_iter()
@@ -1403,12 +1403,12 @@ impl ProxyService {
             legacy_brpc_thrift_in_scope: false,
             rust_native_aliases_ready: true,
             compared_cpp_files: vec![
-                "/root/src/github-services/TemporalStore/src/proxy/proxy.h".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/proxy.cc".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.h".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/heartbeat.cc".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/service.h".to_string(),
-                "/root/src/github-services/TemporalStore/src/proxy/service.cc".to_string(),
+                "<repo>/src/proxy/proxy.h".to_string(),
+                "<repo>/src/proxy/proxy.cc".to_string(),
+                "<repo>/src/proxy/heartbeat.h".to_string(),
+                "<repo>/src/proxy/heartbeat.cc".to_string(),
+                "<repo>/src/proxy/service.h".to_string(),
+                "<repo>/src/proxy/service.cc".to_string(),
             ],
             entries: vec![
                 proxy_operational_surface_entry(

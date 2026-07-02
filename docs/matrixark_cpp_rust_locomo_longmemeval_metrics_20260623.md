@@ -4,12 +4,12 @@ This run compares MatrixArk benchmark behavior on the C++ TemporalStore direct b
 
 ## Environment
 
-- Repo: /root/src/github-services/TemporalStore
+- Repo: <repo>
 - Branch: main
 - LOCOMO data: /root/matrixark_benchmarks/data/locomo10.json
 - LongMemEval_s data: /root/matrixark_benchmarks/data/longmemeval_s_cleaned_official_hf.json
-- C++ library: /root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so
-- Rust CLI: /root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log
+- C++ library: <repo>/output-ubuntu22/release/sdk/lib/libbcache2.so
+- Rust CLI: <repo>/sdk/rust/temporalstore/target/release/matrixark_record_log
 - Reader: deterministic CI reader, not paper-style LLM reader
 - Judge: deterministic local support judge, not paper-style GPT judge
 - Token budget: 1200 context tokens

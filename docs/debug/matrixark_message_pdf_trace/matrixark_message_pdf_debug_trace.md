@@ -10,7 +10,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 
 ## Configuration
 
-- Event log: `/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/matrixark_message_pdf_debug_trace.jsonl`
+- Event log: `<repo>/docs/debug/matrixark_message_pdf_trace/matrixark_message_pdf_debug_trace.jsonl`
 - Embedding model: `matrixark-local-token-hash-v1`
 - Embedding execution mode: `deterministic-token-hash`
 - Query: `What is the current Project Aurora GPU approval, owner, budget cap, deadline, and runbook blocker?`
@@ -60,31 +60,31 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 
 |raw_uri|title|line_count|
 |---|---|---|
-|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|Project Aurora GPU Approval Packet|5|
-|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|GPU Procurement Runbook|4|
-|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|Budget Update Memo|4|
+|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|Project Aurora GPU Approval Packet|5|
+|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|GPU Procurement Runbook|4|
+|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|Budget Update Memo|4|
 
 ## Resource Import Tasks
 
 |status|raw_uri|resource_type|chunk_count|resource_fact_count|resource_entity_count|metrics|
 |---|---|---|---|---|---|---|
-|queued|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|||||
-|running|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|||||
-|completed|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 205.382, "embedding_count":...|
-|queued|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|||||
-|running|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|||||
-|completed|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|1|3|3|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 19.877, "embedding_count": ...|
-|queued|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|||||
-|running|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|||||
-|completed|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|1|5|5|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 18.248, "embedding_count": ...|
+|queued|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|||||
+|running|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|||||
+|completed|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|pdf|1|7|7|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 205.382, "embedding_count":...|
+|queued|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|||||
+|running|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|||||
+|completed|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|pdf|1|3|3|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 19.877, "embedding_count": ...|
+|queued|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|||||
+|running|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|||||
+|completed|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|pdf|1|5|5|{"chunk_count": 1, "cloud_bucket": "", "cloud_key": "", "dedupe_count": 0, "duration_ms": 18.248, "embedding_count": ...|
 
 ## Resource Chunks
 
 |chunk_hash|raw_uri|source_ref|token_estimate|metadata.unit_kind|metadata.content_hash|text|
 |---|---|---|---|---|---|---|
-|8736436273504687932|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|51|pdf_page|49199ad5bd94964c|Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Own...|
-|6034139221235933872|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|43|pdf_page|7aaae94b56b51807|GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and ba...|
-|4893379877725482254|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|48|pdf_page|87731a0bb7829d5c|Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state:...|
+|8736436273504687932|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|51|pdf_page|49199ad5bd94964c|Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU purchase after finance review. Own...|
+|6034139221235933872|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|43|pdf_page|7aaae94b56b51807|GPU Procurement Runbook Procedure: Attach finance approval before vendor selection. Procedure: Compare primary and ba...|
+|4893379877725482254|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|48|pdf_page|87731a0bb7829d5c|Budget Update Memo Update: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars. Current state:...|
 
 ## Extracted Events
 
@@ -98,23 +98,23 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 |6460926268341786696|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: The active deadline is July 15, 2026. Vendor selection requires the finance approval attachment.||
 |3050751851654260645|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||user: Correction: Alice raised the cap to 45000 dollars after the backup GPU quote came in.||
 |6665319736342895071|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|||assistant: Updated: the current Project Aurora GPU budget cap is 45000 dollars.||
-|571365746382456544|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|resource_decision|resource_decision: Alice approved the Project Aurora GPU purchase after finance review|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|2900456491093257987|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|resource_owner|resource_owner: Bob owns procurement and vendor coordination|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|1596920217437410578|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Current approved cap is 45000 dollars|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|9047961491740927299|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|resource_deadline|resource_deadline: Purchase order must be ready by July 15, 2026|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|929939956861191542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: be ready by July 15, 2026|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|274150047248606686|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: Packet|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|4265994536714805107|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: Vendor selection is blocked if finance approval is not attached|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|571365746382456544|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|resource_decision|resource_decision: Alice approved the Project Aurora GPU purchase after finance review|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|2900456491093257987|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|resource_owner|resource_owner: Bob owns procurement and vendor coordination|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|1596920217437410578|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Current approved cap is 45000 dollars|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|9047961491740927299|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|resource_deadline|resource_deadline: Purchase order must be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|929939956861191542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: be ready by July 15, 2026|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|274150047248606686|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: Packet|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|4265994536714805107|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: Vendor selection is blocked if finance approval is not attached|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
 |8513196518652600321|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Project Aurora GPU Approval Packet||
-|2159848791115076643|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting_step|resource_troubleshooting|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|4657147395257529645|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: before vendor selection|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|5464066946068943028|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: Attach finance approval before vendor selection|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|2159848791115076643|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting_step|resource_troubleshooting|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|4657147395257529645|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|5464066946068943028|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: Attach finance approval before vendor selection|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
 |443443440602181842|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: GPU Procurement Runbook||
-|6698509590300807928|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Update Memo|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|5430002385288940542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: not be used for current-state answers|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|6999014925757708944|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: r: Alice confirmed the updated cap|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|2824274976164423253|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: 42000 dollars is historical and should not be used for current-state answers|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|4155085225937358975|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: ed the updated cap|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6698509590300807928|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|resource_cost|resource_cost: Update Memo|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|5430002385288940542|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|resource_policy|resource_policy: not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6999014925757708944|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|resource_approval|resource_approval: r: Alice confirmed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|2824274976164423253|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|resource_risk|resource_risk: 42000 dollars is historical and should not be used for current-state answers|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|4155085225937358975|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|resource_procedure|resource_procedure: ed the updated cap|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
 |1585344323533811142|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|||tool: Import PDF resource for MatrixArk parsing: Budget Update Memo||
 
 ## Extracted Entities
@@ -126,21 +126,21 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 |5708414255151575681|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|by Alice in finance, pending procurement owner assignment|LLM_MERGE|by Alice in finance, pending procurement owner assignment||
 |8967060400784335657|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|must be attached before vendor selection|LLM_MERGE|must be attached before vendor selection||
 |1722827731307680407|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]|approval_state|attachment|LLM_MERGE|attachment||
-|6763603293199773729|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|decision:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|8832111546635263332|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|owner:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|203192128854999035|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|1846258924606901354|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|deadline:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|957438680062716470|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|3959598143726660477|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|7448309444804846956|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
-|482208152304334466|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting|troubleshooting:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|1138079515152565102|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|2904433185475945916|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
-|8287587184611689973|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|6918872119779279271|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|62418527498755741|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|9128041085176869255|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
-|2222864349714042728|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/f:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6763603293199773729|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_decision|decision:<repo>/docs/debug/matrixark_message_pdf_trace/f:Alice approved the Project ...|LATEST|resource_decision: Alice approved the Project Aurora GPU purchase after finance review. Source: Project Aurora GPU Ap...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|8832111546635263332|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_owner|owner:<repo>/docs/debug/matrixark_message_pdf_trace/f:Bob owns procurement and vendo...|LATEST|resource_owner: Bob owns procurement and vendor coordination. Source: Project Aurora GPU Approval Packet Decision: Al...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|203192128854999035|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Current approved cap is 45000 d...|LATEST|resource_cost: Current approved cap is 45000 dollars. Source: Project Aurora GPU Approval Packet Decision: Alice appr...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|1846258924606901354|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_deadline|deadline:<repo>/docs/debug/matrixark_message_pdf_trace/f:Purchase order must be read...|LATEST|resource_deadline: Purchase order must be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|957438680062716470|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:be ready by July 15, 2026|LATEST|resource_policy: be ready by July 15, 2026. Source: Project Aurora GPU Approval Packet Decision: Alice approved the P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|3959598143726660477|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:Packet|LATEST|resource_approval: Packet. Source: Project Aurora GPU Approval Packet Decision: Alice approved the Project Aurora GPU...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|7448309444804846956|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:Vendor selection is blocked if ...|LATEST|resource_risk: Vendor selection is blocked if finance approval is not attached. Source: Project Aurora GPU Approval P...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pd...|
+|482208152304334466|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_troubleshooting|troubleshooting:<repo>/docs/debug/matrixark_message_pdf_trace/f:Procedure: Attach fi...|LATEST|resource_troubleshooting_step: Procedure: Attach finance approval before vendor selection. Source: GPU Procurement Ru...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|1138079515152565102|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:before vendor selection|LATEST|resource_approval: before vendor selection. Source: GPU Procurement Runbook Procedure: Attach finance approval before...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|2904433185475945916|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:Attach finance approval be...|LATEST|resource_procedure: Attach finance approval before vendor selection. Source: GPU Procurement Runbook Procedure: Attac...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1|
+|8287587184611689973|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_cost|cost:<repo>/docs/debug/matrixark_message_pdf_trace/f:Update Memo|LATEST|resource_cost: Update Memo. Source: Budget Update Memo Update: The backup GPU quote increased the cap from 42000 doll...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|6918872119779279271|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_policy|policy:<repo>/docs/debug/matrixark_message_pdf_trace/f:not be used for current-state...|LATEST|resource_policy: not be used for current-state answers. Source: Budget Update Memo Update: The backup GPU quote incre...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|62418527498755741|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_approval|approval:<repo>/docs/debug/matrixark_message_pdf_trace/f:r: Alice confirmed the upda...|LATEST|resource_approval: r: Alice confirmed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increa...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|9128041085176869255|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_risk|risk:<repo>/docs/debug/matrixark_message_pdf_trace/f:42000 dollars is historical and...|LATEST|resource_risk: 42000 dollars is historical and should not be used for current-state answers. Source: Budget Update Me...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
+|2222864349714042728|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|resource_procedure|procedure:<repo>/docs/debug/matrixark_message_pdf_trace/f:ed the updated cap|LATEST|resource_procedure: ed the updated cap. Source: Budget Update Memo Update: The backup GPU quote increased the cap fro...|<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1|
 
 ## Summaries
 
@@ -155,11 +155,11 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |batch_l0|3690166991097399202|["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session", "conversation:project_aurora"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. assistan...||
-|resource_l0|1065960116080248254|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: /root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval...|[8736436273504687932]|
+|resource_l0|1065960116080248254|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval...|[8736436273504687932]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|3105537185769273475|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: /root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook....|[6034139221235933872]|
+|resource_l0|3105537185769273475|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook....|[6034139221235933872]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
-|resource_l0|5896945476345582083|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: /root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_updat...|[4893379877725482254]|
+|resource_l0|5896945476345582083|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||resource: <repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_updat...|[4893379877725482254]|
 |session_l0|8695652974415713980|["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]||user: Alice from finance approved the GPU purchase request for Project Aurora after reviewing the Q3 budget. user: Al...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session :: user: Alice from finance approved the GPU...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "session:debug-message-pdf-session"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / session:debug-message-pdf-session. Rich overview: user: Alice fro...||
@@ -169,10 +169,10 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
 |node_l1||["tenant:tenant_codex"]|has_child_summaries|Context node tenant:tenant_codex. Rich overview: user: Alice from finance approved the GPU purchase request for Proje...||
 |node_l0||["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|tenant:tenant_codex / user:deeproute :: user: Alice from finance approved the GPU purchase request for Project Aurora...||
 |node_l1||["tenant:tenant_codex", "user:deeproute"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute. Rich overview: user: Alice from finance approved the GPU purchase ...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: resource: /root/src/github-services/TemporalStore/docs/debug/matr...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: resource: /root/src/github-services/Tem...||
-|node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: resource: /root/src/github-services/TemporalStor...||
-|node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: resource: /root/src/gi...||
+|node_l0||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources :: resource: <repo>/docs/debug/matr...||
+|node_l1||["tenant:tenant_codex", "user:deeproute", "resources"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources. Rich overview: resource: <repo>/github-services/Tem...||
+|node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|tenant:tenant_codex / user:deeproute / resources / project_aurora :: resource: <repo>/github-services/TemporalStor...||
+|node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora"]|has_child_summaries|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora. Rich overview: resource: <repo>/gi...||
 |node_l0||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement :: GPU Procurement Runbook Proced...||
 |node_l1||["tenant:tenant_codex", "user:deeproute", "resources", "project_aurora", "gpu_procurement"]|event_count_threshold|Context node tenant:tenant_codex / user:deeproute / resources / project_aurora / gpu_procurement. Rich overview: GPU ...||
 
@@ -428,7 +428,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
     "refs": [
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -490,7 +490,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.80692,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -498,7 +498,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -560,7 +560,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.803316,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -568,7 +568,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -630,7 +630,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.791875,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -638,7 +638,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -700,7 +700,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.788054,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -708,7 +708,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -770,7 +770,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.785084,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -778,7 +778,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -840,7 +840,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.780629,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -848,7 +848,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -910,7 +910,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.692372,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -918,7 +918,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -980,7 +980,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.687448,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -988,7 +988,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1050,7 +1050,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.684075,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1058,7 +1058,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1120,7 +1120,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.681378,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -1128,7 +1128,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1190,7 +1190,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.656047,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 43,
         "token_estimate": 43,
@@ -1198,7 +1198,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -1260,7 +1260,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.648173,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 43,
         "token_estimate": 43,
@@ -1471,7 +1471,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "score": 0.849325,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 8736436273504687932,
-      "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+      "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
       "sparse_score": 0.7857142857142857,
       "text": "Project Aurora GPU Approval Packet\nDecision: Alice approved the Project Aurora GPU purchase after finance review.\nOwner: Bob owns procurement and vendor coordination.\nBudget: Current approved cap is 45000 dollars.\nDeadline: Purchase order must be ready by July 15, 2026.\nRisk: Vendor selection is blocked if finance approval is not attached.",
       "time_score": 1.0,
@@ -1735,7 +1735,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "score": 0.728759,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 4893379877725482254,
-      "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+      "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
       "sparse_score": 0.5,
       "text": "Budget Update Memo\nUpdate: The backup GPU quote increased the cap from 42000 dollars to 45000 dollars.\nCurrent state: 45000 dollars is the valid active budget cap.\nStale blocker: 42000 dollars is historical and should not be used for current-state answers.\nApprover: Alice confirmed the updated cap.",
       "time_score": 1.0,
@@ -1837,7 +1837,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       "score": 0.698979,
       "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
       "source_chunk_hash": 6034139221235933872,
-      "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
+      "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_runbook.pdf#page=1",
       "sparse_score": 0.35714285714285715,
       "text": "GPU Procurement Runbook\nProcedure: Attach finance approval before vendor selection.\nProcedure: Compare primary and backup GPU quotes before purchase order creation.\nTroubleshooting: If approval attachment is missing, notify Alice and stop vendor selection.\nAudit: Store final vendor selection evidence with the purchase order.",
       "time_score": 1.0,
@@ -3097,7 +3097,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
     "refs": [
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3159,7 +3159,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.80692,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3167,7 +3167,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3229,7 +3229,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.803316,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3237,7 +3237,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3299,7 +3299,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.791875,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3307,7 +3307,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3369,7 +3369,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.788054,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3377,7 +3377,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3439,7 +3439,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.785084,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3447,7 +3447,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3509,7 +3509,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.780629,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_gpu_approval_packet.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 51,
         "token_estimate": 51,
@@ -3517,7 +3517,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [
@@ -3579,7 +3579,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
         "resource_version": "",
         "score": 0.692372,
         "selection_reason": "selected by tree path, secondary indexes, and resource fact/event hybrid score",
-        "source_ref": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "source_ref": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "stale_or_superseded": false,
         "token_cost": 48,
         "token_estimate": 48,
@@ -3587,7 +3587,7 @@ python3 tools/run_matrixark_message_pdf_debug_trace.py
       },
       {
         "access_decision": "allowed_by_scope",
-        "citation": "/root/src/github-services/TemporalStore/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
+        "citation": "<repo>/docs/debug/matrixark_message_pdf_trace/fixtures/aurora_budget_update.pdf#page=1",
         "context_class": "resource_fact",
         "drop_reason": "duplicate",
         "matched_index_terms": [

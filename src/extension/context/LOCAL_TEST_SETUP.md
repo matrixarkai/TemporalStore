@@ -8,13 +8,13 @@ MatrixArk.
 Windows path:
 
 ```text
-C:\Users\Deeproute\Documents\Codex\2026-06-07\what-s-the-topology-for-all\temporalstore-service-fix
+<workspace>\Codex\2026-06-07\what-s-the-topology-for-all\temporalstore-service-fix
 ```
 
 WSL path:
 
 ```bash
-/mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+<workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 ```
 
 Branch:
@@ -92,7 +92,7 @@ src/extension/context/AI_AGENT_CONTEXT_ENVELOPE.md
 Run:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+cd <workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 git diff --check -- src/extension/context/test.cc src/extension/context/implement.cc src/extension/context/interface.proto
 ```
 
@@ -101,11 +101,11 @@ git diff --check -- src/extension/context/test.cc src/extension/context/implemen
 Use the local dependency cache rather than downloading or editing third-party sources.
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+cd <workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 
 env \
-  BYTESTORE_COMPAT_INCLUDE_DIR="/mnt/c/Users/Deeproute/Documents/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
-  BRPC_STATIC_LIBRARY="/root/src/github-services/TemporalStore-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
+  BYTESTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
+  BRPC_STATIC_LIBRARY="<repo>-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
   EXTRA_CMAKE_ARGS="-DTEMPORALSTORE_USE_ROOT_CMAKE_GLUE=ON" \
   BUILD_TARGETS=context_module \
   BUILD_TYPE=Release \
@@ -117,8 +117,8 @@ To generate and run the context mini-cluster test target, enable tests:
 
 ```bash
 env \
-  BYTESTORE_COMPAT_INCLUDE_DIR="/mnt/c/Users/Deeproute/Documents/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
-  BRPC_STATIC_LIBRARY="/root/src/github-services/TemporalStore-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
+  BYTESTORE_COMPAT_INCLUDE_DIR="<workspace>/Codex/2026-06-06/set-up-wsl-with-ubuntu-2022/work/cmake-glue/compat-include" \
+  BRPC_STATIC_LIBRARY="<repo>-main-no-deps/build-ubuntu22/release/_open_source_brpc/output/lib/libbrpc.a" \
   EXTRA_CMAKE_ARGS="-DTEMPORALSTORE_USE_ROOT_CMAKE_GLUE=ON" \
   BCACHE2_BUILD_TESTS=ON \
   BUILD_TARGETS=context_module_test \
@@ -213,7 +213,7 @@ local model path to `--embedding-model`, so the E2E does not need to reach
 readiness; it does not load VLM weights unless resource-image tests are added.
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
+cd <workspace>/Codex/2026-06-07/what-s-the-topology-for-all/temporalstore-service-fix
 
 python3 tools/run_context_pipeline_scale_e2e.py \
   --events-per-lane 500 \

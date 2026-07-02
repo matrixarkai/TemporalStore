@@ -25,7 +25,7 @@ The debug artifact confirms ContextEmbedding vectors are 384-dimensional, which 
 
 ```bash
 docker rm -f matrixark-locomo-oss-debug >/dev/null 2>&1 || true
-docker run -d --name matrixark-locomo-oss-debug   -v /root/src/github-services/TemporalStore:/work   -v /root/src/github-services/TemporalStore/.local/context-oss-models:/models:ro   -w /work   matrixark-locomo-oss-debug:local sleep infinity
+docker run -d --name matrixark-locomo-oss-debug   -v <repo>:/work   -v <repo>/.local/context-oss-models:/models:ro   -w /work   matrixark-locomo-oss-debug:local sleep infinity
 
 docker exec -w /work   -e MATRIXARK_EMBEDDING_PROVIDER=oss   -e MATRIXARK_REQUIRE_OSS_EMBEDDINGS=1   -e MATRIXARK_EMBEDDING_MODEL_PATH=/models/sentence-transformers/all-MiniLM-L6-v2   -e PYTHONPATH=/work   matrixark-locomo-oss-debug   python3 tools/run_matrixark_locomo_debug_flow.py     --artifact-dir .local/context-debug/locomo-oss-docker-debug
 ```
@@ -33,11 +33,11 @@ docker exec -w /work   -e MATRIXARK_EMBEDDING_PROVIDER=oss   -e MATRIXARK_REQUIR
 ## Debug Files Left On Disk
 
 ```text
-/root/src/github-services/TemporalStore/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_event_log.jsonl
-/root/src/github-services/TemporalStore/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.json
-/root/src/github-services/TemporalStore/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.md
-/root/src/github-services/TemporalStore/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.html
-/root/src/github-services/TemporalStore/.local/context-debug/locomo-oss-docker-debug/run_stdout.json
+<repo>/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_event_log.jsonl
+<repo>/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.json
+<repo>/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.md
+<repo>/.local/context-debug/locomo-oss-docker-debug/matrixark_locomo_debug_data_flow.html
+<repo>/.local/context-debug/locomo-oss-docker-debug/run_stdout.json
 ```
 
 ## Data Model Counts From The Run

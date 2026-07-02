@@ -11,16 +11,16 @@ Both backends passed the same online and batch context pipeline checks. This val
 
 ## Environment
 
-- Repo: `/root/src/github-services/TemporalStore`
+- Repo: `<repo>`
 - Branch: `main`
 - C++ deployment: `127.0.0.1:18000` metaserver and `127.0.0.1:18001` server
-- Rust binary: `/root/src/github-services/TemporalStore/sdk/rust/temporalstore/target/release/matrixark_record_log`
+- Rust binary: `<repo>/sdk/rust/temporalstore/target/release/matrixark_record_log`
 - Run date: `2026-06-23`
 
 ## Commands
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 
 BUILD_TYPE=Release \
 TEMPORALSTORE_STORAGE_ASYNC=true \

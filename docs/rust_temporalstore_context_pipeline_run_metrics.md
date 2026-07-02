@@ -146,7 +146,7 @@ Run date: 2026-06-25
 Command:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
+cd <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore
 cargo run -p temporalstore-rust --bin context_workflow_harness \
   > /tmp/temporalstore-context-workflow-validation.log
 python3 tools/validate_aws_validation_log.py \

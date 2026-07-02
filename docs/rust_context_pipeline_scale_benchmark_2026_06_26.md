@@ -34,7 +34,7 @@ Shared C++/Rust scale E2E, 100 events per lane:
 
 ```bash
 python3 tools/run_context_pipeline_scale_e2e.py \
-  --consumer-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+  --consumer-repo <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
   --events-per-lane 100 \
   --model-provider deterministic \
   --write-results /tmp/ts_context_scale_20260626/context_pipeline_scale_e2e_100.json
@@ -44,7 +44,7 @@ Shared C++/Rust scale E2E, 500 events per lane:
 
 ```bash
 python3 tools/run_context_pipeline_scale_e2e.py \
-  --consumer-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+  --consumer-repo <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
   --events-per-lane 500 \
   --model-provider deterministic \
   --write-results /tmp/ts_context_scale_20260626/context_pipeline_scale_e2e_500.json
@@ -54,7 +54,7 @@ OSS model attempt:
 
 ```bash
 python3 tools/run_context_pipeline_scale_e2e.py \
-  --consumer-repo /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+  --consumer-repo <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
   --events-per-lane 100 \
   --model-provider open_source \
   --write-results /tmp/ts_context_scale_20260626/context_pipeline_scale_e2e_oss_attempt_100.json

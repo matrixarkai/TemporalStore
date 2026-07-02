@@ -28,7 +28,7 @@
     "deadline_after_record_load": 97
   },
   "jsonl_bytes": 6187663,
-  "jsonl_path": "/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl",
+  "jsonl_path": "<repo>/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl",
   "matrixark_audit_log_count": 221,
   "partial_context_pack_count": 104,
   "record_counts": {
@@ -88,7 +88,7 @@
 ### retrieval worker sweep 4/8/16/32 with resource import and audit
 
 - result: `timed_out_after_244s_with_partial_jsonl_trace`
-- evidence: `/root/src/github-services/TemporalStore/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl`
+- evidence: `<repo>/docs/benchmarks/matrixark_scale_sweeps_20260626/retrieve_resource_scale/matrixark_retrieve_resource_scale.jsonl`
 - likely cause: Local Python/MCP record-log loading and audit writes degrade into timeout_partial packs; retrieval elapsed in audit records is ~56-72s despite 5s deadline fallback.
 
 ## Next Fixes

@@ -222,8 +222,8 @@ The latest parity runs verify:
 Local resource/skill replay and audit check:
 
 ```bash
-cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus
-TEMPORALSTORE_CONSUMER_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+cd <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus
+TEMPORALSTORE_CONSUMER_REPO=<workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
 MATRIXARK_EMBEDDING_PROVIDER=hash \
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=0 \
 MATRIXARK_UNDERSTANDING_PROVIDER=rules \
@@ -234,7 +234,7 @@ python3 tools/run_matrixark_resource_skill_backend_parity.py --backends local --
 C++ replay and audit check:
 
 ```bash
-TEMPORALSTORE_CONSUMER_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+TEMPORALSTORE_CONSUMER_REPO=<workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
 MATRIXARK_EMBEDDING_PROVIDER=hash \
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=0 \
 MATRIXARK_UNDERSTANDING_PROVIDER=rules \
@@ -245,7 +245,7 @@ python3 tools/run_matrixark_resource_skill_backend_parity.py --backends cpp --ru
 Rust replay and audit check:
 
 ```bash
-TEMPORALSTORE_CONSUMER_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+TEMPORALSTORE_CONSUMER_REPO=<workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
 MATRIXARK_EMBEDDING_PROVIDER=hash \
 MATRIXARK_REQUIRE_OSS_EMBEDDINGS=0 \
 MATRIXARK_UNDERSTANDING_PROVIDER=rules \

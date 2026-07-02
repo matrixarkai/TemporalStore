@@ -123,8 +123,8 @@
   <p>The resource/skill backend parity harness validates the same replay/audit contract for local JSONL, C++ TemporalStore, and Rust TemporalStore record-log backends. It checks <code>context_pack_audit</code>, replayable selected refs, resource chunk replay, skill section replay, and access audit for retrieve/replay/resource/skill actions.</p>
 
   <h2>Debug Commands</h2>
-<pre><code>cd /mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus
-TEMPORALSTORE_CONSUMER_REPO=/mnt/c/Users/Deeproute/Documents/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
+<pre><code>cd <workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStoreTestCorpus
+TEMPORALSTORE_CONSUMER_REPO=<workspace>/Codex/2026-06-10/pull-rust-temporalstore-code-from-matrixarkai/work/TemporalStore \
 MATRIXARK_EMBEDDING_PROVIDER=hash MATRIXARK_REQUIRE_OSS_EMBEDDINGS=0 \
 MATRIXARK_UNDERSTANDING_PROVIDER=rules MATRIXARK_REQUIRE_OSS_UNDERSTANDING=0 \
 python3 tools/run_matrixark_resource_skill_backend_parity.py --backends local --run-id replay-audit-local</code></pre>

@@ -3,7 +3,7 @@
 Local WSL Ubuntu guardrail run:
 
 ```bash
-bash /root/src/temporalstore/tools/replication_guardrails_ubuntu22.sh
+bash <repo>/tools/replication_guardrails_ubuntu22.sh
 ```
 
 Result directory:
@@ -14,11 +14,11 @@ Result directory:
 
 ## Build/Runtime Inputs
 
-- Server binary: `/root/src/temporalstore/output/bcache2-server`
-- Metaserver binary: `/root/src/temporalstore/release-bin-20260606/output/bcache2-metaserver`
-- Replication client: `/root/src/temporalstore/build/src/client/example/replication_smoke_example`
-- Raft codec smoke: `/root/src/temporalstore/build/src/partition/storage/test/data_raft_replication_codec_smoke`
-- Runtime library path included `/root/src/temporalstore/build/lib` for `libthriftd.so.0.11.0`.
+- Server binary: `<repo>/output/bcache2-server`
+- Metaserver binary: `<repo>/release-bin-20260606/output/bcache2-metaserver`
+- Replication client: `<repo>/build/src/client/example/replication_smoke_example`
+- Raft codec smoke: `<repo>/build/src/partition/storage/test/data_raft_replication_codec_smoke`
+- Runtime library path included `<repo>/build/lib` for `libthriftd.so.0.11.0`.
 
 ## RustRaft Path Guardrails
 

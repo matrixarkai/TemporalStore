@@ -3,20 +3,50 @@
 
 from __future__ import annotations
 
+import argparse
+import json
+import os
+from pathlib import Path
+
 try:
-    from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import (
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        Json,
+        MatrixArkError,
+        adapter_ensure_backend_ready,
+    )
     from tools.matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from tools.matrixark_mcp_temporal_adapters import (
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
+    from matrixark_mcp_core import (
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        Json,
+        MatrixArkError,
+        adapter_ensure_backend_ready,
+    )
     from matrixark_mcp_local_adapter import MatrixArkLocalAdapter
     from matrixark_mcp_temporal_adapters import (
         MatrixArkTemporalStoreDirectAdapter,
         MatrixArkTemporalStoreRustAdapter,
     )
+
+
+__all__ = [
+    "add_backend_arguments",
+    "backend_ready_required",
+    "build_mcp_adapter",
+    "default_mcp_backend",
+    "ensure_startup_backend_ready",
+    "production_profile_enabled",
+    "validate_mcp_backend_policy",
+]
 
 
 def production_profile_enabled() -> bool:

@@ -1,12 +1,12 @@
 {
   "artifacts": {
-    "context_pack_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.context_packs.jsonl",
-    "hypotheses_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.hypotheses.jsonl",
-    "judge_jsonl": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.judge.jsonl",
-    "progress_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.progress.json",
-    "report_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.report.json",
-    "report_markdown": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.report.md",
-    "result_json": "/root/src/github-services/TemporalStore/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.result.json"
+    "context_pack_jsonl": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.context_packs.jsonl",
+    "hypotheses_jsonl": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.hypotheses.jsonl",
+    "judge_jsonl": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.judge.jsonl",
+    "progress_json": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.progress.json",
+    "report_json": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.report.json",
+    "report_markdown": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.report.md",
+    "result_json": "<repo>/docs/benchmarks/cpp_rust_oss_20260624/locomo_rust_oss_q5/locomo_rust_oss_q5.result.json"
   },
   "dataset": {
     "answerable_questions_run": 5,

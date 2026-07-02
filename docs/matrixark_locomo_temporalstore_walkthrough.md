@@ -410,7 +410,7 @@ Question-type packing:
 Python logic smoke tests:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 PYTHONPATH=. python3 tools/test_matrixark_mcp_server.py
 PYTHONPATH=. python3 tools/test_matrixark_batch_memory.py
 ```
@@ -418,7 +418,7 @@ PYTHONPATH=. python3 tools/test_matrixark_batch_memory.py
 C++ TemporalStore-backed LOCOMO run:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 PYTHONPATH=. python3 tools/run_matrixark_dataset_benchmark.py \
   --dataset locomo \
   --input /path/to/locomo.json \

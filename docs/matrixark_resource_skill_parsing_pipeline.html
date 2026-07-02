@@ -360,28 +360,28 @@ Important product boundary:
 Run local resource/skill parity:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends local
 ```
 
 Run C++ live parity after topology readiness:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp
 ```
 
 Run Rust live parity:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends rust
 ```
 
 Run combined comparison:
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 python3 third_party/TemporalStoreTestCorpus/tools/run_matrixark_resource_skill_backend_parity.py --backends cpp rust
 ```
 

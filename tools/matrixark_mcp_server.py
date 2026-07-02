@@ -13,12 +13,36 @@ storage adapters for compatibility with existing scripts.
 
 from __future__ import annotations
 
+import argparse
 from contextlib import contextmanager
+import json
+import os
+import sys
+from http.server import ThreadingHTTPServer
+from pathlib import Path
 import traceback
+import threading
+import time
 
 try:
-    from tools.matrixark_mcp_core import *
-    from tools.matrixark_mcp_core import _mcp_debug_log
+    from tools.matrixark_mcp_core import (
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        SUMMARY_REFRESH_INTERVAL_MS,
+        SUMMARY_REFRESH_LIMIT,
+        Json,
+        MatrixArkError,
+        _mcp_debug_log,
+        infer_query_type,
+        is_retryable_temporalstore_error,
+        json_text,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        require_string,
+        stable_hash,
+    )
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
     from tools.matrixark_mcp_backends import (
@@ -37,8 +61,24 @@ try:
     from tools.matrixark_mcp_retrieval import is_retrieval_tool
     from tools.matrixark_mcp_schemas import TOOLS
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
-    from matrixark_mcp_core import _mcp_debug_log
+    from matrixark_mcp_core import (
+        MATRIXARK_ALLOW_LOCAL_BACKEND,
+        MATRIXARK_MCP_PROFILE,
+        MATRIXARK_REQUIRE_BACKEND_READY,
+        SUMMARY_REFRESH_INTERVAL_MS,
+        SUMMARY_REFRESH_LIMIT,
+        Json,
+        MatrixArkError,
+        _mcp_debug_log,
+        infer_query_type,
+        is_retryable_temporalstore_error,
+        json_text,
+        local_context_budget,
+        now_ms,
+        optional_object,
+        require_string,
+        stable_hash,
+    )
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
     from matrixark_mcp_backends import (
@@ -56,6 +96,21 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_requests import normalize_mcp_tool_request
     from matrixark_mcp_retrieval import is_retrieval_tool
     from matrixark_mcp_schemas import TOOLS
+
+
+__all__ = [
+    "MatrixArkBackpressureError",
+    "MatrixArkMcpServer",
+    "MatrixArkLocalAdapter",
+    "MatrixArkRustCliClient",
+    "MatrixArkTemporalStoreDirectAdapter",
+    "MatrixArkTemporalStoreRustAdapter",
+    "backend_ready_required",
+    "default_mcp_backend",
+    "main",
+    "production_profile_enabled",
+    "validate_mcp_backend_policy",
+]
 
 
 try:

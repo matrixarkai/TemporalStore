@@ -92,7 +92,7 @@ records what was inferred in audit.
 ## Universal Hook Command
 
 ```bash
-cd /root/src/github-services/TemporalStore
+cd <repo>
 echo '{"prompt":"Alice approved the GPU request.","session_id":"demo-thread"}' |
   python3 tools/matrixark_agent_hook.py \
     --agent generic \
@@ -216,25 +216,25 @@ Commit events / one-pass batch extraction:
 Claude Desktop should use MCP first. Generate the config:
 
 ```bash
-cd /root/src/github-services/TemporalStore
-python3 tools/matrixark_agent_config.py --client claude --repo-root /root/src/github-services/TemporalStore
+cd <repo>
+python3 tools/matrixark_agent_config.py --client claude --repo-root <repo>
 ```
 
 Claude Code-style or enterprise Claude wrappers that expose lifecycle hooks can
 use these commands in their hook entries:
 
 ```bash
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent claude \
   --event UserPromptSubmit \
   --backend temporalstore-direct
 
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent claude \
   --event PostToolUse \
   --backend temporalstore-direct
 
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent claude \
   --event Stop \
   --backend temporalstore-direct
@@ -289,14 +289,14 @@ OpenClaw-style agents should use the same MCP server and the same universal
 hook adapter. Generate a complete config block:
 
 ```bash
-cd /root/src/github-services/TemporalStore
-python3 tools/matrixark_agent_config.py --client openclaw --repo-root /root/src/github-services/TemporalStore
+cd <repo>
+python3 tools/matrixark_agent_config.py --client openclaw --repo-root <repo>
 ```
 
 Prompt hook:
 
 ```bash
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent openclaw \
   --event UserPromptSubmit \
   --backend temporalstore-direct
@@ -305,7 +305,7 @@ python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
 Resource hook:
 
 ```bash
-cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+cat <<'JSON' | python3 <repo>/tools/matrixark_agent_hook.py \
   --agent openclaw \
   --event ResourceAdded \
   --backend temporalstore-direct
@@ -321,7 +321,7 @@ JSON
 Stop/session-boundary hook:
 
 ```bash
-cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+cat <<'JSON' | python3 <repo>/tools/matrixark_agent_hook.py \
   --agent openclaw \
   --event Stop \
   --backend temporalstore-direct
@@ -342,7 +342,7 @@ Cursor should primarily use MCP. If a project or enterprise wrapper can call an
 external command before/after the agent loop, use:
 
 ```bash
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent cursor \
   --event UserPromptSubmit \
   --backend temporalstore-direct
@@ -371,7 +371,7 @@ Payload:
 Use MCP as the default. If the agent can run a command after tool calls:
 
 ```bash
-python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+python3 <repo>/tools/matrixark_agent_hook.py \
   --agent cline \
   --event PostToolUse \
   --backend temporalstore-direct
@@ -402,7 +402,7 @@ At graph/workflow end:
 CLI wrapper pattern:
 
 ```bash
-cat payload.json | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+cat payload.json | python3 <repo>/tools/matrixark_agent_hook.py \
   --agent langgraph \
   --event UserPromptSubmit \
   --backend temporalstore-direct
@@ -478,7 +478,7 @@ normalizes resource and feedback lifecycle events through the same universal hoo
 adapter:
 
 ```bash
-cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+cat <<'JSON' | python3 <repo>/tools/matrixark_agent_hook.py \
   --agent cursor \
   --event ResourceAdded \
   --backend temporalstore-direct
@@ -490,7 +490,7 @@ cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_a
 }
 JSON
 
-cat <<'JSON' | python3 /root/src/github-services/TemporalStore/tools/matrixark_agent_hook.py \
+cat <<'JSON' | python3 <repo>/tools/matrixark_agent_hook.py \
   --agent claude \
   --event Feedback \
   --backend temporalstore-direct

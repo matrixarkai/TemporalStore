@@ -136,7 +136,7 @@
         "segment_provider": {
           "execution_mode": "oss_embedding_model",
           "fallback_used": false,
-          "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+          "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
           "provider": "oss_encoder",
           "segment_count": 8
         },
@@ -339,7 +339,7 @@
         "segment_provider": {
           "execution_mode": "oss_embedding_model",
           "fallback_used": false,
-          "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+          "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
           "provider": "oss_encoder",
           "segment_count": 9
         },
@@ -408,7 +408,7 @@
       }
     }
   ],
-  "embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+  "embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
   "embedding_provider": "oss",
   "event_log": ".local/context-debug/query-index-cpp-direct-oss-understanding/matrixark_query_index_event_log.jsonl",
   "model_counts": {
@@ -431,7 +431,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -465,7 +465,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -499,7 +499,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -533,7 +533,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -567,7 +567,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -601,7 +601,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -635,7 +635,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -669,7 +669,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -703,7 +703,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -737,7 +737,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -771,7 +771,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -805,7 +805,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -839,7 +839,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -873,7 +873,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -907,7 +907,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -941,7 +941,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -975,7 +975,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1009,7 +1009,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1043,7 +1043,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1077,7 +1077,7 @@
       {
         "dim": 384,
         "embedding_type": "event_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1111,7 +1111,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1145,7 +1145,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1179,7 +1179,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1213,7 +1213,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1247,7 +1247,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1281,7 +1281,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1315,7 +1315,7 @@
       {
         "dim": 384,
         "embedding_type": "entity_state",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1349,7 +1349,7 @@
       {
         "dim": 384,
         "embedding_type": "segment_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1383,7 +1383,7 @@
       {
         "dim": 384,
         "embedding_type": "segment_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -1417,7 +1417,7 @@
       {
         "dim": 384,
         "embedding_type": "segment_text",
-        "model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "node_hash": 8525532004486225381,
         "node_path": [
           "personal_memory",
@@ -4703,7 +4703,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 1,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -5558,7 +5558,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 21,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -6757,7 +6757,7 @@
         "packing_policy": "question_type_aware:date",
         "primary_candidate_count": 22,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "date",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -7736,7 +7736,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 1,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -8587,7 +8587,7 @@
         "packing_policy": "question_type_aware:why_emotion",
         "primary_candidate_count": 23,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "why_emotion",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -9662,7 +9662,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 2,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -10575,7 +10575,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 23,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -11702,7 +11702,7 @@
         "packing_policy": "question_type_aware:current_state",
         "primary_candidate_count": 23,
         "quality_warnings": [],
-        "query_embedding_model": "/root/src/github-services/TemporalStore/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
+        "query_embedding_model": "<repo>/.local/context-oss-models/sentence-transformers/all-MiniLM-L6-v2",
         "question_type": "current_state",
         "recall_policy": {
           "auxiliary_path": "keyword graph inside selected tree after secondary-index prefilter",
@@ -12724,7 +12724,7 @@
     "namespace": "deploy_ns",
     "storage_prefix": "matrixark:cpp:query:index:oss-understanding:1782232028871",
     "table": "deploy_table",
-    "temporalstore_lib": "/root/src/github-services/TemporalStore/output-ubuntu22/release/sdk/lib/libbcache2.so"
+    "temporalstore_lib": "<repo>/output-ubuntu22/release/sdk/lib/libbcache2.so"
   },
   "understanding_provider": "oss_encoder"
 }

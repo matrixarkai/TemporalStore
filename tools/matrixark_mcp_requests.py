@@ -3,10 +3,36 @@
 
 from __future__ import annotations
 
+import json
+import secrets
+
 try:
-    from tools.matrixark_mcp_core import *
+    from tools.matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        local_identity_defaults,
+        normalize_storage_options,
+        now_ms,
+        optional_object,
+        stable_hash,
+    )
 except ModuleNotFoundError:  # Direct script execution from tools/.
-    from matrixark_mcp_core import *
+    from matrixark_mcp_core import (
+        Json,
+        MatrixArkError,
+        local_identity_defaults,
+        normalize_storage_options,
+        now_ms,
+        optional_object,
+        stable_hash,
+    )
+
+
+__all__ = [
+    "generated_idempotency_key",
+    "normalize_request_scope",
+    "normalize_mcp_tool_request",
+]
 
 
 def generated_idempotency_key(tool_name: str, args: Json) -> str:

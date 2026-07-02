@@ -100,7 +100,7 @@ Important retrieval checks:
 Local C++ TemporalStore was started with release binaries:
 
 ```bash
-OUT_DIR=/root/src/github-services/TemporalStore/output-ubuntu22/release \
+OUT_DIR=<repo>/output-ubuntu22/release \
   bash tools/deploy_local_ubuntu22.sh start
 ```
 

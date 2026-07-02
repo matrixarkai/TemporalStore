@@ -9,8 +9,8 @@ Purpose: verify the existing shared stream/object-store replay path still works 
 Local suite:
 
 ```bash
-BUILD_DIR=/root/src/temporalstore/build \
-OUT_DIR=/root/src/temporalstore/output \
+BUILD_DIR=<repo>/build \
+OUT_DIR=<repo>/output \
 bash tools/replication_guardrails_ubuntu22.sh
 ```
 

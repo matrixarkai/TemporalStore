@@ -55,7 +55,7 @@
 {
   "processes": [
     {
-      "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-metaserver --metaserver_cluster_name=localdeploy --metaserver_server_port=18000 --metaserver_work_dir=/tmp/temporalstore-deploy/runtime/metaserver1/data --metaserver_log_dir=/tmp/temporalstore-deploy/runtime/metaserver1/log --metaserver_raft_id=1 --metaserver_raft_peers=1,127.0.0.1:18010,127.0.0.1:18020,0 --metaserver_raft_heartbeat_cycle_ms=500 --metaserver_raft_election_cycle_ms=1500 --metaserver_raft_segment_size=16384 --metaserver_snapshot_trigger_interval_sec=0 --metaserver_meta_check_routine_interval_sec=1 --metaserver_balance_routine_interval_ms=3000 --metaserver_placement_host_deduplicate=false --metaserver_forbid_auto_register_for_convict_server=false --metaserver_consul_announce_enabled=false --metaserver_log_level=2",
+      "args": "<repo>/output-ubuntu22/release/bcache2-metaserver --metaserver_cluster_name=localdeploy --metaserver_server_port=18000 --metaserver_work_dir=/tmp/temporalstore-deploy/runtime/metaserver1/data --metaserver_log_dir=/tmp/temporalstore-deploy/runtime/metaserver1/log --metaserver_raft_id=1 --metaserver_raft_peers=1,127.0.0.1:18010,127.0.0.1:18020,0 --metaserver_raft_heartbeat_cycle_ms=500 --metaserver_raft_election_cycle_ms=1500 --metaserver_raft_segment_size=16384 --metaserver_snapshot_trigger_interval_sec=0 --metaserver_meta_check_routine_interval_sec=1 --metaserver_balance_routine_interval_ms=3000 --metaserver_placement_host_deduplicate=false --metaserver_forbid_auto_register_for_convict_server=false --metaserver_consul_announce_enabled=false --metaserver_log_level=2",
       "command": "bcache2-metaser",
       "cpu_percent": "470",
       "mem_percent": "0.3",
@@ -63,7 +63,7 @@
       "rss_kb": "51716"
     },
     {
-      "args": "/root/src/github-services/TemporalStore/output-ubuntu22/release/bcache2-server --cluster_name=localdeploy --metaserver_uri=127.0.0.1:18000 --host_spec_path=/tmp/temporalstore-deploy/runtime/server1/host_spec.json --host=127.0.0.1 --port=18001 --server_log_dir=/tmp/temporalstore-deploy/runtime/server1/log --server_log_level=2 --server_meta_tinker_interval_ms=1000 --server_heartbeat_interval_ms=1000 --storage_zone_size=10485760 --stream_max_blob_size=10485760 --storage_async=false --storage_oplog_delay_dump_length=0 --replicator_out_of_sync_s=10",
+      "args": "<repo>/output-ubuntu22/release/bcache2-server --cluster_name=localdeploy --metaserver_uri=127.0.0.1:18000 --host_spec_path=/tmp/temporalstore-deploy/runtime/server1/host_spec.json --host=127.0.0.1 --port=18001 --server_log_dir=/tmp/temporalstore-deploy/runtime/server1/log --server_log_level=2 --server_meta_tinker_interval_ms=1000 --server_heartbeat_interval_ms=1000 --storage_zone_size=10485760 --stream_max_blob_size=10485760 --storage_async=false --storage_oplog_delay_dump_length=0 --replicator_out_of_sync_s=10",
       "command": "bcache2-server",
       "cpu_percent": "8.4",
       "mem_percent": "0.3",

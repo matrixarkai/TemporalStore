@@ -10,7 +10,7 @@ NAME_PREFIX="${TEMPORALSTORE_NAME_PREFIX:-temporalstore-test}"
 BUCKET="${ARTIFACT_BUCKET:-temporalstore-test-artifacts-657817560042-us-west-2}"
 RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-ROOT_WIN="/mnt/c/Users/Vincent Jiang/Documents/Codex/2026-05-10/bytekv-in-local-vs-etcd"
+ROOT_WIN="${TEMPORALSTORE_WORKSPACE_ROOT:-<workspace>}"
 ABASE_ARTIFACT="${ABASE_ARTIFACT:-${ROOT_WIN}/outputs/abase-runtime-stripped.tar.gz}"
 BYTEKV_ARTIFACT="${BYTEKV_ARTIFACT:-${ROOT_WIN}/bytekv-runtime-release.tar.gz}"
 
