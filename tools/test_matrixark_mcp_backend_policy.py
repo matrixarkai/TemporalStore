@@ -1094,6 +1094,29 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack")
         self.assertEqual(request["watermark_count"], 7)
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
+        self.assertEqual(
+            request["required_native_apis"],
+            [
+                "health",
+                "readiness",
+                "metrics",
+                "matrixark_batch_append_records",
+                "matrixark_retrieve_context_pack",
+                "compact_secondary_index_lookup",
+                "placement_key_candidate_fetch",
+            ],
+        )
+        self.assertEqual(
+            request["normal_path_stages"],
+            [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack",
+            ],
+        )
         self.assertEqual(request["normalization_requirements"]["scope_key"], "canonical")
         self.assertEqual(request["normalization_requirements"]["placement_key"], "context:{scope_key}:node={node_hash}")
         self.assertEqual(request["execution_plan_requirements"]["phase"], "phase4_native_score_rerank_pack")
@@ -1124,9 +1147,16 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["execution_plan_requirements"]["full_replay_audit_default"], "disabled")
         self.assertEqual(request["execution_plan_requirements"]["secondary_index"], "compact_postings_by_scope_index_time_bucket")
         self.assertEqual(request["execution_plan_requirements"]["broad_prefix_scan"], "disabled_unless_explicit_debug_fallback")
+        self.assertEqual(request["execution_plan_requirements"]["health_readiness_metrics"], "native_backend_must_expose_health_readiness_metrics")
+        self.assertEqual(
+            request["execution_plan_requirements"]["normal_path"],
+            "query_understanding_scope_filter_l0_l1_traversal_compact_index_placement_fetch_native_score_rerank_pack",
+        )
         self.assertIn("scope", request["required_output"]["drop_counters"])
         self.assertIn("score_threshold", request["required_output"]["drop_counters"])
         self.assertTrue(request["required_output"]["broad_scan_used"])
+        self.assertTrue(request["required_output"]["normal_path_stages"])
+        self.assertTrue(request["required_output"]["health_readiness_metrics"])
         self.assertTrue(request["required_output"]["candidate_cache_key_shape"])
         self.assertTrue(request["required_output"]["native_pack_assembly"])
         self.assertFalse(request["required_output"]["raw_candidate_tables"])
@@ -1143,6 +1173,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(result["retrieval_metrics"]["dropped_refs"], 21)
         self.assertTrue(result["retrieval_metrics"]["native_pack_assembly"])
         self.assertFalse(result["retrieval_metrics"]["python_pack_fallback"])
+        self.assertFalse(result["retrieval_metrics"]["broad_scan_used"])
+        self.assertEqual(result["retrieval_metrics"]["broad_scan_policy"], "explicit_fallback_or_debug_only")
+        self.assertEqual(result["retrieval_metrics"]["normal_path_stages"], request["normal_path_stages"])
+        self.assertEqual(result["retrieval_metrics"]["health_readiness_metrics"], {"health": True, "readiness": True, "metrics": True})
         self.assertFalse(result["retrieval_metrics"]["raw_candidate_tables_returned"])
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["scope"], 1)
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["score_threshold"], 6)
@@ -1198,6 +1232,18 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(result["retrieval_metrics"]["broad_scan_used"])
         self.assertTrue(result["retrieval_metrics"]["broad_scan_blocked"])
         self.assertEqual(result["retrieval_metrics"]["scanned_records"], 0)
+        self.assertEqual(
+            result["retrieval_metrics"]["normal_path_stages"],
+            [
+                "query_understanding",
+                "scope_filter",
+                "l0_l1_node_traversal",
+                "compact_secondary_index_prefilter",
+                "placement_key_candidate_fetch",
+                "native_score_rerank_pack",
+            ],
+        )
+        self.assertEqual(result["retrieval_metrics"]["health_readiness_metrics"], {"health": True, "readiness": True, "metrics": True})
         self.assertEqual(client.read_all_calls, 0)
         self.assertIn("quality_warnings", result)
 
