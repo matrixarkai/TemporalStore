@@ -440,21 +440,77 @@ breaking existing consumers.
 
 Required Phase 2 behavior:
 
-- C++ and Rust emit canonical names by default.
+- C++ and Rust report parsers accept old and new field names.
 - Existing old report fields remain readable through adapters or are emitted
   under `compatibility_aliases` for one compatibility window.
 - Report parsers normalize old and new field names into the same in-memory
   shape before comparison.
-- CI verifies that old reports still parse, new reports use canonical names,
-  and mixed C++/Rust report pairs compare on canonical fields only.
+- CI verifies that old reports still parse, new reports can include canonical
+  names, and mixed C++/Rust report pairs compare on canonical fields only.
 - Deprecation warnings identify alias usage, but do not fail old-report parsing
   until the compatibility window ends.
 
-Phase 2 removal gate:
+### Phase 3: Rust Public Struct Names
+
+Phase 3 updates Rust public structs, report DTOs, metrics payloads, and
+documentation to match the C++/shared public names.
+
+Required Phase 3 behavior:
+
+- Rust public output uses `PageAddress`, `BlockAddress`, `PageIndexEntry`,
+  `BlockIndexEntry`, `StorageZone`, `Segment`, `Extent`, `AppendWatermark`,
+  and `CompactionWatermark`.
+- Rust private implementation names may remain internally, but conversion to
+  public DTOs must happen before data leaves the backend.
+- Rust compatibility deserializers continue reading old report fields through
+  `compatibility_aliases`.
+
+### Phase 4: C++ Report Shape Parity
+
+Phase 4 updates C++ public reports to emit the same canonical shape as Rust.
+
+Required Phase 4 behavior:
+
+- C++ reports include the same canonical fields, nesting, metric names, and
+  effective config fields as Rust.
+- C++ compatibility aliases remain available for old dashboards and benchmark
+  artifacts during the compatibility window.
+- C++/Rust comparison reports normalize both sides and show alias usage as a
+  warning, not as a separate metric family.
+
+### Phase 5: Shared Tests
+
+Phase 5 makes the shared tests the source of truth for both engines.
+
+Required Phase 5 coverage:
+
+- shared page-address compatibility corpus;
+- shared page/block metrics parity validator;
+- old-report compatibility fixtures;
+- C++ and Rust native tests for page split, compaction rewrite, tombstones,
+  no-promote cold scans, crash/restart index rebuild, and watermark behavior;
+- comparison tests that prove canonicalized C++ and Rust reports are equivalent.
+
+### Phase 6: Drift Gates
+
+Phase 6 turns compatibility into enforcement.
+
+Required Phase 6 gates:
+
+- fail if public fields drift between C++ and Rust;
+- fail if effective storage config fields drift or are missing;
+- fail if page/block metric names drift or are missing;
+- fail if canonical fields are absent from new reports;
+- fail if alias fields appear outside `compatibility_aliases` after the
+  compatibility window;
+- fail if broad legacy report paths are used in production-performance parity
+  claims.
+
+Removal gate:
 
 - remove or hide alias output only after dashboards, benchmark reports, portal
-  pages, C++ tests, Rust tests, and replay/audit tooling all read the canonical
-  schema directly.
+  pages, C++ tests, Rust tests, replay/audit tooling, and parity gates all read
+  the canonical schema directly.
 
 ## C++/Rust Mapping
 

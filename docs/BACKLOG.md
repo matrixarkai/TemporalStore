@@ -1312,11 +1312,15 @@ Completed since the last backlog update:
       - migration strategy:
         - Phase 1 documents the shared schema and compatibility aliases for old
           report fields;
-        - Phase 2 renames report outputs to canonical fields while preserving
-          old report parsing through `compatibility_aliases` and adapter
-          normalization;
-        - parity gates compare canonical fields only and warn on alias usage
-          until the compatibility window closes.
+        - Phase 2 renames/report-normalizes compatibility fields without
+          breaking old reports;
+        - Phase 3 updates Rust public structs and report DTOs to match the
+          shared/C++ public names;
+        - Phase 4 updates C++ reports to emit the same canonical shape as Rust;
+        - Phase 5 adds shared C++/Rust tests and old-report compatibility
+          fixtures;
+        - Phase 6 makes parity gates fail if fields, config, metrics, or alias
+          placement drift.
       - add shared C++/Rust cases for address encode/decode, stable ordering,
         timestamp range lookup, object lookup, page split, compaction rewrite,
         tombstone-before-reclaim, restart index rebuild, and no-cache cold
