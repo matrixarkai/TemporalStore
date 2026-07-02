@@ -1313,6 +1313,12 @@ Completed since the last backlog update:
         timestamp range lookup, object lookup, page split, compaction rewrite,
         tombstone-before-reclaim, restart index rebuild, and no-cache cold
         scans.
+      - keep `compat/page_address_compatibility_corpus.json` as the shared
+        PageAddress corpus and require C++/Rust CI to validate:
+        encode/decode `PageAddress`, stable ordering by `{shard_id, zone_id,
+        segment_id, page_id, offset}`, timestamp range -> page address lookup,
+        page split behavior, and page compaction rewrite preserving logical
+        records.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
