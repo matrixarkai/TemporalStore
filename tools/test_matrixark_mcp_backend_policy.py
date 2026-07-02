@@ -498,6 +498,26 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         failures = validate_report_pair(corpus["cpp"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_lifecycle_phases`", failures)
 
+    def test_storage_cache_layers_are_exact_and_top_level(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
+        cpp_drift["storage_cache_layers"] = [
+            "memory_object_cache",
+            "page_index_cache",
+            "block_index_cache",
+            "disk_cache",
+            "shared_store_read_through",
+        ]
+        failures = validate_report_pair(cpp_drift, corpus["rust"])
+        self.assertTrue(any("cpp storage_cache_layers drift" in failure for failure in failures))
+
+        rust_missing = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing["storage_cache_layers"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        self.assertIn("rust report missing required top-level `storage_cache_layers`", failures)
+
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
             "config": {
