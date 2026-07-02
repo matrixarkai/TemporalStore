@@ -66,6 +66,33 @@ pub struct BlockAddress {
     pub sha256: Option<String>,
 }
 
+impl BlockAddress {
+    pub fn cpp_zone_id(&self) -> Option<u32> {
+        u32::try_from(self.page_segment_id).ok()
+    }
+
+    pub fn cpp_zone_offset(&self) -> Option<u32> {
+        u32::try_from(self.offset).ok()
+    }
+
+    pub fn cpp_zone_address(&self) -> Option<u64> {
+        cpp_zone_address_from_parts(self.page_segment_id, self.offset)
+    }
+
+    pub fn from_cpp_zone_address(cpp_zone_address: u64, length: u64) -> Self {
+        Self {
+            page_segment_id: cpp_extract_zone_id(cpp_zone_address) as u64,
+            offset: cpp_extract_zone_offset(cpp_zone_address) as u64,
+            length,
+            page_id: None,
+            object_id: None,
+            routing_slot: None,
+            extent_id: None,
+            sha256: None,
+        }
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreStats {
     pub writes: u64,
@@ -416,6 +443,12 @@ pub struct BlockStorePageIndexReport {
     pub page_segment_id: u64,
     pub offset: u64,
     pub length: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpp_zone_address: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpp_zone_id: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpp_zone_offset: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub extent_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2210,6 +2243,20 @@ fn extent_id_for_segment(page_segment_id: u64) -> u64 {
     page_segment_id
 }
 
+fn cpp_zone_address_from_parts(page_segment_id: u64, offset: u64) -> Option<u64> {
+    let zone_id = u32::try_from(page_segment_id).ok()?;
+    let zone_offset = u32::try_from(offset).ok()?;
+    Some(((zone_id as u64) << 32) | zone_offset as u64)
+}
+
+fn cpp_extract_zone_id(address: u64) -> u32 {
+    (address >> 32) as u32
+}
+
+fn cpp_extract_zone_offset(address: u64) -> u32 {
+    (address & 0xFFFF_FFFF) as u32
+}
+
 fn segment_ids_at(root: &Path) -> Result<Vec<u64>, BlockStoreError> {
     let mut ids = Vec::new();
     if !root.exists() {
@@ -2398,6 +2445,20 @@ mod tests {
 
         assert_eq!(next.page_segment_id, 3);
         assert_eq!(next.offset, b"restored-segment".len() as u64);
+        assert_eq!(next.cpp_zone_id(), Some(3));
+        assert_eq!(
+            next.cpp_zone_offset(),
+            Some(b"restored-segment".len() as u32)
+        );
+        assert_eq!(
+            next.cpp_zone_address(),
+            Some((3_u64 << 32) | b"restored-segment".len() as u64)
+        );
+        let from_cpp =
+            BlockAddress::from_cpp_zone_address(next.cpp_zone_address().unwrap(), next.length);
+        assert_eq!(from_cpp.page_segment_id, next.page_segment_id);
+        assert_eq!(from_cpp.offset, next.offset);
+        assert_eq!(from_cpp.length, next.length);
         assert_eq!(store.read(&next).unwrap(), b"after-restore");
     }
 
@@ -2434,6 +2495,16 @@ mod tests {
         assert_eq!(address.routing_slot, Some(17));
         assert_eq!(address.extent_id, Some(0));
         assert_eq!(address.sha256, Some(sha256_hex(b"address-contract")));
+        assert_eq!(address.cpp_zone_id(), Some(0));
+        assert_eq!(address.cpp_zone_offset(), Some(0));
+        assert_eq!(address.cpp_zone_address(), Some(0));
+        let from_cpp_zone = BlockAddress::from_cpp_zone_address(
+            address.cpp_zone_address().unwrap(),
+            address.length,
+        );
+        assert_eq!(from_cpp_zone.page_segment_id, address.page_segment_id);
+        assert_eq!(from_cpp_zone.offset, address.offset);
+        assert_eq!(from_cpp_zone.length, address.length);
         assert_eq!(store.read(&address).unwrap(), b"address-contract");
 
         let cpp_style_json = serde_json::json!({
@@ -3054,6 +3125,18 @@ mod tests {
         );
         assert_eq!(reports[0].page_index_entries[0].offset, first.offset);
         assert_eq!(reports[0].page_index_entries[0].length, first.length);
+        assert_eq!(
+            reports[0].page_index_entries[0].cpp_zone_address,
+            first.cpp_zone_address()
+        );
+        assert_eq!(
+            reports[0].page_index_entries[0].cpp_zone_id,
+            first.cpp_zone_id()
+        );
+        assert_eq!(
+            reports[0].page_index_entries[0].cpp_zone_offset,
+            first.cpp_zone_offset()
+        );
         assert_eq!(reports[0].page_index_entries[0].page_id, first.page_id);
         assert_eq!(
             reports[0].page_index_entries[0].page_size,
