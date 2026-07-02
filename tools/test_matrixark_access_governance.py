@@ -149,6 +149,48 @@ class MatrixArkAccessGovernanceTest(unittest.TestCase):
         self.assertEqual("local_user", applied["local_scope"]["user_id"])
         self.assertTrue(applied["api_key"].startswith("mk_local_"))
 
+    def test_scoped_read_tools_are_checked_before_output(self) -> None:
+        server = self.make_server()
+        session_key = server.call_tool(
+            "matrixark_admin_create_api_key",
+            {
+                "scope": {"account_id": "acct_read", "tenant_id": "tenant_read"},
+                "account_id": "acct_read",
+                "tenant_id": "tenant_read",
+                "role": "viewer",
+                "scopes": [
+                    "portal:read",
+                    "context:retrieve",
+                    "context:replay",
+                    "resource:read",
+                    "skill:read",
+                ],
+                "allowed_session_ids": ["session_allowed"],
+            },
+        )["api_key"]
+        allowed_scope = {"account_id": "acct_read", "tenant_id": "tenant_read", "session_id": "session_allowed"}
+        self.assertEqual(
+            "ok",
+            server.call_tool("matrixark_ingestion_dashboard", {"api_key": session_key, "scope": allowed_scope})["status"],
+        )
+        with self.assertRaises(MatrixArkError):
+            server.call_tool(
+                "matrixark_retrieve",
+                {
+                    "api_key": session_key,
+                    "scope": {"account_id": "acct_read", "tenant_id": "tenant_read", "session_id": "session_denied"},
+                    "query": "should not leave the server",
+                },
+            )
+        with self.assertRaises(MatrixArkError):
+            server.call_tool(
+                "matrixark_ingestion_dashboard",
+                {
+                    "api_key": session_key,
+                    "scope": {"account_id": "acct_read", "tenant_id": "tenant_read", "session_id": "session_denied"},
+                },
+            )
+
     def test_disabled_user_and_tenant_block_portal_and_context_access(self) -> None:
         server = self.make_server()
         admin_key = server.call_tool(

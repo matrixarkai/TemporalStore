@@ -10,6 +10,7 @@ try:
     from tools.matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        identity_hashes,
         local_identity_defaults,
         normalize_storage_options,
         now_ms,
@@ -20,6 +21,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import (
         Json,
         MatrixArkError,
+        identity_hashes,
         local_identity_defaults,
         normalize_storage_options,
         now_ms,
@@ -33,6 +35,19 @@ __all__ = [
     "normalize_request_scope",
     "normalize_mcp_tool_request",
 ]
+
+
+def _with_request_scope_key(scope: Json) -> Json:
+    normalized = dict(scope)
+    account_id = str(normalized.get("account_id") or "")
+    tenant_id = str(normalized.get("tenant_id") or "")
+    if not account_id or not tenant_id:
+        return normalized
+    user_id = str(normalized.get("user_id") or "")
+    session_id = str(normalized.get("session_id") or "")
+    for key, value in identity_hashes(account_id, tenant_id, user_id, session_id).items():
+        normalized.setdefault(key, value)
+    return normalized
 
 
 def generated_idempotency_key(tool_name: str, args: Json) -> str:
@@ -55,14 +70,14 @@ def normalize_request_scope(args: Json) -> Json:
     # For API-key calls, keep the caller's requested scope intact. The access
     # manager validates it against the key and then enriches it exactly once.
     if args.get("api_key"):
-        return scope
+        return _with_request_scope_key(scope)
     defaults = local_identity_defaults(args, scope)
     normalized = dict(scope)
     for key in ("account_id", "tenant_id", "user_id", "session_id", "agent_name"):
         value = defaults.get(key)
         if value and key not in normalized:
             normalized[key] = value
-    return normalized
+    return _with_request_scope_key(normalized)
 
 
 def normalize_mcp_tool_request(tool_name: str, args: Json, *, write_tools: set[str]) -> Json:
