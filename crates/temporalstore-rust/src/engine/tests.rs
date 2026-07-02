@@ -6671,7 +6671,7 @@ fn core_index_loads_legacy_slot_page_field_names() {
     );
 }
 
-// shared-corpus: cpp_storage_object_page_slot_parity_surfaces storage_slot_layout_transitions;
+// shared-corpus: storage_object_page_slot_parity_surfaces storage_slot_layout_transitions;
 #[test]
 fn slot_store_reports_all_layout_states_and_runtime_flags() {
     let mut shard = ShardState::default();
@@ -6866,7 +6866,7 @@ fn slot_store_reports_all_layout_states_and_runtime_flags() {
     assert_eq!(report.max_dirty_generation, 7);
 }
 
-// shared-corpus: cpp_storage_object_page_slot_parity_surfaces storage_object_hot_cold_reload;
+// shared-corpus: storage_object_page_slot_parity_surfaces storage_object_hot_cold_reload;
 #[test]
 fn object_manager_runtime_report_tracks_residency_layout_and_tombstones() {
     let dir = tempfile::tempdir().unwrap();

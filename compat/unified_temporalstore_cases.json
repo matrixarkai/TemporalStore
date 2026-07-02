@@ -3058,7 +3058,7 @@
       ]
     },
     {
-      "name": "cpp_storage_object_page_slot_parity_surfaces",
+      "name": "storage_object_page_slot_parity_surfaces",
       "shard_id": 1,
       "steps": [
         {
@@ -4382,7 +4382,7 @@
       "steps": [
         {
           "command": {
-            "cpp_reference": "src/extension/context/test.cc",
+            "cpp_reference": "/root/src/github-services/TemporalStore/src/extension/context/test.cc",
             "description": "Shared C++/Rust Context case translated from C++ WRITE_EXTRACTED_EVENT debug tests: an extracted event writes event_kind, entity, status, source, and event_time_bucket internal indexes, and disabled indexes are not queryable.",
             "kind": "existing_test",
             "mode": "rust_executable_cxx_static",
@@ -4665,7 +4665,7 @@
               "temporalstore-rust"
             ],
             "cxx_reference_paths": [
-              "tools/matrixark_mcp_server.py"
+              "/root/src/github-services/TemporalStore/tools/matrixark_mcp_server.py"
             ],
             "description": "Shared MatrixArk MCP server can select temporalstore-direct for C++ or temporalstore-rust for Rust; the Rust backend provides the record-log put/get/hset/hget boundary expected by the shared server.",
             "kind": "existing_test",
@@ -5497,15 +5497,15 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes plus PageIndex-like page/block entries with compact C++ zone address fields.",
+      "description": "Shared C++/Rust storage stream case: random-size string values survive reopen and page stream scan exposes persisted bytes plus PageIndex-like page/block entries with compact extent address fields.",
       "family": "storage/cache",
       "name": "storage_stream_random_size_reopen_scan",
       "shard_id": 92,
       "steps": [
         {
           "command": {
-            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, stream scan records, PageIndex-like block entry fields, and compact C++ zone address metadata.",
-            "expect_cpp_zone_address": true,
+            "description": "Writes deterministic random-size values, reopens storage, verifies logical reads, page stream bytes, stream scan records, PageIndex-like block entry fields, and compact extent address metadata.",
+            "expect_compact_extent_address": true,
             "expect_page_index_entries": true,
             "kind": "storage_stream_reopen_scan",
             "scenario": "random_size_reopen_scan"
@@ -5516,7 +5516,7 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: stream-backed zones roll, read logical ranges, persist manifests, expose C++-style zone used-byte stats, and track delayed destroy lifecycle.",
+      "description": "Shared C++/Rust storage stream case: stream-backed zones roll, read logical ranges, persist manifests, expose extent used-byte stats, and track delayed destroy lifecycle.",
       "family": "storage/cache",
       "name": "storage_stream_backed_extent_runtime",
       "shard_id": 92,
@@ -9702,7 +9702,7 @@
       "feature_nested_proto_aggregate_semantics",
       "sequence_batch_filter_groups",
       "context_missing_node_semantics",
-      "cpp_storage_object_page_slot_parity_surfaces",
+      "storage_object_page_slot_parity_surfaces",
       "cpp_storage_manager_compaction_gc_parity_surfaces",
       "cpp_storage_oplog_index_replay_parity_surfaces",
       "cpp_storage_slot_context_test_parity_surfaces",
