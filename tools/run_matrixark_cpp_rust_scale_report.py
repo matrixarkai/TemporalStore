@@ -177,6 +177,26 @@ STORAGE_TUNING_DEFAULTS: Json = {
     "TS_BLOCK_INDEX_CACHE_BYTES": 64 * 1024 * 1024,
 }
 
+PAGE_BLOCK_METRIC_NAMES = [
+    "page_index_lookup_count",
+    "page_index_lookup_ms",
+    "page_index_cache_hit_rate",
+    "block_index_lookup_count",
+    "block_index_lookup_ms",
+    "block_index_cache_hit_rate",
+    "page_reads",
+    "page_writes",
+    "block_reads",
+    "block_writes",
+    "bytes_read",
+    "bytes_written",
+    "compaction_reclaimed_bytes",
+    "cold_scan_no_cache_reads",
+    "hot_cache_promotions",
+    "append_watermark",
+    "compaction_watermark",
+]
+
 
 def _parse_int_csv(raw: str, default: list[int]) -> list[int]:
     if not raw:
@@ -1755,6 +1775,16 @@ def write_report(path: Path, report: Json) -> None:
             f"{tuning.get('TS_BLOCK_INDEX_CACHE_BYTES', '')} | "
             f"{tuning.get('effective_block_segment_target_bytes', '')} |"
         )
+    lines.extend(
+        [
+            "",
+            "## Required Page/Block Metrics",
+            "",
+            "Both C++ and Rust backends must expose these metric names before storage performance parity claims are accepted:",
+            "",
+        ]
+    )
+    lines.extend(f"- `{name}`" for name in PAGE_BLOCK_METRIC_NAMES)
     lines.extend(["", "## Raw Storage", "", "| backend | write record QPS | write batch p95 | read QPS | read p95 | write errors | read errors |", "|---|---:|---:|---:|---:|---:|---:|"])
     for backend in backend_order:
         item = report["backends"].get(backend, {})
@@ -2125,6 +2155,7 @@ def main() -> int:
             },
             "storage_options": parsed.storage_options,
             "effective_storage_tuning": effective_storage_tuning_from_env(),
+            "required_page_block_metrics": PAGE_BLOCK_METRIC_NAMES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
             "skip_context_pipeline": parsed.skip_context_pipeline,

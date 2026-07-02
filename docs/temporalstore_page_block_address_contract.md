@@ -469,6 +469,10 @@ Both C++ and Rust should expose the same metric names:
 - `append_watermark`
 - `compaction_watermark`
 
+`tools/validate_page_block_metrics_parity.py` validates that this canonical
+metric set is present in the shared contract and in C++/Rust scale report
+artifacts.
+
 ## Acceptance
 
 This contract is satisfied when C++ and Rust:
