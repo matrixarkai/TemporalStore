@@ -1334,6 +1334,13 @@ Completed since the last backlog update:
         rebuild of `PageIndex` and `BlockIndex`.
       - keep `tools/validate_page_block_metrics_parity.py` in CI so both
         engines and scale reports expose the same page/block metric names.
+      - Acceptance: page/block parity is done only when:
+        - C++ and Rust encode the same logical `PageAddress`;
+        - both can rebuild `PageIndex` and `BlockIndex` after restart;
+        - both expose the same page/block config;
+        - the same corpus produces equivalent page/block index summaries;
+        - cold scans, cache admission, compaction, and GC are measured
+          identically.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
