@@ -69,6 +69,22 @@ semantics. `leader_election_events` use `Term`, `LeaderId`, `CommitIndex`, and
 `AppliedIndex` semantics. `failover_metrics` must report
 `RaftFailoverEvent` evidence.
 
+## Phase 1 Metaserver Raft Behavior
+
+`metaserver_raft.behavior_evidence` must include these behavior keys, each with
+`status: passed`, before metaserver Raft parity can be marked feature-correct:
+
+- `leader_election`
+- `namespace_table_creation`
+- `slot_assignment`
+- `primary_placement`
+- `topology_readiness`
+- `membership_add_remove`
+- `follower_catch_up`
+- `leader_failover`
+- `restart_recovery`
+- `snapshot_restore`
+
 `tools/validate_raft_cpp_rust_parity_contract.py` validates this contract and
 the synthetic C++/Rust report pair in
 `compat/raft_parity_report_pair_corpus.json`.
