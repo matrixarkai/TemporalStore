@@ -4,14 +4,23 @@
 
 TemporalStore already had a primary timestamp-keyed feature model before MatrixArk context management was introduced. That older model stores data under one time-ordered key and applies compact field filters during query.
 
-MatrixArk's current `ContextIndexRef` layer is closer to a native posting list:
+MatrixArk's compatibility `ContextIndexRef` layer is closer to a native posting list:
 
 ```text
 ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}
   timestamp_key -> {primary_node_hash, primary_event_time_ms, event_id_hash}
 ```
 
-That is better than duplicating full events, but it can still fan out heavily when every event, resource chunk, PDF keyword, heading, status, and source emits separate index refs. The production direction should be:
+New C++ default context-index writes use compact bucket postings:
+
+```text
+ctxidx2:{tenant_hash}:{scope_hash}:{index_name}:{time_bucket_ms}
+  timestamp_key -> {primary_node_hash, primary_event_time_ms, event_id_hash, index_value_hash}
+```
+
+This moves the hot serving key shape closer to `scope + index family + time bucket`: one posting object can hold multiple values for the same index family and time bucket, and query-time filtering checks the stored `index_value_hash`. The old `ctxidx:` key remains readable for compatibility/debug callers that use `WRITE_INDEX_REF` directly.
+
+That is better than duplicating full events or creating product-visible rows, but it can still fan out if every resource chunk, PDF keyword, heading, status, and source emits unbounded refs. The longer-term production direction remains:
 
 ```text
 timestamped context series + declared compact filter fields
@@ -70,7 +79,8 @@ ctx:event:{tenant_hash}:{node_hash}
 ctx:entity:{tenant_hash}:{node_hash}:{entity_hash}
 ctx:summary:{tenant_hash}:{node_hash}:{level}
 ctx:embedding:{tenant_hash}:{ref_hash}
-ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}
+ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}        # legacy direct path
+ctxidx2:{tenant_hash}:{scope_hash}:{index_name}:{time_bucket_ms}         # compact default path
 ```
 
 For a `ContextEvent`, ingestion time is the primary timeline:
@@ -80,7 +90,7 @@ ctx:event:{tenant_hash}:{node_hash}
   context_timeline_key(ingestion_time_ms, event_id_hash) -> compact ContextEvent
 ```
 
-For secondary lookup, the current native context path writes small refs:
+For secondary lookup, direct compatibility calls can still write small refs:
 
 ```text
 ctxidx:{tenant_hash}:event_kind:{event_kind_hash}:{scope_hash}
@@ -107,6 +117,26 @@ ctxidx:2466697514329931826:event_kind:3:7836037686236352053
 ```
 
 Retrieval can query several index timelines, intersect event ids, then fetch the exact event rows from `ctx:event:{tenant}:{node}`.
+
+For extracted context events, the C++ native path now writes the same refs into compact bucket posting objects by default:
+
+```text
+ctxidx2:{tenant_hash}:{scope_hash}:status:{minute_bucket_ms}
+  timestamp_key -> {primary_node_hash, primary_event_time_ms, event_id_hash, index_value_hash=status_hash}
+```
+
+Native retrieve follows this path:
+
+```text
+query understanding
+-> scope filter
+-> L0/L1 node traversal
+-> compact posting lookup by scope + index_name + time_bucket
+-> placement-key candidate fetch from selected node partitions
+-> native score / rerank / token-budget pack
+```
+
+Broad prefix scan is fallback/debug only and must be visible in telemetry as `broad_scan_used`.
 
 ## Why Too Many Indexes Hurt
 

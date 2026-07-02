@@ -67,6 +67,7 @@ message IndexRef {
     uint64 primary_node_hash = 1;
     uint64 primary_event_time_ms = 2;
     uint64 event_id_hash = 3;
+    uint64 index_value_hash = 4;
 }
 
 message AuditRef {
@@ -225,6 +226,7 @@ message WriteIndexRefRequest {
     uint64 scope_hash = 4;
     uint64 event_time_ms = 5;
     IndexRef ref = 6;
+    uint64 time_bucket_ms = 7;
 }
 
 message WriteIndexRefResponse {
@@ -239,6 +241,7 @@ message QueryIndexRequest {
     uint64 start_time_ms = 5;
     uint64 end_time_ms = 6;
     uint32 limit = 7;
+    uint64 time_bucket_ms = 8;
 }
 
 message QueryIndexResponse {
@@ -252,6 +255,7 @@ message ContextIndexFilter {
     uint64 start_time_ms = 3;
     uint64 end_time_ms = 4;
     uint32 limit = 5;
+    uint64 time_bucket_ms = 6;
 }
 
 message ContextPackRef {
@@ -295,6 +299,9 @@ message NativeRetrieveTelemetry {
     bool stale_superseded_filter_applied = 27;
     bool shared_resource_skill_quota_applied = 28;
     bool cross_session_quota_rerank_applied = 29;
+    bool compact_index_bucket_used = 30;
+    uint32 compact_index_bucket_count = 31;
+    uint32 placement_fetch_count = 32;
 }
 
 message RetrieveContextPackRequest {
@@ -323,6 +330,8 @@ message RetrieveContextPackRequest {
     bool cross_session_rerank = 23;
     bool same_session_priority = 24;
     uint64 placement_node_hash = 25;
+    string placement_key = 26;
+    uint64 index_time_bucket_ms = 27;
 }
 
 message RetrieveContextPackResponse {

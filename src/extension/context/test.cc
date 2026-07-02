@@ -17,6 +17,11 @@ uint32_t MakeCmdId(int module_id, int function_id) {
     return (static_cast<uint32_t>(module_id) << 16) | static_cast<uint32_t>(function_id);
 }
 
+uint64_t TestIndexBucket(uint64_t timestamp_ms) {
+    constexpr uint64_t kBucketMs = 60 * 1000;
+    return timestamp_ms - (timestamp_ms % kBucketMs);
+}
+
 class ContextModuleTest : public ::testing::Test {
  public:
     void SetUp() override {
@@ -630,7 +635,8 @@ TEST_F(ContextModuleTest, WriteExtractedEventCreatesDefaultInternalIndexes) {
     }
 
     auto query_index = [&](const std::string& index_name, uint64_t value_hash,
-                           uint64_t start_time_ms, uint64_t end_time_ms) {
+                           uint64_t index_time_ms, uint64_t start_time_ms,
+                           uint64_t end_time_ms) {
         context::QueryIndexRequest request;
         request.set_tenant_hash(kTenant);
         request.set_index_name(index_name);
@@ -639,6 +645,7 @@ TEST_F(ContextModuleTest, WriteExtractedEventCreatesDefaultInternalIndexes) {
         request.set_start_time_ms(start_time_ms);
         request.set_end_time_ms(end_time_ms);
         request.set_limit(10);
+        request.set_time_bucket_ms(TestIndexBucket(index_time_ms));
 
         context::QueryIndexResponse response;
         Execute(context::QUERY_INDEX, "ctx-extracted-index-query", request, &response);
@@ -648,12 +655,17 @@ TEST_F(ContextModuleTest, WriteExtractedEventCreatesDefaultInternalIndexes) {
         ASSERT_EQ(response.refs(0).event_id_hash(), kEventId);
     };
 
-    query_index("event_kind", 7, kIngestionTime - 1, kIngestionTime + 1);
-    query_index("entity", kGpuEntity, kIngestionTime - 1, kIngestionTime + 1);
-    query_index("entity", kProjectEntity, kIngestionTime - 1, kIngestionTime + 1);
-    query_index("status", kApprovedStatus, kIngestionTime - 1, kIngestionTime + 1);
-    query_index("source", kCursorSource, kIngestionTime - 1, kIngestionTime + 1);
-    query_index("event_time_bucket", kBucket, kBucket - 1, kBucket + 1);
+    query_index("event_kind", 7, kIngestionTime, kIngestionTime - 1,
+                kIngestionTime + 1);
+    query_index("entity", kGpuEntity, kIngestionTime, kIngestionTime - 1,
+                kIngestionTime + 1);
+    query_index("entity", kProjectEntity, kIngestionTime, kIngestionTime - 1,
+                kIngestionTime + 1);
+    query_index("status", kApprovedStatus, kIngestionTime, kIngestionTime - 1,
+                kIngestionTime + 1);
+    query_index("source", kCursorSource, kIngestionTime, kIngestionTime - 1,
+                kIngestionTime + 1);
+    query_index("event_time_bucket", kBucket, kBucket, kBucket - 1, kBucket + 1);
 }
 
 TEST_F(ContextModuleTest, WriteExtractedEventCanDisableDefaultIndexes) {
@@ -758,7 +770,10 @@ TEST_F(ContextModuleTest, RetrieveContextPackUsesCompactIndexPostings) {
     ASSERT_EQ(response.selected_refs(0).matched_index_names(0), "status");
     ASSERT_EQ(response.telemetry().selected_refs(), 1);
     ASSERT_EQ(response.telemetry().index_postings_read(), 1);
+    ASSERT_TRUE(response.telemetry().compact_index_bucket_used());
+    ASSERT_GE(response.telemetry().compact_index_bucket_count(), 1);
     ASSERT_EQ(response.telemetry().candidate_fetch_count(), 1);
+    ASSERT_EQ(response.telemetry().placement_fetch_count(), 1);
     ASSERT_FALSE(response.telemetry().broad_scan_used());
     ASSERT_TRUE(response.telemetry().broad_scan_blocked());
     ASSERT_GT(response.telemetry().placement_partitions_touched(), 0);

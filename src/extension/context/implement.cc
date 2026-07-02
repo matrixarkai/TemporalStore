@@ -32,6 +32,7 @@ constexpr uint32_t kDefaultTopKPerDepth = 5;
 constexpr uint32_t kDefaultTraversalCandidates = 24;
 constexpr uint32_t kMaxChildrenScoredPerParent = 256;
 constexpr uint32_t kMaxFilterValues = 32;
+constexpr uint32_t kMaxIndexBucketsPerFilter = 64;
 constexpr uint32_t kMaxAuditRefs = 512;
 constexpr uint32_t kMaxPropagateDepth = 8;
 constexpr uint32_t kMaxEmbeddingDim = 4096;
@@ -46,6 +47,7 @@ constexpr size_t kMaxCompressionSnippetBytes = 256;
 constexpr size_t kMaxQueryIdBytes = 256;
 constexpr size_t kMaxEventTextBytes = 64 * 1024;
 constexpr uint64_t kTimelineKeyFanout = 1024 * 1024;
+constexpr uint64_t kDefaultIndexPostingBucketMs = 60 * 1000;
 
 std::string JoinKey(const std::string& prefix, uint64_t tenant_hash, uint64_t suffix) {
     return prefix + ":" + std::to_string(tenant_hash) + ":" + std::to_string(suffix);
@@ -93,6 +95,47 @@ std::string IndexKey(uint64_t tenant_hash, const std::string& index_name,
                      uint64_t index_value_hash, uint64_t scope_hash) {
     return "ctxidx:" + std::to_string(tenant_hash) + ":" + index_name + ":" +
            std::to_string(index_value_hash) + ":" + std::to_string(scope_hash);
+}
+
+std::string CompactIndexKey(uint64_t tenant_hash, const std::string& index_name,
+                            uint64_t scope_hash, uint64_t time_bucket_ms) {
+    return "ctxidx2:" + std::to_string(tenant_hash) + ":" +
+           std::to_string(scope_hash) + ":" + index_name + ":" +
+           std::to_string(time_bucket_ms);
+}
+
+std::string IndexStorageKey(uint64_t tenant_hash, const std::string& index_name,
+                            uint64_t index_value_hash, uint64_t scope_hash,
+                            uint64_t time_bucket_ms) {
+    if (time_bucket_ms != 0) {
+        return CompactIndexKey(tenant_hash, index_name, scope_hash, time_bucket_ms);
+    }
+    return IndexKey(tenant_hash, index_name, index_value_hash, scope_hash);
+}
+
+uint64_t IndexTimeBucket(uint64_t timestamp_ms) {
+    if (timestamp_ms == 0) {
+        return 0;
+    }
+    return timestamp_ms - (timestamp_ms % kDefaultIndexPostingBucketMs);
+}
+
+std::vector<uint64_t> LatestIndexBucketsForRange(uint64_t start_time_ms,
+                                                 uint64_t end_time_ms) {
+    std::vector<uint64_t> buckets;
+    if (start_time_ms == 0 || end_time_ms == 0 || start_time_ms > end_time_ms) {
+        return buckets;
+    }
+    const uint64_t start_bucket = IndexTimeBucket(start_time_ms);
+    uint64_t bucket = IndexTimeBucket(end_time_ms);
+    for (uint32_t i = 0; i < kMaxIndexBucketsPerFilter && bucket >= start_bucket; ++i) {
+        buckets.push_back(bucket);
+        if (bucket < kDefaultIndexPostingBucketMs) {
+            break;
+        }
+        bucket -= kDefaultIndexPostingBucketMs;
+    }
+    return buckets;
 }
 
 uint32_t LimitOrDefault(uint32_t limit) {
@@ -944,17 +987,27 @@ Status WriteIndexRef(ExecuteEnv* env, const WriteIndexRefRequest& request,
         return status;
     }
 
+    if (request.time_bucket_ms() != 0) {
+        status = ValidateTimelineTimestamp(request.time_bucket_ms());
+        if (!status.ok()) {
+            return status;
+        }
+    }
+
     const std::string key =
-        IndexKey(request.tenant_hash(), request.index_name(), request.index_value_hash(),
-                 request.scope_hash());
+        IndexStorageKey(request.tenant_hash(), request.index_name(),
+                        request.index_value_hash(), request.scope_hash(),
+                        request.time_bucket_ms());
     ObjectHandle<model::ContextIndexModel> object;
     status = env->GetOrNewObject(key, &object);
     if (!status.ok()) {
         return status;
     }
 
+    IndexRef stored_ref = request.ref();
+    stored_ref.set_index_value_hash(request.index_value_hash());
     std::string value;
-    if (!request.ref().SerializeToString(&value)) {
+    if (!stored_ref.SerializeToString(&value)) {
         return Status::InvalidArgument("failed to serialize IndexRef");
     }
     status = object->OrSet().Add(
@@ -981,6 +1034,7 @@ Status WriteDefaultIndexRef(ExecuteEnv* env, uint64_t tenant_hash, uint64_t scop
     request.set_index_value_hash(index_value_hash);
     request.set_scope_hash(scope_hash);
     request.set_event_time_ms(index_time_ms);
+    request.set_time_bucket_ms(IndexTimeBucket(index_time_ms));
     *request.mutable_ref() = ref;
 
     WriteIndexRefResponse index_response;
@@ -1091,9 +1145,17 @@ Status QueryIndex(ExecuteEnv* env, const QueryIndexRequest& request, QueryIndexR
         return status;
     }
 
+    if (request.time_bucket_ms() != 0) {
+        status = ValidateTimelineTimestamp(request.time_bucket_ms());
+        if (!status.ok()) {
+            return status;
+        }
+    }
+
     const std::string key =
-        IndexKey(request.tenant_hash(), request.index_name(), request.index_value_hash(),
-                 request.scope_hash());
+        IndexStorageKey(request.tenant_hash(), request.index_name(),
+                        request.index_value_hash(), request.scope_hash(),
+                        request.time_bucket_ms());
     response->set_object_key(key);
     ObjectHandle<model::ContextIndexModel> object;
     status = env->GetObject(key, &object);
@@ -1104,11 +1166,15 @@ Status QueryIndex(ExecuteEnv* env, const QueryIndexRequest& request, QueryIndexR
         return status;
     }
 
+    const bool compact_bucket = request.time_bucket_ms() != 0;
     object->OrSet().Query(TimelineStart(request.start_time_ms()),
                           TimelineEnd(request.end_time_ms()), LimitOrDefault(request.limit()),
-                          [response](const uint64_t, const std::string& value) {
+                          [response, compact_bucket, &request](
+                              const uint64_t, const std::string& value) {
                               IndexRef ref;
-                              if (ref.ParseFromString(value)) {
+                              if (ref.ParseFromString(value) &&
+                                  (!compact_bucket ||
+                                   ref.index_value_hash() == request.index_value_hash())) {
                                   *response->add_refs() = std::move(ref);
                               }
                           });
@@ -1510,66 +1576,89 @@ Status CollectIndexCandidates(ExecuteEnv* env, const RetrieveContextPackRequest&
                               NativeRetrieveTelemetry* telemetry) {
     const uint64_t start_ms = NowSteadyMs();
     for (const auto& filter : request.index_filters()) {
-        QueryIndexRequest index_request;
-        index_request.set_tenant_hash(request.tenant_hash());
-        index_request.set_index_name(filter.index_name());
-        index_request.set_index_value_hash(filter.index_value_hash());
-        index_request.set_scope_hash(request.scope_hash());
-        index_request.set_start_time_ms(filter.start_time_ms() == 0 ? request.start_time_ms()
-                                                                    : filter.start_time_ms());
-        index_request.set_end_time_ms(filter.end_time_ms() == 0 ? request.end_time_ms()
-                                                                : filter.end_time_ms());
-        index_request.set_limit(filter.limit());
-        QueryIndexResponse index_response;
-        Status status = QueryIndex(env, index_request, &index_response);
-        if (!status.ok()) {
-            return status;
+        const uint64_t filter_start_ms =
+            filter.start_time_ms() == 0 ? request.start_time_ms() : filter.start_time_ms();
+        const uint64_t filter_end_ms =
+            filter.end_time_ms() == 0 ? request.end_time_ms() : filter.end_time_ms();
+        std::vector<uint64_t> buckets;
+        if (filter.time_bucket_ms() != 0) {
+            buckets.push_back(filter.time_bucket_ms());
+        } else if (request.index_time_bucket_ms() != 0) {
+            buckets.push_back(request.index_time_bucket_ms());
+        } else {
+            buckets = LatestIndexBucketsForRange(filter_start_ms, filter_end_ms);
         }
-        if (index_response.refs_size() == 0) {
-            telemetry->set_dropped_by_index_filter(
-                telemetry->dropped_by_index_filter() + 1);
-        }
-        telemetry->set_index_postings_read(telemetry->index_postings_read() +
-                                           index_response.refs_size());
-        for (const auto& ref : index_response.refs()) {
-            if (!selected_node_hashes.empty() &&
-                selected_node_hashes.find(ref.primary_node_hash()) ==
-                    selected_node_hashes.end()) {
-                telemetry->set_dropped_by_placement(telemetry->dropped_by_placement() + 1);
-                continue;
-            }
-            ContextEvent event;
-            bool found = false;
-            status = LoadEventByIndexRef(env, request.tenant_hash(), ref, &event, &found);
+        telemetry->set_compact_index_bucket_used(!buckets.empty());
+        telemetry->set_compact_index_bucket_count(
+            telemetry->compact_index_bucket_count() + static_cast<uint32_t>(buckets.size()));
+
+        uint32_t refs_read_for_filter = 0;
+        for (uint64_t bucket_ms : buckets) {
+            QueryIndexRequest index_request;
+            index_request.set_tenant_hash(request.tenant_hash());
+            index_request.set_index_name(filter.index_name());
+            index_request.set_index_value_hash(filter.index_value_hash());
+            index_request.set_scope_hash(request.scope_hash());
+            index_request.set_start_time_ms(filter_start_ms);
+            index_request.set_end_time_ms(filter_end_ms);
+            index_request.set_limit(filter.limit());
+            index_request.set_time_bucket_ms(bucket_ms);
+            QueryIndexResponse index_response;
+            Status status = QueryIndex(env, index_request, &index_response);
             if (!status.ok()) {
                 return status;
             }
-            telemetry->set_candidate_fetch_count(telemetry->candidate_fetch_count() + 1);
-            if (!found) {
-                telemetry->set_dropped_by_missing_record(
-                    telemetry->dropped_by_missing_record() + 1);
-                continue;
-            }
-            status = AddCandidateFromEvent(event, ref.primary_node_hash(), filter.index_name(),
-                                           candidates);
-            if (!status.ok()) {
-                return status;
-            }
-            if (filter.index_name() == "entity" || filter.index_name() == "entity_hash") {
-                ContextEntity entity;
-                bool found_entity = false;
-                status = LoadEntityByHash(env, request.tenant_hash(), ref.primary_node_hash(),
-                                          filter.index_value_hash(), &entity, &found_entity);
+            refs_read_for_filter += index_response.refs_size();
+            telemetry->set_index_postings_read(telemetry->index_postings_read() +
+                                               index_response.refs_size());
+            for (const auto& ref : index_response.refs()) {
+                if (!selected_node_hashes.empty() &&
+                    selected_node_hashes.find(ref.primary_node_hash()) ==
+                        selected_node_hashes.end()) {
+                    telemetry->set_dropped_by_placement(telemetry->dropped_by_placement() + 1);
+                    continue;
+                }
+                ContextEvent event;
+                bool found = false;
+                status = LoadEventByIndexRef(env, request.tenant_hash(), ref, &event, &found);
                 if (!status.ok()) {
                     return status;
                 }
-                if (found_entity) {
-                    status = AddCandidateFromEntity(entity, filter.index_name(), candidates);
+                telemetry->set_candidate_fetch_count(telemetry->candidate_fetch_count() + 1);
+                telemetry->set_placement_fetch_count(telemetry->placement_fetch_count() + 1);
+                if (!found) {
+                    telemetry->set_dropped_by_missing_record(
+                        telemetry->dropped_by_missing_record() + 1);
+                    continue;
+                }
+                status = AddCandidateFromEvent(event, ref.primary_node_hash(),
+                                               filter.index_name(), candidates);
+                if (!status.ok()) {
+                    return status;
+                }
+                if (filter.index_name() == "entity" || filter.index_name() == "entity_hash") {
+                    ContextEntity entity;
+                    bool found_entity = false;
+                    status = LoadEntityByHash(env, request.tenant_hash(),
+                                              ref.primary_node_hash(),
+                                              filter.index_value_hash(), &entity,
+                                              &found_entity);
                     if (!status.ok()) {
                         return status;
                     }
+                    if (found_entity) {
+                        status = AddCandidateFromEntity(entity, filter.index_name(),
+                                                        candidates);
+                        if (!status.ok()) {
+                            return status;
+                        }
+                    }
                 }
             }
+        }
+        if (refs_read_for_filter == 0) {
+            telemetry->set_dropped_by_index_filter(
+                telemetry->dropped_by_index_filter() + 1);
         }
     }
     telemetry->set_index_prefilter_ms(ElapsedSinceMs(start_ms));
@@ -1602,6 +1691,8 @@ Status CollectNodeEventCandidates(ExecuteEnv* env, const RetrieveContextPackRequ
         }
         telemetry->set_scanned_records(telemetry->scanned_records() +
                                        events_response.events_size());
+        telemetry->set_placement_fetch_count(telemetry->placement_fetch_count() +
+                                             events_response.events_size());
         for (const auto& event : events_response.events()) {
             status = AddCandidateFromEvent(event, node_hash, "", candidates);
             if (!status.ok()) {
