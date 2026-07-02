@@ -20,6 +20,7 @@ from typing import Any
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 CONTRACT = ROOT / "docs" / "temporalstore_page_block_address_contract.md"
 SCALE_REPORT = ROOT / "tools" / "run_matrixark_cpp_rust_scale_report.py"
+REPORT_PAIR_CORPUS = ROOT / "compat" / "storage_lifecycle_report_pair_corpus.json"
 
 REQUIRED_STORAGE_LIFECYCLE_METRICS = [
     "storage_manager_prepare_count",
@@ -59,6 +60,43 @@ REQUIRED_CONFIG_FIELDS = [
     "TS_PAGE_INDEX_CACHE_BYTES",
     "TS_BLOCK_INDEX_CACHE_BYTES",
 ]
+
+CANONICAL_PUBLIC_FIELDS = [
+    "PageAddress",
+    "BlockAddress",
+    "PageIndexEntry",
+    "BlockIndexEntry",
+    "StorageZone",
+    "Segment",
+    "Extent",
+    "AppendWatermark",
+    "CompactionWatermark",
+]
+
+CANONICAL_JSON_FIELDS = [
+    "page_address",
+    "block_address",
+    "page_index_entry",
+    "block_index_entry",
+    "storage_zone",
+    "segment",
+    "extent",
+    "append_watermark",
+    "compaction_watermark",
+]
+
+LEGACY_ALIAS_MAP = {
+    "page_store": "storage_zone",
+    "block_store": "storage_zone",
+    "page_segment": "segment",
+    "page_segment_id": "segment_id",
+    "stream_blob": "segment",
+    "stream_blob_id": "segment_id",
+    "zone": "storage_zone",
+    "extent_id": "extent_id",
+}
+
+ALLOWED_ALIAS_CONTAINERS = {"compatibility_aliases", "legacy_alias", "legacy_aliases", "migration_aliases"}
 
 
 def _extract_runner_list(name: str) -> list[str]:
@@ -114,10 +152,52 @@ def _as_number(value: Any) -> float | None:
     return None
 
 
+def _walk_public_keys(value: Any, *, in_alias_container: bool = False, path: tuple[str, ...] = ()) -> list[tuple[tuple[str, ...], str]]:
+    violations: list[tuple[tuple[str, ...], str]] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = (*path, str(key))
+            child_in_alias = in_alias_container or str(key) in ALLOWED_ALIAS_CONTAINERS
+            if not child_in_alias and str(key) in LEGACY_ALIAS_MAP:
+                violations.append((child_path, str(key)))
+            violations.extend(_walk_public_keys(child, in_alias_container=child_in_alias, path=child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            violations.extend(_walk_public_keys(child, in_alias_container=in_alias_container, path=(*path, str(index))))
+    return violations
+
+
+def _normalize_public_storage_shape(report: dict[str, Any]) -> dict[str, Any]:
+    """Return canonical public storage fields from a backend report.
+
+    Canonical fields win. Legacy aliases are accepted only from compatibility
+    alias containers and normalized for comparison.
+    """
+    source_candidates = [
+        report.get("public_storage_contract"),
+        report.get("storage_public_contract"),
+        report.get("storage_lifecycle", {}).get("public_contract") if isinstance(report.get("storage_lifecycle"), dict) else None,
+    ]
+    source = next((candidate for candidate in source_candidates if isinstance(candidate, dict)), {})
+    aliases = source.get("compatibility_aliases") if isinstance(source.get("compatibility_aliases"), dict) else {}
+
+    normalized: dict[str, Any] = {}
+    for key in CANONICAL_JSON_FIELDS:
+        if key in source:
+            normalized[key] = source[key]
+    for alias, canonical in LEGACY_ALIAS_MAP.items():
+        if alias in aliases and canonical not in normalized:
+            normalized[canonical] = aliases[alias]
+    return normalized
+
+
 def validate_contract_and_runner() -> list[str]:
     failures: list[str] = []
     contract_text = CONTRACT.read_text(encoding="utf-8")
     runner_metrics = _extract_runner_list("STORAGE_LIFECYCLE_METRIC_NAMES")
+    for name in CANONICAL_PUBLIC_FIELDS + CANONICAL_JSON_FIELDS:
+        if f"`{name}`" not in contract_text:
+            failures.append(f"contract missing canonical public field `{name}`")
     if runner_metrics != REQUIRED_STORAGE_LIFECYCLE_METRICS:
         failures.append("runner:STORAGE_LIFECYCLE_METRIC_NAMES does not match the canonical lifecycle metric order")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
@@ -134,6 +214,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
     rust_metrics = _dig_metrics(rust_report)
     cpp_config = _dig_config(cpp_report)
     rust_config = _dig_config(rust_report)
+    cpp_public_shape = _normalize_public_storage_shape(cpp_report)
+    rust_public_shape = _normalize_public_storage_shape(rust_report)
 
     for field in REQUIRED_CONFIG_FIELDS:
         if field not in cpp_config:
@@ -148,6 +230,26 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             failures.append(f"cpp metrics missing `{metric}`")
         if metric not in rust_metrics:
             failures.append(f"rust metrics missing `{metric}`")
+
+    for backend, report in [("cpp", cpp_report), ("rust", rust_report)]:
+        for path, key in _walk_public_keys(report):
+            failures.append(
+                f"{backend} public report exposes legacy alias `{key}` outside compatibility_aliases at {'.'.join(path)}"
+            )
+
+    if cpp_public_shape or rust_public_shape:
+        for field in CANONICAL_JSON_FIELDS:
+            if field not in cpp_public_shape:
+                failures.append(f"cpp public storage shape missing canonical `{field}`")
+            if field not in rust_public_shape:
+                failures.append(f"rust public storage shape missing canonical `{field}`")
+        comparable_fields = [field for field in CANONICAL_JSON_FIELDS if field in cpp_public_shape and field in rust_public_shape]
+        for field in comparable_fields:
+            if type(cpp_public_shape[field]).__name__ != type(rust_public_shape[field]).__name__:
+                failures.append(
+                    f"public storage shape type drift `{field}`: cpp={type(cpp_public_shape[field]).__name__} "
+                    f"rust={type(rust_public_shape[field]).__name__}"
+                )
 
     for metric in [
         "cold_scan_no_cache_reads",
@@ -172,13 +274,24 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cpp-report", type=pathlib.Path)
     parser.add_argument("--rust-report", type=pathlib.Path)
+    parser.add_argument(
+        "--skip-report-pair-corpus",
+        action="store_true",
+        help="Only validate docs/runner contract unless explicit reports are supplied.",
+    )
     args = parser.parse_args()
 
     failures = validate_contract_and_runner()
+    validated_pair = False
+    if not args.skip_report_pair_corpus and not (args.cpp_report or args.rust_report):
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        failures.extend(validate_report_pair(corpus["cpp"], corpus["rust"]))
+        validated_pair = True
     if bool(args.cpp_report) != bool(args.rust_report):
         failures.append("--cpp-report and --rust-report must be provided together")
     if args.cpp_report and args.rust_report:
         failures.extend(validate_report_pair(_load_json(args.cpp_report), _load_json(args.rust_report)))
+        validated_pair = True
 
     if failures:
         for failure in failures:
@@ -188,8 +301,8 @@ def main() -> int:
     print("storage lifecycle parity contract passed:")
     for metric in REQUIRED_STORAGE_LIFECYCLE_METRICS:
         print(f"- {metric}")
-    if args.cpp_report and args.rust_report:
-        print("- C++/Rust report pair exposes matching config and lifecycle metrics")
+    if validated_pair:
+        print("- C++/Rust report pair exposes matching config, lifecycle metrics, and canonical public storage shape")
     return 0
 
 

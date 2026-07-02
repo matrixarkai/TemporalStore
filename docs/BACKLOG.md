@@ -1339,6 +1339,13 @@ Completed since the last backlog update:
         and scale reports expose the same stream, zone, eviction, GC, reclaim,
         compaction, watermark, cache-admission, and StorageManager lifecycle
         metric names.
+      - keep `compat/storage_lifecycle_report_pair_corpus.json` in CI so C++
+        and Rust report comparisons normalize `page_store`, `block_store`,
+        stream/blob, and page-segment aliases only from
+        `compatibility_aliases`, while public comparisons use
+        `PageAddress`, `BlockAddress`, `PageIndexEntry`, `BlockIndexEntry`,
+        `StorageZone`, `Segment`, `Extent`, `AppendWatermark`, and
+        `CompactionWatermark`.
       - Acceptance: page/block parity is done only when:
         - C++ and Rust encode the same logical `PageAddress` and
           `BlockAddress`;
