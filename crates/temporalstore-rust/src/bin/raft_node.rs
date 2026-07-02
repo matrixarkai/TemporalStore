@@ -970,7 +970,7 @@ mod tests {
         runtime.cluster().set_alive(3, true).unwrap();
         let _ = runtime.cluster().check_write_authority(3);
 
-        let report: temporalstore_rust::raft::RustRaftRuntimeAdminReport =
+        let report: temporalstore_rust::raft::ByteRaftRuntimeAdminReport =
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
@@ -1006,7 +1006,7 @@ mod tests {
             .peer_pipeline_states
             .iter()
             .any(|peer| peer.peer_id == 3 && peer.append_queue_depth > 0));
-        let local: temporalstore_rust::raft::RustRaftLocalStatusReport =
+        let local: temporalstore_rust::raft::ByteRaftLocalStatusReport =
             serde_json::from_slice(&route(
                 &runtime,
                 "GET",
@@ -1022,14 +1022,17 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = String::from_utf8(route(&runtime, "GET", "/metrics", Vec::new())).unwrap();
-        assert!(metrics.contains("temporalstore_raft_rustraft_ready"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_capability_ready"));
+        assert!(metrics.contains("rustraft_byteraft_ready"));
+        assert!(metrics.contains("rustraft_byteraft_capability_ready"));
+        assert!(metrics.contains("rustraft_byteraft_capability_field_present"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_append_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
         assert!(metrics.contains("replica_role=\"voter\""));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_reorder_queue_depth"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_snapshot_installed_index"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_wal_segment_count"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     }
 
     #[test]

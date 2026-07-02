@@ -4625,7 +4625,7 @@ mod tests {
         };
         let (code, body) = handle_server_raft_route(&state, &request).unwrap();
         assert_eq!(code, 200);
-        let report: temporalstore_rust::raft::RustRaftRuntimeAdminReport =
+        let report: temporalstore_rust::raft::ByteRaftRuntimeAdminReport =
             serde_json::from_slice(&body).unwrap();
         assert!(report.read_index_validated);
         assert!(report.lease_read_validated);
@@ -4662,7 +4662,7 @@ mod tests {
         };
         let (code, body) = handle_server_raft_route(&state, &request).unwrap();
         assert_eq!(code, 200);
-        let local: temporalstore_rust::raft::RustRaftLocalStatusReport =
+        let local: temporalstore_rust::raft::ByteRaftLocalStatusReport =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(local.leader_id, report.leader_id);
         assert!(!local.peers.is_empty());
@@ -4672,14 +4672,17 @@ mod tests {
             .any(|peer| peer.pipeline_state.peer_id == peer.status.node_id));
 
         let metrics = state.runtime.cluster().prometheus_metrics();
-        assert!(metrics.contains("temporalstore_raft_rustraft_ready"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_capability_ready"));
+        assert!(metrics.contains("rustraft_byteraft_ready"));
+        assert!(metrics.contains("rustraft_byteraft_capability_ready"));
+        assert!(metrics.contains("rustraft_byteraft_capability_field_present"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_ready"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_capability_ready"));
         assert!(metrics.contains("capability=\"wal_segment_lifecycle\""));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_append_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_append_queue_depth"));
         assert!(metrics.contains("replica_role=\"voter\""));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_reorder_queue_depth"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_peer_snapshot_installed_index"));
-        assert!(metrics.contains("temporalstore_raft_rustraft_wal_segment_count"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_reorder_queue_depth"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_peer_snapshot_installed_index"));
+        assert!(metrics.contains("temporalstore_raft_byteraft_wal_segment_count"));
     }
 
     // shared-corpus: server_raft_membership_apply_route
