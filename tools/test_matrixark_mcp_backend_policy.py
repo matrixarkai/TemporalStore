@@ -143,18 +143,26 @@ class _NativeContextPackClient:
                 "node_traversal_ms": 2.5,
                 "index_prefilter_ms": 3.5,
                 "candidate_fetch_ms": 4.5,
-                    "score_ms": 5.5,
-                    "pack_ms": 6.5,
-                    "audit_ms": 0.0,
-                    "append_queue_wait_ms": 0.25,
-                    "append_engine_ms": 0.75,
-                    "selected_refs": 1,
-                    "dropped_refs": 21,
-                    "scanned_records": 7,
-                    "candidate_cache_hit": True,
-                    "placement_partitions_touched": 2,
-                    "index_postings_read": 9,
-                    "drop_counters": {
+                "score_ms": 5.5,
+                "pack_ms": 6.5,
+                "audit_ms": 0.0,
+                "append_queue_wait_ms": 0.25,
+                "append_engine_ms": 0.75,
+                "selected_refs": 1,
+                "dropped_refs": 21,
+                "scanned_records": 7,
+                "candidate_cache_hit": True,
+                "placement_partitions_touched": 2,
+                "index_postings_read": 9,
+                "correctness_evidence": {
+                    "scope_filtering": True,
+                    "placement_filtering": True,
+                    "compact_secondary_index_prefilter": True,
+                    "stale_superseded_exclusion": True,
+                    "shared_resource_skill_quota": True,
+                    "cross_session_quota_rerank": True,
+                },
+                "drop_counters": {
                     "scope": 1,
                     "placement": 2,
                     "index_filter": 3,
@@ -1142,6 +1150,14 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack")
         self.assertEqual(request["watermark_count"], 7)
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
+        self.assertEqual(request["placement_node_hash"], request["start_node_hash"])
+        self.assertFalse(request["include_superseded"])
+        self.assertFalse(request["include_superseded_resources"])
+        self.assertEqual(request["shared_resource_max_refs"], 4)
+        self.assertEqual(request["skill_max_refs"], 4)
+        self.assertEqual(request["cross_session_max_refs"], 4)
+        self.assertTrue(request["cross_session_rerank"])
+        self.assertTrue(request["same_session_priority"])
         self.assertEqual(
             request["required_native_apis"],
             [
@@ -1228,6 +1244,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertFalse(result["retrieval_metrics"]["raw_candidate_tables_returned"])
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["scope"], 1)
         self.assertEqual(result["retrieval_metrics"]["drop_counters"]["score_threshold"], 6)
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["scope_filtering"])
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["placement_filtering"])
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["compact_secondary_index_prefilter"])
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["stale_superseded_exclusion"])
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["shared_resource_skill_quota"])
+        self.assertTrue(result["retrieval_metrics"]["correctness_evidence"]["cross_session_quota_rerank"])
         self.assertEqual(
             result["recall_policy"]["backend_retrieval_pushdown"]["execution_mode"],
             "native_context_pack",

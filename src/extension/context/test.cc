@@ -969,6 +969,12 @@ TEST_F(ContextModuleTest, RetrieveContextPackIncludesNativeContextModelRefs) {
     request.set_max_context_tokens(256);
     request.set_max_selected_refs(8);
     request.set_min_score(0.1);
+    request.set_shared_resource_max_refs(2);
+    request.set_skill_max_refs(2);
+    request.set_cross_session_max_refs(2);
+    request.set_cross_session_rerank(true);
+    request.set_same_session_priority(true);
+    request.set_placement_node_hash(kNode);
     auto* filter = request.add_index_filters();
     filter->set_index_name("entity");
     filter->set_index_value_hash(kEntityHash);
@@ -991,6 +997,53 @@ TEST_F(ContextModuleTest, RetrieveContextPackIncludesNativeContextModelRefs) {
     ASSERT_TRUE(ref_types.find("compression") != ref_types.end());
     ASSERT_FALSE(response.telemetry().broad_scan_used());
     ASSERT_EQ(response.telemetry().index_postings_read(), 1);
+    ASSERT_TRUE(response.telemetry().scope_filter_applied());
+    ASSERT_TRUE(response.telemetry().placement_filter_applied());
+    ASSERT_TRUE(response.telemetry().compact_index_prefilter_applied());
+    ASSERT_TRUE(response.telemetry().stale_superseded_filter_applied());
+    ASSERT_TRUE(response.telemetry().shared_resource_skill_quota_applied());
+    ASSERT_TRUE(response.telemetry().cross_session_quota_rerank_applied());
+}
+
+TEST_F(ContextModuleTest, RetrieveContextPackPlacementFilterDropsWrongPlacement) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kNode = 8902;
+    constexpr uint64_t kOtherNode = 8903;
+    constexpr uint64_t kIngestionTime = 1781500000300ULL;
+    constexpr uint64_t kEventId = 450;
+
+    {
+        context::WriteEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.9);
+        event->set_importance(0.8);
+        event->set_text("This event should be dropped by requested placement.");
+        context::WriteEventResponse response;
+        Execute(context::WRITE_EVENT, "ctx-native-pack-placement-filter-event", request,
+                &response);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kNode);
+    request.set_start_time_ms(kIngestionTime - 1);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_placement_node_hash(kOtherNode);
+    request.set_max_context_tokens(64);
+    request.set_max_selected_refs(4);
+
+    context::RetrieveContextPackResponse response;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-pack-placement-filter", request,
+            &response);
+    ASSERT_EQ(response.selected_refs_size(), 0);
+    ASSERT_TRUE(response.telemetry().placement_filter_applied());
+    ASSERT_GT(response.telemetry().dropped_by_placement(), 0);
+    ASSERT_EQ(response.warnings_size(), 1);
 }
 
 TEST_F(ContextModuleTest, FirstWriteOnlyKeepsOriginalEventPayload) {

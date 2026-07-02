@@ -289,6 +289,12 @@ message NativeRetrieveTelemetry {
     uint64 score_ms = 21;
     uint64 pack_ms = 22;
     uint64 audit_ms = 23;
+    bool scope_filter_applied = 24;
+    bool placement_filter_applied = 25;
+    bool compact_index_prefilter_applied = 26;
+    bool stale_superseded_filter_applied = 27;
+    bool shared_resource_skill_quota_applied = 28;
+    bool cross_session_quota_rerank_applied = 29;
 }
 
 message RetrieveContextPackRequest {
@@ -310,6 +316,13 @@ message RetrieveContextPackRequest {
     bool leaf_only = 16;
     repeated ContextIndexFilter index_filters = 17;
     bool allow_broad_scan_fallback = 18;
+    bool include_superseded = 19;
+    uint32 shared_resource_max_refs = 20;
+    uint32 skill_max_refs = 21;
+    uint32 cross_session_max_refs = 22;
+    bool cross_session_rerank = 23;
+    bool same_session_priority = 24;
+    uint64 placement_node_hash = 25;
 }
 
 message RetrieveContextPackResponse {

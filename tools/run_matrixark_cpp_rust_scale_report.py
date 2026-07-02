@@ -696,6 +696,12 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
                     "maximum": max_drift_ratio,
                 }
             )
+        else:
+            for values in backend_values.values():
+                if isinstance(values, dict) and values.get("status") == "passed":
+                    evidence = values.setdefault("correctness_evidence", {})
+                    if isinstance(evidence, dict):
+                        evidence["selected_ref_parity"] = True
     else:
         drift_ratio = None
     signature_sources = {
@@ -715,6 +721,11 @@ def phase0_correctness_gate(backends: dict[str, Json | None], args: argparse.Nam
             if len(unique) > 1:
                 mismatches.append({"query_id": query_id, "selected_ref_signatures": by_backend})
         if mismatches:
+            for values in backend_values.values():
+                if isinstance(values, dict):
+                    evidence = values.setdefault("correctness_evidence", {})
+                    if isinstance(evidence, dict):
+                        evidence["selected_ref_parity"] = False
             failures.append(
                 {
                     "backend": "cross_backend",
