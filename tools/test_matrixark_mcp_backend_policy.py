@@ -538,6 +538,38 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         failures = validate_report_pair(corpus["cpp"], rust_missing)
         self.assertIn("rust report missing required top-level `storage_cache_semantics`", failures)
 
+    def test_storage_reclaim_metrics_and_scope_are_required(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        required_reclaim_metrics = [
+            "tombstone_records",
+            "stale_page_tombstones",
+            "stale_block_tombstones",
+            "stale_pages_rewritten",
+            "stale_pages_skipped",
+            "stale_blocks_rewritten",
+            "stale_blocks_skipped",
+            "reclaimable_bytes",
+            "compaction_reclaimed_bytes",
+            "physical_reclaimed_bytes",
+            "physical_reclaim_errors",
+        ]
+        for metric in required_reclaim_metrics:
+            rust_missing = json.loads(json.dumps(corpus["rust"]))
+            del rust_missing["storage_lifecycle_metrics"][metric]
+            failures = validate_report_pair(corpus["cpp"], rust_missing)
+            self.assertIn(f"rust metrics missing `{metric}`", failures)
+
+        cpp_bad_scope = json.loads(json.dumps(corpus["cpp"]))
+        cpp_bad_scope["storage_reclaim_scope"] = {
+            "owner": "matrixark_context_gc",
+            "matrixark_context_gc_role": "owns_physical_reclaim",
+            "physical_reclaim_context_specific": True,
+        }
+        failures = validate_report_pair(cpp_bad_scope, corpus["rust"])
+        self.assertTrue(any("cpp storage_reclaim_scope drift" in failure for failure in failures))
+
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
             "config": {
