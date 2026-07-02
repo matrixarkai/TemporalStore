@@ -431,6 +431,19 @@ Shared C++/Rust parity cases must cover:
 - restart/recovery rebuilding `PageIndex`, `BlockIndex`, and `ObjectIndex`;
 - cold scan using no-cache/no-promote reads.
 
+The shared `compat/page_address_compatibility_corpus.json` corpus covers the
+PageAddress subset that both C++ and Rust must consume:
+
+- encode/decode `PageAddress`;
+- stable ordering by `{shard_id, zone_id, segment_id, page_id, offset}`;
+- timestamp range -> page address lookup;
+- page split behavior;
+- page compaction rewrite preserving logical records.
+
+`tools/validate_page_address_compatibility_corpus.py` is the lightweight
+fail-closed validator for this shared corpus. Native C++ and Rust tests should
+use the same corpus for engine-specific storage/index assertions.
+
 ## Metrics
 
 Both C++ and Rust should expose the same metric names:
