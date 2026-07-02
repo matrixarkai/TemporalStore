@@ -326,25 +326,40 @@
     },
     "fail_closed_gates": {
       "same_quorum_rule": {
-        "status": "passed"
+        "status": "passed",
+        "quorum_rule": "majority(voters)"
       },
       "commit_applied_index_no_unexpected_drift": {
-        "status": "passed"
+        "status": "passed",
+        "commit_index_drift": 0,
+        "applied_index_drift": 0,
+        "max_allowed_drift": 0
       },
       "no_stale_follower_reads_when_ready": {
-        "status": "passed"
+        "status": "passed",
+        "readiness_status": "healthy",
+        "stale_read_count": 0
       },
       "membership_change_result_match": {
-        "status": "passed"
+        "status": "passed",
+        "membership_change_result": "add_remove_committed"
       },
       "snapshot_restore_record_count_checksum_match": {
-        "status": "passed"
+        "status": "passed",
+        "record_count_match": true,
+        "checksum_match": true
       },
       "metaserver_ready_after_slot_primary_assignment": {
-        "status": "passed"
+        "status": "passed",
+        "topology_ready": true,
+        "slot_assignment_complete": true,
+        "primary_assignment_complete": true
       },
       "data_node_unhealthy_when_apply_lag_exceeds_threshold": {
-        "status": "passed"
+        "status": "passed",
+        "raft_health_status": "healthy",
+        "apply_lag_max": 0,
+        "apply_lag_threshold": 64
       }
     },
     "report_summary": {
@@ -689,25 +704,40 @@
     },
     "fail_closed_gates": {
       "same_quorum_rule": {
-        "status": "passed"
+        "status": "passed",
+        "quorum_rule": "majority(voters)"
       },
       "commit_applied_index_no_unexpected_drift": {
-        "status": "passed"
+        "status": "passed",
+        "commit_index_drift": 0,
+        "applied_index_drift": 0,
+        "max_allowed_drift": 0
       },
       "no_stale_follower_reads_when_ready": {
-        "status": "passed"
+        "status": "passed",
+        "readiness_status": "healthy",
+        "stale_read_count": 0
       },
       "membership_change_result_match": {
-        "status": "passed"
+        "status": "passed",
+        "membership_change_result": "add_remove_committed"
       },
       "snapshot_restore_record_count_checksum_match": {
-        "status": "passed"
+        "status": "passed",
+        "record_count_match": true,
+        "checksum_match": true
       },
       "metaserver_ready_after_slot_primary_assignment": {
-        "status": "passed"
+        "status": "passed",
+        "topology_ready": true,
+        "slot_assignment_complete": true,
+        "primary_assignment_complete": true
       },
       "data_node_unhealthy_when_apply_lag_exceeds_threshold": {
-        "status": "passed"
+        "status": "passed",
+        "raft_health_status": "healthy",
+        "apply_lag_max": 0,
+        "apply_lag_threshold": 64
       }
     },
     "report_summary": {

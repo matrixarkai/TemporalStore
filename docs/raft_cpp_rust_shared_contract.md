@@ -163,6 +163,27 @@ and Rust before unified Raft parity can be marked feature-correct:
 - `metaserver_ready_after_slot_primary_assignment`
 - `data_node_unhealthy_when_apply_lag_exceeds_threshold`
 
+The gate evidence must include:
+
+- `quorum_rule`
+- `commit_index_drift`
+- `applied_index_drift`
+- `max_allowed_drift`
+- `readiness_status`
+- `stale_read_count`
+- `membership_change_result`
+- `record_count_match`
+- `checksum_match`
+- `topology_ready`
+- `slot_assignment_complete`
+- `primary_assignment_complete`
+- `raft_health_status`
+- `apply_lag_max`
+- `apply_lag_threshold`
+
+C++ and Rust must report the same `quorum_rule` and
+`membership_change_result`; otherwise parity fails closed.
+
 ## Phase 5 Shared Report Summary
 
 `report_summary` must include these fields:

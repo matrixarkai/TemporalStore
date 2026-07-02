@@ -105,6 +105,33 @@ class RaftCppRustParityContractTest(unittest.TestCase):
         failures = validate_report_pair(corpus["cpp"], rust_failed_gate)
         self.assertIn("rust fail_closed_gates.same_quorum_rule status drift: 'failed'", failures)
 
+        cpp_missing_evidence = json.loads(json.dumps(corpus["cpp"]))
+        del cpp_missing_evidence["fail_closed_gates"]["no_stale_follower_reads_when_ready"]["stale_read_count"]
+        failures = validate_report_pair(cpp_missing_evidence, corpus["rust"])
+        self.assertIn(
+            "cpp fail_closed_gates.no_stale_follower_reads_when_ready missing `stale_read_count`",
+            failures,
+        )
+
+        rust_quorum_drift = json.loads(json.dumps(corpus["rust"]))
+        rust_quorum_drift["fail_closed_gates"]["same_quorum_rule"]["quorum_rule"] = "all(voters)"
+        failures = validate_report_pair(corpus["cpp"], rust_quorum_drift)
+        self.assertIn(
+            "fail_closed_gates.same_quorum_rule.quorum_rule drift: cpp='majority(voters)' rust='all(voters)'",
+            failures,
+        )
+
+        rust_membership_drift = json.loads(json.dumps(corpus["rust"]))
+        rust_membership_drift["fail_closed_gates"]["membership_change_result_match"][
+            "membership_change_result"
+        ] = "remove_rejected"
+        failures = validate_report_pair(corpus["cpp"], rust_membership_drift)
+        self.assertIn(
+            "fail_closed_gates.membership_change_result_match.membership_change_result drift: "
+            "cpp='add_remove_committed' rust='remove_rejected'",
+            failures,
+        )
+
     def test_shared_report_summary_is_required(self) -> None:
         corpus = _load_json(REPORT_PAIR_CORPUS)
         self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
