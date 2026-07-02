@@ -283,6 +283,81 @@
       ]
     }
   },
+  "tombstone_compaction_case": {
+    "name": "tombstones_survive_compaction_while_live_records_are_rewritten",
+    "before": [
+      {
+        "timestamp_ms": 4000,
+        "value": "live-before-compaction"
+      },
+      {
+        "timestamp_ms": 4010,
+        "value": "deleted-before-compaction",
+        "tombstone": {
+          "deleted_at_ms": 9010,
+          "reason": "ttl_expired"
+        }
+      },
+      {
+        "timestamp_ms": 4020,
+        "value": "live-after-compaction"
+      }
+    ],
+    "after_compaction": {
+      "address": {
+        "id": "compact2",
+        "shard_id": 1,
+        "zone_id": 12,
+        "segment_id": 2,
+        "page_id": 1,
+        "offset": 96,
+        "length": 96,
+        "generation": 3,
+        "checksum": "sha256:compact2"
+      },
+      "records": [
+        {
+          "timestamp_ms": 4000,
+          "value": "live-before-compaction"
+        },
+        {
+          "timestamp_ms": 4020,
+          "value": "live-after-compaction"
+        }
+      ],
+      "tombstones": [
+        {
+          "timestamp_ms": 4010,
+          "deleted_at_ms": 9010,
+          "reason": "ttl_expired"
+        }
+      ]
+    },
+    "normal_query_expected_values": [
+      "live-before-compaction",
+      "live-after-compaction"
+    ],
+    "debug_replay_expected_tombstones": [
+      4010
+    ]
+  },
+  "stale_generation_case": {
+    "name": "stale_generation_addresses_are_ignored_after_compaction",
+    "live_generation": 2,
+    "live_address_ids": [
+      "compact1"
+    ],
+    "stale_generation": 1,
+    "stale_address_ids": [
+      "a1",
+      "a2"
+    ],
+    "normal_read_expected_ignored_address_ids": [
+      "a1",
+      "a2"
+    ],
+    "debug_replay_can_request_stale_generations": true
+  },
   "cold_scan_case": {
     "name": "cold_scan_does_not_warm_serving_cache",
     "timestamp_range": {
