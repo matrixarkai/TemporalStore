@@ -1320,6 +1320,8 @@ Completed since the last backlog update:
         page split behavior, page compaction rewrite preserving logical
         records, tombstone filtering, no-promote cold scans, and crash/restart
         rebuild of `PageIndex` and `BlockIndex`.
+      - keep `tools/validate_page_block_metrics_parity.py` in CI so both
+        engines and scale reports expose the same page/block metric names.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
