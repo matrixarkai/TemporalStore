@@ -1277,6 +1277,31 @@ Status CollectCandidateNodes(ExecuteEnv* env, const RetrieveContextPackRequest& 
     return Status::OK();
 }
 
+void ApplyPlacementFilter(const RetrieveContextPackRequest& request,
+                          std::set<uint64_t>* selected_node_hashes,
+                          NativeRetrieveTelemetry* telemetry) {
+    telemetry->set_placement_filter_applied(true);
+    if (request.placement_node_hash() == 0) {
+        return;
+    }
+    if (selected_node_hashes->find(request.placement_node_hash()) ==
+        selected_node_hashes->end()) {
+        telemetry->set_dropped_by_placement(
+            telemetry->dropped_by_placement() +
+            static_cast<uint32_t>(selected_node_hashes->size()));
+        selected_node_hashes->clear();
+        return;
+    }
+    const uint64_t placement_node_hash = request.placement_node_hash();
+    const uint32_t dropped =
+        static_cast<uint32_t>(selected_node_hashes->size() > 0
+                                  ? selected_node_hashes->size() - 1
+                                  : 0);
+    selected_node_hashes->clear();
+    selected_node_hashes->insert(placement_node_hash);
+    telemetry->set_dropped_by_placement(telemetry->dropped_by_placement() + dropped);
+}
+
 Status AddCandidateFromEvent(const ContextEvent& event, uint64_t node_hash,
                              const std::string& matched_index_name,
                              std::map<std::string, NativeContextCandidate>* candidates) {
@@ -1500,6 +1525,10 @@ Status CollectIndexCandidates(ExecuteEnv* env, const RetrieveContextPackRequest&
         if (!status.ok()) {
             return status;
         }
+        if (index_response.refs_size() == 0) {
+            telemetry->set_dropped_by_index_filter(
+                telemetry->dropped_by_index_filter() + 1);
+        }
         telemetry->set_index_postings_read(telemetry->index_postings_read() +
                                            index_response.refs_size());
         for (const auto& ref : index_response.refs()) {
@@ -1610,6 +1639,14 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     }
     NativeRetrieveTelemetry* telemetry = response->mutable_telemetry();
     const uint64_t query_plan_start_ms = NowSteadyMs();
+    telemetry->set_scope_filter_applied(request.scope_hash() != 0);
+    telemetry->set_compact_index_prefilter_applied(request.index_filters_size() > 0);
+    telemetry->set_stale_superseded_filter_applied(!request.include_superseded());
+    telemetry->set_shared_resource_skill_quota_applied(
+        request.shared_resource_max_refs() > 0 || request.skill_max_refs() > 0);
+    telemetry->set_cross_session_quota_rerank_applied(
+        request.cross_session_max_refs() > 0 || request.cross_session_rerank() ||
+        request.same_session_priority());
     telemetry->set_broad_scan_used(false);
     telemetry->set_broad_scan_blocked(!request.allow_broad_scan_fallback());
     telemetry->set_candidate_cache_hit(false);
@@ -1619,6 +1656,7 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     if (!status.ok()) {
         return status;
     }
+    ApplyPlacementFilter(request, &selected_node_hashes, telemetry);
     telemetry->set_placement_partitions_touched(
         static_cast<uint32_t>(selected_node_hashes.size()));
     telemetry->set_query_plan_ms(ElapsedSinceMs(query_plan_start_ms));
@@ -1705,9 +1743,13 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
     telemetry->set_selected_refs(response->selected_refs_size());
     telemetry->set_dropped_refs(static_cast<uint32_t>(scored_candidates.size()) -
                                 response->selected_refs_size() +
+                                telemetry->dropped_by_scope() +
                                 telemetry->dropped_by_missing_record() +
                                 telemetry->dropped_by_placement() +
-                                telemetry->dropped_by_score_threshold());
+                                telemetry->dropped_by_index_filter() +
+                                telemetry->dropped_by_stale_version() +
+                                telemetry->dropped_by_score_threshold() +
+                                telemetry->dropped_by_token_budget());
     telemetry->set_pack_ms(ElapsedSinceMs(pack_start_ms));
     telemetry->set_audit_ms(0);
     if (response->selected_refs_size() == 0) {

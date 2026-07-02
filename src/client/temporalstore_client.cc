@@ -210,6 +210,15 @@ bool ParseJsonString(const std::string& json, const std::string& field, std::str
     return false;
 }
 
+uint64_t StableHash64(const std::string& value) {
+    uint64_t hash = 1469598103934665603ULL;
+    for (unsigned char c : value) {
+        hash ^= c;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
 void ParseJsonFloatArray(const std::string& json, const std::string& field,
                          google::protobuf::RepeatedField<float>* values) {
     if (values == nullptr) {
@@ -337,6 +346,33 @@ void ApplyNativeRetrieveDefaults(const std::string& json,
     if (ParseJsonBool(json, "allow_broad_scan_fallback", &bool_value)) {
         request->set_allow_broad_scan_fallback(bool_value);
     }
+    if (ParseJsonBool(json, "include_superseded", &bool_value) ||
+        ParseJsonBool(json, "include_superseded_resources", &bool_value)) {
+        request->set_include_superseded(bool_value);
+    }
+    if (ParseJsonUint64(json, "shared_resource_max_refs", &uint_value)) {
+        request->set_shared_resource_max_refs(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "skill_max_refs", &uint_value)) {
+        request->set_skill_max_refs(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonUint64(json, "cross_session_max_refs", &uint_value)) {
+        request->set_cross_session_max_refs(static_cast<uint32_t>(uint_value));
+    }
+    if (ParseJsonBool(json, "cross_session_rerank", &bool_value)) {
+        request->set_cross_session_rerank(bool_value);
+    }
+    if (ParseJsonBool(json, "same_session_priority", &bool_value)) {
+        request->set_same_session_priority(bool_value);
+    }
+    if (ParseJsonUint64(json, "placement_node_hash", &uint_value)) {
+        request->set_placement_node_hash(uint_value);
+    }
+    std::string scope_key;
+    if (request->scope_hash() == 0 && ParseJsonString(json, "scope_key", &scope_key) &&
+        !scope_key.empty()) {
+        request->set_scope_hash(StableHash64(scope_key));
+    }
     ParseJsonFloatArray(json, "query_vector", request->mutable_query_vector());
     if (request->start_time_ms() == 0) {
         request->set_start_time_ms(1);
@@ -444,6 +480,18 @@ std::string RenderContextPackResponseJson(
     os << "\"native_pack_assembly\":true,";
     os << "\"python_pack_fallback\":false,";
     os << "\"candidate_cache_key_shape\":\"scope_key+node_hash+record_type+append_watermark+resource_version_watermark\",";
+    os << "\"correctness_evidence\":{";
+    os << "\"scope_filtering\":" << (telemetry.scope_filter_applied() ? "true" : "false") << ",";
+    os << "\"placement_filtering\":" << (telemetry.placement_filter_applied() ? "true" : "false") << ",";
+    os << "\"compact_secondary_index_prefilter\":"
+       << (telemetry.compact_index_prefilter_applied() ? "true" : "false") << ",";
+    os << "\"stale_superseded_exclusion\":"
+       << (telemetry.stale_superseded_filter_applied() ? "true" : "false") << ",";
+    os << "\"shared_resource_skill_quota\":"
+       << (telemetry.shared_resource_skill_quota_applied() ? "true" : "false") << ",";
+    os << "\"cross_session_quota_rerank\":"
+       << (telemetry.cross_session_quota_rerank_applied() ? "true" : "false");
+    os << "},";
     os << "\"drop_counters\":{";
     os << "\"scope\":" << telemetry.dropped_by_scope() << ",";
     os << "\"placement\":" << telemetry.dropped_by_placement() << ",";

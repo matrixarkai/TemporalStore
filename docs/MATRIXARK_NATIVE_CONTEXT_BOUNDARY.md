@@ -103,6 +103,13 @@ ContextPack boundary. The first implementation is correctness-first:
 Broad prefix scan remains fallback/debug only. Normal C++ retrieval should move
 through this native API before any latency claim is treated as meaningful.
 
+Correctness is the first performance gate. The native retrieve path now reports
+whether scope filtering, placement filtering, compact secondary-index prefilter,
+stale/superseded exclusion, shared resource/skill quota, and cross-session
+quota/rerank were applied before scoring. The C++/Rust scale comparison fails
+the performance gate when C++ selected refs are empty or when selected-ref
+counts/signatures drift materially from Rust/Python reference output.
+
 The direct C++ SDK now also exports the path through
 `TemporalStoreClient::MatrixArkRetrieveContextPack` and the C ABI symbol
 `temporalstore_matrixark_retrieve_context_pack`. The Python MatrixArk adapter

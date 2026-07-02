@@ -1836,6 +1836,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "tenant_hash": int(scope.get("tenant_hash") or 0),
             "scope_hash": stable_hash(scope_key) if scope_key else 0,
             "start_node_hash": native_start_node_hash,
+            "placement_node_hash": native_start_node_hash,
             "native_start_node_path": [str(part) for part in native_node_path],
             "start_time_ms": 1,
             "end_time_ms": reference_time_ms,
@@ -1847,6 +1848,11 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "top_k_per_depth": int(ranking.get("top_k_per_layer") or ranking.get("top_k_per_depth") or 16),
             "max_children_scored_per_parent": int(ranking.get("max_children_scored_per_parent") or 256),
             "max_candidate_nodes": int(ranking.get("max_candidate_nodes") or 64),
+            "shared_resource_max_refs": int(ranking.get("shared_resource_max_refs") or args.get("shared_resource_max_refs") or 4),
+            "skill_max_refs": int(ranking.get("skill_max_refs") or args.get("skill_max_refs") or 4),
+            "cross_session_max_refs": int(ranking.get("cross_session_max_refs") or args.get("cross_session_max_refs") or 4),
+            "cross_session_rerank": bool(ranking.get("cross_session_rerank", True)),
+            "same_session_priority": bool(ranking.get("same_session_priority", True)),
             "leaf_only": bool(ranking.get("leaf_only", False)),
             "allow_broad_scan_fallback": bool(native_retrieve_fallback_allowed(args)),
             "ranking": ranking,
@@ -1856,6 +1862,7 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
             "local_context_tokens": int(args.get("local_context_tokens") or 0),
             "local_context_safety_margin_tokens": args.get("local_context_safety_margin_tokens"),
             "reference_time_ms": reference_time_ms,
+            "include_superseded": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "include_superseded_resources": bool(args.get("include_superseded_resources", False) or args.get("historical_replay", False)),
             "debug_context_pack": bool(args.get("debug_context_pack") or args.get("include_retrieval_debug")),
             "include_retrieval_metrics": bool(args.get("include_retrieval_metrics")),
@@ -2042,6 +2049,28 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
                 "native_context_pack_ms": total_native_ms,
                 "source": "native_context_pack",
             }
+            native_correctness = (
+                native_telemetry.get("correctness_evidence")
+                if isinstance(native_telemetry.get("correctness_evidence"), dict)
+                else {}
+            )
+            if native_correctness:
+                retrieval_metrics["correctness_evidence"] = {
+                    "scope_filtering": bool(native_correctness.get("scope_filtering")),
+                    "placement_filtering": bool(native_correctness.get("placement_filtering")),
+                    "compact_secondary_index_prefilter": bool(
+                        native_correctness.get("compact_secondary_index_prefilter")
+                    ),
+                    "stale_superseded_exclusion": bool(
+                        native_correctness.get("stale_superseded_exclusion")
+                    ),
+                    "shared_resource_skill_quota": bool(
+                        native_correctness.get("shared_resource_skill_quota")
+                    ),
+                    "cross_session_quota_rerank": bool(
+                        native_correctness.get("cross_session_quota_rerank")
+                    ),
+                }
             native_drop_counters = native_telemetry.get("drop_counters") if isinstance(native_telemetry.get("drop_counters"), dict) else {}
             if not native_drop_counters:
                 native_drop_counters = pack.get("drop_counters") if isinstance(pack.get("drop_counters"), dict) else {}
