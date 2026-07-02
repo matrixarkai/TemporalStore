@@ -25,6 +25,7 @@ try:
         summarize_retrieval_metrics,
         timeout_count,
     )
+    from tools.validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
@@ -39,6 +40,7 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
         summarize_retrieval_metrics,
         timeout_count,
     )
+    from validate_storage_lifecycle_parity import REPORT_PAIR_CORPUS, _load_json, validate_report_pair
 
 
 
@@ -432,6 +434,24 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         del report["backends"]["cpp"]["effective_storage_tuning"]["TS_PAGE_INDEX_CACHE_BYTES"]
         failures = storage_tuning_failures(report)
         self.assertIn("cpp missing effective_storage_tuning.TS_PAGE_INDEX_CACHE_BYTES", failures)
+
+    def test_storage_lifecycle_read_sequence_is_exact_and_top_level(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_drift = json.loads(json.dumps(corpus["cpp"]))
+        cpp_drift["storage_read_sequence"] = [
+            "logical_key_timestamp_range",
+            "page_read",
+            "decode_records",
+        ]
+        failures = validate_report_pair(cpp_drift, corpus["rust"])
+        self.assertTrue(any("cpp storage_read_sequence drift" in failure for failure in failures))
+
+        rust_missing = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing["storage_read_sequence"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        self.assertIn("rust report missing required top-level `storage_read_sequence`", failures)
 
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
