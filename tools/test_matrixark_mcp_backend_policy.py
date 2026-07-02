@@ -29,8 +29,15 @@ class _NativeAppendClient:
     def get_string(self, key: str) -> str:
         return "0"
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
-        self.calls.append({"entries": list(entries), "count_key": count_key, "count_value": count_value})
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
+        self.calls.append(
+            {
+                "entries": list(entries),
+                "count_key": count_key,
+                "count_value": count_value,
+                "append_options": dict(append_options or {}),
+            }
+        )
 
 
 class _CandidateCacheClient:
@@ -79,7 +86,7 @@ class _NativeIndexClient:
             for entry in entries
         ]
 
-    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None) -> None:
+    def matrixark_batch_append_records(self, entries, *, count_key=None, count_value=None, append_options=None) -> None:
         for entry in entries:
             self.hset(str(entry["key"]), str(entry["field"]), str(entry["value"]))
         if count_key is not None and count_value is not None:
@@ -483,6 +490,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         call = client.calls[0]
         self.assertEqual(call["count_key"], "matrixark:test:native-append:record_count")
         self.assertEqual(call["count_value"], "1")
+        self.assertEqual(call["append_options"]["append_path"], "native_append_queue")
+        self.assertTrue(call["append_options"]["coalesce_writes"])
+        self.assertEqual(call["append_options"]["route_by"], "placement_key")
+        self.assertTrue(call["append_options"]["persist_from_storage_options"])
+        self.assertEqual(call["append_options"]["hset_lowering"], "forbidden_for_parity")
+        self.assertEqual(call["append_options"]["audit_hot_path"], "inline_counters_only")
+        self.assertEqual(call["append_options"]["full_context_pack_audit"], "sample_or_enqueue_async_policy_enabled")
         keys = {entry["key"] for entry in call["entries"]}
         self.assertIn("matrixark:test:native-append:records:000000", keys)
         routed_entries = [entry for entry in call["entries"] if entry.get("storage_route", {}).get("placement_key")]
@@ -897,6 +911,12 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["execution_plan_requirements"]["python_role"], "dispatcher_only_no_candidate_materialization_no_hot_path_pack")
         self.assertEqual(request["execution_plan_requirements"]["pack_assembly"], "native_score_rank_budget_pack_selected_refs_dropped_summary")
         self.assertEqual(request["execution_plan_requirements"]["write_path"], "native_batch_append_records_append_queue_coalesced_persistence")
+        self.assertEqual(request["execution_plan_requirements"]["write_route"], "placement_key_partition_route_before_persistence")
+        self.assertEqual(request["execution_plan_requirements"]["write_coalescing"], "native_append_queue_coalesces_by_record_key_field")
+        self.assertEqual(request["execution_plan_requirements"]["durability"], "storage_options_select_async_sync_shared_store_or_raft")
+        self.assertEqual(request["execution_plan_requirements"]["retrieval_hot_path_audit"], "inline_counters_only_no_full_audit_blocking")
+        self.assertEqual(request["execution_plan_requirements"]["context_pack_audit"], "sample_or_enqueue_async_policy_enabled")
+        self.assertEqual(request["execution_plan_requirements"]["full_replay_audit_default"], "disabled")
         self.assertEqual(request["execution_plan_requirements"]["secondary_index"], "compact_postings_by_scope_index_time_bucket")
         self.assertEqual(request["execution_plan_requirements"]["broad_prefix_scan"], "disabled_unless_explicit_debug_fallback")
         self.assertIn("scope", request["required_output"]["drop_counters"])

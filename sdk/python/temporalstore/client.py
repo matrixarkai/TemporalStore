@@ -602,6 +602,7 @@ class Client:
         *,
         count_key: Optional[str] = None,
         count_value: Optional[str] = None,
+        append_options: Optional[dict] = None,
     ) -> None:
         values = list(entries)
         if not self._native.has_matrixark_batch_append_records:
@@ -643,8 +644,14 @@ class Client:
         *,
         count_key: Optional[str] = None,
         count_value: Optional[str] = None,
+        append_options: Optional[dict] = None,
     ) -> None:
-        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+        self.matrixark_batch_append_records(
+            entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
 
     def matrixark_retrieve_context_pack(self, request: dict | str) -> dict:
         if not self._native.has_matrixark_retrieve_context_pack:

@@ -69,6 +69,7 @@ class ProxyClient:
         *,
         count_key: Optional[str] = None,
         count_value: Optional[str] = None,
+        append_options: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.batch_hset(entries)
         if count_key is not None and count_value is not None:
@@ -80,8 +81,14 @@ class ProxyClient:
         *,
         count_key: Optional[str] = None,
         count_value: Optional[str] = None,
+        append_options: Optional[Dict[str, Any]] = None,
     ) -> None:
-        self.matrixark_batch_append_records(entries, count_key=count_key, count_value=count_value)
+        self.matrixark_batch_append_records(
+            entries,
+            count_key=count_key,
+            count_value=count_value,
+            append_options=append_options,
+        )
 
     def hget(self, key: str, field: str) -> str:
         body = self._key_body(key)
