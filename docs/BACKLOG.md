@@ -1286,10 +1286,23 @@ Completed since the last backlog update:
       - MatrixArk GC workers should use timestamp-keyed context event ranges,
         compact secondary indexes, no-cache cold scans, bounded batches,
         tombstone records, retention/audit safety gates, and compaction hooks.
-      - Until scheduled logical GC, TTL enforcement, and general TemporalStore
-        page/block reclaim scheduling run in production profiles, local/shared
-        store growth is expected as data volume grows, even when hot cache
-        eviction works.
+    - Until scheduled logical GC, TTL enforcement, and general TemporalStore
+      page/block reclaim scheduling run in production profiles, local/shared
+      store growth is expected as data volume grows, even when hot cache
+      eviction works.
+    - Shared page/block contract:
+      - use `docs/temporalstore_page_block_address_contract.md` as the single
+        public contract for C++/Rust `PageAddress`, `BlockAddress`,
+        `PageIndexEntry`, `BlockIndexEntry`, `ObjectIndex`, `StorageZone`,
+        `Segment`, `Extent`, `AppendWatermark`, `CompactionWatermark`, and
+        `TombstoneGcMetadata`;
+      - public reports, metrics, and parity tests should use the canonical
+        names from that contract instead of backend-specific `page_store` vs
+        `block_store` naming;
+      - add shared C++/Rust cases for address encode/decode, stable ordering,
+        timestamp range lookup, object lookup, page split, compaction rewrite,
+        tombstone-before-reclaim, restart index rebuild, and no-cache cold
+        scans.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
