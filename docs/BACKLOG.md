@@ -1137,6 +1137,9 @@ Completed since the last backlog update:
     - Low-level TemporalStore read path must stay canonical across C++ and Rust:
       logical key/timestamp range -> `PageIndex` lookup -> `PageAddress` list ->
       `BlockIndex` lookup -> page read -> decode records.
+    - Cold scan path must be separate from hot reads:
+      timestamp range -> `PageIndex` scan -> no-cache page read -> bounded
+      decode -> no hot-cache promotion.
     - Placement policy should colocate records for the same hot serving unit
       where practical:
       `context:{scope_key}:node={node_hash}` for session/user nodes,
