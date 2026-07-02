@@ -18,7 +18,7 @@ use temporalstore_rust::{
     handle_authenticated_raft_http, Command, CommandResponse, DistributedRaftCommandResponse,
     DistributedRaftProposeRequest, DistributedRaftReadRequest, ProductionRaftEngineKind,
     ProductionRaftNode, ProductionRaftRuntime, ProductionRaftRuntimeOptions,
-    ProductionRaftSecurity, RaftApplyHealth, RaftClusterStatus, RaftConfig,
+    ProductionRaftSecurity, RaftApplyHealth, RaftClusterStatus, RaftConfig, RaftError,
     RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions, Status,
 };
 use temporalstore_snapshot::{FileObjectStore, S3SnapshotStore};
@@ -110,6 +110,10 @@ struct RustRaftRuntimeSemanticsReport {
     leader_transfer_exact_once_validated: bool,
     snapshot_bootstrap_validated: bool,
     membership_rescale_validated: bool,
+    scale_down_target_voters_validated: bool,
+    scale_up_target_voters_validated: bool,
+    post_snapshot_rescale_validated: bool,
+    post_rescale_reads_validated: bool,
     membership_role_process_validated: bool,
     apply_pipeline_converged: bool,
     wal_persistence_observed: bool,
@@ -423,8 +427,8 @@ fn build_rustraft_runtime_semantics_report(
     external_snapshot_read: &ReplicaReadSummary,
     rescale_down_after_snapshot: &[MembershipSummary],
     rescale_up_after_snapshot: &[MembershipSummary],
-    _rescale_down_reads: &[ReplicaReadSummary],
-    _rescale_up_reads: &[ReplicaReadSummary],
+    rescale_down_reads: &[ReplicaReadSummary],
+    rescale_up_reads: &[ReplicaReadSummary],
     membership_role_process_evidence: &MembershipRoleProcessEvidence,
 ) -> RustRaftRuntimeSemanticsReport {
     let process_path_validated = nodes.len() >= 4
@@ -446,12 +450,34 @@ fn build_rustraft_runtime_semantics_report(
             .all(|node| node.status.leader_id == 2 && node.status.commit_index >= 2);
     let snapshot_bootstrap_validated = external_snapshot_read.status.ok
         && external_snapshot_read.value.as_deref() == Some("from-external-snapshot");
+    let scale_down_target_voters_validated = scale_down
+        .iter()
+        .all(|item| item.status.ok && item.voters == vec![1, 2, 3] && item.leader_id > 0);
+    let scale_up_target_voters_validated = scale_up
+        .iter()
+        .all(|item| item.status.ok && item.voters == vec![1, 2, 3, 4] && item.leader_id > 0);
+    let post_snapshot_rescale_validated = rescale_down_after_snapshot
+        .iter()
+        .all(|item| item.status.ok && item.voters == vec![1, 2, 3] && item.leader_id > 0)
+        && rescale_up_after_snapshot
+            .iter()
+            .all(|item| item.status.ok && item.voters == vec![1, 2, 3, 4] && item.leader_id > 0);
+    let post_rescale_reads_validated = rescale_down_reads
+        .iter()
+        .all(|read| read.status.ok && read.value.as_deref() == Some("after-scale-down"))
+        && rescale_up_reads
+            .iter()
+            .all(|read| read.status.ok && read.value.as_deref() == Some("after-scale-up"));
     let membership_rescale_validated = scale_down.iter().all(|item| item.status.ok)
         && scale_up.iter().all(|item| item.status.ok)
         && rescale_down_after_snapshot
             .iter()
             .all(|item| item.status.ok)
-        && rescale_up_after_snapshot.iter().all(|item| item.status.ok);
+        && rescale_up_after_snapshot.iter().all(|item| item.status.ok)
+        && scale_down_target_voters_validated
+        && scale_up_target_voters_validated
+        && post_snapshot_rescale_validated
+        && post_rescale_reads_validated;
     let membership_role_process_validated = membership_role_process_evidence.ready;
     let apply_pipeline_converged = nodes.iter().all(|node| {
         node.apply_health.healthy
@@ -478,6 +504,18 @@ fn build_rustraft_runtime_semantics_report(
     if !membership_rescale_validated {
         blockers.push("membership_rescale_not_validated".to_string());
     }
+    if !scale_down_target_voters_validated {
+        blockers.push("scale_down_target_voters_not_validated".to_string());
+    }
+    if !scale_up_target_voters_validated {
+        blockers.push("scale_up_target_voters_not_validated".to_string());
+    }
+    if !post_snapshot_rescale_validated {
+        blockers.push("post_snapshot_rescale_not_validated".to_string());
+    }
+    if !post_rescale_reads_validated {
+        blockers.push("post_rescale_reads_not_validated".to_string());
+    }
     if !membership_role_process_validated {
         blockers.extend(
             membership_role_process_evidence
@@ -501,6 +539,10 @@ fn build_rustraft_runtime_semantics_report(
         leader_transfer_exact_once_validated,
         snapshot_bootstrap_validated,
         membership_rescale_validated,
+        scale_down_target_voters_validated,
+        scale_up_target_voters_validated,
+        post_snapshot_rescale_validated,
+        post_rescale_reads_validated,
         membership_role_process_validated,
         apply_pipeline_converged,
         wal_persistence_observed,
@@ -935,10 +977,17 @@ fn bootstrap_voter_from_leader_snapshot(runtimes: &[ProductionRaftRuntime], node
         .create_snapshot()
         .expect("leader snapshot should be available for scale-up bootstrap");
     for runtime in runtimes {
-        runtime
+        match runtime
             .cluster()
             .install_snapshot(node_id, snapshot.clone())
-            .expect("new voter should install leader snapshot");
+        {
+            Ok(_) => {}
+            Err(RaftError::StaleSnapshot { .. }) => runtime
+                .cluster()
+                .catch_up(node_id)
+                .expect("new voter should catch up when snapshot is already stale"),
+            Err(err) => panic!("new voter should install leader snapshot or catch up: {err:?}"),
+        }
     }
 }
 

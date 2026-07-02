@@ -41,6 +41,15 @@ def validate_raft(job, summary):
         require(read["value"] == "after-scale-down", f"{job}: scale-down read mismatch: {read}")
     for read in summary["scale_up_reads"]:
         require(read["value"] == "after-scale-up", f"{job}: scale-up read mismatch: {read}")
+    runtime_semantics = summary.get("rustraft_runtime_semantics")
+    require(runtime_semantics is not None, f"{job}: RustRaft runtime semantics report missing")
+    for field in [
+        "scale_down_target_voters_validated",
+        "scale_up_target_voters_validated",
+        "post_snapshot_rescale_validated",
+        "post_rescale_reads_validated",
+    ]:
+        require(runtime_semantics[field], f"{job}: RustRaft runtime semantics field {field} is false")
     for node in summary["nodes"]:
         require(node["status"]["has_majority"], f"{job}: node {node['node_id']} has no majority")
         require(node["apply_health"]["healthy"], f"{job}: node {node['node_id']} apply health unhealthy")
@@ -509,6 +518,10 @@ def validate_raft_distributed_parity(job, summary):
         "leader_transfer_exact_once_validated",
         "snapshot_bootstrap_validated",
         "membership_rescale_validated",
+        "scale_down_target_voters_validated",
+        "scale_up_target_voters_validated",
+        "post_snapshot_rescale_validated",
+        "post_rescale_reads_validated",
         "apply_pipeline_converged",
         "wal_persistence_observed",
     ]:

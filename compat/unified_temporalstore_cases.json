@@ -3667,6 +3667,12 @@
         {
           "command": {
             "description": "Shared data-node Raft snapshot install, restart recovery, follower lag, and catch-up case. Rust uses distributed plus secondary process harness evidence.",
+            "acceptance": {
+              "post_snapshot_rescale_validated": true,
+              "post_rescale_reads_validated": true,
+              "snapshot_bootstrap_validated": true,
+              "secondary_lag_and_catchup_observed": true
+            },
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
@@ -3692,6 +3698,12 @@
         {
           "command": {
             "description": "Shared data-node Raft membership add/promote/remove and secondary-read visibility case.",
+            "acceptance": {
+              "membership_rescale_validated": true,
+              "scale_down_target_voters_validated": true,
+              "scale_up_target_voters_validated": true,
+              "secondary_read_validated": true
+            },
             "kind": "existing_test",
             "mode": "stress",
             "required_paths": [
