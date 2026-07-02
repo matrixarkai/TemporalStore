@@ -141,6 +141,10 @@ struct HashEntry {
     std::string route_json;
 };
 
+struct MatrixArkBatchAppendOptions {
+    std::string append_options_json;
+};
+
 class TemporalStoreClient {
  public:
     static Status Connect(const TemporalStoreClientOptions& options,
@@ -167,7 +171,8 @@ class TemporalStoreClient {
     Status HDel(const std::string& key, const std::string& field);
     Status MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
                                        const std::string& count_key = "",
-                                       const std::string& count_value = "");
+                                       const std::string& count_value = "",
+                                       const MatrixArkBatchAppendOptions& options = {});
     Status MatrixArkRetrieveContextPack(const std::string& request_json,
                                         std::string* response_json);
 
