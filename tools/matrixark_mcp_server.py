@@ -21,12 +21,20 @@ try:
     from tools.matrixark_mcp_core import _mcp_debug_log
     from tools.matrixark_access import MatrixArkAccessManager
     from tools.matrixark_http import make_matrixark_http_handler
+    from tools.matrixark_mcp_admin import is_admin_tool
+    from tools.matrixark_mcp_ingestion import is_ingestion_tool
+    from tools.matrixark_mcp_requests import normalize_mcp_tool_request
+    from tools.matrixark_mcp_retrieval import is_retrieval_tool
     from tools.matrixark_mcp_schemas import TOOLS
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
     from matrixark_mcp_core import _mcp_debug_log
     from matrixark_access import MatrixArkAccessManager
     from matrixark_http import make_matrixark_http_handler
+    from matrixark_mcp_admin import is_admin_tool
+    from matrixark_mcp_ingestion import is_ingestion_tool
+    from matrixark_mcp_requests import normalize_mcp_tool_request
+    from matrixark_mcp_retrieval import is_retrieval_tool
     from matrixark_mcp_schemas import TOOLS
 
 
@@ -375,15 +383,15 @@ class MatrixArkMcpServer:
         )
 
     def _operation_group(self, name: str) -> str:
-        if name in {"matrixark_ingest", "matrixark_batch_extract", "matrixark_session_commit", "matrixark_refresh_summaries"}:
+        if is_ingestion_tool(name):
             return "ingest"
-        if name == "matrixark_retrieve":
+        if is_retrieval_tool(name):
             return "retrieve"
         if name == "matrixark_feedback":
             return "feedback"
         if name == "matrixark_replay":
             return "replay"
-        if name.startswith("matrixark_admin_") or name.startswith("matrixark_auth_") or name in {"matrixark_management_portal", "matrixark_ingestion_dashboard"}:
+        if is_admin_tool(name):
             return "admin"
         return ""
 
@@ -423,7 +431,7 @@ class MatrixArkMcpServer:
             raise MatrixArkError("tool name must be a non-empty string")
         if not isinstance(args, dict):
             raise MatrixArkError("tool arguments must be an object")
-        args = dict(args)
+        args = normalize_mcp_tool_request(name, args, write_tools=self.IDEMPOTENT_WRITE_TOOLS)
         request_deadline_ms = self._request_deadline_ms(name, args)
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
