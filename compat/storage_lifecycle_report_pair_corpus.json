@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "name": "temporalstore-storage-lifecycle-report-pair-corpus",
+  "description": "Synthetic C++/Rust report pair proving canonical public storage shape normalization and lifecycle metric parity.",
+  "cpp": {
+    "effective_storage_tuning": {
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+    },
+    "public_storage_contract": {
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "page_index_entry": "PageIndexEntry",
+      "block_index_entry": "BlockIndexEntry",
+      "storage_zone": "StorageZone",
+      "segment": "Segment",
+      "extent": "Extent",
+      "append_watermark": "AppendWatermark",
+      "compaction_watermark": "CompactionWatermark",
+      "compatibility_aliases": {
+        "page_store": "StorageZone",
+        "page_segment_id": "segment_id"
+      }
+    },
+    "storage_lifecycle_metrics": {
+      "storage_manager_prepare_count": 1,
+      "storage_manager_reclaim_count": 1,
+      "storage_manager_evict_count": 1,
+      "storage_manager_expire_count": 1,
+      "storage_manager_page_gc_count": 1,
+      "storage_manager_compaction_count": 1,
+      "storage_manager_index_gc_count": 1,
+      "storage_manager_loop_ms": 4,
+      "stream_rollover_count": 1,
+      "storage_zone_total_bytes": 10485760,
+      "storage_zone_used_bytes": 4096,
+      "storage_zone_stale_bytes": 1024,
+      "cache_admissions": 10,
+      "cache_evictions": 2,
+      "cache_rehydrates": 1,
+      "cold_scan_no_cache_reads": 3,
+      "hot_cache_promotions": 0,
+      "tombstone_records": 1,
+      "delayed_destroy_backlog": 0,
+      "follower_cursor_retention_floor": 0,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "append_watermark": 7,
+      "compaction_watermark": 6
+    }
+  },
+  "rust": {
+    "effective_storage_tuning": {
+      "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+      "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+      "TS_STORAGE_ZONE_SIZE": 10485760,
+      "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+      "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+      "TS_COLD_SCAN_NO_CACHE_FILL": true,
+      "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+      "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+    },
+    "public_storage_contract": {
+      "page_address": "PageAddress",
+      "block_address": "BlockAddress",
+      "page_index_entry": "PageIndexEntry",
+      "block_index_entry": "BlockIndexEntry",
+      "storage_zone": "StorageZone",
+      "segment": "Segment",
+      "extent": "Extent",
+      "append_watermark": "AppendWatermark",
+      "compaction_watermark": "CompactionWatermark",
+      "compatibility_aliases": {
+        "block_store": "StorageZone",
+        "stream_blob": "Segment"
+      }
+    },
+    "storage_lifecycle_metrics": {
+      "storage_manager_prepare_count": 1,
+      "storage_manager_reclaim_count": 1,
+      "storage_manager_evict_count": 1,
+      "storage_manager_expire_count": 1,
+      "storage_manager_page_gc_count": 1,
+      "storage_manager_compaction_count": 1,
+      "storage_manager_index_gc_count": 1,
+      "storage_manager_loop_ms": 5,
+      "stream_rollover_count": 1,
+      "storage_zone_total_bytes": 10485760,
+      "storage_zone_used_bytes": 4096,
+      "storage_zone_stale_bytes": 1024,
+      "cache_admissions": 10,
+      "cache_evictions": 2,
+      "cache_rehydrates": 1,
+      "cold_scan_no_cache_reads": 3,
+      "hot_cache_promotions": 0,
+      "tombstone_records": 1,
+      "delayed_destroy_backlog": 0,
+      "follower_cursor_retention_floor": 0,
+      "reclaimable_bytes": 1024,
+      "compaction_reclaimed_bytes": 512,
+      "physical_reclaim_errors": 0,
+      "append_watermark": 7,
+      "compaction_watermark": 6
+    }
+  }
+}

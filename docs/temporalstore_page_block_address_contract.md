@@ -618,6 +618,11 @@ also use one shared lifecycle metric vocabulary:
 lifecycle metric set is present in the shared contract and scale report runner.
 When given `--cpp-report` and `--rust-report`, it also verifies that both reports
 carry the same public storage tuning fields and lifecycle metric names.
+By default, it also validates
+`compat/storage_lifecycle_report_pair_corpus.json`, a synthetic C++/Rust report
+pair that proves `page_store`, `block_store`, stream/blob, and page-segment
+aliases are accepted only under `compatibility_aliases` and compared through the
+canonical public shape.
 
 Lifecycle parity is intentionally stricter than cache eviction parity:
 
