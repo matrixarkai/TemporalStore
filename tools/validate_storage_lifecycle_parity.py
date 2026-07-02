@@ -203,6 +203,9 @@ LEGACY_ALIAS_MAP = {
     "page_segment_id": "segment_id",
     "stream_blob": "segment",
     "stream_blob_id": "segment_id",
+    "oplog": "append_watermark",
+    "oplog_id": "append_watermark",
+    "oplog_sequence": "append_watermark",
     "zone": "storage_zone",
     "extent_id": "extent_id",
 }
