@@ -299,6 +299,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(gate["status"], "passed")
         self.assertEqual(gate["open_required_cases"], [])
         self.assertEqual(gate["phase"], "phase-4")
+        self.assertEqual(gate["full_contextmemory_pipeline"]["status"], "passed")
 
     def test_phase_scale_matrix_can_fail_closed_for_missing_scale_evidence(self) -> None:
         args = argparse.Namespace(
@@ -324,6 +325,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertIn(("event_ingestion", 10000), open_cases)
         self.assertIn(("event_ingestion", 100000), open_cases)
         self.assertIn(("resource_imports", "large_pdf"), open_cases)
+        self.assertEqual(gate["full_contextmemory_pipeline"]["status"], "incomplete")
 
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
