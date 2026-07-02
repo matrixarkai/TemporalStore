@@ -332,6 +332,11 @@ message RetrieveContextPackRequest {
     uint64 placement_node_hash = 25;
     string placement_key = 26;
     uint64 index_time_bucket_ms = 27;
+    string scope_key = 28;
+    uint64 append_watermark = 29;
+    string resource_version_watermark = 30;
+    string skill_status_watermark = 31;
+    uint64 index_posting_watermark = 32;
 }
 
 message RetrieveContextPackResponse {

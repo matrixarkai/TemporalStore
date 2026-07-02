@@ -376,9 +376,26 @@ void ApplyNativeRetrieveDefaults(const std::string& json,
         request->set_placement_key(placement_key);
     }
     std::string scope_key;
+    if (ParseJsonString(json, "scope_key", &scope_key)) {
+        request->set_scope_key(scope_key);
+    }
     if (request->scope_hash() == 0 && ParseJsonString(json, "scope_key", &scope_key) &&
         !scope_key.empty()) {
         request->set_scope_hash(StableHash64(scope_key));
+    }
+    if (ParseJsonUint64(json, "append_watermark", &uint_value) ||
+        ParseJsonUint64(json, "watermark_count", &uint_value)) {
+        request->set_append_watermark(uint_value);
+    }
+    if (ParseJsonUint64(json, "index_posting_watermark", &uint_value)) {
+        request->set_index_posting_watermark(uint_value);
+    }
+    std::string watermark;
+    if (ParseJsonString(json, "resource_version_watermark", &watermark)) {
+        request->set_resource_version_watermark(watermark);
+    }
+    if (ParseJsonString(json, "skill_status_watermark", &watermark)) {
+        request->set_skill_status_watermark(watermark);
     }
     ParseJsonFloatArray(json, "query_vector", request->mutable_query_vector());
     if (request->start_time_ms() == 0) {

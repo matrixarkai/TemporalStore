@@ -7,9 +7,11 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "common/cmd_manager.h"
@@ -33,6 +35,7 @@ constexpr uint32_t kDefaultTraversalCandidates = 24;
 constexpr uint32_t kMaxChildrenScoredPerParent = 256;
 constexpr uint32_t kMaxFilterValues = 32;
 constexpr uint32_t kMaxIndexBucketsPerFilter = 64;
+constexpr size_t kMaxNativeCandidateCacheEntries = 256;
 constexpr uint32_t kMaxAuditRefs = 512;
 constexpr uint32_t kMaxPropagateDepth = 8;
 constexpr uint32_t kMaxEmbeddingDim = 4096;
@@ -288,6 +291,65 @@ struct NativeContextCandidate {
     std::set<std::string> matched_index_names;
 };
 
+std::mutex& CandidateCacheMutex() {
+    static std::mutex mutex;
+    return mutex;
+}
+
+std::unordered_map<std::string, std::vector<NativeContextCandidate>>& CandidateCache() {
+    static std::unordered_map<std::string, std::vector<NativeContextCandidate>> cache;
+    return cache;
+}
+
+std::string CandidateCacheScope(const RetrieveContextPackRequest& request) {
+    if (!request.scope_key().empty()) {
+        return request.scope_key();
+    }
+    if (!request.placement_key().empty()) {
+        return request.placement_key();
+    }
+    if (request.scope_hash() != 0) {
+        return std::to_string(request.scope_hash());
+    }
+    return std::to_string(request.tenant_hash());
+}
+
+std::string CandidateCacheKey(const RetrieveContextPackRequest& request,
+                              uint64_t node_hash, const std::string& record_type) {
+    std::ostringstream os;
+    os << "scope=" << CandidateCacheScope(request)
+       << "|node=" << node_hash
+       << "|type=" << record_type
+       << "|append=" << request.append_watermark()
+       << "|resource=" << request.resource_version_watermark()
+       << "|skill=" << request.skill_status_watermark()
+       << "|index=" << request.index_posting_watermark();
+    return os.str();
+}
+
+bool LoadCandidateCache(const RetrieveContextPackRequest& request, uint64_t node_hash,
+                        const std::string& record_type,
+                        std::vector<NativeContextCandidate>* cached) {
+    std::lock_guard<std::mutex> lock(CandidateCacheMutex());
+    const auto iter = CandidateCache().find(CandidateCacheKey(request, node_hash, record_type));
+    if (iter == CandidateCache().end()) {
+        return false;
+    }
+    *cached = iter->second;
+    return true;
+}
+
+void StoreCandidateCache(const RetrieveContextPackRequest& request, uint64_t node_hash,
+                         const std::string& record_type,
+                         const std::vector<NativeContextCandidate>& candidates) {
+    std::lock_guard<std::mutex> lock(CandidateCacheMutex());
+    auto& cache = CandidateCache();
+    if (cache.size() >= kMaxNativeCandidateCacheEntries) {
+        cache.clear();
+    }
+    cache[CandidateCacheKey(request, node_hash, record_type)] = candidates;
+}
+
 uint64_t NowSteadyMs() {
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -318,6 +380,20 @@ std::string CandidateKey(const std::string& ref_type, uint64_t node_hash,
                          uint64_t event_time_ms, uint64_t ref_hash) {
     return ref_type + ":" + std::to_string(node_hash) + ":" +
            std::to_string(event_time_ms) + ":" + std::to_string(ref_hash);
+}
+
+void MergeCandidate(const NativeContextCandidate& candidate,
+                    std::map<std::string, NativeContextCandidate>* candidates) {
+    const std::string key = CandidateKey(candidate.ref_type, candidate.node_hash,
+                                         candidate.event_time_ms, candidate.ref_hash);
+    NativeContextCandidate& existing = (*candidates)[key];
+    if (existing.ref_hash == 0) {
+        existing = candidate;
+        return;
+    }
+    existing.matched_index_names.insert(candidate.matched_index_names.begin(),
+                                        candidate.matched_index_names.end());
+    existing.base_score = std::max(existing.base_score, candidate.base_score);
 }
 
 Status ValidateRange(uint64_t start_time_ms, uint64_t end_time_ms) {
@@ -1673,6 +1749,15 @@ Status CollectNodeEventCandidates(ExecuteEnv* env, const RetrieveContextPackRequ
     const uint32_t per_node_limit = TraversalLimit(request.max_candidate_nodes(),
                                                    kDefaultTraversalCandidates, kMaxLimit);
     for (uint64_t node_hash : selected_node_hashes) {
+        std::vector<NativeContextCandidate> cached_candidates;
+        if (LoadCandidateCache(request, node_hash, "event", &cached_candidates)) {
+            telemetry->set_candidate_cache_hit(true);
+            for (const auto& candidate : cached_candidates) {
+                MergeCandidate(candidate, candidates);
+            }
+            continue;
+        }
+
         QueryEventsRequest events_request;
         events_request.set_tenant_hash(request.tenant_hash());
         events_request.set_node_hash(node_hash);
@@ -1693,12 +1778,20 @@ Status CollectNodeEventCandidates(ExecuteEnv* env, const RetrieveContextPackRequ
                                        events_response.events_size());
         telemetry->set_placement_fetch_count(telemetry->placement_fetch_count() +
                                              events_response.events_size());
+        std::map<std::string, NativeContextCandidate> node_candidates;
         for (const auto& event : events_response.events()) {
-            status = AddCandidateFromEvent(event, node_hash, "", candidates);
+            status = AddCandidateFromEvent(event, node_hash, "", &node_candidates);
             if (!status.ok()) {
                 return status;
             }
         }
+        std::vector<NativeContextCandidate> parsed_candidates;
+        parsed_candidates.reserve(node_candidates.size());
+        for (const auto& pair : node_candidates) {
+            parsed_candidates.push_back(pair.second);
+            MergeCandidate(pair.second, candidates);
+        }
+        StoreCandidateCache(request, node_hash, "event", parsed_candidates);
     }
     telemetry->set_candidate_fetch_ms(ElapsedSinceMs(start_ms));
     return Status::OK();

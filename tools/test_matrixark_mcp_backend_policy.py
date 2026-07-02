@@ -1152,6 +1152,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         request = client.requests[0]
         self.assertEqual(request["storage_prefix"], "matrixark:test:native-pack")
         self.assertEqual(request["watermark_count"], 7)
+        self.assertEqual(request["append_watermark"], 7)
+        self.assertEqual(request["index_posting_watermark"], 7)
+        self.assertEqual(request["resource_version_watermark"], "")
+        self.assertEqual(request["skill_status_watermark"], "")
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
         self.assertEqual(request["placement_node_hash"], request["start_node_hash"])
         self.assertEqual(request["placement_key"], f"context:{request['scope_key']}:node={request['start_node_hash']}")
