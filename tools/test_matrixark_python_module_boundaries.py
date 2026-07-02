@@ -88,6 +88,24 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertIn('matrixark-agent-hook = "tools.matrixark_agent_hook:main"', pyproject_text)
         self.assertIn('matrixark-admin = "tools.matrixark_admin:main"', pyproject_text)
 
+    def test_production_defaults_doc_records_control_plane_boundary(self) -> None:
+        defaults_doc = (REPO_ROOT / "docs" / "matrixark_mcp_production_defaults.md").read_text(encoding="utf-8")
+        required_snippets = [
+            "Python remains the MCP/HTTP/control-plane layer",
+            "Native C++ or Rust MCP servers are future optimizations, not a v1 requirement",
+            "C++ and Rust TemporalStore remain the serving engines",
+            "compact and audit-light",
+            "Full replay/debug audit is opt-in",
+            "Cloud mode requires an API key or trusted SSO gateway identity",
+            "Local/dev mode may use generated local scope defaults",
+            "no private checkout paths",
+            "no local credentials or secrets",
+            "no vendored build outputs",
+            "reproducible local validation commands",
+        ]
+        for snippet in required_snippets:
+            self.assertIn(snippet, defaults_doc)
+
     def test_request_boundary_generates_idempotency_and_validates_storage(self) -> None:
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
         args = requests_mod.normalize_mcp_tool_request(
