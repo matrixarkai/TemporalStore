@@ -146,6 +146,29 @@ class RaftCppRustParityContractTest(unittest.TestCase):
         failures = validate_report_pair(corpus["cpp"], rust_bad_backend)
         self.assertIn("rust report_summary.backend drift: 'cpp'", failures)
 
+        cpp_missing_label = json.loads(json.dumps(corpus["cpp"]))
+        del cpp_missing_label["report_summary"]["status_labels"]["performance_candidate"]
+        failures = validate_report_pair(cpp_missing_label, corpus["rust"])
+        self.assertIn(
+            "cpp report_summary.status_labels missing `performance_candidate`",
+            failures,
+        )
+
+    def test_healthy_data_node_with_excessive_apply_lag_fails_closed(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        rust_bad_lag = json.loads(json.dumps(corpus["rust"]))
+        gate = rust_bad_lag["fail_closed_gates"]["data_node_unhealthy_when_apply_lag_exceeds_threshold"]
+        gate["raft_health_status"] = "healthy"
+        gate["apply_lag_max"] = gate["apply_lag_threshold"] + 1
+        failures = validate_report_pair(corpus["cpp"], rust_bad_lag)
+        self.assertIn(
+            "rust fail_closed_gates.data_node_unhealthy_when_apply_lag_exceeds_threshold inconsistent: "
+            "healthy with apply_lag_max=65 > apply_lag_threshold=64",
+            failures,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

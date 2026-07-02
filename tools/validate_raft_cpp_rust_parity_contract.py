@@ -212,6 +212,13 @@ REQUIRED_RAFT_REPORT_SUMMARY_KEYS = [
     "latency_qps",
     "errors",
     "open_blockers",
+    "status_labels",
+]
+
+REQUIRED_RAFT_STATUS_LABELS = [
+    "feature_correct",
+    "performance_candidate",
+    "production_performance_parity",
 ]
 
 
@@ -234,6 +241,7 @@ def _validate_contract_doc() -> list[str]:
         + REQUIRED_RAFT_FAIL_CLOSED_GATES
         + sorted({field for fields in REQUIRED_RAFT_FAIL_CLOSED_GATE_FIELDS.values() for field in fields})
         + REQUIRED_RAFT_REPORT_SUMMARY_KEYS
+        + REQUIRED_RAFT_STATUS_LABELS
     ):
         if f"`{name}`" not in text:
             failures.append(f"contract missing `{name}`")
@@ -310,6 +318,20 @@ def _validate_fail_closed_gates(backend: str, gates: Any) -> list[str]:
         for field in fields:
             if field not in item:
                 failures.append(f"{backend} fail_closed_gates.{gate} missing `{field}`")
+        if gate == "data_node_unhealthy_when_apply_lag_exceeds_threshold":
+            health = item.get("raft_health_status")
+            apply_lag = item.get("apply_lag_max")
+            threshold = item.get("apply_lag_threshold")
+            if (
+                health == "healthy"
+                and isinstance(apply_lag, (int, float))
+                and isinstance(threshold, (int, float))
+                and apply_lag > threshold
+            ):
+                failures.append(
+                    f"{backend} fail_closed_gates.{gate} inconsistent: "
+                    f"healthy with apply_lag_max={apply_lag} > apply_lag_threshold={threshold}"
+                )
     return failures
 
 
@@ -347,6 +369,13 @@ def _validate_report_summary(backend: str, value: Any) -> list[str]:
     latency_qps = value.get("latency_qps")
     if not isinstance(latency_qps, dict):
         failures.append(f"{backend} report_summary.latency_qps missing object")
+    status_labels = value.get("status_labels")
+    if not isinstance(status_labels, dict):
+        failures.append(f"{backend} report_summary.status_labels missing object")
+    else:
+        for label in REQUIRED_RAFT_STATUS_LABELS:
+            if label not in status_labels:
+                failures.append(f"{backend} report_summary.status_labels missing `{label}`")
     return failures
 
 
@@ -397,7 +426,7 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
         parity_status = report.get("parity_status")
         if not isinstance(parity_status, dict) or "feature_correct" not in parity_status:
             failures.append(f"{backend} parity_status missing feature_correct")
-        elif not {"feature_correct", "performance_candidate", "production_performance_parity"}.issubset(parity_status):
+        elif not set(REQUIRED_RAFT_STATUS_LABELS).issubset(parity_status):
             failures.append(f"{backend} parity_status missing required status labels")
         failures.extend(
             _validate_named_passed_map(

@@ -200,12 +200,20 @@ C++ and Rust must report the same `quorum_rule` and
 - `latency_qps`
 - `errors`
 - `open_blockers`
+- `status_labels`
 
 `parity_status` uses these labels:
 
 - `feature_correct`
 - `performance_candidate`
 - `production_performance_parity`
+
+`report_summary.status_labels` must repeat these labels so a single shared
+report can be rendered without digging into backend internals.
+
+If `data_node_unhealthy_when_apply_lag_exceeds_threshold` reports
+`raft_health_status: healthy` while `apply_lag_max` is greater than
+`apply_lag_threshold`, parity fails closed.
 
 `tools/validate_raft_cpp_rust_parity_contract.py` validates this contract and
 the synthetic C++/Rust report pair in
