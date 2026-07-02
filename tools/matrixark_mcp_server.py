@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 import json
 import os
 import sys
@@ -34,6 +35,7 @@ try:
         Json,
         MatrixArkError,
         _mcp_debug_log,
+        compact_context_pack_for_serving,
         infer_query_type,
         is_retryable_temporalstore_error,
         json_text,
@@ -70,6 +72,7 @@ except ModuleNotFoundError:  # Direct script execution from tools/.
         Json,
         MatrixArkError,
         _mcp_debug_log,
+        compact_context_pack_for_serving,
         infer_query_type,
         is_retryable_temporalstore_error,
         json_text,
@@ -156,14 +159,7 @@ class MatrixArkMcpServer:
         "matrixark_auth_sso_callback",
         "matrixark_auth_sso_login",
     }
-    SCOPED_READ_TOOLS = {
-        "matrixark_retrieve",
-        "matrixark_replay",
-        "matrixark_management_portal",
-        "matrixark_ingestion_dashboard",
-        "matrixark_list_resources",
-        "matrixark_list_skills",
-    }
+    SCOPED_READ_TOOLS = {"matrixark_retrieve", "matrixark_replay", "matrixark_management_portal", "matrixark_ingestion_dashboard", "matrixark_list_resources", "matrixark_list_skills"}
     SERVER_NAME = "matrixark-context"
     SERVER_VERSION = "0.2.0"
     DEFAULT_PROTOCOL_VERSION = "2025-06-18"
@@ -172,6 +168,7 @@ class MatrixArkMcpServer:
         "matrixark_retrieve": int(os.environ.get("MATRIXARK_RETRIEVE_TIMEOUT_MS", os.environ.get("MATRIXARK_RETRIEVAL_TIMEOUT_MS", "5000"))),
         "matrixark_feedback": int(os.environ.get("MATRIXARK_FEEDBACK_TIMEOUT_MS", "15000")),
         "matrixark_replay": int(os.environ.get("MATRIXARK_REPLAY_TIMEOUT_MS", "10000")),
+        "matrixark_admin": int(os.environ.get("MATRIXARK_ADMIN_TIMEOUT_MS", "10000")),
     }
     DEFAULT_OPERATION_CONCURRENCY = {
         "ingest": int(os.environ.get("MATRIXARK_MAX_CONCURRENT_INGEST", "32")),
@@ -193,6 +190,8 @@ class MatrixArkMcpServer:
         self._summary_refresh_interval_s = max(0.0, SUMMARY_REFRESH_INTERVAL_MS / 1000.0)
         self._summary_refresh_limit = max(1, SUMMARY_REFRESH_LIMIT)
         self._operation_backpressure_timeout_ms = max(0, int(os.environ.get("MATRIXARK_BACKPRESSURE_TIMEOUT_MS", "100")))
+        self._audit_mode_default = os.environ.get("MATRIXARK_AUDIT_MODE", "async").strip().lower() or "async"
+        self._audit_executor = ThreadPoolExecutor(max_workers=max(1, int(os.environ.get("MATRIXARK_AUDIT_WORKERS", "2"))))
         self._operation_limiters = {
             group: threading.BoundedSemaphore(max(1, int(capacity)))
             for group, capacity in self.DEFAULT_OPERATION_CONCURRENCY.items()
@@ -218,16 +217,7 @@ class MatrixArkMcpServer:
                 self.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
                 refreshed_count = int(result.get("refreshed_count") or 0)
                 if refreshed_count:
-                    self.access.append_audit(
-                        "context.refresh_summaries.background",
-                        {"account_id": "system", "tenant_id": "system", "user_id": "summary_worker"},
-                        status="ok",
-                        details={
-                            "refreshed_count": refreshed_count,
-                            "interval_ms": SUMMARY_REFRESH_INTERVAL_MS,
-                            "limit": self._summary_refresh_limit,
-                        },
-                    )
+                    self.access.append_audit("context.refresh_summaries.background", {"account_id": "system", "tenant_id": "system", "user_id": "summary_worker"}, status="ok", details={"refreshed_count": refreshed_count, "interval_ms": SUMMARY_REFRESH_INTERVAL_MS, "limit": self._summary_refresh_limit})
             except Exception as exc:
                 self.metrics.observe_operation("summary_refresh", "error", 0.0, timeout=is_retryable_temporalstore_error(exc))
                 _mcp_debug_log(f"matrixark summary refresh loop failed: {exc}")
@@ -239,6 +229,23 @@ class MatrixArkMcpServer:
         adapter_close = getattr(self.adapter, "close", None)
         if callable(adapter_close):
             adapter_close(timeout_s=timeout_s)
+        self._audit_executor.shutdown(wait=False, cancel_futures=False)
+
+    def append_audit_policy(self, action: str, identity: Json, *, status: str, details: Json | None = None, args: Json | None = None, hot_path: bool = False) -> None:
+        mode = str((args or {}).get("audit_mode") or self._audit_mode_default).strip().lower()
+        if mode in {"off", "none", "disabled"}:
+            return
+        if hot_path and mode not in {"full", "sync", "synchronous"}:
+            def write_audit() -> None:
+                try:
+                    self.access.append_audit(action, identity, status=status, details=details)
+                except Exception as exc:
+                    setattr(self.adapter, "_audit_flush_failures", int(getattr(self.adapter, "_audit_flush_failures", 0) or 0) + 1)
+                    _mcp_debug_log(f"async audit write failed action={action}: {exc}")
+
+            self._audit_executor.submit(write_audit)
+            return
+        self.access.append_audit(action, identity, status=status, details=details)
 
     def _backend_storage_mode_from_metrics(self, result: Json) -> str:
         metrics = result.get("metrics") if isinstance(result.get("metrics"), dict) else {}
@@ -442,7 +449,10 @@ class MatrixArkMcpServer:
         return response
 
     def _request_deadline_ms(self, name: str, args: Json) -> int:
-        raw_value = args.get("request_deadline_ms", args.get("timeout_ms", self.DEFAULT_REQUEST_DEADLINES_MS.get(name, 0)))
+        default_deadline = self.DEFAULT_REQUEST_DEADLINES_MS.get(name)
+        if default_deadline is None and is_admin_tool(name):
+            default_deadline = self.DEFAULT_REQUEST_DEADLINES_MS["matrixark_admin"]
+        raw_value = args.get("request_deadline_ms", args.get("timeout_ms", default_deadline or 0))
         try:
             deadline_ms = int(raw_value or 0)
         except (TypeError, ValueError):
@@ -497,7 +507,7 @@ class MatrixArkMcpServer:
                 "request_deadline_ms": request_deadline_ms,
                 "request_elapsed_ms": round(elapsed_ms, 3),
             }
-        return result
+        return compact_context_pack_for_serving(result)
 
     @contextmanager
     def _operation_slot(self, name: str, request_deadline_ms: int):
@@ -553,11 +563,13 @@ class MatrixArkMcpServer:
                 result["backpressure"] = True
                 self.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)
                 self.metrics.observe_retrieve_result(result)
-                self.access.append_audit(
+                self.append_audit_policy(
                     "context.retrieve",
                     identity,
                     status="backpressure_partial",
                     details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms},
+                    args=args,
+                    hot_path=True,
                 )
                 return self._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
             raise MatrixArkError(str(exc))

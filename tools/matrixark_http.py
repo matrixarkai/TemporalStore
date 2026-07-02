@@ -5,10 +5,10 @@ from __future__ import annotations
 
 try:
     from tools.matrixark_mcp_core import *
-    from tools.matrixark_mcp_core import _mcp_debug_log
+    from tools.matrixark_mcp_core import _mcp_debug_log, adapter_ensure_backend_ready
 except ModuleNotFoundError:  # Direct script execution from tools/.
     from matrixark_mcp_core import *
-    from matrixark_mcp_core import _mcp_debug_log
+    from matrixark_mcp_core import _mcp_debug_log, adapter_ensure_backend_ready
 
 def _coerce_http_value(value: str) -> Any:
     lowered = value.strip().lower()
@@ -157,8 +157,21 @@ def make_matrixark_http_handler(server: "MatrixArkMcpServer", static_root: Path)
 
         def do_GET(self) -> None:  # noqa: N802 - http.server API
             parsed = urlparse(self.path)
-            if parsed.path in {"/api/health", "/api/ready"}:
-                self._write_json(200, {"status": "ok", "service": "matrixark_portal", "backend": server.adapter.backend_metrics().get("backend", "unknown")})
+            if parsed.path == "/api/health":
+                backend = "unknown"
+                try:
+                    backend = str(server.adapter.backend_metrics().get("backend", "unknown"))
+                except Exception:
+                    pass
+                self._write_json(200, {"status": "ok", "service": "matrixark_portal", "backend": backend})
+                return
+            if parsed.path == "/api/ready":
+                try:
+                    ready = adapter_ensure_backend_ready(server.adapter, reason="http_ready", probe=True, timeout_ms=1000)
+                    status = "ok" if ready.get("status") == "ready" else "topology_not_ready"
+                    self._write_json(200 if status == "ok" else 503, {"status": status, "service": "matrixark_portal", "readiness": ready})
+                except Exception as exc:
+                    self._write_json(503, {"status": "topology_not_ready", "service": "matrixark_portal", "error": str(exc)})
                 return
             if parsed.path in HTTP_TOOL_ROUTES:
                 self._call_tool_route(HTTP_TOOL_ROUTES[parsed.path], _http_query_args(parsed))

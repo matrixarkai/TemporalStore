@@ -75,7 +75,14 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         server.metrics.observe_operation("ingest", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
         server._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
         server.metrics.observe_ingest_result(result)
-        server.access.append_audit("context.ingest", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
+        server.append_audit_policy(
+            "context.ingest",
+            identity,
+            status="ok",
+            details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms},
+            args=args,
+            hot_path=True,
+        )
         response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_batch_extract":
@@ -86,12 +93,19 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
             server.metrics.observe_operation("batch_extract", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
             raise
         server.metrics.observe_operation("batch_extract", "ok", (time.perf_counter() - started_perf) * 1000.0)
-        server.access.append_audit("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")})
+        server.append_audit_policy("context.batch_extract", identity, status="ok", details={"batch_id_hash": result.get("batch_id_hash")}, args=args, hot_path=True)
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_session_commit":
         result = server.adapter.session_commit(args, hook=hook)
-        server.access.append_audit("context.session_commit", identity, status="ok", details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")})
+        server.append_audit_policy(
+            "context.session_commit",
+            identity,
+            status="ok",
+            details={"commit_id_hash": result.get("commit_id_hash"), "batch_id_hash": result.get("batch_id_hash")},
+            args=args,
+            hot_path=True,
+        )
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_refresh_summaries":
@@ -102,7 +116,7 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
             server.metrics.observe_operation("summary_refresh", "error", (time.perf_counter() - started_perf) * 1000.0, timeout=is_retryable_temporalstore_error(exc))
             raise
         server.metrics.observe_operation("summary_refresh", "ok", (time.perf_counter() - started_perf) * 1000.0)
-        server.access.append_audit("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")})
+        server.append_audit_policy("context.refresh_summaries", identity, status="ok", details={"refreshed_count": result.get("refreshed_count")}, args=args, hot_path=True)
         response = {**result, "access": args.get("_matrixark_auth", {})}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_retrieve":
@@ -124,7 +138,14 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
                 result["partial_context_pack"] = True
                 server.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=True)
                 server.metrics.observe_retrieve_result(result)
-                server.access.append_audit("context.retrieve", identity, status="timeout_partial", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
+                server.append_audit_policy(
+                    "context.retrieve",
+                    identity,
+                    status="timeout_partial",
+                    details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms},
+                    args=args,
+                    hot_path=True,
+                )
                 return server._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
             raise
         elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
@@ -137,7 +158,14 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         result["request_elapsed_ms"] = round(elapsed_ms, 3)
         server.metrics.observe_operation("retrieve", "ok", elapsed_ms, timeout=timeout)
         server.metrics.observe_retrieve_result(result)
-        server.access.append_audit("context.retrieve", identity, status="timeout_partial" if timeout else "ok", details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
+        server.append_audit_policy(
+            "context.retrieve",
+            identity,
+            status="timeout_partial" if timeout else "ok",
+            details={"context_pack_id": result.get("context_pack_id"), "request_deadline_ms": request_deadline_ms},
+            args=args,
+            hot_path=True,
+        )
         return server._retrieve_response(result, args, request_deadline_ms=request_deadline_ms, elapsed_ms=elapsed_ms)
     if name == "matrixark_ingestion_dashboard":
         result = server.adapter.ingestion_dashboard(args)
@@ -149,7 +177,8 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_auth_sso_login":
         result = server.access.sso_login(args, identity)
-        return {**result, "access": args.get("_matrixark_auth", {})}
+        response = {**result, "access": args.get("_matrixark_auth", {})}
+        return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_auth_sso_callback":
         result = server.access.sso_callback(args, identity)
         response = {**result, "access": args.get("_matrixark_auth", {})}
@@ -181,7 +210,14 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
         server.metrics.observe_operation("feedback", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
         server._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
-        server.access.append_audit("context.feedback", identity, status="ok", details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms})
+        server.append_audit_policy(
+            "context.feedback",
+            identity,
+            status="ok",
+            details={"event_id_hash": result.get("event_id_hash"), "request_deadline_ms": request_deadline_ms},
+            args=args,
+            hot_path=True,
+        )
         response = {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
         return server._finalize_write_response(name, args, identity, hook, response)
     if name == "matrixark_replay":
@@ -194,7 +230,14 @@ def dispatch_matrixark_tool(server: Any, name: str, args: Json, hook: Json | Non
         elapsed_ms = (time.perf_counter() - started_perf) * 1000.0
         server.metrics.observe_operation("replay", "ok", elapsed_ms, timeout=request_deadline_ms > 0 and elapsed_ms >= request_deadline_ms)
         server._raise_if_request_timed_out(name, started_perf, request_deadline_ms)
-        server.access.append_audit("context.replay", identity, status="ok", details={"context_pack_id": args.get("context_pack_id"), "request_deadline_ms": request_deadline_ms})
+        server.append_audit_policy(
+            "context.replay",
+            identity,
+            status="ok",
+            details={"context_pack_id": args.get("context_pack_id"), "request_deadline_ms": request_deadline_ms},
+            args=args,
+            hot_path=True,
+        )
         return {**result, "access": args.get("_matrixark_auth", {}), "request_deadline_ms": request_deadline_ms, "request_elapsed_ms": round(elapsed_ms, 3)}
     if name == "matrixark_admin_create_account":
         response = server.access.create_account(args, identity)
