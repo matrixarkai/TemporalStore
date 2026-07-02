@@ -2968,7 +2968,7 @@
           "command": {
             "cpp_runner_contract": "C++ ObjectManager runner emits matching hot, cold, deleted residency, object-page ownership, dirty generation, and reload-stability fields.",
             "description": "Shared ObjectManager case for hot/cold/tombstone object residency, object-page ownership transitions, compaction, dump/load install, unload/load recovery, and conflict-free owner refs.",
-            "kind": "existing_test",
+            "kind": "storage_disk_shared_store_persistence_parity",
             "mode": "rust_executable_cxx_static",
             "rust_runner": "cargo test -p temporalstore-rust object_manager_runtime_report_tracks_residency_layout_and_tombstones --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
@@ -3053,6 +3053,34 @@
             "mode": "Async"
           },
           "name": "storage_shared_store_async_replays_cpp_migration_case",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared Rust/C++ storage durability case for local disk restart plus shared-store checkpoint restore and sync/async WAL replay.",
+      "family": "storage/cache",
+      "name": "storage_disk_shared_store_persistence_parity",
+      "shard_id": 1,
+      "steps": [
+        {
+          "command": {
+            "cpp_contract": "C++ ObjectManager/PageStore persists local disk state, restores a checkpoint into a follower, replays sync and async WAL entries, and blocks unsafe cursor GC.",
+            "kind": "existing_test",
+            "mode": "rust_executable_cxx_static",
+            "required_paths": [
+              "src/partition/storage/object_manager.*",
+              "src/partition/storage/page_store.*",
+              "src/partition/storage/replicator*"
+            ],
+            "rust_test": "disk_and_shared_store_persistence_recover_through_restart_and_replay",
+            "suite": "cpp_storage_parity"
+          },
+          "expect": {
+            "kind": "status",
+            "ok": true
+          },
+          "name": "disk_restart_checkpoint_restore_sync_async_wal_replay",
           "skip_client": true
         }
       ]
@@ -11570,6 +11598,7 @@
       "storage_cache_refill",
       "storage_shared_store_sync_replay",
       "storage_shared_store_async_replay",
+      "storage_disk_shared_store_persistence_parity",
       "raft_data_node_leader_election_failover",
       "raft_data_node_snapshot_restart_follower_lag",
       "raft_data_node_membership_secondary_reads",
@@ -11697,6 +11726,7 @@
       "storage_byteraft_cache_refill_pressure",
       "storage_manager_continuous_background_runtime",
       "storage_cache_cold_read_after_eviction_shared",
+      "storage_disk_shared_store_persistence_parity",
       "storage_merged_dump_load_interruption_shared",
       "raft_process_path_log_inspection_shared",
       "client_proxy_route_churn_shared",
@@ -11764,6 +11794,7 @@
       "storage_cold_read_page_address_fallback",
       "storage_recovery_reconciles_slot_index_to_model_views",
       "storage_shared_store_replay",
+      "storage_disk_shared_store_persistence_parity",
       "storage_stream_reopen_scan",
       "storage_stream_partial_extent_rebuild",
       "storage_stream_manifest_disk_reconciliation",

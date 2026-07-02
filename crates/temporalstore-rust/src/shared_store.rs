@@ -1319,6 +1319,167 @@ mod tests {
         );
     }
 
+    // shared-corpus: storage_disk_shared_store_persistence_parity
+    #[tokio::test]
+    async fn disk_and_shared_store_persistence_recover_through_restart_and_replay() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        assert!(
+            primary
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: "disk-key".to_string(),
+                        value: b"disk-value".to_vec(),
+                    },
+                })
+                .status
+                .ok
+        );
+        drop(primary);
+
+        let restarted_primary = test_engine(dir.path(), "primary");
+        restarted_primary.load_shard(1);
+        assert_eq!(
+            restarted_primary
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "disk-key".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"disk-value".to_vec())
+            }
+        );
+
+        let (_store, replicator) = test_shared_store(dir.path());
+        let manifest = replicator
+            .publish_checkpoint(1, 1, &restarted_primary, &restarted_primary.block_store())
+            .await
+            .unwrap();
+        assert_eq!(manifest.checkpoint_oplog_index, 1);
+        assert!(!manifest.page_segments.is_empty());
+
+        let sync_writer = replicator.storage_writer(SharedStoreStorageMode::Sync, 2);
+        assert_eq!(
+            sync_writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: "shared-sync".to_string(),
+                        value: b"sync-value".to_vec(),
+                    },
+                )
+                .await
+                .unwrap(),
+            SharedStoreWriteReport {
+                oplog_index: 2,
+                published: true,
+                queued: false,
+            }
+        );
+
+        let async_writer = replicator.storage_writer(SharedStoreStorageMode::Async, 3);
+        assert_eq!(
+            async_writer
+                .write(
+                    1,
+                    Command::StringSet {
+                        key: "shared-async".to_string(),
+                        value: b"async-value".to_vec(),
+                    },
+                )
+                .await
+                .unwrap(),
+            SharedStoreWriteReport {
+                oplog_index: 3,
+                published: false,
+                queued: true,
+            }
+        );
+        assert_eq!(
+            async_writer.flush_pending(8).await.unwrap(),
+            SharedStoreFlushReport {
+                flushed: 1,
+                remaining: 0,
+                last_oplog_index: 3,
+            }
+        );
+
+        let follower = test_engine_with_cache(dir.path(), "follower", 32);
+        replicator
+            .restore_checkpoint(&manifest, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        let reads_before = follower.block_store().stats().reads;
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "disk-key".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"disk-value".to_vec())
+            }
+        );
+        assert!(
+            follower.block_store().stats().reads > reads_before,
+            "restored follower should read checkpointed bytes from disk-backed block segments"
+        );
+
+        let replay = replicator.replay_wal_strict(1, 1, &follower).await.unwrap();
+        assert_eq!(
+            replay,
+            ReplayReport {
+                applied: 2,
+                last_oplog_index: 3,
+            }
+        );
+        for (key, value) in [
+            ("shared-sync", b"sync-value".to_vec()),
+            ("shared-async", b"async-value".to_vec()),
+        ] {
+            assert_eq!(
+                follower
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet {
+                            key: key.to_string()
+                        },
+                    })
+                    .response,
+                CommandResponse::Bytes { value: Some(value) }
+            );
+        }
+
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_oplog_index: replay.last_oplog_index,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+        let gc = replicator
+            .gc_wal_before_cursor_safe(1, 5)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            gc,
+            SharedStoreReplicationError::GcBlockedByReplayCursor {
+                cursor_oplog_index: 3,
+                retain_from_oplog_index: 5,
+            }
+        ));
+    }
+
     #[tokio::test]
     async fn shared_store_rejects_corrupt_oplog_checksum() {
         let dir = tempfile::tempdir().unwrap();
