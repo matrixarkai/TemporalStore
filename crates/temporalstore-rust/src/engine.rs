@@ -4085,7 +4085,7 @@ impl TemporalEngine {
         let Some(shard) = shards.get(&shard_id) else {
             return report;
         };
-        for entry in collect_live_page_entries_from_model_maps(shard) {
+        for entry in collect_live_page_entries(shard) {
             let routing_slot = entry
                 .address
                 .routing_slot
@@ -5177,7 +5177,7 @@ impl TemporalEngine {
         shard: &ShardState,
     ) -> StoragePageOwnershipValidation {
         let mut validation = StoragePageOwnershipValidation::default();
-        for entry in collect_live_page_entries_from_model_maps(shard) {
+        for entry in collect_live_page_entries(shard) {
             let expected_object_id = expected_live_page_object_id(shard_id, &entry);
             let expected_routing_slot = self.routing_slot_for_key(shard_id, &entry.object_key);
             let object_mismatch = entry
@@ -7966,15 +7966,9 @@ fn execute_on_shard(
         } => {
             let object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
+            let timeline_key = context_timeline_key(event.primary_time_ms(), event.event_id_hash);
             let series = shard.context_events.entry(object_key.clone()).or_default();
-            if let Some(timeline_key) = context_event_timeline_key_for_write(
-                series,
-                cache,
-                page_store,
-                shard_id,
-                &event,
-                first_write_only,
-            ) {
+            if !(first_write_only && series.contains_key(&timeline_key)) {
                 let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&object_key, start_routing_slot, end_routing_slot);
@@ -8010,18 +8004,12 @@ fn execute_on_shard(
             let event_object_key = context_event_key(tenant_hash, node_hash);
             normalize_context_event_storage_keys(node_hash, &mut event);
             let primary_time_ms = event.primary_time_ms();
+            let event_timeline_key = context_timeline_key(primary_time_ms, event.event_id_hash);
             let event_series = shard
                 .context_events
                 .entry(event_object_key.clone())
                 .or_default();
-            if let Some(event_timeline_key) = context_event_timeline_key_for_write(
-                event_series,
-                cache,
-                page_store,
-                shard_id,
-                &event,
-                first_write_only,
-            ) {
+            if !(first_write_only && event_series.contains_key(&event_timeline_key)) {
                 let value = context_bytes(&event);
                 let routing_slot =
                     page_routing_slot(&event_object_key, start_routing_slot, end_routing_slot);
@@ -9341,10 +9329,6 @@ fn collect_live_page_entries(shard: &ShardState) -> Vec<LivePageEntry> {
     collect_model_live_page_entries(shard)
 }
 
-fn collect_live_page_entries_from_model_maps(shard: &ShardState) -> Vec<LivePageEntry> {
-    collect_model_live_page_entries(shard)
-}
-
 fn rebuild_slot_page_ownership(
     shard_id: ShardId,
     shard: &mut ShardState,
@@ -10145,7 +10129,7 @@ fn storage_object_lifecycle_report_for_slots(
     selected_slots: &BTreeSet<u32>,
     routing_slot_for_key: impl Fn(&str) -> u32,
 ) -> StorageObjectLifecycleReport {
-    let entries = collect_live_page_entries_from_model_maps(shard)
+    let entries = collect_live_page_entries(shard)
         .into_iter()
         .filter(|entry| {
             let routing_slot = entry
@@ -10810,49 +10794,10 @@ fn slot_generation_fingerprints_by_slot(shard: &ShardState) -> BTreeMap<u32, BTr
 }
 
 fn collect_live_page_addresses(shard: &ShardState) -> Vec<PageAddress> {
-    let mut addresses = Vec::new();
-    addresses.extend(shard.strings.values().cloned());
-    for fields in shard.hashes.values() {
-        addresses.extend(fields.values().cloned());
-    }
-    for members in shard.sets.values() {
-        addresses.extend(members.values().cloned());
-    }
-    for series in shard.features.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.sequences.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.ips.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    addresses.extend(shard.risk_pages.values().cloned());
-    addresses.extend(shard.context_nodes.values().cloned());
-    for series in shard.context_events.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.context_indexes.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.context_audits.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.context_dirty.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    addresses.extend(shard.context_entities.values().cloned());
-    for series in shard.context_children.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    addresses.extend(shard.context_embeddings.values().cloned());
-    for series in shard.context_summaries.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    for series in shard.context_compressions.values() {
-        addresses.extend(unique_timestamped_kv_page_addresses(series));
-    }
-    addresses
+    collect_live_page_entries(shard)
+        .into_iter()
+        .map(|entry| entry.address)
+        .collect()
 }
 
 fn unique_timestamped_kv_page_addresses(series: &BTreeMap<u64, PageAddress>) -> Vec<PageAddress> {
