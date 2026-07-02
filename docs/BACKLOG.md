@@ -1317,8 +1317,9 @@ Completed since the last backlog update:
         PageAddress corpus and require C++/Rust CI to validate:
         encode/decode `PageAddress`, stable ordering by `{shard_id, zone_id,
         segment_id, page_id, offset}`, timestamp range -> page address lookup,
-        page split behavior, and page compaction rewrite preserving logical
-        records.
+        page split behavior, page compaction rewrite preserving logical
+        records, tombstone filtering, no-promote cold scans, and crash/restart
+        rebuild of `PageIndex` and `BlockIndex`.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
