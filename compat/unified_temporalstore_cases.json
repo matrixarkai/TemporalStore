@@ -5535,20 +5535,41 @@
       ]
     },
     {
-      "description": "Shared C++/Rust storage stream case: missing manifests rebuild from sealed/active extents and partial corrupt tails preserve readable prefixes with explicit corruption evidence.",
+      "description": "Shared C++/Rust storage stream case: missing manifests rebuild from sealed/active extents, manifest/live-stream divergence is reconciled on open, and partial corrupt tails preserve readable prefixes with explicit corruption evidence.",
       "family": "storage/cache",
       "name": "storage_stream_partial_extent_rebuild",
       "shard_id": 92,
       "steps": [
         {
           "command": {
-            "description": "Removes the extent manifest, appends a corrupt partial tail to a sealed extent, reopens storage, verifies readable-prefix manifest rebuild, and reports corruption without hiding healthy extents.",
+            "description": "Removes the extent manifest, appends a corrupt partial tail to a sealed extent, reopens storage, verifies readable-prefix manifest rebuild, manifest/disk consistency, and reports corruption without hiding healthy extents.",
             "expect_corrupt_extent_count": 1,
+            "expect_extent_manifest_disk_consistent": true,
             "expect_extent_manifest_rebuild": true,
             "expect_partial_extent_recovery": true,
             "kind": "storage_stream_partial_extent_rebuild"
           },
           "name": "partial_extent_manifest_rebuild_preserves_readable_prefix",
+          "skip_client": true
+        }
+      ]
+    },
+    {
+      "description": "Shared C++/Rust storage stream case: stale extent manifests reconcile against live and missing stream files during reopen, matching C++ page-store zone update behavior.",
+      "family": "storage/cache",
+      "name": "storage_stream_manifest_disk_reconciliation",
+      "shard_id": 92,
+      "steps": [
+        {
+          "command": {
+            "description": "Creates manifest/live-stream divergence, reopens storage, verifies open-time reconciliation, zero remaining manifest/disk mismatches, active/sealed/purged lifecycle states, and logical reads from healthy extents.",
+            "expect_extent_manifest_disk_consistent": true,
+            "expect_extent_manifest_reconciled_on_open": true,
+            "expect_manifest_extra_stream_extents": 0,
+            "expect_manifest_missing_stream_extents": 0,
+            "kind": "storage_stream_manifest_disk_reconciliation"
+          },
+          "name": "stale_extent_manifest_reconciles_with_stream_files",
           "skip_client": true
         }
       ]
@@ -9765,6 +9786,7 @@
       "storage_stream_random_size_reopen_scan",
       "storage_stream_backed_extent_runtime",
       "storage_stream_partial_extent_rebuild",
+      "storage_stream_manifest_disk_reconciliation",
       "storage_manager_background_loop",
       "storage_manager_pressure_scale_evidence",
       "storage_wal_index_gc_generation_retention",
@@ -9909,6 +9931,7 @@
       "storage_shared_store_replay",
       "storage_stream_reopen_scan",
       "storage_stream_partial_extent_rebuild",
+      "storage_stream_manifest_disk_reconciliation",
       "storage_manager_pressure_scale_evidence",
       "storage_wal_index_gc_generation_retention",
       "storage_gc_dependency_retention_matrix",
