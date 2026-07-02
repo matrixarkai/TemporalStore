@@ -153,7 +153,10 @@ class _NativeContextPackClient:
                 "scanned_records": 7,
                 "candidate_cache_hit": True,
                 "placement_partitions_touched": 2,
+                "placement_fetch_count": 8,
                 "index_postings_read": 9,
+                "compact_index_bucket_used": True,
+                "compact_index_bucket_count": 3,
                 "correctness_evidence": {
                     "scope_filtering": True,
                     "placement_filtering": True,
@@ -1151,6 +1154,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertEqual(request["watermark_count"], 7)
         self.assertEqual(request["scope_key"], "t=11|u=22|s=33|")
         self.assertEqual(request["placement_node_hash"], request["start_node_hash"])
+        self.assertEqual(request["placement_key"], f"context:{request['scope_key']}:node={request['start_node_hash']}")
         self.assertFalse(request["include_superseded"])
         self.assertFalse(request["include_superseded_resources"])
         self.assertEqual(request["shared_resource_max_refs"], 4)
@@ -1230,7 +1234,10 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(request["required_output"]["retrieval_metrics"])
         self.assertEqual(result["retrieval_metrics"]["query_plan_ms"], 1.5)
         self.assertEqual(result["retrieval_metrics"]["placement_partitions_touched"], 2)
+        self.assertEqual(result["retrieval_metrics"]["placement_fetch_count"], 8)
         self.assertEqual(result["retrieval_metrics"]["index_postings_read"], 9)
+        self.assertTrue(result["retrieval_metrics"]["compact_index_bucket_used"])
+        self.assertEqual(result["retrieval_metrics"]["compact_index_bucket_count"], 3)
         self.assertTrue(result["retrieval_metrics"]["candidate_cache_hit"])
         self.assertEqual(result["retrieval_metrics"]["append_queue_wait_ms"], 0.25)
         self.assertEqual(result["retrieval_metrics"]["append_engine_ms"], 0.75)

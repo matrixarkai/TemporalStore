@@ -88,7 +88,8 @@ Latest AWS/test state:
 - Replace product-visible per-term `ContextIndex` fanout with TemporalStore-native feature/sequence-style secondary filtering for hot context serving.
   - Design note: see `docs/matrixark_temporalstore_secondary_index_design.md`.
   - Problem:
-    - the current compatibility path writes compact `ContextIndexRef` postings under `ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}`;
+    - the legacy compatibility path writes compact `ContextIndexRef` postings under `ctxidx:{tenant_hash}:{index_name}:{index_value_hash}:{scope_hash}`;
+    - C++ default extracted-context writes now use bucketed postings under `ctxidx2:{tenant_hash}:{scope_hash}:{index_name}:{time_bucket_ms}` with `index_value_hash` stored in the ref payload;
     - those refs are smaller than duplicated events, but they still grow with `objects x index_terms_per_object`;
     - resource imports, PDFs, repos, and keyword-heavy chunks can create too many index refs and too much debug/audit noise.
   - Target:

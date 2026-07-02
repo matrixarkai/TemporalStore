@@ -368,6 +368,13 @@ void ApplyNativeRetrieveDefaults(const std::string& json,
     if (ParseJsonUint64(json, "placement_node_hash", &uint_value)) {
         request->set_placement_node_hash(uint_value);
     }
+    if (ParseJsonUint64(json, "index_time_bucket_ms", &uint_value)) {
+        request->set_index_time_bucket_ms(uint_value);
+    }
+    std::string placement_key;
+    if (ParseJsonString(json, "placement_key", &placement_key)) {
+        request->set_placement_key(placement_key);
+    }
     std::string scope_key;
     if (request->scope_hash() == 0 && ParseJsonString(json, "scope_key", &scope_key) &&
         !scope_key.empty()) {
@@ -401,6 +408,9 @@ void ApplyNativeRetrieveDefaults(const std::string& json,
         }
         if (ParseJsonUint64(object, "limit", &uint_value)) {
             filter->set_limit(static_cast<uint32_t>(uint_value));
+        }
+        if (ParseJsonUint64(object, "time_bucket_ms", &uint_value)) {
+            filter->set_time_bucket_ms(uint_value);
         }
     }
 }
@@ -472,7 +482,12 @@ std::string RenderContextPackResponseJson(
     os << "\"dropped_refs\":" << telemetry.dropped_refs() << ",";
     os << "\"scanned_records\":" << telemetry.scanned_records() << ",";
     os << "\"index_postings_read\":" << telemetry.index_postings_read() << ",";
+    os << "\"compact_index_bucket_used\":"
+       << (telemetry.compact_index_bucket_used() ? "true" : "false") << ",";
+    os << "\"compact_index_bucket_count\":"
+       << telemetry.compact_index_bucket_count() << ",";
     os << "\"candidate_fetch_count\":" << telemetry.candidate_fetch_count() << ",";
+    os << "\"placement_fetch_count\":" << telemetry.placement_fetch_count() << ",";
     os << "\"candidate_cache_hit\":" << (telemetry.candidate_cache_hit() ? "true" : "false") << ",";
     os << "\"placement_partitions_touched\":" << telemetry.placement_partitions_touched() << ",";
     os << "\"broad_scan_used\":" << (telemetry.broad_scan_used() ? "true" : "false") << ",";
@@ -1001,21 +1016,25 @@ Status TemporalStoreClient::MatrixArkRetrieveContextPack(const std::string& requ
 
     std::string scope_key;
     ParseJsonString(request_json, "scope_key", &scope_key);
-    std::ostringstream route;
-    route << "context:";
-    if (!scope_key.empty()) {
-        route << scope_key;
-    } else if (request.scope_hash() != 0) {
-        route << request.scope_hash();
-    } else {
-        route << request.tenant_hash();
+    std::string route_key;
+    if (!ParseJsonString(request_json, "placement_key", &route_key) || route_key.empty()) {
+        std::ostringstream route;
+        route << "context:";
+        if (!scope_key.empty()) {
+            route << scope_key;
+        } else if (request.scope_hash() != 0) {
+            route << request.scope_hash();
+        } else {
+            route << request.tenant_hash();
+        }
+        route << ":node=" << request.start_node_hash();
+        route_key = route.str();
     }
-    route << ":node=" << request.start_node_hash();
 
     ::bcache2::context::RetrieveContextPackResponse response;
     RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::CONTEXT,
                                              ::bcache2::context::RETRIEVE_CONTEXT_PACK,
-                                             route.str(), request, &response, false));
+                                             route_key, request, &response, false));
     *response_json = RenderContextPackResponseJson(request_json, response);
     RETURN_IF_STATUS_ERROR(
         ValidateSize(response_json->size(), impl_->options.max_value_bytes, "response_json"));
