@@ -177,6 +177,8 @@ STORAGE_TUNING_DEFAULTS: Json = {
     "TS_BLOCK_INDEX_CACHE_BYTES": 64 * 1024 * 1024,
 }
 
+STORAGE_TUNING_FIELD_NAMES = list(STORAGE_TUNING_DEFAULTS.keys())
+
 PAGE_BLOCK_METRIC_NAMES = [
     "page_index_lookup_count",
     "page_index_lookup_ms",
@@ -287,6 +289,37 @@ def effective_storage_tuning_from_env() -> Json:
         int(values["TS_STREAM_MAX_BLOB_SIZE"]),
     )
     return values
+
+
+def storage_tuning_failures(report: Json) -> list[str]:
+    config = report.get("config", {}) if isinstance(report.get("config"), dict) else {}
+    config_tuning = config.get("effective_storage_tuning") if isinstance(config.get("effective_storage_tuning"), dict) else {}
+    failures: list[str] = []
+    for field in STORAGE_TUNING_FIELD_NAMES:
+        if field not in config_tuning:
+            failures.append(f"config missing effective_storage_tuning.{field}")
+
+    backends = report.get("backends", {}) if isinstance(report.get("backends"), dict) else {}
+    for backend_name in ("cpp", "rust"):
+        backend = backends.get(backend_name)
+        if not isinstance(backend, dict):
+            continue
+        if backend.get("status") != "passed":
+            continue
+        backend_tuning = backend.get("effective_storage_tuning")
+        if not isinstance(backend_tuning, dict):
+            failures.append(f"{backend_name} missing effective_storage_tuning")
+            continue
+        for field in STORAGE_TUNING_FIELD_NAMES:
+            if field not in backend_tuning:
+                failures.append(f"{backend_name} missing effective_storage_tuning.{field}")
+                continue
+            if field in config_tuning and backend_tuning[field] != config_tuning[field]:
+                failures.append(
+                    f"{backend_name} effective_storage_tuning.{field} drift: "
+                    f"backend={backend_tuning[field]!r} config={config_tuning[field]!r}"
+                )
+    return failures
 
 
 def retrieval_metrics_from_result(result: Json) -> Json:
@@ -1728,6 +1761,15 @@ def production_policy_gate(report: Json) -> Json:
         (
             "Performance parity requires the same dataset, storage mode, topology, token budget, "
             "batch size, embedding model, reader, judge, and effective storage tuning for C++ and Rust."
+        ),
+    )
+    tuning_failures = storage_tuning_failures(report)
+    add_check(
+        "same_effective_storage_tuning",
+        not tuning_failures,
+        (
+            "C++ and Rust passed backends must report the same effective TS_* storage tuning as the run config. "
+            + ("; ".join(tuning_failures) if tuning_failures else "all required knobs match")
         ),
     )
 

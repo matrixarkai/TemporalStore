@@ -14,11 +14,31 @@ import matrixark_mcp_server as mcp
 try:
     from tools import matrixark_mcp_local_adapter as mcp_local
     from tools import matrixark_mcp_core as mcp_core
-    from tools.run_matrixark_cpp_rust_scale_report import comparison, effective_storage_tuning_from_env, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from tools.run_matrixark_cpp_rust_scale_report import (
+        comparison,
+        effective_storage_tuning_from_env,
+        fallback_flags_from_backend,
+        phase_scale_matrix_gate,
+        production_policy_gate,
+        selected_ref_count,
+        storage_tuning_failures,
+        summarize_retrieval_metrics,
+        timeout_count,
+    )
 except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
     import matrixark_mcp_local_adapter as mcp_local
     import matrixark_mcp_core as mcp_core
-    from run_matrixark_cpp_rust_scale_report import comparison, effective_storage_tuning_from_env, fallback_flags_from_backend, phase_scale_matrix_gate, production_policy_gate, selected_ref_count, summarize_retrieval_metrics, timeout_count
+    from run_matrixark_cpp_rust_scale_report import (
+        comparison,
+        effective_storage_tuning_from_env,
+        fallback_flags_from_backend,
+        phase_scale_matrix_gate,
+        production_policy_gate,
+        selected_ref_count,
+        storage_tuning_failures,
+        summarize_retrieval_metrics,
+        timeout_count,
+    )
 
 
 
@@ -238,6 +258,19 @@ def _direct_adapter_for_readiness(*, metaserver: str, client: object | None = No
 
 
 class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
+    def _storage_tuning(self) -> dict[str, object]:
+        return {
+            "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
+            "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
+            "TS_STORAGE_ZONE_SIZE": 10485760,
+            "TS_STREAM_MAX_BLOB_SIZE": 10485760,
+            "TS_COMPACTION_WATERMARK_BYTES": 268435456,
+            "TS_COLD_SCAN_NO_CACHE_FILL": True,
+            "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
+            "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
+            "effective_block_segment_target_bytes": 10485760,
+        }
+
     def setUp(self) -> None:
         self._old_profile = mcp.MATRIXARK_MCP_PROFILE
         self._old_allow_local = mcp.MATRIXARK_ALLOW_LOCAL_BACKEND
@@ -374,6 +407,32 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 else:
                     os.environ[name] = value
 
+    def test_storage_tuning_failures_detect_backend_omission_and_drift(self) -> None:
+        tuning = self._storage_tuning()
+        report = {
+            "config": {"effective_storage_tuning": dict(tuning)},
+            "backends": {
+                "cpp": {"status": "passed", "effective_storage_tuning": dict(tuning)},
+                "rust": {
+                    "status": "passed",
+                    "effective_storage_tuning": {
+                        **tuning,
+                        "TS_STREAM_MAX_BLOB_SIZE": 20971520,
+                    },
+                },
+            },
+        }
+
+        failures = storage_tuning_failures(report)
+
+        self.assertIn(
+            "rust effective_storage_tuning.TS_STREAM_MAX_BLOB_SIZE drift: backend=20971520 config=10485760",
+            failures,
+        )
+        del report["backends"]["cpp"]["effective_storage_tuning"]["TS_PAGE_INDEX_CACHE_BYTES"]
+        failures = storage_tuning_failures(report)
+        self.assertIn("cpp missing effective_storage_tuning.TS_PAGE_INDEX_CACHE_BYTES", failures)
+
     def test_production_policy_gate_blocks_perf_claims_before_correct_refs(self) -> None:
         report = {
             "config": {
@@ -392,22 +451,13 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "reader_model": "matrixark-deterministic-reader",
                 "judge_provider": "deterministic",
                 "judge_model": "matrixark-deterministic-judge",
-                "effective_storage_tuning": {
-                    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
-                    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
-                    "TS_STORAGE_ZONE_SIZE": 10485760,
-                    "TS_STREAM_MAX_BLOB_SIZE": 10485760,
-                    "TS_COMPACTION_WATERMARK_BYTES": 268435456,
-                    "TS_COLD_SCAN_NO_CACHE_FILL": True,
-                    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
-                    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
-                    "effective_block_segment_target_bytes": 10485760,
-                },
+                "effective_storage_tuning": self._storage_tuning(),
             },
             "comparison": {"phase0_correctness": {"status": "failed"}},
             "backends": {
                 "cpp": {
                     "status": "passed",
+                    "effective_storage_tuning": self._storage_tuning(),
                     "retrieve": {
                         "stage_metrics": {
                             "selected_refs_max": 0,
@@ -419,6 +469,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 },
                 "rust": {
                     "status": "passed",
+                    "effective_storage_tuning": self._storage_tuning(),
                     "retrieve": {"stage_metrics": {"selected_refs_max": 2, "stage_p95_ms": {"audit_ms": 0}}},
                 },
             },
@@ -457,22 +508,20 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "reader_model": "matrixark-deterministic-reader",
                 "judge_provider": "deterministic",
                 "judge_model": "matrixark-deterministic-judge",
-                "effective_storage_tuning": {
-                    "TS_CONTEXT_PAGE_TARGET_BYTES": 65536,
-                    "TS_BLOCK_SEGMENT_TARGET_BYTES": 1073741824,
-                    "TS_STORAGE_ZONE_SIZE": 10485760,
-                    "TS_STREAM_MAX_BLOB_SIZE": 10485760,
-                    "TS_COMPACTION_WATERMARK_BYTES": 268435456,
-                    "TS_COLD_SCAN_NO_CACHE_FILL": True,
-                    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
-                    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864,
-                    "effective_block_segment_target_bytes": 10485760,
-                },
+                "effective_storage_tuning": self._storage_tuning(),
             },
             "comparison": {"phase0_correctness": {"status": "passed"}},
             "backends": {
-                "cpp": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
-                "rust": {"status": "passed", "retrieve": {"stage_metrics": dict(metrics)}},
+                "cpp": {
+                    "status": "passed",
+                    "effective_storage_tuning": self._storage_tuning(),
+                    "retrieve": {"stage_metrics": dict(metrics)},
+                },
+                "rust": {
+                    "status": "passed",
+                    "effective_storage_tuning": self._storage_tuning(),
+                    "retrieve": {"stage_metrics": dict(metrics)},
+                },
             },
         }
 
