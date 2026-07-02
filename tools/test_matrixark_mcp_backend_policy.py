@@ -605,6 +605,11 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(result["status_labels"]["feature_correct"])
         self.assertTrue(result["status_labels"]["performance_candidate"])
         self.assertTrue(result["status_labels"]["production_performance_parity"])
+        self.assertEqual(result["rust_vs_cpp_parity"]["feature_parity"]["status"], "passed")
+        self.assertTrue(result["rust_vs_cpp_parity"]["feature_parity"]["passed"])
+        self.assertEqual(result["rust_vs_cpp_parity"]["performance_parity"]["status"], "passed")
+        self.assertTrue(result["rust_vs_cpp_parity"]["performance_parity"]["passed"])
+        self.assertTrue(result["rust_vs_cpp_parity"]["production_performance_parity"]["passed"])
 
     def test_scale_report_requires_shared_correctness_evidence(self) -> None:
         base = {
