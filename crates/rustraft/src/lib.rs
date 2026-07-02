@@ -685,36 +685,6 @@ pub enum RustRaftRole {
     Learner,
 }
 
-pub type RustRaftNodeId = u64;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RustRaftReplicaRole {
-    Voter,
-    Learner,
-    Witness,
-}
-
-impl RustRaftReplicaRole {
-    pub fn participates_in_quorum(self) -> bool {
-        matches!(self, Self::Voter | Self::Witness)
-    }
-
-    pub fn can_serve_data(self) -> bool {
-        matches!(self, Self::Voter | Self::Learner)
-    }
-
-    pub fn can_be_leader(self) -> bool {
-        matches!(self, Self::Voter)
-    }
-}
-
-impl Default for RustRaftReplicaRole {
-    fn default() -> Self {
-        Self::Voter
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RustRaftLogId {
     pub term: u64,
@@ -845,6 +815,42 @@ pub struct RustRaftReadSafetyDecision {
     pub read_index: u64,
     pub lease_read: bool,
     pub reason: String,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RustRaftReadSafetyOperation {
+    ReadIndex,
+    LeaseRead,
+    BoundedStaleRead,
+    Write,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustRaftReadSafetyRuntimeInput {
+    pub operation: RustRaftReadSafetyOperation,
+    pub node_id: u64,
+    pub leader_id: u64,
+    pub node_alive: bool,
+    pub role_can_serve_data: bool,
+    pub leader_lease_valid: bool,
+    pub has_majority: bool,
+    pub node_commit_index: u64,
+    pub leader_commit_index: u64,
+    pub max_stale_index_lag: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RustRaftReadSafetyRuntimeDecision {
+    pub allowed: bool,
+    pub read_index: u64,
+    pub reason: String,
+    pub stale_leader_lease_rejected: bool,
+    pub lagging_follower_read_rejected: bool,
+    pub stale_follower_write_rejected: bool,
+    pub minority_partition_read_rejected: bool,
+    pub minority_partition_write_rejected: bool,
+    pub healed_follower_catchup_observed: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1541,6 +1547,108 @@ pub fn rustraft_read_safety_decision(
         read_index: status.commit_index,
         lease_read: request.allow_lease_read,
         reason: "safe".to_string(),
+    }
+}
+
+pub fn rustraft_read_safety_runtime_decision(
+    input: RustRaftReadSafetyRuntimeInput,
+) -> RustRaftReadSafetyRuntimeDecision {
+    let is_follower = input.node_id != input.leader_id;
+    if matches!(input.operation, RustRaftReadSafetyOperation::Write) {
+        let stale_follower_write_rejected = is_follower;
+        let minority_partition_write_rejected = !input.has_majority;
+        let allowed = !stale_follower_write_rejected && !minority_partition_write_rejected;
+        return RustRaftReadSafetyRuntimeDecision {
+            allowed,
+            read_index: input.leader_commit_index,
+            reason: if allowed {
+                "write_authority".to_string()
+            } else if stale_follower_write_rejected {
+                "not_leader".to_string()
+            } else {
+                "minority_partition".to_string()
+            },
+            stale_leader_lease_rejected: false,
+            lagging_follower_read_rejected: false,
+            stale_follower_write_rejected,
+            minority_partition_read_rejected: false,
+            minority_partition_write_rejected,
+            healed_follower_catchup_observed: false,
+        };
+    }
+
+    if !input.node_alive || !input.role_can_serve_data {
+        return RustRaftReadSafetyRuntimeDecision {
+            allowed: false,
+            read_index: input.node_commit_index,
+            reason: "node_unavailable".to_string(),
+            stale_leader_lease_rejected: false,
+            lagging_follower_read_rejected: false,
+            stale_follower_write_rejected: false,
+            minority_partition_read_rejected: false,
+            minority_partition_write_rejected: false,
+            healed_follower_catchup_observed: false,
+        };
+    }
+
+    if matches!(
+        input.operation,
+        RustRaftReadSafetyOperation::ReadIndex | RustRaftReadSafetyOperation::LeaseRead
+    ) && (!input.leader_lease_valid || !input.has_majority)
+    {
+        return RustRaftReadSafetyRuntimeDecision {
+            allowed: false,
+            read_index: input.node_commit_index,
+            reason: if !input.leader_lease_valid {
+                "stale_leader_lease".to_string()
+            } else {
+                "minority_partition".to_string()
+            },
+            stale_leader_lease_rejected: !input.leader_lease_valid,
+            lagging_follower_read_rejected: false,
+            stale_follower_write_rejected: false,
+            minority_partition_read_rejected: !input.has_majority,
+            minority_partition_write_rejected: false,
+            healed_follower_catchup_observed: false,
+        };
+    }
+
+    let lag = input
+        .leader_commit_index
+        .saturating_sub(input.node_commit_index);
+    let max_lag = if matches!(
+        input.operation,
+        RustRaftReadSafetyOperation::BoundedStaleRead
+    ) {
+        input.max_stale_index_lag
+    } else {
+        0
+    };
+    if lag > max_lag {
+        return RustRaftReadSafetyRuntimeDecision {
+            allowed: false,
+            read_index: input.node_commit_index,
+            reason: "replica_lagging".to_string(),
+            stale_leader_lease_rejected: false,
+            lagging_follower_read_rejected: is_follower,
+            stale_follower_write_rejected: false,
+            minority_partition_read_rejected: false,
+            minority_partition_write_rejected: false,
+            healed_follower_catchup_observed: false,
+        };
+    }
+
+    RustRaftReadSafetyRuntimeDecision {
+        allowed: true,
+        read_index: input.node_commit_index,
+        reason: "safe".to_string(),
+        stale_leader_lease_rejected: false,
+        lagging_follower_read_rejected: false,
+        stale_follower_write_rejected: false,
+        minority_partition_read_rejected: false,
+        minority_partition_write_rejected: false,
+        healed_follower_catchup_observed: is_follower
+            && input.node_commit_index == input.leader_commit_index,
     }
 }
 
@@ -2504,20 +2612,78 @@ mod tests {
     }
 
     #[test]
-    fn replica_role_semantics_are_owned_by_rustraft() {
-        assert!(RustRaftReplicaRole::Voter.participates_in_quorum());
-        assert!(RustRaftReplicaRole::Voter.can_serve_data());
-        assert!(RustRaftReplicaRole::Voter.can_be_leader());
+    fn runtime_read_safety_rejects_stale_leader_lease() {
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: RustRaftReadSafetyOperation::ReadIndex,
+            node_id: 1,
+            leader_id: 1,
+            node_alive: true,
+            role_can_serve_data: true,
+            leader_lease_valid: false,
+            has_majority: true,
+            node_commit_index: 10,
+            leader_commit_index: 10,
+            max_stale_index_lag: 0,
+        });
+        assert!(!decision.allowed);
+        assert!(decision.stale_leader_lease_rejected);
+        assert_eq!(decision.reason, "stale_leader_lease");
+    }
 
-        assert!(!RustRaftReplicaRole::Learner.participates_in_quorum());
-        assert!(RustRaftReplicaRole::Learner.can_serve_data());
-        assert!(!RustRaftReplicaRole::Learner.can_be_leader());
+    #[test]
+    fn runtime_read_safety_rejects_lagging_follower() {
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: RustRaftReadSafetyOperation::ReadIndex,
+            node_id: 2,
+            leader_id: 1,
+            node_alive: true,
+            role_can_serve_data: true,
+            leader_lease_valid: true,
+            has_majority: true,
+            node_commit_index: 7,
+            leader_commit_index: 10,
+            max_stale_index_lag: 0,
+        });
+        assert!(!decision.allowed);
+        assert!(decision.lagging_follower_read_rejected);
+        assert_eq!(decision.reason, "replica_lagging");
+    }
 
-        assert!(RustRaftReplicaRole::Witness.participates_in_quorum());
-        assert!(!RustRaftReplicaRole::Witness.can_serve_data());
-        assert!(!RustRaftReplicaRole::Witness.can_be_leader());
+    #[test]
+    fn runtime_read_safety_allows_bounded_stale_within_lag_budget() {
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: RustRaftReadSafetyOperation::BoundedStaleRead,
+            node_id: 2,
+            leader_id: 1,
+            node_alive: true,
+            role_can_serve_data: true,
+            leader_lease_valid: true,
+            has_majority: true,
+            node_commit_index: 8,
+            leader_commit_index: 10,
+            max_stale_index_lag: 2,
+        });
+        assert!(decision.allowed);
+        assert_eq!(decision.read_index, 8);
+    }
 
-        assert_eq!(RustRaftReplicaRole::default(), RustRaftReplicaRole::Voter);
+    #[test]
+    fn runtime_read_safety_rejects_minority_writes() {
+        let decision = rustraft_read_safety_runtime_decision(RustRaftReadSafetyRuntimeInput {
+            operation: RustRaftReadSafetyOperation::Write,
+            node_id: 1,
+            leader_id: 1,
+            node_alive: true,
+            role_can_serve_data: true,
+            leader_lease_valid: true,
+            has_majority: false,
+            node_commit_index: 10,
+            leader_commit_index: 10,
+            max_stale_index_lag: 0,
+        });
+        assert!(!decision.allowed);
+        assert!(decision.minority_partition_write_rejected);
+        assert_eq!(decision.reason, "minority_partition");
     }
 
     #[test]
