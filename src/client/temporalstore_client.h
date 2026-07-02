@@ -168,6 +168,7 @@ class TemporalStoreClient {
 
     Status HSet(const std::string& key, const std::string& field, const std::string& value);
     Status HGet(const std::string& key, const std::string& field, std::string* value);
+    Status HGetAll(const std::string& key, std::vector<HashEntry>* entries);
     Status HDel(const std::string& key, const std::string& field);
     Status MatrixArkBatchAppendRecords(const std::vector<HashEntry>& entries,
                                        const std::string& count_key = "",

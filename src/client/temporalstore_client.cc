@@ -1036,6 +1036,26 @@ Status TemporalStoreClient::HGet(const std::string& key, const std::string& fiel
     return Status::OK();
 }
 
+Status TemporalStoreClient::HGetAll(const std::string& key, std::vector<HashEntry>* entries) {
+    RETURN_IF_STATUS_ERROR(CheckInitialized());
+    RETURN_IF_STATUS_ERROR(ValidateNotEmpty(key, "key"));
+    RETURN_IF_STATUS_ERROR(ValidateSize(key.size(), impl_->options.max_key_bytes, "key"));
+    RETURN_IF_STATUS_ERROR(ValidateOutput(entries, "entries"));
+    ::bcache2::hash2::GetAllRequest request;
+    request.set_key(key);
+    ::bcache2::hash2::GetAllResponse response;
+    RETURN_IF_STATUS_ERROR(impl_->ExecuteRaw(Module::HASH, ::bcache2::hash2::GETALL, key, request, &response, false));
+    if (response.fields_size() != response.values_size()) {
+        return Status::InvalidArgument("hash getall response field/value size mismatch");
+    }
+    entries->clear();
+    entries->reserve(response.fields_size());
+    for (int i = 0; i < response.fields_size(); ++i) {
+        entries->push_back(HashEntry{key, response.fields(i), response.values(i), ""});
+    }
+    return Status::OK();
+}
+
 Status TemporalStoreClient::HDel(const std::string& key, const std::string& field) {
     RETURN_IF_STATUS_ERROR(CheckInitialized());
     RETURN_IF_STATUS_ERROR(ValidateNotEmpty(key, "key"));

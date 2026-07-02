@@ -122,6 +122,13 @@ struct CStringArray {
 
 #[cfg(feature = "direct")]
 #[repr(C)]
+struct CHashEntryArray {
+    count: usize,
+    entries: *mut CHashEntry,
+}
+
+#[cfg(feature = "direct")]
+#[repr(C)]
 struct CSequenceFeatureRowArray {
     count: usize,
     rows: *mut CSequenceFeatureRow,
@@ -183,6 +190,12 @@ extern "C" {
         value: *mut *mut c_char,
         error_message: *mut *mut c_char,
     ) -> c_int;
+    fn temporalstore_hgetall(
+        client: *mut TemporalStoreClientOpaque,
+        key: *const c_char,
+        entries: *mut CHashEntryArray,
+        error_message: *mut *mut c_char,
+    ) -> c_int;
     fn temporalstore_hdel(
         client: *mut TemporalStoreClientOpaque,
         key: *const c_char,
@@ -202,6 +215,7 @@ extern "C" {
         error_message: *mut *mut c_char,
     ) -> c_int;
     fn temporalstore_string_array_free(array: *mut CStringArray);
+    fn temporalstore_hash_entry_array_free(array: *mut CHashEntryArray);
     fn temporalstore_matrixark_batch_append_records(
         client: *mut TemporalStoreClientOpaque,
         entries: *const CHashEntry,
@@ -412,6 +426,44 @@ impl Client {
         let out = unsafe { CStr::from_ptr(value).to_string_lossy().into_owned() };
         unsafe { temporalstore_free_string(value) };
         Ok(out)
+    }
+
+    pub fn hgetall(&self, key: &str) -> Result<Vec<(String, String)>> {
+        let key = cstring(key)?;
+        let mut out = CHashEntryArray {
+            count: 0,
+            entries: ptr::null_mut(),
+        };
+        let mut error: *mut c_char = ptr::null_mut();
+        let code = unsafe { temporalstore_hgetall(self.raw, key.as_ptr(), &mut out, &mut error) };
+        check(code, error)?;
+        let entries = if out.entries.is_null() {
+            Vec::new()
+        } else {
+            let slice = unsafe { std::slice::from_raw_parts(out.entries, out.count) };
+            slice
+                .iter()
+                .map(|entry| {
+                    let field = if entry.field.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { CStr::from_ptr(entry.field).to_string_lossy().into_owned() }
+                    };
+                    let value = if entry.value.is_null() {
+                        String::new()
+                    } else {
+                        unsafe { CStr::from_ptr(entry.value).to_string_lossy().into_owned() }
+                    };
+                    (field, value)
+                })
+                .collect()
+        };
+        unsafe { temporalstore_hash_entry_array_free(&mut out) };
+        Ok(entries)
+    }
+
+    pub fn scan_hash(&self, key: &str) -> Result<Vec<(String, String)>> {
+        self.hgetall(key)
     }
 
     pub fn hdel(&self, key: &str, field: &str) -> Result<()> {
@@ -1056,6 +1108,8 @@ mod tests {
     fn direct_client_exposes_cpp_c_abi_parity_methods() {
         let _: fn(&Client, &str, &str, &str) -> super::Result<()> = Client::hset;
         let _: fn(&Client, &str, &str) -> super::Result<String> = Client::hget;
+        let _: fn(&Client, &str) -> super::Result<Vec<(String, String)>> = Client::hgetall;
+        let _: fn(&Client, &str) -> super::Result<Vec<(String, String)>> = Client::scan_hash;
         let _: fn(&Client, &str, &str) -> super::Result<()> = Client::hdel;
         let _: fn(&Client, &str) -> super::Result<()> = Client::delete_object;
         let _: fn(&Client, &str, u64) -> super::Result<()> = Client::expire;

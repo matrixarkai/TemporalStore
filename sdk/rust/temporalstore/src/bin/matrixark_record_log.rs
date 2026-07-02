@@ -338,10 +338,11 @@ fn command_stats(command: &Command, result: &Value) -> CommandStats {
                 stats.bytes_written += command.value.as_ref().map(|value| value.len() as u64).unwrap_or(0);
             }
         }
-        "batch_hget" => {
+        "batch_hget" | "hgetall" | "scan_hash" => {
             stats.records_read = result
                 .get("read")
                 .and_then(Value::as_u64)
+                .or_else(|| result.get("count").and_then(Value::as_u64))
                 .or_else(|| Some(command_entry_count(command)))
                 .unwrap_or(0);
             stats.bytes_read = result.to_string().len() as u64;
@@ -684,6 +685,15 @@ fn run_with_client(client: &Client, command: Command) -> Result<Value, String> {
             }
             Ok(json!({"ok": true, "read": reads.len(), "records": reads}))
         }
+        "hgetall" | "scan_hash" => {
+            let key = required(command.key, "key")?;
+            let rows = client.scan_hash(&key).map_err(|err| err.to_string())?;
+            let records: Vec<Value> = rows
+                .iter()
+                .map(|(field, value)| json!({"key": key, "field": field, "value": value}))
+                .collect();
+            Ok(json!({"ok": true, "count": records.len(), "read": records.len(), "records": records}))
+        }
         "write_matrixark_record" => {
             let record = command
                 .record
@@ -1017,6 +1027,32 @@ mod tests {
         assert!(text.contains("matrixark_rust_record_log_records_written_total 1"));
         assert!(text.contains("matrixark_rust_record_log_bytes_written_total 128"));
         assert!(text.contains("matrixark_rust_record_log_commands_failed_total 1"));
+    }
+
+
+    #[test]
+    fn command_stats_counts_scan_hash_records() {
+        let command = Command {
+            op: "scan_hash".to_string(),
+            key: Some("matrixark:mcp:records:000000".to_string()),
+            field: None,
+            value: None,
+            entries: None,
+            entries_compact: None,
+            record: None,
+            records: None,
+            record_type: None,
+            tenant_hash: None,
+            record_id: None,
+            record_ids: None,
+            metaserver: None,
+            namespace: None,
+            table: None,
+            request_timeout_ms: None,
+            io_timeout_ms: None,
+        };
+        let stats = command_stats(&command, &json!({"ok": true, "count": 3, "records": []}));
+        assert_eq!(stats.records_read, 3);
     }
 
     #[test]

@@ -120,6 +120,23 @@ bcache2::Status CheckClient(temporalstore_client_t* client) {
     return bcache2::Status::OK();
 }
 
+void ClearHashEntryArray(temporalstore_hash_entry_array_t* array) {
+    if (array == nullptr) {
+        return;
+    }
+    if (array->entries != nullptr) {
+        for (size_t i = 0; i < array->count; ++i) {
+            std::free(const_cast<char*>(array->entries[i].key));
+            std::free(const_cast<char*>(array->entries[i].field));
+            std::free(const_cast<char*>(array->entries[i].value));
+            std::free(const_cast<char*>(array->entries[i].route_json));
+        }
+    }
+    std::free(array->entries);
+    array->entries = nullptr;
+    array->count = 0;
+}
+
 void ClearStringArray(temporalstore_string_array_t* array) {
     if (array == nullptr) {
         return;
@@ -190,6 +207,10 @@ void temporalstore_free_string(char* value) { std::free(value); }
 
 void temporalstore_string_array_free(temporalstore_string_array_t* array) {
     ClearStringArray(array);
+}
+
+void temporalstore_hash_entry_array_free(temporalstore_hash_entry_array_t* array) {
+    ClearHashEntryArray(array);
 }
 
 void temporalstore_feature_point_array_free(temporalstore_feature_point_array_t* array) {
@@ -383,6 +404,42 @@ int temporalstore_hget(temporalstore_client_t* client, const char* key, const ch
         *value = CopyCString(out);
         if (*value == nullptr) {
             status = bcache2::Status::ResourceExhausted("failed to allocate output string");
+        }
+    }
+    return Finish(status, error_message);
+}
+
+int temporalstore_hgetall(temporalstore_client_t* client, const char* key,
+                          temporalstore_hash_entry_array_t* entries,
+                          char** error_message) {
+    if (entries == nullptr) {
+        return Finish(NullError("entries"), error_message);
+    }
+    ClearHashEntryArray(entries);
+    bcache2::Status status = CheckClient(client);
+    std::vector<bcache2::client::HashEntry> values;
+    if (status.ok()) {
+        status = client->impl->HGetAll(key ? key : "", &values);
+    }
+    if (status.ok()) {
+        entries->entries = static_cast<temporalstore_hash_entry_t*>(
+            std::calloc(values.size(), sizeof(temporalstore_hash_entry_t)));
+        if (entries->entries == nullptr && !values.empty()) {
+            status = bcache2::Status::ResourceExhausted("failed to allocate hash entry array");
+        } else {
+            entries->count = values.size();
+            for (size_t i = 0; i < values.size(); ++i) {
+                entries->entries[i].key = CopyCString(values[i].key);
+                entries->entries[i].field = CopyCString(values[i].field);
+                entries->entries[i].value = CopyCString(values[i].value);
+                entries->entries[i].route_json = CopyCString(values[i].route_json);
+                if (entries->entries[i].key == nullptr || entries->entries[i].field == nullptr ||
+                    entries->entries[i].value == nullptr || entries->entries[i].route_json == nullptr) {
+                    status = bcache2::Status::ResourceExhausted("failed to allocate hash entry value");
+                    ClearHashEntryArray(entries);
+                    break;
+                }
+            }
         }
     }
     return Finish(status, error_message);
