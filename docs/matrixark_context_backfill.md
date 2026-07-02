@@ -44,10 +44,40 @@ The runner processes source records in `BATCH_SIZE` chunks. It uses backend batc
 The checkpoint key is:
 
 ```text
-matrixark:backfill:<job_id>:checkpoint:<target_prefix_hash>
+matrixark:backfill:<job_id>:checkpoint:<hash(source_prefix,target_prefix,partial_spec)>
 ```
 
-With `--resume=1`, the next run starts after the last successfully processed source sequence. Checkpoints are advanced after the pending target batch has been flushed, so a restart replays at most the last uncommitted batch. Bad or corrupt records are written to the target dead-letter hash and do not block later records unless `--fail-fast` is set.
+With `--resume=1`, the next run starts after the last successfully processed source sequence for that exact source, target, and partial filter. This prevents a partial repair from accidentally resuming from a previous full backfill checkpoint. Checkpoints are advanced after the pending target batch has been flushed, so a restart replays at most the last uncommitted batch. Bad or corrupt records are written to the target dead-letter hash and do not block later records unless `--fail-fast` is set.
+
+## Partial Backfills
+
+Use partial backfills when only a slice of raw ingestion data needs repair, for example after a primary partition restore, tenant/session-specific corruption, or a bounded raw-log gap. Partial jobs still default to shadow-first and never mutate the source raw log.
+
+A partial job is explicit with `--partial=1`. It must include either a bounded sequence range (`--start-seq` plus `--end-seq`) or at least one filter unless `--partial-require-bounded=0` is supplied. Supported filters are:
+
+- `--partial-record-types=context_event,context_summary`
+- `--partial-tenant-ids=<tenant-id>[,...]`
+- `--partial-user-ids=<user-id>[,...]`
+- `--partial-session-ids=<session-id>[,...]`
+- `--partial-filter-json='{"kind":"message"}'` for exact top-level matches; `{"scope":{"team":"x"}}` matches scope fields
+
+Example tenant/session slice:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --partial=1 \
+  --partial-tenant-ids=tenant-a \
+  --partial-session-ids=session-42 \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_repair:tenant-a-session-42 \
+  --job-id=repair-tenant-a-session-42 \
+  --start-seq=400000 \
+  --end-seq=450000 \
+  --batch-size=1024 \
+  --dry-run=0
+```
+
+The JSON summary, Prometheus metrics, and target manifest include a `filtered` count plus the exact partial spec. The manifest is written under `<target-prefix>:backfill_manifest` keyed by `job_id`, making partial repair audits repeatable and inspectable.
 
 ## Validate Shadow
 

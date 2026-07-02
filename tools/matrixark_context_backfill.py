@@ -51,6 +51,7 @@ class BackfillMetrics:
     duplicate: int = 0
     failed: int = 0
     dead_letter: int = 0
+    filtered: int = 0
     context_events: int = 0
     context_entities: int = 0
     context_summaries: int = 0
@@ -82,7 +83,7 @@ class BackfillMetrics:
     def finish(self) -> None:
         self.finished_at_ms = int(time.time() * 1000)
 
-    def to_json(self, *, job_id: str, source_prefix: str, target_prefix: str, mode: str) -> Json:
+    def to_json(self, *, job_id: str, source_prefix: str, target_prefix: str, mode: str, partial: Json | None = None) -> Json:
         elapsed_ms = max(0, (self.finished_at_ms or int(time.time() * 1000)) - self.started_at_ms)
         qps = (self.scanned * 1000.0 / elapsed_ms) if elapsed_ms else 0.0
         return {
@@ -91,6 +92,7 @@ class BackfillMetrics:
             'source_prefix': source_prefix,
             'target_prefix': target_prefix,
             'mode': mode,
+            'partial': partial or {},
             'elapsed_ms': elapsed_ms,
             'scan_qps': round(qps, 3),
             'metrics': {
@@ -100,6 +102,7 @@ class BackfillMetrics:
                 'duplicate': self.duplicate,
                 'failed': self.failed,
                 'dead_letter': self.dead_letter,
+                'filtered': self.filtered,
                 'context_events': self.context_events,
                 'context_entities': self.context_entities,
                 'context_summaries': self.context_summaries,
@@ -118,7 +121,7 @@ class BackfillMetrics:
             '# HELP matrixark_context_backfill_records_total Records processed by context backfill.',
             '# TYPE matrixark_context_backfill_records_total counter',
         ]
-        for name in ['scanned', 'skipped', 'written', 'duplicate', 'failed', 'dead_letter']:
+        for name in ['scanned', 'skipped', 'written', 'duplicate', 'failed', 'dead_letter', 'filtered']:
             lines.append(f'matrixark_context_backfill_records_total{{{labels},status="{name}"}} {getattr(self, name)}')
         lines.extend([
             '# HELP matrixark_context_backfill_serving_records_total Serving records materialized by type.',
@@ -529,8 +532,9 @@ class CaptureAdapter(MatrixArkLocalAdapter):
         self.records.extend(materialize_serving_record_batch(records))
 
 
-def checkpoint_key(target_prefix: str, job_id: str) -> str:
-    return f'matrixark:backfill:{job_id}:checkpoint:{stable_hash(target_prefix)}'
+def checkpoint_key(target_prefix: str, job_id: str, *, source_prefix: str = '', partial: Json | None = None) -> str:
+    fingerprint = partial_checkpoint_fingerprint(source_prefix, target_prefix, partial or {})
+    return f'matrixark:backfill:{job_id}:checkpoint:{fingerprint}'
 
 
 def default_target_prefix(job_id: str) -> str:
@@ -556,6 +560,90 @@ def clone_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace
     values = vars(args).copy()
     values.update(overrides)
     return Namespace(**values)
+
+
+def _csv_set(value: str) -> set[str]:
+    return {item.strip() for item in str(value or '').split(',') if item.strip()}
+
+
+def _scope_value(record: Json, name: str) -> str:
+    scope = record.get('scope') if isinstance(record.get('scope'), dict) else {}
+    for key in (name, name.replace('_id', '')):
+        value = record.get(key)
+        if value not in (None, ''):
+            return str(value)
+        value = scope.get(key) if isinstance(scope, dict) else None
+        if value not in (None, ''):
+            return str(value)
+    return ''
+
+
+def build_partial_spec(args: argparse.Namespace) -> Json:
+    filter_json = getattr(args, 'partial_filter_json', '') or ''
+    parsed_filter: Json = {}
+    if filter_json:
+        try:
+            decoded = json.loads(filter_json)
+        except json.JSONDecodeError as exc:
+            raise BackfillError(f'invalid --partial-filter-json: {exc}') from exc
+        if not isinstance(decoded, dict):
+            raise BackfillError('--partial-filter-json must decode to a JSON object')
+        parsed_filter = decoded
+    spec: Json = {
+        'enabled': bool(getattr(args, 'partial', False)),
+        'record_types': sorted(_csv_set(getattr(args, 'partial_record_types', '') or '')),
+        'tenant_ids': sorted(_csv_set(getattr(args, 'partial_tenant_ids', '') or '')),
+        'user_ids': sorted(_csv_set(getattr(args, 'partial_user_ids', '') or '')),
+        'session_ids': sorted(_csv_set(getattr(args, 'partial_session_ids', '') or '')),
+        'filter_json': parsed_filter,
+    }
+    if any(value for key, value in spec.items() if key != 'enabled'):
+        spec['enabled'] = True
+    return spec
+
+
+def validate_partial_args(args: argparse.Namespace, partial: Json) -> None:
+    if not partial.get('enabled'):
+        return
+    has_filter = any(partial.get(key) for key in ['record_types', 'tenant_ids', 'user_ids', 'session_ids']) or bool(partial.get('filter_json'))
+    has_bounded_range = args.end_seq is not None and args.end_seq > args.start_seq
+    if getattr(args, 'partial_require_bounded', True) and not (has_bounded_range or has_filter):
+        raise BackfillError('partial backfill requires --end-seq or at least one partial filter')
+
+
+def record_matches_partial(raw_record: Json, partial: Json) -> bool:
+    if not partial.get('enabled'):
+        return True
+    record_types = set(partial.get('record_types') or [])
+    if record_types and str(raw_record.get('record_type') or '') not in record_types:
+        return False
+    checks = [
+        ('tenant_ids', 'tenant_id'),
+        ('user_ids', 'user_id'),
+        ('session_ids', 'session_id'),
+    ]
+    for spec_key, record_key in checks:
+        allowed = set(partial.get(spec_key) or [])
+        if allowed and _scope_value(raw_record, record_key) not in allowed:
+            return False
+    filter_json = partial.get('filter_json') if isinstance(partial.get('filter_json'), dict) else {}
+    for key, expected in filter_json.items():
+        if key == 'scope' and isinstance(expected, dict):
+            scope = raw_record.get('scope') if isinstance(raw_record.get('scope'), dict) else {}
+            if any(scope.get(scope_key) != scope_value for scope_key, scope_value in expected.items()):
+                return False
+        elif raw_record.get(key) != expected:
+            return False
+    return True
+
+
+def partial_checkpoint_fingerprint(source_prefix: str, target_prefix: str, partial: Json) -> str:
+    seed = json.dumps({
+        'source_prefix': source_prefix,
+        'target_prefix': target_prefix,
+        'partial': partial,
+    }, sort_keys=True, separators=(',', ':'))
+    return stable_hash(seed)
 
 
 def derive_backfill_record(source_prefix: str, sequence: int, raw_record: Json) -> Json:
@@ -595,13 +683,15 @@ def run_backfill(args: argparse.Namespace) -> Json:
     if args.mode == 'shadow' and args.target_prefix == args.source_prefix:
         raise BackfillError('shadow mode requires target-prefix different from source-prefix')
 
+    partial = build_partial_spec(args)
+    validate_partial_args(args, partial)
     kv = make_kv(args)
 
     target_prefix = resolve_target_prefix(args)
     source = MatrixKVRecordLog(kv, prefix=args.source_prefix)
     target = MatrixKVBackfillTarget(kv, prefix=target_prefix)
     metrics = BackfillMetrics()
-    cp_key = checkpoint_key(target_prefix, args.job_id)
+    cp_key = checkpoint_key(target_prefix, args.job_id, source_prefix=args.source_prefix, partial=partial)
     start_seq = max(0, args.start_seq)
     if args.resume:
         raw_checkpoint = kv.get_string(cp_key)
@@ -650,6 +740,10 @@ def run_backfill(args: argparse.Namespace) -> Json:
     def process_raw_record(sequence: int, raw_record: Json) -> None:
         nonlocal checkpoint_pending_seq
         try:
+            if not record_matches_partial(raw_record, partial):
+                metrics.filtered += 1
+                checkpoint_pending_seq = sequence
+                return
             if not should_backfill_record(raw_record):
                 metrics.skipped += 1
                 checkpoint_pending_seq = sequence
@@ -716,7 +810,22 @@ def run_backfill(args: argparse.Namespace) -> Json:
         source_prefix=args.source_prefix,
         target_prefix=target_prefix,
         mode=args.mode,
+        partial=partial,
     )
+    manifest = {
+        'job_id': args.job_id,
+        'mode': args.mode,
+        'source_prefix': args.source_prefix,
+        'target_prefix': target_prefix,
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'partial': partial,
+        'checkpoint_key': cp_key,
+        'summary': summary,
+    }
+    summary['manifest_key'] = f'{target_prefix}:backfill_manifest'
+    if not args.dry_run:
+        kv.hset(summary['manifest_key'], args.job_id, json.dumps(manifest, sort_keys=True, separators=(',', ':')))
     if args.prometheus_output:
         Path(args.prometheus_output).write_text(metrics.to_prometheus(job_id=args.job_id), encoding='utf-8')
     return summary
@@ -749,6 +858,7 @@ def run_validate_shadow(args: argparse.Namespace) -> Json:
         'target_prefix': args.target_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
+        'partial': build_partial_spec(args),
         'validation_strict': bool(args.validation_strict),
         'expected_records': expected_count,
         'actual_records': actual_count,
@@ -796,6 +906,7 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
         'source_prefix': args.source_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
+        'partial': build_partial_spec(args),
         'validation': validation,
     }
     kv.put_string(f'{args.active_prefix_key}:previous:{args.job_id}', previous)
@@ -855,6 +966,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
             'active_prefix': active_prefix,
             'start_seq': args.start_seq,
             'end_seq': args.end_seq,
+            'partial': build_partial_spec(args),
             'validation': validation,
             'promotion_metrics': promotion.get('metrics', {}),
         }
@@ -869,6 +981,7 @@ def run_incremental_repair(args: argparse.Namespace) -> Json:
         'active_prefix': active_prefix,
         'start_seq': args.start_seq,
         'end_seq': args.end_seq,
+        'partial': build_partial_spec(args),
         'validation': validation,
         'promotion': promotion,
         'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
@@ -894,6 +1007,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--job-id', default=f'local-{int(time.time())}')
     parser.add_argument('--start-seq', type=int, default=0)
     parser.add_argument('--end-seq', type=int)
+    parser.add_argument('--partial', type=int, choices=[0, 1], default=0, help='mark this as a partial/slice backfill')
+    parser.add_argument('--partial-record-types', default='', help='comma-separated raw record_type allow-list for partial backfill')
+    parser.add_argument('--partial-tenant-ids', default='', help='comma-separated tenant ids for partial backfill')
+    parser.add_argument('--partial-user-ids', default='', help='comma-separated user ids for partial backfill')
+    parser.add_argument('--partial-session-ids', default='', help='comma-separated session ids for partial backfill')
+    parser.add_argument('--partial-filter-json', default='', help='exact-match JSON object filter for partial backfill')
+    parser.add_argument('--partial-require-bounded', type=int, choices=[0, 1], default=1, help='require bounded range or filters for partial backfill')
     parser.add_argument('--batch-size', type=int, default=256)
     parser.add_argument('--source-scan-max-empty-shards', type=int, default=2)
     parser.add_argument('--dry-run', type=int, choices=[0, 1], default=1)
@@ -911,6 +1031,8 @@ def main() -> int:
     args.resume = bool(args.resume)
     args.validation_strict = bool(args.validation_strict)
     args.skip_validation = bool(args.skip_validation)
+    args.partial = bool(args.partial)
+    args.partial_require_bounded = bool(args.partial_require_bounded)
     if args.batch_size <= 0:
         parser.error('--batch-size must be positive')
     if args.source_scan_max_empty_shards <= 0:

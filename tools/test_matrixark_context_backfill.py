@@ -48,6 +48,13 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "job_id": "unit",
             "start_seq": 0,
             "end_seq": None,
+            "partial": False,
+            "partial_record_types": "",
+            "partial_tenant_ids": "",
+            "partial_user_ids": "",
+            "partial_session_ids": "",
+            "partial_filter_json": "",
+            "partial_require_bounded": True,
             "batch_size": 2,
             "source_scan_max_empty_shards": 2,
             "dry_run": False,
@@ -225,6 +232,75 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             retried = backfill.run_incremental_repair(repair_args)
             self.assertEqual(retried["promotion"]["metrics"]["duplicate"], 1)
             self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
+
+    def test_partial_backfill_filters_and_isolates_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1, "scope": {"tenant_id": "t1", "user_id": "u1"}})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2, "scope": {"tenant_id": "t2", "user_id": "u2"}})
+            write_sharded(kv, "matrixark:mcp", 2, {"record_type": "context_summary", "summary_text": "skip", "scope": {"tenant_id": "t1", "user_id": "u1"}})
+            kv.put_string("matrixark:mcp:record_count", "3")
+
+            with self.assertRaises(backfill.BackfillError):
+                backfill.run_backfill(self.make_args(path, partial=True))
+
+            full = backfill.run_backfill(self.make_args(path, target_prefix="shadow:full", job_id="same", resume=False))
+            partial = backfill.run_backfill(self.make_args(
+                path,
+                target_prefix="shadow:partial",
+                job_id="same",
+                partial=True,
+                partial_user_ids="u1",
+                partial_record_types="context_event",
+                resume=True,
+            ))
+            self.assertEqual(full["metrics"]["written"], 3)
+            self.assertEqual(partial["metrics"]["scanned"], 3)
+            self.assertEqual(partial["metrics"]["filtered"], 2)
+            self.assertEqual(partial["metrics"]["written"], 1)
+            self.assertTrue(partial["partial"]["enabled"])
+
+            kv_after = backfill.LocalJsonKV(path)
+            records = read_target_records(kv_after, "shadow:partial")
+            self.assertEqual([record["event_id_hash"] for record in records], [1])
+            manifest = kv_after.hget("shadow:partial:backfill_manifest", "same")
+            self.assertIn('"partial"', manifest)
+
+            full_cp = backfill.checkpoint_key("shadow:full", "same", source_prefix="matrixark:mcp", partial=full["partial"])
+            partial_cp = backfill.checkpoint_key("shadow:partial", "same", source_prefix="matrixark:mcp", partial=partial["partial"])
+            self.assertNotEqual(full_cp, partial_cp)
+            self.assertEqual(kv_after.get_string(partial_cp), "2")
+
+    def test_incremental_repair_honors_partial_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1, "scope": {"session_id": "s1"}})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2, "scope": {"session_id": "s2"}})
+            kv.put_string("matrixark:mcp:record_count", "2")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+
+            common = {
+                "partial": True,
+                "partial_session_ids": "s2",
+                "start_seq": 0,
+                "end_seq": 2,
+                "resume": False,
+            }
+            shadow = backfill.run_backfill(self.make_args(path, target_prefix="matrixark:context_repair:partial", **common))
+            self.assertEqual(shadow["metrics"]["written"], 1)
+            repaired = backfill.run_incremental_repair(self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:partial",
+                confirm_incremental_repair="YES",
+                **common,
+            ))
+            self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+            self.assertEqual(repaired["promotion"]["metrics"]["filtered"], 1)
+            active_records = read_target_records(backfill.LocalJsonKV(path), "matrixark:context:active")
+            self.assertEqual([record["event_id_hash"] for record in active_records], [2])
 
     def test_missing_record_dead_letters_and_in_place_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
