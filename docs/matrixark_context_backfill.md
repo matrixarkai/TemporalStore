@@ -172,6 +172,80 @@ A corrupt, missing, or unreadable source record increments `failed` and `dead_le
 
 By default, a bad record does not stop the job. Use `--fail-fast` for debugging or for strict migration gates where any bad source record should stop the run.
 
+## Batch Backfills
+
+Batch backfills are the normal path for full or large-range rebuilds. A batch backfill is not a different mode; it is `shadow` mode with a production-sized `--batch-size`, resumable checkpoints, and batch read/write APIs enabled by the backend.
+
+Use batch backfills when:
+
+- rebuilding a full context-serving prefix
+- replaying a large raw-log sequence range
+- running a tenant-wide repair with many matching records
+- validating sustained MatrixKV or TemporalStore ingestion throughput
+
+The runner batches source references first, then uses `batch_hget` when the backend exposes it. Materialized target records are accumulated up to `--batch-size` and written with `matrixark_append_records` when available, then `batch_hset`, then single-record fallback.
+
+### Batch Size Guide
+
+| Workload | Suggested `--batch-size` | Notes |
+| --- | --- | --- |
+| Small repair | `128` to `256` | Better control and easier debugging |
+| Normal production backfill | `1024` | Good default for throughput and memory |
+| Large rebuild with stable target latency | `2048` to `4096` | Increase only after watching write latency and memory |
+| Unstable target or high dead-letter risk | `128` to `512` | Keeps retry windows smaller |
+
+A larger batch improves throughput only when target append latency remains stable. If target writes slow down, increase in-flight timeouts or reduce `--batch-size` before rerunning.
+
+### Batch Backfill Example
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_backfill:full-20260702 \
+  --job-id=full-20260702 \
+  --start-seq=0 \
+  --batch-size=1024 \
+  --dry-run=0 \
+  --resume=1 \
+  --prometheus-output=/tmp/matrixark_context_backfill_full_20260702.prom
+```
+
+For a bounded batch replay, always set both range endpoints:
+
+```bash
+python3 tools/matrixark_context_backfill.py \
+  --source-prefix=matrixark:mcp \
+  --target-prefix=matrixark:context_backfill:range-40m-45m \
+  --job-id=range-40m-45m \
+  --start-seq=40000000 \
+  --end-seq=45000000 \
+  --batch-size=2048 \
+  --dry-run=0 \
+  --resume=1
+```
+
+### Batch Backfill Production Checks
+
+Before the run:
+
+- confirm the source prefix and record-count/index metadata
+- choose a unique target prefix and job id
+- run the exact command with `--dry-run=1` first
+- confirm expected `scanned`, `written`, and `filtered` counts
+- confirm Prometheus output path and log capture
+
+During the run:
+
+- watch `source_batches`, `target_batches`, `scan_qps`, and target write latency
+- watch `failed` and `dead_letter`; stop if they are unexpected
+- watch `duplicate`; high duplicate on a first run usually means the target prefix was reused
+
+After the run:
+
+- run `validate_shadow` with the same source range and partial flags
+- preserve the manifest under `<target-prefix>:backfill_manifest`
+- activate only after validation and context-quality checks pass
+
 ## Partial Backfills
 
 Partial backfills repair only a slice of raw ingestion data. They are useful after partition restore, tenant/session-specific recovery, or a known raw-log sequence gap.
@@ -307,16 +381,38 @@ matrixark:context:active_prefix:previous:<job_id>
 
 Do not delete source raw records during rollback. Do not rewrite source raw records. If the shadow prefix is bad, switch the active pointer back and keep the bad shadow prefix for audit until the incident review is complete.
 
-## Incremental Repair Promotion
+## Incremental Backfills And Repair Promotion
 
-Incremental repair promotes a bounded shadow repair into the active prefix without changing the active pointer.
+Incremental backfills repair a bounded slice of derived context state without rebuilding or switching the entire active prefix. The safe production pattern is still shadow-first: build a shadow repair prefix, validate it, then promote the same bounded slice into the active prefix with `incremental_repair`.
 
-Use it when:
+Use incremental backfills when:
 
 - only a source sequence range was missed
 - only one tenant, user, or session needs repair
 - a primary partition restore left derived serving data incomplete
 - the existing active prefix should remain live
+- replay cost for a full rebuild is unnecessary
+
+Incremental repair is different from full activation:
+
+| Property | Full activation | Incremental repair |
+| --- | --- | --- |
+| Writes new target records | During shadow build | During shadow build and active promotion |
+| Changes active prefix pointer | Yes | No |
+| Requires bounded range | Recommended | Required |
+| Requires confirmation | `--confirm-activate=YES` | `--confirm-incremental-repair=YES` |
+| Retry behavior | Revalidate and rerun activation | Safe to rerun; idempotency skips already promoted records |
+
+### Incremental Prechecks
+
+Before promoting a repair slice:
+
+- identify the exact raw-log range with `--start-seq` and `--end-seq`
+- use partial filters when the incident is tenant, user, or session scoped
+- confirm the active prefix key resolves to the intended active context prefix
+- build the shadow repair prefix with `--dry-run=0`
+- run `validate_shadow` with the exact same range and partial filters
+- confirm `failed == 0` and `dead_letter == 0` unless an incident owner explicitly accepts exceptions
 
 ### Step 1: Build Shadow Repair Prefix
 
@@ -377,7 +473,18 @@ Promotion writes an audit entry to:
 matrixark:context:active_prefix:incremental_repair_audit field <job_id>
 ```
 
-The active prefix pointer remains unchanged.
+The active prefix pointer remains unchanged. The active target receives newly materialized serving records for the same source range and partial spec used by the shadow repair. Target-side idempotency keys make the promotion retryable: rerunning the same command should increase `duplicate`, not append a second copy.
+
+### Incremental Postchecks
+
+After promotion:
+
+- inspect the incremental repair audit entry
+- confirm active target `record_count` increased only by the expected new records
+- rerun a read/query smoke for the repaired tenant, session, or sequence range
+- compare before/after retrieval quality for representative context-pack refs
+- keep the shadow repair prefix until the incident review is complete
+
 
 ## In-Place Mode
 
@@ -508,7 +615,7 @@ Recommended production alerts:
 
 ## Performance And Batch Tuning
 
-Start with `--batch-size=1024` for larger jobs. Use `256` for small repairs or when target latency is unstable.
+Start with `--batch-size=1024` for larger jobs. Use `256` for small repairs or when target latency is unstable. Treat `4096` as an upper-end starting point only after a smaller batch has proven stable.
 
 The runner uses:
 
@@ -524,6 +631,8 @@ For very large jobs:
 3. Watch `source_batches`, `target_batches`, scan QPS, and target service latency.
 4. Increase batch size only if target write latency and memory remain stable.
 5. Keep `--resume=1` so restarts do not begin from zero.
+6. Prefer bounded ranges for incident work; reserve open-ended scans for controlled full rebuilds.
+7. If source metadata is missing and `scan_hash_batches` is high, set `--end-seq` or tune `--source-scan-max-empty-shards`.
 
 ## Production Runbooks
 
