@@ -540,16 +540,18 @@ Shared C++/Rust parity cases must cover:
 - cold scan using no-cache/no-promote reads.
 
 The shared `compat/page_address_compatibility_corpus.json` corpus covers the
-PageAddress subset that both C++ and Rust must consume:
+PageAddress and BlockAddress subset that both C++ and Rust must consume:
 
 - encode/decode `PageAddress`;
+- encode/decode `BlockAddress`;
 - stable ordering by `{shard_id, zone_id, segment_id, page_id, offset}`;
+- stable `BlockAddress` ordering by `{shard_id, zone_id, block_id, offset}`;
 - timestamp range -> page address lookup;
 - page split behavior;
 - page compaction rewrite preserving logical records;
 - tombstone filtering that skips stale records on normal reads;
 - cold scan reads that do not warm the serving cache;
-- crash/restart rebuild of `PageIndex` and `BlockIndex`.
+- crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndex`.
 
 `tools/validate_page_address_compatibility_corpus.py` is the lightweight
 fail-closed validator for this shared corpus. Native C++ and Rust tests should
@@ -581,6 +583,51 @@ Both C++ and Rust should expose the same metric names:
 metric set is present in the shared contract and in C++/Rust scale report
 artifacts.
 
+## Storage Lifecycle Metrics
+
+Stream, zone, eviction, GC, reclaim, compaction, and StorageManager reports must
+also use one shared lifecycle metric vocabulary:
+
+- `storage_manager_prepare_count`
+- `storage_manager_reclaim_count`
+- `storage_manager_evict_count`
+- `storage_manager_expire_count`
+- `storage_manager_page_gc_count`
+- `storage_manager_compaction_count`
+- `storage_manager_index_gc_count`
+- `storage_manager_loop_ms`
+- `stream_rollover_count`
+- `storage_zone_total_bytes`
+- `storage_zone_used_bytes`
+- `storage_zone_stale_bytes`
+- `cache_admissions`
+- `cache_evictions`
+- `cache_rehydrates`
+- `cold_scan_no_cache_reads`
+- `hot_cache_promotions`
+- `tombstone_records`
+- `delayed_destroy_backlog`
+- `follower_cursor_retention_floor`
+- `reclaimable_bytes`
+- `compaction_reclaimed_bytes`
+- `physical_reclaim_errors`
+- `append_watermark`
+- `compaction_watermark`
+
+`tools/validate_storage_lifecycle_parity.py` validates that this canonical
+lifecycle metric set is present in the shared contract and scale report runner.
+When given `--cpp-report` and `--rust-report`, it also verifies that both reports
+carry the same public storage tuning fields and lifecycle metric names.
+
+Lifecycle parity is intentionally stricter than cache eviction parity:
+
+- cache eviction only proves memory pressure relief;
+- tombstone metadata proves logical delete eligibility;
+- compaction and GC prove live-record rewrite and stale-generation exclusion;
+- physical reclaim is complete only when reclaimable bytes and reclaimed bytes
+  are reported with zero physical reclaim errors;
+- cold scan parity requires no-cache/no-promote reads and no hot-cache admission.
+
 ## Acceptance
 
 This contract is satisfied when C++ and Rust:
@@ -591,7 +638,8 @@ This contract is satisfied when C++ and Rust:
 - expose the same storage lifecycle metrics;
 - reject public report changes that reintroduce backend-specific naming drift;
 - encode the same logical `PageAddress`;
-- rebuild `PageIndex` and `BlockIndex` after restart;
+- rebuild `PageIndex`, `BlockIndex`, and `ObjectIndex` after restart;
 - expose the same page/block config;
 - produce equivalent page/block index summaries from the same corpus;
-- measure cold scans, cache admission, compaction, and GC identically.
+- measure cold scans, cache admission, eviction, compaction, GC, and physical
+  reclaim identically.

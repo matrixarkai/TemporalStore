@@ -197,6 +197,34 @@ PAGE_BLOCK_METRIC_NAMES = [
     "compaction_watermark",
 ]
 
+STORAGE_LIFECYCLE_METRIC_NAMES = [
+    "storage_manager_prepare_count",
+    "storage_manager_reclaim_count",
+    "storage_manager_evict_count",
+    "storage_manager_expire_count",
+    "storage_manager_page_gc_count",
+    "storage_manager_compaction_count",
+    "storage_manager_index_gc_count",
+    "storage_manager_loop_ms",
+    "stream_rollover_count",
+    "storage_zone_total_bytes",
+    "storage_zone_used_bytes",
+    "storage_zone_stale_bytes",
+    "cache_admissions",
+    "cache_evictions",
+    "cache_rehydrates",
+    "cold_scan_no_cache_reads",
+    "hot_cache_promotions",
+    "tombstone_records",
+    "delayed_destroy_backlog",
+    "follower_cursor_retention_floor",
+    "reclaimable_bytes",
+    "compaction_reclaimed_bytes",
+    "physical_reclaim_errors",
+    "append_watermark",
+    "compaction_watermark",
+]
+
 
 def _parse_int_csv(raw: str, default: list[int]) -> list[int]:
     if not raw:
@@ -1785,6 +1813,16 @@ def write_report(path: Path, report: Json) -> None:
         ]
     )
     lines.extend(f"- `{name}`" for name in PAGE_BLOCK_METRIC_NAMES)
+    lines.extend(
+        [
+            "",
+            "## Required Storage Lifecycle Metrics",
+            "",
+            "Both C++ and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
+            "",
+        ]
+    )
+    lines.extend(f"- `{name}`" for name in STORAGE_LIFECYCLE_METRIC_NAMES)
     lines.extend(["", "## Raw Storage", "", "| backend | write record QPS | write batch p95 | read QPS | read p95 | write errors | read errors |", "|---|---:|---:|---:|---:|---:|---:|"])
     for backend in backend_order:
         item = report["backends"].get(backend, {})
@@ -2156,6 +2194,7 @@ def main() -> int:
             "storage_options": parsed.storage_options,
             "effective_storage_tuning": effective_storage_tuning_from_env(),
             "required_page_block_metrics": PAGE_BLOCK_METRIC_NAMES,
+            "required_storage_lifecycle_metrics": STORAGE_LIFECYCLE_METRIC_NAMES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
             "skip_context_pipeline": parsed.skip_context_pipeline,

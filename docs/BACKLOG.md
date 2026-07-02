@@ -1326,21 +1326,28 @@ Completed since the last backlog update:
         tombstone-before-reclaim, restart index rebuild, and no-cache cold
         scans.
       - keep `compat/page_address_compatibility_corpus.json` as the shared
-        PageAddress corpus and require C++/Rust CI to validate:
-        encode/decode `PageAddress`, stable ordering by `{shard_id, zone_id,
-        segment_id, page_id, offset}`, timestamp range -> page address lookup,
-        page split behavior, page compaction rewrite preserving logical
-        records, tombstone filtering, no-promote cold scans, and crash/restart
-        rebuild of `PageIndex` and `BlockIndex`.
+        PageAddress/BlockAddress corpus and require C++/Rust CI to validate:
+        encode/decode `PageAddress`, encode/decode `BlockAddress`, stable
+        ordering by `{shard_id, zone_id, segment_id, page_id, offset}` and
+        `{shard_id, zone_id, block_id, offset}`, timestamp range -> page
+        address lookup, page split behavior, page compaction rewrite preserving
+        logical records, tombstone filtering, no-promote cold scans, and
+        crash/restart rebuild of `PageIndex`, `BlockIndex`, and `ObjectIndex`.
       - keep `tools/validate_page_block_metrics_parity.py` in CI so both
         engines and scale reports expose the same page/block metric names.
+      - keep `tools/validate_storage_lifecycle_parity.py` in CI so both engines
+        and scale reports expose the same stream, zone, eviction, GC, reclaim,
+        compaction, watermark, cache-admission, and StorageManager lifecycle
+        metric names.
       - Acceptance: page/block parity is done only when:
-        - C++ and Rust encode the same logical `PageAddress`;
-        - both can rebuild `PageIndex` and `BlockIndex` after restart;
-        - both expose the same page/block config;
+        - C++ and Rust encode the same logical `PageAddress` and
+          `BlockAddress`;
+        - both can rebuild `PageIndex`, `BlockIndex`, and `ObjectIndex` after
+          restart;
+        - both expose the same page/block/stream/zone config;
         - the same corpus produces equivalent page/block index summaries;
-        - cold scans, cache admission, compaction, and GC are measured
-          identically.
+        - cold scans, cache admission, eviction, compaction, GC, and physical
+          reclaim are measured identically.
 
 - GPU-specific models.
   - Most TemporalStore data models do not need GPU compute.
