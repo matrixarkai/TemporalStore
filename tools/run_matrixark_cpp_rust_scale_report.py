@@ -229,6 +229,14 @@ STORAGE_LIFECYCLE_PHASE_NAMES = [
     "watermark_progress",
 ]
 
+STORAGE_RECLAIM_SEMANTICS = [
+    "cache_eviction_memory_only",
+    "logical_tombstone_required",
+    "stale_pages_blocks_rewritten_or_skipped",
+    "reclaimed_bytes_reported",
+    "physical_reclaim_errors_zero",
+]
+
 STORAGE_LIFECYCLE_METRIC_NAMES = [
     "storage_manager_prepare_count",
     "storage_manager_reclaim_count",
@@ -252,10 +260,17 @@ STORAGE_LIFECYCLE_METRIC_NAMES = [
     "cold_scan_no_cache_reads",
     "hot_cache_promotions",
     "tombstone_records",
+    "stale_page_tombstones",
+    "stale_block_tombstones",
+    "stale_pages_rewritten",
+    "stale_pages_skipped",
+    "stale_blocks_rewritten",
+    "stale_blocks_skipped",
     "delayed_destroy_backlog",
     "follower_cursor_retention_floor",
     "reclaimable_bytes",
     "compaction_reclaimed_bytes",
+    "physical_reclaimed_bytes",
     "physical_reclaim_errors",
     "append_watermark",
     "compaction_watermark",
@@ -1922,6 +1937,16 @@ def write_report(path: Path, report: Json) -> None:
     lines.extend(
         [
             "",
+            "## Required Storage Reclaim Semantics",
+            "",
+            "Physical reclaim parity requires these semantics; cache eviction alone is memory-only:",
+            "",
+        ]
+    )
+    lines.extend(f"- `{name}`" for name in STORAGE_RECLAIM_SEMANTICS)
+    lines.extend(
+        [
+            "",
             "## Required Storage Lifecycle Metrics",
             "",
             "Both C++ and Rust backends must expose these lifecycle metric names before stream/zone/eviction/GC/reclaim parity claims are accepted:",
@@ -2303,6 +2328,7 @@ def main() -> int:
             "required_storage_read_sequence": STORAGE_READ_SEQUENCE_STEPS,
             "required_storage_cold_scan_sequence": STORAGE_COLD_SCAN_SEQUENCE_STEPS,
             "required_storage_lifecycle_phases": STORAGE_LIFECYCLE_PHASE_NAMES,
+            "required_storage_reclaim_semantics": STORAGE_RECLAIM_SEMANTICS,
             "required_storage_lifecycle_metrics": STORAGE_LIFECYCLE_METRIC_NAMES,
             "rust_record_log_root": os.environ.get("MATRIXARK_TEMPORALSTORE_RUST_ROOT", ""),
             "python_ref_store": parsed.python_ref_store,
