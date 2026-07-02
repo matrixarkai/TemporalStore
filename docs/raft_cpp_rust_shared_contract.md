@@ -61,6 +61,20 @@ The full C++ and Rust top-level key sets must match exactly.
 - `replica_set`
 - `learner_set`
 - `raft_health`
+- `metrics`
+
+`metrics` must include these required fields for both metaserver and data-node
+Raft reports:
+
+- `leader_election_ms`
+- `term_changes`
+- `commit_index`
+- `applied_index`
+- `membership_change_count`
+- `topology_ready_ms`
+- `snapshot_restore_ms`
+- `failed_ready_checks`
+- `stale_leader_observed`
 
 ## Required Evidence
 
@@ -76,6 +90,22 @@ semantics. `leader_election_events` use `Term`, `LeaderId`, `CommitIndex`, and
 
 - `leader_election`
 - `namespace_table_creation`
+- `slot_assignment`
+- `primary_placement`
+- `topology_readiness`
+- `membership_add_remove`
+- `follower_catch_up`
+- `leader_failover`
+- `restart_recovery`
+- `snapshot_restore`
+
+## Phase 2 Data Node Raft Behavior
+
+`data_node_raft.behavior_evidence` must include these behavior keys, each with
+`status: passed`, before data-node Raft parity can be marked feature-correct:
+
+- `leader_election`
+- `write_replication`
 - `slot_assignment`
 - `primary_placement`
 - `topology_readiness`

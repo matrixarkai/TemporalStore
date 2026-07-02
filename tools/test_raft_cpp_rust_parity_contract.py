@@ -43,6 +43,46 @@ class RaftCppRustParityContractTest(unittest.TestCase):
             failures,
         )
 
+    def test_required_metrics_are_required_for_both_subsystems(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        cpp_missing_metric = json.loads(json.dumps(corpus["cpp"]))
+        del cpp_missing_metric["metaserver_raft"]["metrics"]["leader_election_ms"]
+        failures = validate_report_pair(cpp_missing_metric, corpus["rust"])
+        self.assertIn(
+            "cpp metaserver_raft.metrics missing `leader_election_ms`",
+            failures,
+        )
+
+        rust_missing_metric = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing_metric["data_node_raft"]["metrics"]["stale_leader_observed"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing_metric)
+        self.assertIn(
+            "rust data_node_raft.metrics missing `stale_leader_observed`",
+            failures,
+        )
+
+    def test_data_node_raft_phase2_behaviors_are_required(self) -> None:
+        corpus = _load_json(REPORT_PAIR_CORPUS)
+        self.assertEqual(validate_report_pair(corpus["cpp"], corpus["rust"]), [])
+
+        rust_missing = json.loads(json.dumps(corpus["rust"]))
+        del rust_missing["data_node_raft"]["behavior_evidence"]["write_replication"]
+        failures = validate_report_pair(corpus["cpp"], rust_missing)
+        self.assertIn(
+            "rust data_node_raft.behavior_evidence missing `write_replication`",
+            failures,
+        )
+
+        cpp_failed = json.loads(json.dumps(corpus["cpp"]))
+        cpp_failed["data_node_raft"]["behavior_evidence"]["leader_failover"]["status"] = "failed"
+        failures = validate_report_pair(cpp_failed, corpus["rust"])
+        self.assertIn(
+            "cpp data_node_raft.behavior_evidence.leader_failover status drift: 'failed'",
+            failures,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

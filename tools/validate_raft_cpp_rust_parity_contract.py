@@ -100,6 +100,31 @@ REQUIRED_METASERVER_RAFT_BEHAVIORS = [
     "snapshot_restore",
 ]
 
+REQUIRED_DATA_NODE_RAFT_BEHAVIORS = [
+    "leader_election",
+    "write_replication",
+    "slot_assignment",
+    "primary_placement",
+    "topology_readiness",
+    "membership_add_remove",
+    "follower_catch_up",
+    "leader_failover",
+    "restart_recovery",
+    "snapshot_restore",
+]
+
+REQUIRED_RAFT_METRICS = [
+    "leader_election_ms",
+    "term_changes",
+    "commit_index",
+    "applied_index",
+    "membership_change_count",
+    "topology_ready_ms",
+    "snapshot_restore_ms",
+    "failed_ready_checks",
+    "stale_leader_observed",
+]
+
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -120,19 +145,43 @@ def _validate_contract_doc() -> list[str]:
 
 
 def _validate_metaserver_behaviors(backend: str, metaserver: dict[str, Any]) -> list[str]:
+    return _validate_behavior_evidence(backend, "metaserver_raft", metaserver, REQUIRED_METASERVER_RAFT_BEHAVIORS)
+
+
+def _validate_data_node_behaviors(backend: str, data_node: dict[str, Any]) -> list[str]:
+    return _validate_behavior_evidence(backend, "data_node_raft", data_node, REQUIRED_DATA_NODE_RAFT_BEHAVIORS)
+
+
+def _validate_behavior_evidence(
+    backend: str,
+    section: str,
+    subsystem: dict[str, Any],
+    required_behaviors: list[str],
+) -> list[str]:
     failures: list[str] = []
-    evidence = metaserver.get("behavior_evidence")
+    evidence = subsystem.get("behavior_evidence")
     if not isinstance(evidence, dict):
-        return [f"{backend} metaserver_raft missing object `behavior_evidence`"]
-    for behavior in REQUIRED_METASERVER_RAFT_BEHAVIORS:
+        return [f"{backend} {section} missing object `behavior_evidence`"]
+    for behavior in required_behaviors:
         item = evidence.get(behavior)
         if not isinstance(item, dict):
-            failures.append(f"{backend} metaserver_raft.behavior_evidence missing `{behavior}`")
+            failures.append(f"{backend} {section}.behavior_evidence missing `{behavior}`")
             continue
         if item.get("status") != "passed":
             failures.append(
-                f"{backend} metaserver_raft.behavior_evidence.{behavior} status drift: {item.get('status')!r}"
+                f"{backend} {section}.behavior_evidence.{behavior} status drift: {item.get('status')!r}"
             )
+    return failures
+
+
+def _validate_raft_metrics(backend: str, section: str, subsystem: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    metrics = subsystem.get("metrics")
+    if not isinstance(metrics, dict):
+        return [f"{backend} {section} missing object `metrics`"]
+    for metric in REQUIRED_RAFT_METRICS:
+        if metric not in metrics:
+            failures.append(f"{backend} {section}.metrics missing `{metric}`")
     return failures
 
 
@@ -166,8 +215,11 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             for key in REQUIRED_RAFT_SUBSYSTEM_KEYS:
                 if key not in value:
                     failures.append(f"{backend} {section} missing `{key}`")
+            failures.extend(_validate_raft_metrics(backend, section, value))
             if section == "metaserver_raft":
                 failures.extend(_validate_metaserver_behaviors(backend, value))
+            if section == "data_node_raft":
+                failures.extend(_validate_data_node_behaviors(backend, value))
         if not isinstance(report.get("membership_events"), list):
             failures.append(f"{backend} membership_events must be a list")
         if not isinstance(report.get("leader_election_events"), list):
@@ -226,6 +278,8 @@ def main() -> int:
     print("- metadata_top_level_shape=schema_version, raft_public_contract")
     print("- subsystem_shape=" + ", ".join(REQUIRED_RAFT_SUBSYSTEM_KEYS))
     print("- metaserver_behaviors=" + ", ".join(REQUIRED_METASERVER_RAFT_BEHAVIORS))
+    print("- data_node_behaviors=" + ", ".join(REQUIRED_DATA_NODE_RAFT_BEHAVIORS))
+    print("- required_metrics=" + ", ".join(REQUIRED_RAFT_METRICS))
     return 0
 
 

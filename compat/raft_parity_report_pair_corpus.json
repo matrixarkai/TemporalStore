@@ -103,6 +103,17 @@
           "snapshot_index": 96,
           "checksum_match": true
         }
+      },
+      "metrics": {
+        "leader_election_ms": 12,
+        "term_changes": 1,
+        "commit_index": 128,
+        "applied_index": 128,
+        "membership_change_count": 2,
+        "topology_ready_ms": 25,
+        "snapshot_restore_ms": 18,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
       }
     },
     "data_node_raft": {
@@ -129,6 +140,72 @@
       "raft_health": {
         "status": "healthy",
         "quorum": true
+      },
+      "metrics": {
+        "leader_election_ms": 15,
+        "term_changes": 1,
+        "commit_index": 4096,
+        "applied_index": 4096,
+        "membership_change_count": 1,
+        "topology_ready_ms": 31,
+        "snapshot_restore_ms": 33,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 11,
+          "term": 7
+        },
+        "write_replication": {
+          "status": "passed",
+          "commit_index": 4096,
+          "applied_index": 4096
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            14
+          ],
+          "removed": [
+            12
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 4096
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 3072,
+          "checksum_match": true
+        }
       }
     },
     "membership_events": [
@@ -289,6 +366,17 @@
           "snapshot_index": 96,
           "checksum_match": true
         }
+      },
+      "metrics": {
+        "leader_election_ms": 12,
+        "term_changes": 1,
+        "commit_index": 128,
+        "applied_index": 128,
+        "membership_change_count": 2,
+        "topology_ready_ms": 25,
+        "snapshot_restore_ms": 18,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
       }
     },
     "data_node_raft": {
@@ -315,6 +403,72 @@
       "raft_health": {
         "status": "healthy",
         "quorum": true
+      },
+      "metrics": {
+        "leader_election_ms": 15,
+        "term_changes": 1,
+        "commit_index": 4096,
+        "applied_index": 4096,
+        "membership_change_count": 1,
+        "topology_ready_ms": 31,
+        "snapshot_restore_ms": 33,
+        "failed_ready_checks": 0,
+        "stale_leader_observed": false
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 11,
+          "term": 7
+        },
+        "write_replication": {
+          "status": "passed",
+          "commit_index": 4096,
+          "applied_index": 4096
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            14
+          ],
+          "removed": [
+            12
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 12,
+          "new_leader_id": 11
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 4096
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 3072,
+          "checksum_match": true
+        }
       }
     },
     "membership_events": [
