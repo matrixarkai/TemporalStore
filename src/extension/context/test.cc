@@ -869,6 +869,130 @@ TEST_F(ContextModuleTest, RetrieveContextPackTraversesChildrenWithoutQueryVector
     ASSERT_FALSE(response.telemetry().broad_scan_used());
 }
 
+TEST_F(ContextModuleTest, RetrieveContextPackIncludesNativeContextModelRefs) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kNode = 8901;
+    constexpr uint64_t kScope = 3001;
+    constexpr uint64_t kIngestionTime = 1781500000200ULL;
+    constexpr uint64_t kEventId = 449;
+    constexpr uint64_t kEntityHash = 7011;
+
+    {
+        context::WriteExtractedEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.92);
+        event->set_importance(0.84);
+        event->set_text("Alice approved the GPU purchase and Bob owns procurement.");
+        auto* indexes = request.mutable_indexes();
+        indexes->set_scope_hash(kScope);
+        indexes->add_entity_hashes(kEntityHash);
+
+        context::WriteExtractedEventResponse response;
+        Execute(context::WRITE_EXTRACTED_EVENT, "ctx-native-pack-model-event", request,
+                &response);
+    }
+
+    {
+        context::UpsertEntityRequest request;
+        request.set_tenant_hash(kTenant);
+        auto* entity = request.mutable_entity();
+        entity->set_entity_hash(kEntityHash);
+        entity->set_node_hash(kNode);
+        entity->set_type(1);
+        entity->set_name("gpu_purchase_owner");
+        entity->set_value("Bob owns procurement");
+        entity->set_updated_at_ms(kIngestionTime);
+        entity->set_valid_from_ms(kIngestionTime);
+        entity->set_confidence(0.97);
+        entity->add_source_event_hashes(kEventId);
+
+        context::UpsertEntityResponse response;
+        Execute(context::UPSERT_ENTITY, "ctx-native-pack-model-entity", request, &response);
+    }
+
+    {
+        context::UpsertSummaryRequest request;
+        request.set_tenant_hash(kTenant);
+        auto* summary = request.mutable_summary();
+        summary->set_node_hash(kNode);
+        summary->set_level(1);
+        summary->set_text("L0 summary: GPU purchase approved; Bob owns procurement.");
+        summary->set_valid_from_ms(kIngestionTime);
+
+        context::UpsertSummaryResponse response;
+        Execute(context::UPSERT_SUMMARY, "ctx-native-pack-model-summary-l0", request,
+                &response);
+    }
+
+    {
+        context::UpsertSummaryRequest request;
+        request.set_tenant_hash(kTenant);
+        auto* summary = request.mutable_summary();
+        summary->set_node_hash(kNode);
+        summary->set_level(2);
+        summary->set_text("L1 synthesis: approval, owner, and procurement state are known.");
+        summary->set_valid_from_ms(kIngestionTime);
+
+        context::UpsertSummaryResponse response;
+        Execute(context::UPSERT_SUMMARY, "ctx-native-pack-model-summary-l1", request,
+                &response);
+    }
+
+    {
+        context::WriteCompressionEventRequest request;
+        request.set_tenant_hash(kTenant);
+        auto* event = request.mutable_event();
+        event->set_compression_id_hash(9911);
+        event->set_node_hash(kNode);
+        event->set_source_start_ms(kIngestionTime - 100);
+        event->set_source_end_ms(kIngestionTime);
+        event->set_compressed_time_ms(kIngestionTime);
+        event->set_summary("Compressed older approval context for the GPU purchase.");
+
+        context::WriteCompressionEventResponse response;
+        Execute(context::WRITE_COMPRESSION_EVENT, "ctx-native-pack-model-compression",
+                request, &response);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kNode);
+    request.set_scope_hash(kScope);
+    request.set_start_time_ms(kIngestionTime - 200);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_as_of_ms(kIngestionTime + 1);
+    request.set_max_context_tokens(256);
+    request.set_max_selected_refs(8);
+    request.set_min_score(0.1);
+    auto* filter = request.add_index_filters();
+    filter->set_index_name("entity");
+    filter->set_index_value_hash(kEntityHash);
+    filter->set_start_time_ms(kIngestionTime - 1);
+    filter->set_end_time_ms(kIngestionTime + 1);
+    filter->set_limit(10);
+
+    context::RetrieveContextPackResponse response;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-pack-model-refs", request,
+            &response);
+
+    std::set<std::string> ref_types;
+    for (const auto& ref : response.selected_refs()) {
+        ref_types.insert(ref.ref_type());
+    }
+    ASSERT_TRUE(ref_types.find("event") != ref_types.end());
+    ASSERT_TRUE(ref_types.find("entity") != ref_types.end());
+    ASSERT_TRUE(ref_types.find("summary_l0") != ref_types.end());
+    ASSERT_TRUE(ref_types.find("summary_l1") != ref_types.end());
+    ASSERT_TRUE(ref_types.find("compression") != ref_types.end());
+    ASSERT_FALSE(response.telemetry().broad_scan_used());
+    ASSERT_EQ(response.telemetry().index_postings_read(), 1);
+}
+
 TEST_F(ContextModuleTest, FirstWriteOnlyKeepsOriginalEventPayload) {
     constexpr uint64_t kTenant = 1001;
     constexpr uint64_t kNode = 8891;

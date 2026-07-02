@@ -89,13 +89,16 @@ ContextPack boundary. The first implementation is correctness-first:
   vector, optional compact secondary-index filters, token budget, and selected
   ref cap;
 - execution: choose placement nodes, read compact index postings when provided,
-  fetch timestamp-keyed events from the selected node partitions, score with
-  importance/confidence plus optional temporal decay and index boost, then pack
+  fetch timestamp-keyed events from the selected node partitions, add latest L0
+  and L1 summaries, add temporal compression windows, add entity state when the
+  compact index plan carries an entity hash, score with importance/confidence
+  plus optional temporal decay, embedding boost, and index boost, then pack
   selected refs under the token budget;
-- output: compact selected event refs plus native telemetry fields including
-  selected/dropped refs, scanned records, index postings read, candidate fetch
-  count, placement partitions touched, broad-scan status, drop counters, and
-  per-stage latency fields.
+- output: compact selected refs with `ref_type` values of `event`,
+  `summary_l0`, `summary_l1`, `entity`, and `compression`, plus native
+  telemetry fields including selected/dropped refs, scanned records, index
+  postings read, candidate fetch count, placement partitions touched,
+  broad-scan status, drop counters, and per-stage latency fields.
 
 Broad prefix scan remains fallback/debug only. Normal C++ retrieval should move
 through this native API before any latency claim is treated as meaningful.
