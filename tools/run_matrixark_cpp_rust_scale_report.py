@@ -155,6 +155,39 @@ SHARED_CORRECTNESS_REQUIREMENTS = [
     "cross_session_quota_rerank",
 ]
 
+DEFAULT_PHASE_SCALE_EVENTS = [1000, 10000, 100000]
+DEFAULT_PHASE_RETRIEVE_WORKERS = [4, 8, 16, 32]
+DEFAULT_PHASE_RESOURCE_IMPORTS = ["large_pdf", "large_csv", "repo_directory"]
+DEFAULT_PHASE_CONTEXTMEMORY_FEATURES = [
+    "resources",
+    "skills",
+    "cross_session_retrieval",
+    "compact_indexes",
+    "audit_light_telemetry",
+]
+
+
+def _parse_int_csv(raw: str, default: list[int]) -> list[int]:
+    if not raw:
+        return list(default)
+    values: list[int] = []
+    for item in str(raw).replace(";", ",").split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            values.append(int(item))
+        except ValueError:
+            continue
+    return values or list(default)
+
+
+def _parse_str_csv(raw: str, default: list[str]) -> list[str]:
+    if not raw:
+        return list(default)
+    values = [item.strip() for item in str(raw).replace(";", ",").split(",") if item.strip()]
+    return values or list(default)
+
 
 def retrieval_metrics_from_result(result: Json) -> Json:
     pack = result.get("context_pack") if isinstance(result.get("context_pack"), dict) else result
@@ -1346,6 +1379,68 @@ def comparison(cpp: Json | None, rust: Json | None, args: argparse.Namespace | N
     }
 
 
+def _completion_checks(required: list[Any], completed: set[Any]) -> list[Json]:
+    return [{"case": item, "status": "passed" if item in completed else "open"} for item in required]
+
+
+def phase_scale_matrix_gate(report: Json, args: argparse.Namespace) -> Json:
+    required_events = _parse_int_csv(getattr(args, "phase_scale_events", ""), DEFAULT_PHASE_SCALE_EVENTS)
+    required_workers = _parse_int_csv(getattr(args, "phase_retrieve_workers", ""), DEFAULT_PHASE_RETRIEVE_WORKERS)
+    required_imports = _parse_str_csv(getattr(args, "phase_resource_imports", ""), DEFAULT_PHASE_RESOURCE_IMPORTS)
+    required_features = _parse_str_csv(
+        getattr(args, "phase_contextmemory_features", ""),
+        DEFAULT_PHASE_CONTEXTMEMORY_FEATURES,
+    )
+
+    completed_events = set(_parse_int_csv(getattr(args, "completed_scale_events", ""), []))
+    completed_workers = set(_parse_int_csv(getattr(args, "completed_retrieve_workers", ""), []))
+    completed_imports = set(_parse_str_csv(getattr(args, "completed_resource_imports", ""), []))
+    completed_features = set(_parse_str_csv(getattr(args, "completed_contextmemory_features", ""), []))
+
+    try:
+        completed_events.add(int(getattr(args, "events", 0) or 0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        completed_workers.add(int(getattr(args, "retrieve_workers", 0) or 0))
+    except (TypeError, ValueError):
+        pass
+    if not bool(getattr(args, "skip_context_pipeline", False)):
+        completed_features.update({"cross_session_retrieval", "compact_indexes", "audit_light_telemetry"})
+
+    checks = {
+        "event_ingestion": _completion_checks(required_events, completed_events),
+        "retrieve_workers": _completion_checks(required_workers, completed_workers),
+        "resource_imports": _completion_checks(required_imports, completed_imports),
+        "contextmemory_pipeline": _completion_checks(required_features, completed_features),
+    }
+    open_required_cases: list[Json] = []
+    for group, rows in checks.items():
+        for row in rows:
+            if row.get("status") != "passed":
+                open_required_cases.append({"group": group, "case": row.get("case")})
+    require_gate = bool(getattr(args, "require_phase_scale_matrix", False))
+    status = "passed" if not open_required_cases else ("failed" if require_gate else "incomplete")
+    return {
+        "phase": getattr(args, "phase_name", "current") or "current",
+        "status": status,
+        "require_gate": require_gate,
+        "checks": checks,
+        "open_required_cases": open_required_cases,
+        "evidence": {
+            "current_run": {
+                "events": report.get("config", {}).get("events"),
+                "retrieve_workers": report.get("config", {}).get("retrieve_workers"),
+                "skip_context_pipeline": report.get("config", {}).get("skip_context_pipeline"),
+            },
+            "completed_events": sorted(completed_events),
+            "completed_retrieve_workers": sorted(completed_workers),
+            "completed_resource_imports": sorted(completed_imports),
+            "completed_contextmemory_features": sorted(completed_features),
+        },
+    }
+
+
 def write_report(path: Path, report: Json) -> None:
     backend_order = [backend for backend in ("cpp", "rust", "python_ref") if backend in report.get("backends", {})]
     lines = [
@@ -1429,6 +1524,29 @@ def write_report(path: Path, report: Json) -> None:
                 f"- production_performance_parity: `{bool(labels.get('production_performance_parity'))}`",
             ]
         )
+    phase_scale = report.get("phase_scale_matrix", {})
+    if isinstance(phase_scale, dict):
+        lines.extend(
+            [
+                "",
+                "## Post-Phase Scale Matrix",
+                "",
+                f"- status: `{phase_scale.get('status')}`",
+                f"- phase: `{phase_scale.get('phase')}`",
+                f"- require gate: `{bool(phase_scale.get('require_gate'))}`",
+                f"- open required cases: `{len(phase_scale.get('open_required_cases', []))}`",
+                "",
+                "| group | case | status |",
+                "|---|---|---|",
+            ]
+        )
+        checks = phase_scale.get("checks", {}) if isinstance(phase_scale.get("checks"), dict) else {}
+        for group, rows in checks.items():
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if isinstance(row, dict):
+                    lines.append(f"| {group} | {row.get('case')} | {row.get('status')} |")
     if comp.get("status") in {"passed", "failed"}:
         phase0 = comp.get("phase0_correctness", {})
         lines.extend(
@@ -1591,6 +1709,19 @@ def main() -> int:
     parser.add_argument("--perf-min-qps-ratio", type=float, default=0.8)
     parser.add_argument("--perf-max-latency-ratio", type=float, default=2.0)
     parser.add_argument("--require-perf-parity", action="store_true")
+    parser.add_argument("--phase-name", default="current")
+    parser.add_argument("--phase-scale-events", default="1000,10000,100000")
+    parser.add_argument("--phase-retrieve-workers", default="4,8,16,32")
+    parser.add_argument("--phase-resource-imports", default="large_pdf,large_csv,repo_directory")
+    parser.add_argument(
+        "--phase-contextmemory-features",
+        default="resources,skills,cross_session_retrieval,compact_indexes,audit_light_telemetry",
+    )
+    parser.add_argument("--completed-scale-events", default="")
+    parser.add_argument("--completed-retrieve-workers", default="")
+    parser.add_argument("--completed-resource-imports", default="")
+    parser.add_argument("--completed-contextmemory-features", default="")
+    parser.add_argument("--require-phase-scale-matrix", action="store_true")
     parsed = parser.parse_args()
 
     parsed.storage_options = {
@@ -1649,6 +1780,15 @@ def main() -> int:
             "perf_min_qps_ratio": parsed.perf_min_qps_ratio,
             "perf_max_latency_ratio": parsed.perf_max_latency_ratio,
             "require_perf_parity": parsed.require_perf_parity,
+            "phase_name": parsed.phase_name,
+            "phase_scale_events": _parse_int_csv(parsed.phase_scale_events, DEFAULT_PHASE_SCALE_EVENTS),
+            "phase_retrieve_workers": _parse_int_csv(parsed.phase_retrieve_workers, DEFAULT_PHASE_RETRIEVE_WORKERS),
+            "phase_resource_imports": _parse_str_csv(parsed.phase_resource_imports, DEFAULT_PHASE_RESOURCE_IMPORTS),
+            "phase_contextmemory_features": _parse_str_csv(
+                parsed.phase_contextmemory_features,
+                DEFAULT_PHASE_CONTEXTMEMORY_FEATURES,
+            ),
+            "require_phase_scale_matrix": parsed.require_phase_scale_matrix,
         },
         "backends": {},
     }
@@ -1675,14 +1815,28 @@ def main() -> int:
         (artifact_dir / f"{backend}.json").write_text(json.dumps(report["backends"][backend], indent=2, sort_keys=True), encoding="utf-8")
     parsed.python_ref_result = report["backends"].get("python_ref")
     report["comparison"] = comparison(report["backends"].get("cpp"), report["backends"].get("rust"), parsed)
+    report["phase_scale_matrix"] = phase_scale_matrix_gate(report, parsed)
     (artifact_dir / "comparison.json").write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")
     write_report(artifact_dir / "comparison.md", report)
-    print(json.dumps({"artifact_dir": str(artifact_dir), "comparison": report["comparison"]}, indent=2, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "artifact_dir": str(artifact_dir),
+                "comparison": report["comparison"],
+                "phase_scale_matrix": report["phase_scale_matrix"],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     backends_passed = all(report["backends"].get(b, {}).get("status") == "passed" for b in parsed.backends)
     parity_passed = bool(report.get("comparison", {}).get("perf_parity", {}).get("passed", True))
     phase0_failed = report.get("comparison", {}).get("phase0_correctness", {}).get("status") == "failed"
+    phase_scale_failed = report.get("phase_scale_matrix", {}).get("status") == "failed"
     if phase0_failed and not parsed.allow_phase0_correctness_failure:
         return 3
+    if phase_scale_failed:
+        return 4
     if parsed.require_perf_parity and not parity_passed:
         return 2
     return 0 if backends_passed else 1
