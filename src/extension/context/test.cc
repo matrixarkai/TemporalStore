@@ -884,6 +884,61 @@ TEST_F(ContextModuleTest, RetrieveContextPackTraversesChildrenWithoutQueryVector
     ASSERT_FALSE(response.telemetry().broad_scan_used());
 }
 
+TEST_F(ContextModuleTest, RetrieveContextPackCachesParsedPlacementCandidatesByWatermark) {
+    constexpr uint64_t kTenant = 1001;
+    constexpr uint64_t kNode = 8910;
+    constexpr uint64_t kIngestionTime = 1781500000500ULL;
+    constexpr uint64_t kEventId = 452;
+
+    {
+        context::WriteEventRequest request;
+        request.set_tenant_hash(kTenant);
+        request.set_node_hash(kNode);
+        auto* event = request.mutable_event();
+        event->set_event_id_hash(kEventId);
+        event->set_ingestion_time_ms(kIngestionTime);
+        event->set_type(7);
+        event->set_confidence(0.95);
+        event->set_importance(0.9);
+        event->set_text("Native candidate cache should reuse parsed event candidates.");
+        context::WriteEventResponse response;
+        Execute(context::WRITE_EVENT, "ctx-native-cache-event", request, &response);
+    }
+
+    context::RetrieveContextPackRequest request;
+    request.set_tenant_hash(kTenant);
+    request.set_start_node_hash(kNode);
+    request.set_scope_key("t=1001|u=cache|s=test|");
+    request.set_scope_hash(3001);
+    request.set_start_time_ms(kIngestionTime - 1);
+    request.set_end_time_ms(kIngestionTime + 1);
+    request.set_as_of_ms(kIngestionTime + 1);
+    request.set_max_context_tokens(64);
+    request.set_max_selected_refs(4);
+    request.set_append_watermark(1);
+    request.set_resource_version_watermark("rv1");
+
+    context::RetrieveContextPackResponse first;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-cache-first", request, &first);
+    ASSERT_EQ(first.selected_refs_size(), 1);
+    ASSERT_FALSE(first.telemetry().candidate_cache_hit());
+    ASSERT_GT(first.telemetry().placement_fetch_count(), 0);
+
+    context::RetrieveContextPackResponse second;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-cache-second", request, &second);
+    ASSERT_EQ(second.selected_refs_size(), 1);
+    ASSERT_TRUE(second.telemetry().candidate_cache_hit());
+    ASSERT_EQ(second.telemetry().placement_fetch_count(), 0);
+
+    request.set_append_watermark(2);
+    context::RetrieveContextPackResponse after_append;
+    Execute(context::RETRIEVE_CONTEXT_PACK, "ctx-native-cache-after-append", request,
+            &after_append);
+    ASSERT_EQ(after_append.selected_refs_size(), 1);
+    ASSERT_FALSE(after_append.telemetry().candidate_cache_hit());
+    ASSERT_GT(after_append.telemetry().placement_fetch_count(), 0);
+}
+
 TEST_F(ContextModuleTest, RetrieveContextPackIncludesNativeContextModelRefs) {
     constexpr uint64_t kTenant = 1001;
     constexpr uint64_t kNode = 8901;

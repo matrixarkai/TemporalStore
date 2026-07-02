@@ -1825,11 +1825,26 @@ class MatrixArkTemporalStoreDirectAdapter(MatrixArkLocalAdapter):
         local_context = args.get("local_context", [])
         if not isinstance(local_context, list):
             local_context = []
+        watermark_count = self._entry_count_cache if self._entry_count_cache is not None else self._get_count()
+        resource_version_watermark = str(
+            ranking.get("resource_version_watermark")
+            or args.get("resource_version_watermark")
+            or ""
+        )
+        skill_status_watermark = str(
+            ranking.get("skill_status_watermark")
+            or args.get("skill_status_watermark")
+            or ""
+        )
         request: Json = {
             "api_version": 1,
             "storage_prefix": self._storage_prefix,
             "backend": self._backend_label(),
-            "watermark_count": self._entry_count_cache if self._entry_count_cache is not None else self._get_count(),
+            "watermark_count": watermark_count,
+            "append_watermark": watermark_count,
+            "resource_version_watermark": resource_version_watermark,
+            "skill_status_watermark": skill_status_watermark,
+            "index_posting_watermark": watermark_count,
             "query": query,
             "scope": scope,
             "scope_key": scope_key,

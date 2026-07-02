@@ -138,6 +138,20 @@ query understanding
 
 Broad prefix scan is fallback/debug only and must be visible in telemetry as `broad_scan_used`.
 
+The C++ native retrieve path also keeps a small parsed-candidate cache for placement
+fetches:
+
+```text
+scope_key + node_hash + record_type + append_watermark +
+resource_version_watermark + skill_status_watermark + index_posting_watermark
+  -> compact parsed candidate structs
+```
+
+The payload is not JSON; it is the already-parsed native candidate shape used by
+scoring and token-budget packing. Appends, resource version changes, skill status
+changes, and index posting updates invalidate by changing the request watermark, so
+old cache entries naturally stop matching.
+
 ## Why Too Many Indexes Hurt
 
 Index refs are small, but too many still cost real resources:
