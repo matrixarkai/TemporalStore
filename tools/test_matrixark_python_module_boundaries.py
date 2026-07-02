@@ -42,6 +42,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         local_mod = importlib.import_module("tools.matrixark_mcp_local_adapter")
         temporal_mod = importlib.import_module("tools.matrixark_mcp_temporal_adapters")
         admin_mod = importlib.import_module("tools.matrixark_mcp_admin")
+        backends_mod = importlib.import_module("tools.matrixark_mcp_backends")
+        dispatch_mod = importlib.import_module("tools.matrixark_mcp_dispatch")
         ingestion_mod = importlib.import_module("tools.matrixark_mcp_ingestion")
         retrieval_mod = importlib.import_module("tools.matrixark_mcp_retrieval")
         requests_mod = importlib.import_module("tools.matrixark_mcp_requests")
@@ -53,7 +55,13 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertTrue(ingestion_mod.is_ingestion_tool("matrixark_ingest"))
         self.assertTrue(retrieval_mod.is_retrieval_tool("matrixark_retrieve"))
         self.assertTrue(admin_mod.is_admin_tool("matrixark_management_portal"))
+        self.assertTrue(callable(backends_mod.build_mcp_adapter))
+        self.assertTrue(callable(dispatch_mod.dispatch_matrixark_tool))
         self.assertTrue(callable(requests_mod.normalize_mcp_tool_request))
+
+    def test_mcp_entrypoint_stays_small(self) -> None:
+        server_lines = (TOOLS_DIR / "matrixark_mcp_server.py").read_text(encoding="utf-8").splitlines()
+        self.assertLessEqual(len(server_lines), 750)
 
     def test_pyproject_exposes_matrixark_console_scripts(self) -> None:
         pyproject_text = (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
