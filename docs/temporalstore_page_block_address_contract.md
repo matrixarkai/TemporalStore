@@ -632,6 +632,48 @@ artifacts.
 Stream, zone, eviction, GC, reclaim, compaction, and StorageManager reports must
 also use one shared lifecycle metric vocabulary:
 
+## Multi-Layer Cache Contract
+
+C++ and Rust may implement cache internals differently, but public reports must
+use one layered cache vocabulary:
+
+- `memory_object_cache`
+- `page_index_cache`
+- `block_index_cache`
+- `disk_block_cache`
+- `shared_store_read_through`
+
+Canonical cache semantics:
+
+- `lookup_hot_to_cold`: normal reads check hot memory first, then index caches,
+  then disk/local block cache, then shared-store read-through.
+- `refill_from_durable_on_miss`: a serving miss can refill from durable
+  page/block data after checksum and generation validation.
+- `invalidate_on_append_watermark`: append watermark changes invalidate affected
+  parsed/index/cache entries.
+- `invalidate_on_compaction_watermark`: compaction watermark changes invalidate
+  stale page/block generations.
+- `cold_scan_no_promote`: cold lifecycle scans must not promote pages into the
+  hot serving cache.
+- `writeback_backpressure_reported`: async cache writeback must report queue
+  depth and rejection/backpressure counters.
+
+Canonical cache metrics:
+
+- `memory_cache_hits`
+- `memory_cache_misses`
+- `page_index_cache_hits`
+- `page_index_cache_misses`
+- `block_index_cache_hits`
+- `block_index_cache_misses`
+- `disk_cache_hits`
+- `disk_cache_misses`
+- `shared_store_read_throughs`
+- `cache_refills`
+- `cache_invalidations`
+- `cache_writeback_queue_depth`
+- `cache_writeback_rejections`
+
 Canonical StorageManager/StoreManager lifecycle phases:
 
 - `prepare`
@@ -665,6 +707,19 @@ Canonical StorageManager/StoreManager lifecycle phases:
 - `cache_admissions`
 - `cache_evictions`
 - `cache_rehydrates`
+- `memory_cache_hits`
+- `memory_cache_misses`
+- `page_index_cache_hits`
+- `page_index_cache_misses`
+- `block_index_cache_hits`
+- `block_index_cache_misses`
+- `disk_cache_hits`
+- `disk_cache_misses`
+- `shared_store_read_throughs`
+- `cache_refills`
+- `cache_invalidations`
+- `cache_writeback_queue_depth`
+- `cache_writeback_rejections`
 - `cold_scan_no_cache_reads`
 - `hot_cache_promotions`
 - `tombstone_records`
@@ -760,5 +815,7 @@ This contract is satisfied when C++ and Rust:
   during normal reads;
 - expose the same page/block config;
 - produce equivalent page/block index summaries from the same corpus;
+- report the same multi-layer cache layers, lookup/refill/invalidation
+  semantics, and cache/writeback counters;
 - measure cold scans, cache admission, eviction, compaction, GC, and physical
   reclaim identically.
