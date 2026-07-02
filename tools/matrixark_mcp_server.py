@@ -154,6 +154,15 @@ class MatrixArkMcpServer:
         "matrixark_admin_map_sso_user",
         "matrixark_auth_signup",
         "matrixark_auth_sso_callback",
+        "matrixark_auth_sso_login",
+    }
+    SCOPED_READ_TOOLS = {
+        "matrixark_retrieve",
+        "matrixark_replay",
+        "matrixark_management_portal",
+        "matrixark_ingestion_dashboard",
+        "matrixark_list_resources",
+        "matrixark_list_skills",
     }
     SERVER_NAME = "matrixark-context"
     SERVER_VERSION = "0.2.0"
@@ -398,6 +407,16 @@ class MatrixArkMcpServer:
         )
         return response
 
+    def _enforce_scope_before_output(self, name: str, args: Json, identity: Json) -> None:
+        if name not in self.SCOPED_READ_TOOLS:
+            return
+        scope = optional_object(args, "scope")
+        account_id = str(scope.get("account_id") or identity.get("account_id") or "")
+        tenant_id = str(scope.get("tenant_id") or identity.get("tenant_id") or "")
+        if not account_id or not tenant_id:
+            raise MatrixArkError("scoped read requires resolved account_id and tenant_id")
+        self.access.ensure_identity_can_read_scope(identity, account_id, tenant_id, scope)
+
     def _finalize_write_response(self, name: str, args: Json, identity: Json, hook: Json | None, response: Json) -> Json:
         if name not in self.IDEMPOTENT_WRITE_TOOLS:
             return response
@@ -510,6 +529,7 @@ class MatrixArkMcpServer:
         request_deadline_ms = self._request_deadline_ms(name, args)
         hook = args.pop("agent_hook", None)
         identity = self.access.authorize_and_enrich(name, args)
+        self._enforce_scope_before_output(name, args, identity)
         idempotent_replay = self._idempotent_replay_response(name, args, identity, hook)
         if idempotent_replay is not None:
             return idempotent_replay

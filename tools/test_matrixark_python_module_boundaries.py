@@ -104,6 +104,8 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
         self.assertEqual("async", args["storage_options"]["write_mode"])
         self.assertEqual("acct_local", args["scope"]["account_id"])
         self.assertEqual("tenant_codex", args["scope"]["tenant_id"])
+        self.assertIn("scope_key", args["scope"])
+        self.assertGreater(args["scope"]["tenant_hash"], 0)
 
         with self.assertRaises(Exception):
             requests_mod.normalize_mcp_tool_request(
@@ -111,6 +113,10 @@ class MatrixArkPythonModuleBoundaryTest(unittest.TestCase):
                 {"messages": [{"role": "user", "content": "bad"}], "storage_options": {"route": "not_real"}},
                 write_tools={"matrixark_ingest"},
             )
+
+    def test_all_mutating_mcp_routes_include_idempotency_boundary(self) -> None:
+        server_mod = importlib.import_module("tools.matrixark_mcp_server")
+        self.assertIn("matrixark_auth_sso_login", server_mod.MatrixArkMcpServer.IDEMPOTENT_WRITE_TOOLS)
 
     def test_core_module_has_no_duplicate_top_level_symbols(self) -> None:
         module_path = TOOLS_DIR / "matrixark_mcp_core.py"
