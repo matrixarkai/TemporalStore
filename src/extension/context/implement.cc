@@ -234,7 +234,13 @@ struct ScoredContextEvent {
 
 struct NativeContextCandidate {
     ContextEvent event;
+    std::string ref_type;
+    uint64_t ref_hash = 0;
     uint64_t node_hash = 0;
+    uint64_t event_time_ms = 0;
+    uint32_t token_estimate = 0;
+    std::string text;
+    float base_score = 0.0f;
     float score = 0.0f;
     std::set<std::string> matched_index_names;
 };
@@ -265,9 +271,10 @@ uint32_t EstimateTokens(const std::string& text) {
     return std::max<uint32_t>(1, tokens);
 }
 
-std::string CandidateKey(uint64_t node_hash, uint64_t event_time_ms, uint64_t event_id_hash) {
-    return std::to_string(node_hash) + ":" + std::to_string(event_time_ms) + ":" +
-           std::to_string(event_id_hash);
+std::string CandidateKey(const std::string& ref_type, uint64_t node_hash,
+                         uint64_t event_time_ms, uint64_t ref_hash) {
+    return ref_type + ":" + std::to_string(node_hash) + ":" +
+           std::to_string(event_time_ms) + ":" + std::to_string(ref_hash);
 }
 
 Status ValidateRange(uint64_t start_time_ms, uint64_t end_time_ms) {
@@ -1274,15 +1281,201 @@ Status AddCandidateFromEvent(const ContextEvent& event, uint64_t node_hash,
                              const std::string& matched_index_name,
                              std::map<std::string, NativeContextCandidate>* candidates) {
     const std::string key =
-        CandidateKey(node_hash, EventPrimaryTime(event), event.event_id_hash());
+        CandidateKey("event", node_hash, EventPrimaryTime(event), event.event_id_hash());
     NativeContextCandidate& candidate = (*candidates)[key];
-    if (candidate.event.event_id_hash() == 0) {
+    if (candidate.ref_hash == 0) {
         candidate.event = event;
+        candidate.ref_type = "event";
+        candidate.ref_hash = event.event_id_hash();
         candidate.node_hash = node_hash;
+        candidate.event_time_ms = EventPrimaryTime(event);
+        candidate.text = event.text();
+        candidate.token_estimate = EstimateTokens(candidate.text);
+        candidate.base_score = event.confidence() * event.importance();
     }
     if (!matched_index_name.empty()) {
         candidate.matched_index_names.insert(matched_index_name);
     }
+    return Status::OK();
+}
+
+Status AddGenericCandidate(const std::string& ref_type, uint64_t ref_hash,
+                           uint64_t node_hash, uint64_t event_time_ms,
+                           const std::string& text, float base_score,
+                           const std::string& matched_index_name,
+                           std::map<std::string, NativeContextCandidate>* candidates) {
+    if (ref_hash == 0 || node_hash == 0 || text.empty()) {
+        return Status::OK();
+    }
+    const std::string key = CandidateKey(ref_type, node_hash, event_time_ms, ref_hash);
+    NativeContextCandidate& candidate = (*candidates)[key];
+    if (candidate.ref_hash == 0) {
+        candidate.ref_type = ref_type;
+        candidate.ref_hash = ref_hash;
+        candidate.node_hash = node_hash;
+        candidate.event_time_ms = event_time_ms;
+        candidate.text = text;
+        candidate.token_estimate = EstimateTokens(text);
+        candidate.base_score = base_score;
+    }
+    if (!matched_index_name.empty()) {
+        candidate.matched_index_names.insert(matched_index_name);
+    }
+    return Status::OK();
+}
+
+std::string EntityCandidateText(const ContextEntity& entity) {
+    std::string text = entity.name();
+    if (!entity.value().empty()) {
+        if (!text.empty()) {
+            text.append(": ");
+        }
+        text.append(entity.value());
+    }
+    return text;
+}
+
+Status AddCandidateFromEntity(const ContextEntity& entity,
+                              const std::string& matched_index_name,
+                              std::map<std::string, NativeContextCandidate>* candidates) {
+    const float base_score = std::max(0.05f, entity.confidence());
+    const uint64_t event_time_ms =
+        entity.valid_from_ms() == 0 ? entity.updated_at_ms() : entity.valid_from_ms();
+    return AddGenericCandidate("entity", entity.entity_hash(), entity.node_hash(),
+                               event_time_ms, EntityCandidateText(entity), base_score,
+                               matched_index_name, candidates);
+}
+
+Status LoadEntityByHash(ExecuteEnv* env, uint64_t tenant_hash, uint64_t node_hash,
+                        uint64_t entity_hash, ContextEntity* entity, bool* found) {
+    *found = false;
+    const std::string key = EntityKey(tenant_hash, node_hash, entity_hash);
+    ObjectHandle<model::ContextEntityModel> object;
+    Status status = env->GetObject(key, &object);
+    if (status.IsNotFound()) {
+        return Status::OK();
+    }
+    if (!status.ok()) {
+        return status;
+    }
+    std::string value;
+    status = object->OrSet().Get(kEntityField, &value);
+    if (status.IsNotFound()) {
+        return Status::OK();
+    }
+    if (!status.ok()) {
+        return status;
+    }
+    if (!entity->ParseFromString(value)) {
+        return Status::InvalidArgument("stored ContextEntity is corrupted");
+    }
+    *found = true;
+    return Status::OK();
+}
+
+float ApplyCandidateTemporalDecay(const RetrieveContextPackRequest& request,
+                                  const NativeContextCandidate& candidate) {
+    if (request.decay_half_life_ms() == 0 || candidate.event_time_ms == 0) {
+        return candidate.base_score;
+    }
+    const uint64_t as_of_ms = request.as_of_ms() == 0 ? request.end_time_ms()
+                                                      : request.as_of_ms();
+    const uint64_t age_ms =
+        candidate.event_time_ms >= as_of_ms ? 0 : as_of_ms - candidate.event_time_ms;
+    const double decay =
+        std::pow(0.5, static_cast<double>(age_ms) /
+                          static_cast<double>(request.decay_half_life_ms()));
+    return static_cast<float>(static_cast<double>(candidate.base_score) * decay);
+}
+
+float EmbeddingBoostForCandidate(ExecuteEnv* env,
+                                 const RetrieveContextPackRequest& request,
+                                 const NativeContextCandidate& candidate) {
+    if (request.query_vector_size() == 0 || candidate.ref_hash == 0) {
+        return 0.0f;
+    }
+    ContextEmbedding embedding;
+    Status status = LoadEmbedding(env, request.tenant_hash(), candidate.ref_hash, &embedding);
+    if (status.IsNotFound()) {
+        return 0.0f;
+    }
+    if (!status.ok()) {
+        return 0.0f;
+    }
+    google::protobuf::RepeatedField<float> query_vector;
+    for (float value : request.query_vector()) {
+        query_vector.Add(value);
+    }
+    return std::max(0.0f, CosineSimilarity(query_vector, embedding.vector()));
+}
+
+Status LoadLatestSummary(ExecuteEnv* env, uint64_t tenant_hash, uint64_t node_hash,
+                         uint32_t level, uint64_t as_of_ms, ContextSummary* latest_summary,
+                         bool* found);
+
+Status QueryCompressionEvents(ExecuteEnv* env, const QueryCompressionEventsRequest& request,
+                              QueryCompressionEventsResponse* response);
+
+Status CollectNodeSummaryAndCompressionCandidates(
+    ExecuteEnv* env, const RetrieveContextPackRequest& request,
+    const std::set<uint64_t>& selected_node_hashes,
+    std::map<std::string, NativeContextCandidate>* candidates,
+    NativeRetrieveTelemetry* telemetry) {
+    const uint64_t start_ms = NowSteadyMs();
+    const uint64_t as_of_ms = request.as_of_ms() == 0 ? request.end_time_ms()
+                                                      : request.as_of_ms();
+    for (uint64_t node_hash : selected_node_hashes) {
+        for (uint32_t level = 1; level <= 2; ++level) {
+            ContextSummary summary;
+            bool found_summary = false;
+            Status status = LoadLatestSummary(env, request.tenant_hash(), node_hash, level,
+                                              as_of_ms, &summary, &found_summary);
+            if (!status.ok()) {
+                return status;
+            }
+            if (!found_summary) {
+                continue;
+            }
+            telemetry->set_candidate_fetch_count(telemetry->candidate_fetch_count() + 1);
+            const float base_score = level == 1 ? 0.82f : 0.78f;
+            status = AddGenericCandidate(level == 1 ? "summary_l0" : "summary_l1",
+                                         StableHash64(std::to_string(node_hash) + ":" +
+                                                      std::to_string(level)),
+                                         node_hash, summary.valid_from_ms(), summary.text(),
+                                         base_score, "", candidates);
+            if (!status.ok()) {
+                return status;
+            }
+        }
+    }
+    if (request.start_time_ms() != 0 && request.end_time_ms() != 0) {
+        QueryCompressionEventsRequest compression_request;
+        compression_request.set_tenant_hash(request.tenant_hash());
+        for (uint64_t node_hash : selected_node_hashes) {
+            compression_request.add_node_hashes(node_hash);
+        }
+        compression_request.set_start_time_ms(request.start_time_ms());
+        compression_request.set_end_time_ms(request.end_time_ms());
+        compression_request.set_limit(TraversalLimit(request.max_candidate_nodes(),
+                                                     kDefaultTraversalCandidates, kMaxLimit));
+        QueryCompressionEventsResponse compression_response;
+        Status status = QueryCompressionEvents(env, compression_request, &compression_response);
+        if (!status.ok()) {
+            return status;
+        }
+        telemetry->set_candidate_fetch_count(telemetry->candidate_fetch_count() +
+                                             compression_response.events_size());
+        for (const auto& event : compression_response.events()) {
+            status = AddGenericCandidate("compression", event.compression_id_hash(),
+                                         event.node_hash(), event.compressed_time_ms(),
+                                         event.summary(), 0.74f, "", candidates);
+            if (!status.ok()) {
+                return status;
+            }
+        }
+    }
+    telemetry->set_candidate_fetch_ms(telemetry->candidate_fetch_ms() +
+                                      ElapsedSinceMs(start_ms));
     return Status::OK();
 }
 
@@ -1333,6 +1526,21 @@ Status CollectIndexCandidates(ExecuteEnv* env, const RetrieveContextPackRequest&
             if (!status.ok()) {
                 return status;
             }
+            if (filter.index_name() == "entity" || filter.index_name() == "entity_hash") {
+                ContextEntity entity;
+                bool found_entity = false;
+                status = LoadEntityByHash(env, request.tenant_hash(), ref.primary_node_hash(),
+                                          filter.index_value_hash(), &entity, &found_entity);
+                if (!status.ok()) {
+                    return status;
+                }
+                if (found_entity) {
+                    status = AddCandidateFromEntity(entity, filter.index_name(), candidates);
+                    if (!status.ok()) {
+                        return status;
+                    }
+                }
+            }
         }
     }
     telemetry->set_index_prefilter_ms(ElapsedSinceMs(start_ms));
@@ -1376,16 +1584,22 @@ Status CollectNodeEventCandidates(ExecuteEnv* env, const RetrieveContextPackRequ
     return Status::OK();
 }
 
-float NativeCandidateScore(const RetrieveContextPackRequest& request,
+float NativeCandidateScore(ExecuteEnv* env, const RetrieveContextPackRequest& request,
                            const NativeContextCandidate& candidate) {
-    QueryEventsRequest score_request;
-    score_request.set_end_time_ms(request.end_time_ms());
-    score_request.set_as_of_ms(request.as_of_ms() == 0 ? request.end_time_ms()
-                                                       : request.as_of_ms());
-    score_request.set_decay_half_life_ms(request.decay_half_life_ms());
-    const float decayed = DecayedEventScore(score_request, candidate.event);
+    float decayed = 0.0f;
+    if (candidate.ref_type == "event") {
+        QueryEventsRequest score_request;
+        score_request.set_end_time_ms(request.end_time_ms());
+        score_request.set_as_of_ms(request.as_of_ms() == 0 ? request.end_time_ms()
+                                                           : request.as_of_ms());
+        score_request.set_decay_half_life_ms(request.decay_half_life_ms());
+        decayed = DecayedEventScore(score_request, candidate.event);
+    } else {
+        decayed = ApplyCandidateTemporalDecay(request, candidate);
+    }
     const float index_boost = candidate.matched_index_names.empty() ? 0.0f : 0.15f;
-    return std::min(1.0f, decayed + index_boost);
+    const float embedding_boost = EmbeddingBoostForCandidate(env, request, candidate);
+    return std::min(1.0f, decayed + index_boost + (embedding_boost * 0.20f));
 }
 
 Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& request,
@@ -1422,13 +1636,18 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
             return status;
         }
     }
+    status = CollectNodeSummaryAndCompressionCandidates(env, request, selected_node_hashes,
+                                                        &candidates, telemetry);
+    if (!status.ok()) {
+        return status;
+    }
 
     const uint64_t score_start_ms = NowSteadyMs();
     std::vector<NativeContextCandidate> scored_candidates;
     scored_candidates.reserve(candidates.size());
     for (auto& pair : candidates) {
         NativeContextCandidate candidate = std::move(pair.second);
-        candidate.score = NativeCandidateScore(request, candidate);
+        candidate.score = NativeCandidateScore(env, request, candidate);
         if (candidate.score < request.min_score()) {
             telemetry->set_dropped_by_score_threshold(
                 telemetry->dropped_by_score_threshold() + 1);
@@ -1441,10 +1660,13 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
                   if (left.score != right.score) {
                       return left.score > right.score;
                   }
-                  if (EventPrimaryTime(left.event) != EventPrimaryTime(right.event)) {
-                      return EventPrimaryTime(left.event) > EventPrimaryTime(right.event);
+                  if (left.event_time_ms != right.event_time_ms) {
+                      return left.event_time_ms > right.event_time_ms;
                   }
-                  return left.event.event_id_hash() < right.event.event_id_hash();
+                  if (left.ref_type != right.ref_type) {
+                      return left.ref_type < right.ref_type;
+                  }
+                  return left.ref_hash < right.ref_hash;
               });
     telemetry->set_score_ms(ElapsedSinceMs(score_start_ms));
 
@@ -1459,20 +1681,22 @@ Status RetrieveContextPack(ExecuteEnv* env, const RetrieveContextPackRequest& re
                 telemetry->dropped_by_token_budget() + 1);
             continue;
         }
-        const uint32_t tokens = EstimateTokens(candidate.event.text());
+        const uint32_t tokens = candidate.token_estimate == 0
+                                    ? EstimateTokens(candidate.text)
+                                    : candidate.token_estimate;
         if (used_tokens + tokens > max_tokens) {
             telemetry->set_dropped_by_token_budget(
                 telemetry->dropped_by_token_budget() + 1);
             continue;
         }
         ContextPackRef* ref = response->add_selected_refs();
-        ref->set_ref_type("event");
-        ref->set_ref_hash(candidate.event.event_id_hash());
+        ref->set_ref_type(candidate.ref_type);
+        ref->set_ref_hash(candidate.ref_hash);
         ref->set_node_hash(candidate.node_hash);
-        ref->set_event_time_ms(EventPrimaryTime(candidate.event));
+        ref->set_event_time_ms(candidate.event_time_ms);
         ref->set_score(candidate.score);
         ref->set_token_estimate(tokens);
-        ref->set_text(candidate.event.text());
+        ref->set_text(candidate.text);
         for (const auto& index_name : candidate.matched_index_names) {
             ref->add_matched_index_names(index_name);
         }
