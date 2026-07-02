@@ -51,6 +51,15 @@ def agent_envelope_schema() -> dict[str, object]:
             "file_refs",
             "resource_refs",
         ],
+        "required_fields_by_lifecycle": {
+            "before_llm": ["query"],
+            "after_answer": ["messages"],
+            "after_tool": ["messages"],
+            "resource_added": ["file_refs or resource_refs or raw_uri"],
+            "feedback": ["accepted_refs or rejected_refs"],
+            "session_boundary": ["scope"],
+        },
+        "optional_fields": ["scope", "local_context", "local_context_tokens", "max_context_tokens", "file_refs", "resource_refs"],
         "scope_fields": ["account_id", "tenant_id", "user_id", "session_id", "team", "project"],
         "local_context_examples": [
             "open files",
@@ -58,6 +67,14 @@ def agent_envelope_schema() -> dict[str, object]:
             "visible tool outputs",
             "terminal summaries",
             "browser/page refs",
+        ],
+        "file_ref_examples": [
+            {"path": "docs/runbook.md", "kind": "md", "visibility": "session"},
+            {"path": "approval_packet.pdf", "kind": "pdf", "visibility": "tenant_shared"},
+        ],
+        "resource_ref_examples": [
+            {"raw_uri": "file:///workspace/docs/runbook.md", "resource_type": "md"},
+            {"raw_uri": "s3://matrixark-resources/tenant/runbook.pdf", "resource_type": "pdf"},
         ],
         "do_not_send": ["hidden prompt", "system prompt", "private model chain-of-thought"],
         "lifecycle_tools": dict(LIFECYCLE_TOOLS),
@@ -211,16 +228,21 @@ Pass:
 - local_context: visible open files, selected text, tool output, terminal summaries, browser/page refs
 - local_context_tokens: estimated visible local-context tokens when known
 - max_context_tokens: remaining prompt budget for local plus remote context when known
+- file_refs/resource_refs: optional visible files or raw_uri resources to import,
+  such as a local PDF/Markdown file or an S3 resource URI
 
 Do not send hidden/internal prompt context. Send only visible user/workspace
 context. MatrixArk dedupes local refs and fills the remaining budget with remote
 events, entities, resources, skills, and summaries.
 
-After answering or using tools, call matrixark_ingest or matrixark_feedback when
-the turn produced durable information:
+After answering or using tools, call matrixark_ingest when the turn produced
+durable information:
 - accepted or rejected refs
 - final answer summary
 - correction, confirmation, decision, approval, commitment, or tool outcome
+
+Use matrixark_feedback for accepted/rejected refs when the host agent has
+explicit feedback signals.
 
 At task/session boundaries, call matrixark_session_commit so MatrixArk can run
 one-pass batch extraction over the same-session buffer.
