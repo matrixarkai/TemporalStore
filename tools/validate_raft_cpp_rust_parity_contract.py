@@ -172,6 +172,33 @@ REQUIRED_RAFT_FAIL_CLOSED_GATES = [
     "data_node_unhealthy_when_apply_lag_exceeds_threshold",
 ]
 
+REQUIRED_RAFT_FAIL_CLOSED_GATE_FIELDS = {
+    "same_quorum_rule": ["quorum_rule"],
+    "commit_applied_index_no_unexpected_drift": [
+        "commit_index_drift",
+        "applied_index_drift",
+        "max_allowed_drift",
+    ],
+    "no_stale_follower_reads_when_ready": ["readiness_status", "stale_read_count"],
+    "membership_change_result_match": ["membership_change_result"],
+    "snapshot_restore_record_count_checksum_match": ["record_count_match", "checksum_match"],
+    "metaserver_ready_after_slot_primary_assignment": [
+        "topology_ready",
+        "slot_assignment_complete",
+        "primary_assignment_complete",
+    ],
+    "data_node_unhealthy_when_apply_lag_exceeds_threshold": [
+        "raft_health_status",
+        "apply_lag_max",
+        "apply_lag_threshold",
+    ],
+}
+
+PAIRWISE_RAFT_FAIL_CLOSED_FIELDS = {
+    "same_quorum_rule": ["quorum_rule"],
+    "membership_change_result_match": ["membership_change_result"],
+}
+
 REQUIRED_RAFT_REPORT_SUMMARY_KEYS = [
     "command",
     "backend",
@@ -205,6 +232,7 @@ def _validate_contract_doc() -> list[str]:
         + REQUIRED_DATA_NODE_RAFT_METRICS
         + REQUIRED_RAFT_TEST_MATRIX_CASES
         + REQUIRED_RAFT_FAIL_CLOSED_GATES
+        + sorted({field for fields in REQUIRED_RAFT_FAIL_CLOSED_GATE_FIELDS.values() for field in fields})
         + REQUIRED_RAFT_REPORT_SUMMARY_KEYS
     ):
         if f"`{name}`" not in text:
@@ -268,6 +296,40 @@ def _validate_named_passed_map(backend: str, section: str, value: Any, required:
             continue
         if item.get("status") != "passed":
             failures.append(f"{backend} {section}.{name} status drift: {item.get('status')!r}")
+    return failures
+
+
+def _validate_fail_closed_gates(backend: str, gates: Any) -> list[str]:
+    failures = _validate_named_passed_map(backend, "fail_closed_gates", gates, REQUIRED_RAFT_FAIL_CLOSED_GATES)
+    if not isinstance(gates, dict):
+        return failures
+    for gate, fields in REQUIRED_RAFT_FAIL_CLOSED_GATE_FIELDS.items():
+        item = gates.get(gate)
+        if not isinstance(item, dict):
+            continue
+        for field in fields:
+            if field not in item:
+                failures.append(f"{backend} fail_closed_gates.{gate} missing `{field}`")
+    return failures
+
+
+def _validate_fail_closed_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    cpp_gates = cpp_report.get("fail_closed_gates")
+    rust_gates = rust_report.get("fail_closed_gates")
+    if not isinstance(cpp_gates, dict) or not isinstance(rust_gates, dict):
+        return failures
+    for gate, fields in PAIRWISE_RAFT_FAIL_CLOSED_FIELDS.items():
+        cpp_gate = cpp_gates.get(gate)
+        rust_gate = rust_gates.get(gate)
+        if not isinstance(cpp_gate, dict) or not isinstance(rust_gate, dict):
+            continue
+        for field in fields:
+            if cpp_gate.get(field) != rust_gate.get(field):
+                failures.append(
+                    f"fail_closed_gates.{gate}.{field} drift: "
+                    f"cpp={cpp_gate.get(field)!r} rust={rust_gate.get(field)!r}"
+                )
     return failures
 
 
@@ -345,20 +407,14 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
                 REQUIRED_RAFT_TEST_MATRIX_CASES,
             )
         )
-        failures.extend(
-            _validate_named_passed_map(
-                backend,
-                "fail_closed_gates",
-                report.get("fail_closed_gates"),
-                REQUIRED_RAFT_FAIL_CLOSED_GATES,
-            )
-        )
+        failures.extend(_validate_fail_closed_gates(backend, report.get("fail_closed_gates")))
         failures.extend(_validate_report_summary(backend, report.get("report_summary")))
 
     cpp_contract = cpp_report.get("raft_public_contract")
     rust_contract = rust_report.get("raft_public_contract")
     if isinstance(cpp_contract, dict) and isinstance(rust_contract, dict) and cpp_contract != rust_contract:
         failures.append("C++/Rust raft_public_contract drift")
+    failures.extend(_validate_fail_closed_pair(cpp_report, rust_report))
 
     for section in ["metaserver_raft", "data_node_raft"]:
         cpp_section = cpp_report.get(section)
