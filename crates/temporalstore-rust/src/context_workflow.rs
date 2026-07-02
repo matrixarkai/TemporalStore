@@ -645,6 +645,16 @@ pub struct ContextIngestExtractSummary {
     pub accepted: usize,
     pub failed: usize,
     pub unique_node_count: usize,
+    #[serde(default)]
+    pub extracted_node_count: usize,
+    #[serde(default)]
+    pub extracted_event_count: usize,
+    #[serde(default)]
+    pub extracted_index_ref_count: usize,
+    #[serde(default)]
+    pub extracted_dirty_marker_count: usize,
+    #[serde(default)]
+    pub extracted_summary_ref_count: usize,
     pub retrieval_node_count: usize,
     pub source_kind_counts: BTreeMap<String, usize>,
     pub provider_counts: BTreeMap<String, usize>,
@@ -1976,6 +1986,14 @@ pub fn ingest_extract_context(
         accepted,
         failed,
         unique_node_count: node_hashes.len(),
+        extracted_node_count: extracts.len(),
+        extracted_event_count: extracts.len(),
+        extracted_index_ref_count: extracts.len(),
+        extracted_dirty_marker_count: extracts.len(),
+        extracted_summary_ref_count: extracts
+            .iter()
+            .map(|extract| extract.summary_refs.len())
+            .sum(),
         retrieval_node_count: retrieve_request.node_hashes.len(),
         source_kind_counts,
         provider_counts,

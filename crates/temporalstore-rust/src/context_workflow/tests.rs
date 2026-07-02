@@ -729,6 +729,11 @@ fn context_management_ingest_extract_builds_retrieval_pipeline() {
     assert_eq!(ingest.summary.accepted, 2);
     assert_eq!(ingest.summary.failed, 0);
     assert_eq!(ingest.summary.unique_node_count, 2);
+    assert_eq!(ingest.summary.extracted_node_count, 2);
+    assert_eq!(ingest.summary.extracted_event_count, 2);
+    assert_eq!(ingest.summary.extracted_index_ref_count, 2);
+    assert_eq!(ingest.summary.extracted_dirty_marker_count, 2);
+    assert_eq!(ingest.summary.extracted_summary_ref_count, 4);
     assert_eq!(ingest.summary.retrieval_node_count, 2);
     assert_eq!(ingest.summary.source_kind_counts.get("incident"), Some(&1));
     assert_eq!(ingest.summary.source_kind_counts.get("ticket"), Some(&1));
