@@ -454,6 +454,16 @@ class MatrixKVBackfillTarget:
         except ValueError:
             return 0
 
+    def _idempotency_key(self, record: Json) -> str:
+        key = str(record.get('idempotency_key') or '')
+        if key:
+            return key
+        backfill = record.get('backfill') if isinstance(record.get('backfill'), dict) else {}
+        return str((backfill or {}).get('idempotency_key') or '')
+
+    def has_idempotency_key(self, key: str) -> bool:
+        return bool(key and self.kv.hget(f'{self.prefix}:idempotency', key))
+
     def append_many(self, records: list[Json]) -> None:
         if not records:
             return
@@ -461,24 +471,31 @@ class MatrixKVBackfillTarget:
             self._next_sequence = self.count()
         sequence = self._next_sequence
         entries: list[Json] = []
+        idempotency_entries: list[Json] = []
         if hasattr(self.kv, 'begin_bulk'):
             self.kv.begin_bulk()
         try:
             for record in records:
                 shard = sequence // self.shard_size
                 offset = sequence % self.shard_size
+                dedupe_key = self._idempotency_key(record)
+                if self.has_idempotency_key(dedupe_key):
+                    continue
                 payload = json.dumps(record, sort_keys=True, separators=(',', ':'))
                 entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'value': payload})
+                if dedupe_key:
+                    idempotency_entries.append({'key': f'{self.prefix}:idempotency', 'field': dedupe_key, 'value': str(sequence)})
                 sequence += 1
             append_records = getattr(self.kv, 'matrixark_append_records', None)
+            all_entries = entries + idempotency_entries
             if callable(append_records):
-                append_records(entries, count_key=f'{self.prefix}:record_count', count_value=str(sequence), append_options={'source': 'matrixark_context_backfill'})
+                append_records(all_entries, count_key=f'{self.prefix}:record_count', count_value=str(sequence), append_options={'source': 'matrixark_context_backfill'})
             else:
                 batch_hset = getattr(self.kv, 'batch_hset', None)
                 if callable(batch_hset):
-                    batch_hset(entries)
+                    batch_hset(all_entries)
                 else:
-                    for entry in entries:
+                    for entry in all_entries:
                         self.kv.hset(str(entry['key']), str(entry['field']), str(entry['value']))
                 self.kv.put_string(f'{self.prefix}:record_count', str(sequence))
             self._next_sequence = sequence
@@ -533,6 +550,12 @@ def make_kv(args: argparse.Namespace) -> Any:
 
 def resolve_target_prefix(args: argparse.Namespace) -> str:
     return args.source_prefix if args.mode == 'in_place' else (args.target_prefix or default_target_prefix(args.job_id))
+
+
+def clone_args(args: argparse.Namespace, **overrides: Any) -> argparse.Namespace:
+    values = vars(args).copy()
+    values.update(overrides)
+    return Namespace(**values)
 
 
 def derive_backfill_record(source_prefix: str, sequence: int, raw_record: Json) -> Json:
@@ -633,7 +656,7 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 return
             record = derive_backfill_record(args.source_prefix, sequence, raw_record)
             dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
-            if dedupe_id in seen_ids:
+            if dedupe_id in seen_ids or (not args.dry_run and target.has_idempotency_key(dedupe_id)):
                 metrics.duplicate += 1
                 checkpoint_pending_seq = sequence
                 return
@@ -643,6 +666,9 @@ def run_backfill(args: argparse.Namespace) -> Json:
                 metrics.skipped += 1
                 checkpoint_pending_seq = sequence
                 return
+            for item in materialized:
+                if not item.get('idempotency_key'):
+                    item['idempotency_key'] = dedupe_id
             pending.extend(materialized)
             checkpoint_pending_seq = sequence
             if len(pending) >= args.batch_size:
@@ -787,6 +813,68 @@ def run_activate_shadow(args: argparse.Namespace) -> Json:
     }
 
 
+def run_incremental_repair(args: argparse.Namespace) -> Json:
+    if not args.target_prefix:
+        raise BackfillError('incremental_repair requires --target-prefix for the shadow repair prefix')
+    if args.target_prefix == args.source_prefix:
+        raise BackfillError('incremental_repair target-prefix must differ from source-prefix')
+    if args.end_seq is None or args.end_seq <= args.start_seq:
+        raise BackfillError('incremental_repair requires a bounded --start-seq/--end-seq window')
+    if args.confirm_incremental_repair != 'YES':
+        raise BackfillError('incremental_repair requires --confirm-incremental-repair=YES')
+
+    validation: Json | None = None
+    if not args.skip_validation:
+        validation = run_validate_shadow(args)
+        if validation.get('status') != 'ok':
+            raise BackfillError(f'incremental repair shadow validation failed: {json.dumps(validation, sort_keys=True)}')
+
+    kv = make_kv(args)
+    active_prefix = args.repair_active_prefix or kv.get_string(args.active_prefix_key)
+    if not active_prefix:
+        raise BackfillError('incremental_repair requires --repair-active-prefix or an active prefix stored under --active-prefix-key')
+    if active_prefix in {args.source_prefix, args.target_prefix}:
+        raise BackfillError('incremental_repair active prefix must differ from source-prefix and shadow repair prefix')
+
+    promote_args = clone_args(
+        args,
+        mode='shadow',
+        target_prefix=active_prefix,
+        job_id=f'{args.job_id}:active',
+    )
+    promotion = run_backfill(promote_args)
+
+    if not args.dry_run:
+        kv = make_kv(args)
+        repaired_at_ms = int(time.time() * 1000)
+        audit = {
+            'job_id': args.job_id,
+            'repaired_at_ms': repaired_at_ms,
+            'source_prefix': args.source_prefix,
+            'shadow_prefix': args.target_prefix,
+            'active_prefix': active_prefix,
+            'start_seq': args.start_seq,
+            'end_seq': args.end_seq,
+            'validation': validation,
+            'promotion_metrics': promotion.get('metrics', {}),
+        }
+        kv.hset(f'{args.active_prefix_key}:incremental_repair_audit', args.job_id, json.dumps(audit, sort_keys=True, separators=(',', ':')))
+
+    return {
+        'status': 'ok',
+        'mode': 'incremental_repair',
+        'job_id': args.job_id,
+        'source_prefix': args.source_prefix,
+        'shadow_prefix': args.target_prefix,
+        'active_prefix': active_prefix,
+        'start_seq': args.start_seq,
+        'end_seq': args.end_seq,
+        'validation': validation,
+        'promotion': promotion,
+        'audit_key': f'{args.active_prefix_key}:incremental_repair_audit',
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Backfill MatrixArk context records from MatrixKV raw ingestion logs.')
     parser.add_argument('--metaserver', default=os.environ.get('MATRIXARK_METASERVER', '127.0.0.1:65000'))
@@ -795,10 +883,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--library-path', default=os.environ.get('TEMPORALSTORE_LIBRARY_PATH', ''))
     parser.add_argument('--source-prefix', default='matrixark:mcp')
     parser.add_argument('--target-prefix', default='')
-    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow'], default='shadow')
+    parser.add_argument('--mode', choices=['shadow', 'in_place', 'validate_shadow', 'activate_shadow', 'incremental_repair'], default='shadow')
     parser.add_argument('--confirm-in-place', default='')
     parser.add_argument('--confirm-activate', default='')
+    parser.add_argument('--confirm-incremental-repair', default='')
     parser.add_argument('--active-prefix-key', default='matrixark:context:active_prefix')
+    parser.add_argument('--repair-active-prefix', default='')
     parser.add_argument('--validation-strict', type=int, choices=[0, 1], default=1)
     parser.add_argument('--skip-validation', type=int, choices=[0, 1], default=0)
     parser.add_argument('--job-id', default=f'local-{int(time.time())}')
@@ -830,6 +920,8 @@ def main() -> int:
             summary = run_validate_shadow(args)
         elif args.mode == 'activate_shadow':
             summary = run_activate_shadow(args)
+        elif args.mode == 'incremental_repair':
+            summary = run_incremental_repair(args)
         else:
             summary = run_backfill(args)
     except Exception as exc:

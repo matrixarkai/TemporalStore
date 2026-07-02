@@ -40,7 +40,9 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             "mode": "shadow",
             "confirm_in_place": "",
             "confirm_activate": "",
+            "confirm_incremental_repair": "",
             "active_prefix_key": "matrixark:context:active_prefix",
+            "repair_active_prefix": "",
             "validation_strict": True,
             "skip_validation": False,
             "job_id": "unit",
@@ -169,6 +171,60 @@ class MatrixArkContextBackfillTest(unittest.TestCase):
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context_backfill:candidate")
             self.assertEqual(kv_after.get_string("matrixark:context:active_prefix:previous:unit"), "matrixark:context:old")
             self.assertIn("matrixark:context_backfill:candidate", kv_after.hget("matrixark:context:active_prefix:audit", "unit"))
+
+
+    def test_incremental_repair_promotes_bounded_range_to_active_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "kv.json"
+            kv = backfill.LocalJsonKV(path)
+            write_sharded(kv, "matrixark:mcp", 0, {"record_type": "context_event", "event_id_hash": 1})
+            write_sharded(kv, "matrixark:mcp", 1, {"record_type": "context_event", "event_id_hash": 2})
+            kv.put_string("matrixark:mcp:record_count", "2")
+            kv.put_string("matrixark:context:active_prefix", "matrixark:context:active")
+
+            shadow_args = self.make_args(
+                path,
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=1,
+                end_seq=2,
+                resume=False,
+            )
+            shadow = backfill.run_backfill(shadow_args)
+            self.assertEqual(shadow["metrics"]["written"], 1)
+
+            with self.assertRaises(backfill.BackfillError):
+                backfill.run_incremental_repair(self.make_args(
+                    path,
+                    mode="incremental_repair",
+                    target_prefix="matrixark:context_repair:p1",
+                    start_seq=1,
+                    end_seq=2,
+                    resume=False,
+                ))
+
+            repair_args = self.make_args(
+                path,
+                mode="incremental_repair",
+                target_prefix="matrixark:context_repair:p1",
+                start_seq=1,
+                end_seq=2,
+                confirm_incremental_repair="YES",
+                resume=False,
+            )
+            repaired = backfill.run_incremental_repair(repair_args)
+            self.assertEqual(repaired["status"], "ok")
+            self.assertEqual(repaired["active_prefix"], "matrixark:context:active")
+            self.assertEqual(repaired["promotion"]["metrics"]["written"], 1)
+
+            kv_after = backfill.LocalJsonKV(path)
+            self.assertEqual(kv_after.get_string("matrixark:context:active_prefix"), "matrixark:context:active")
+            self.assertIn("matrixark:context:active", kv_after.hget("matrixark:context:active_prefix:incremental_repair_audit", "unit"))
+            active_records = read_target_records(kv_after, "matrixark:context:active")
+            self.assertEqual([record["event_id_hash"] for record in active_records], [2])
+
+            retried = backfill.run_incremental_repair(repair_args)
+            self.assertEqual(retried["promotion"]["metrics"]["duplicate"], 1)
+            self.assertEqual(backfill.LocalJsonKV(path).get_string("matrixark:context:active:record_count"), "1")
 
     def test_missing_record_dead_letters_and_in_place_guard(self):
         with tempfile.TemporaryDirectory() as tmp:
