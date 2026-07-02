@@ -31,35 +31,37 @@ Archived raw comparison details:
 | `raw100_fixed` | -1.492% | +288.950% | -51.456% | +22.535% |
 | `raw1k_fixed` | +9.339% | +264.614% | -57.111% | -27.546% |
 
-Latest local Rust functional scale artifact:
+Latest local Rust release functional scale artifact:
 
-- `/tmp/temporalstore-rust-scale-parity-1782962380/scale_harness.json`
+- `/tmp/temporalstore-rust-release-scale-parity-current/scale_harness.json`
 
-This was a debug-profile local Rust scale run after a release build timed out during compilation, so it is
-functional scale evidence, not a release performance parity claim.
+This run used a prebuilt release `scale_harness` binary from
+`/tmp/temporalstore-rust-release-target/release/scale_harness`. It is release-mode Rust functional scale evidence.
+It is still not a full Rust-vs-C++ performance parity claim because it does not rerun the C++ comparison workload
+with identical worker counts and `--require-perf-parity`.
 
 | Metric | Value |
 |---|---:|
 | string ops | 60 |
 | hash ops | 15 |
 | sequence rows | 160 |
-| sampled reads | 10 |
-| failovers | 4 |
+| sampled reads | 8 |
+| failovers | 3 |
 | scale events | 3 |
-| elapsed ms | 35604 |
-| write ops/sec | 2.162678 |
+| elapsed ms | 12789 |
+| write ops/sec | 6.020799 |
 | replication healthy | true |
 | max replica lag | 0 |
-| Raft write p50/p95/p99 us | 102049 / 133094 / 167212 |
-| Raft replica read p50/p95/p99 us | 8158 / 104994 / 104994 |
-| sync primary write QPS | 10.718 |
-| async primary write QPS | 10.816 |
-| sync storage write p50/p95/p99 us | 692 / 1126 / 1544 |
-| async enqueue p50/p95/p99 us | 7 / 11 / 50 |
-| async flush p50/p95 us | 10983 / 23446 |
-| sync replica read QPS | 10.718 |
-| async replica read QPS | 0.541 |
-| sync / async max lag | 0 / 19 |
+| Raft write p50/p95/p99 us | 88432 / 100893 / 106677 |
+| Raft replica read p50/p95/p99 us | 10600 / 15552 / 15552 |
+| sync primary write QPS | 17.873 |
+| async primary write QPS | 21.598 |
+| sync storage write p50/p95/p99 us | 481 / 869 / 869 |
+| async enqueue p50/p95/p99 us | 1 / 27 / 27 |
+| async flush p50/p95 us | 2048 / 2326 |
+| sync replica read QPS | 17.873 |
+| async replica read QPS | 4.320 |
+| sync / async max lag | 0 / 4 |
 
 The run reported the Rust deployment path healthy for Docker/AWS SLO evidence, storage deployment scale SLO,
 metaserver/proxy/client/data-node process evidence, Raft failover, storage/cache pressure, proxy convergence,
@@ -90,8 +92,8 @@ The default report still writes comparison artifacts when parity fails. CI or re
 - Raw read throughput needs a fresh release-mode C++/Rust comparison after the Rust read-pool bridge change.
 - Full C++ parity requires a fresh local scale run with the same raw/context workload, same batch sizes,
   same worker counts, and `--require-perf-parity`.
-- Release-mode Rust scale testing should be repeated after the release binary is already built, because the
-  latest release attempt timed out during compilation rather than during the scale workload.
+- The release Rust scale harness now builds and runs locally; the remaining gap is the strict apples-to-apples
+  Rust-vs-C++ comparison gate, not release compilation.
 
 ## Required Scale Command
 
