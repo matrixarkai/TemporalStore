@@ -87,6 +87,19 @@ REQUIRED_RAFT_SUBSYSTEM_KEYS = [
     "raft_health",
 ]
 
+REQUIRED_METASERVER_RAFT_BEHAVIORS = [
+    "leader_election",
+    "namespace_table_creation",
+    "slot_assignment",
+    "primary_placement",
+    "topology_readiness",
+    "membership_add_remove",
+    "follower_catch_up",
+    "leader_failover",
+    "restart_recovery",
+    "snapshot_restore",
+]
+
 
 def _load_json(path: pathlib.Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -95,9 +108,31 @@ def _load_json(path: pathlib.Path) -> dict[str, Any]:
 def _validate_contract_doc() -> list[str]:
     text = CONTRACT.read_text(encoding="utf-8")
     failures: list[str] = []
-    for name in CANONICAL_RAFT_TYPES + REQUIRED_RAFT_TOP_LEVEL_KEYS + REQUIRED_RAFT_SUBSYSTEM_KEYS:
+    for name in (
+        CANONICAL_RAFT_TYPES
+        + REQUIRED_RAFT_TOP_LEVEL_KEYS
+        + REQUIRED_RAFT_SUBSYSTEM_KEYS
+        + REQUIRED_METASERVER_RAFT_BEHAVIORS
+    ):
         if f"`{name}`" not in text:
             failures.append(f"contract missing `{name}`")
+    return failures
+
+
+def _validate_metaserver_behaviors(backend: str, metaserver: dict[str, Any]) -> list[str]:
+    failures: list[str] = []
+    evidence = metaserver.get("behavior_evidence")
+    if not isinstance(evidence, dict):
+        return [f"{backend} metaserver_raft missing object `behavior_evidence`"]
+    for behavior in REQUIRED_METASERVER_RAFT_BEHAVIORS:
+        item = evidence.get(behavior)
+        if not isinstance(item, dict):
+            failures.append(f"{backend} metaserver_raft.behavior_evidence missing `{behavior}`")
+            continue
+        if item.get("status") != "passed":
+            failures.append(
+                f"{backend} metaserver_raft.behavior_evidence.{behavior} status drift: {item.get('status')!r}"
+            )
     return failures
 
 
@@ -131,6 +166,8 @@ def validate_report_pair(cpp_report: dict[str, Any], rust_report: dict[str, Any]
             for key in REQUIRED_RAFT_SUBSYSTEM_KEYS:
                 if key not in value:
                     failures.append(f"{backend} {section} missing `{key}`")
+            if section == "metaserver_raft":
+                failures.extend(_validate_metaserver_behaviors(backend, value))
         if not isinstance(report.get("membership_events"), list):
             failures.append(f"{backend} membership_events must be a list")
         if not isinstance(report.get("leader_election_events"), list):
@@ -188,6 +225,7 @@ def main() -> int:
     print("- operational_top_level_shape=" + ", ".join(REQUIRED_RAFT_OPERATIONAL_TOP_LEVEL_KEYS))
     print("- metadata_top_level_shape=schema_version, raft_public_contract")
     print("- subsystem_shape=" + ", ".join(REQUIRED_RAFT_SUBSYSTEM_KEYS))
+    print("- metaserver_behaviors=" + ", ".join(REQUIRED_METASERVER_RAFT_BEHAVIORS))
     return 0
 
 

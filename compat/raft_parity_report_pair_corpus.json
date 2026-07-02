@@ -31,10 +31,79 @@
       "commit_index": 128,
       "applied_index": 128,
       "snapshot_index": 96,
-      "membership_config": {"voters": [1, 2, 3], "learners": []},
-      "replica_set": [1, 2, 3],
+      "membership_config": {
+        "voters": [
+          1,
+          2,
+          3
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        1,
+        2,
+        3
+      ],
       "learner_set": [],
-      "raft_health": {"status": "healthy", "quorum": true}
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 1,
+          "term": 4
+        },
+        "namespace_table_creation": {
+          "status": "passed",
+          "namespace": "deploy_ns",
+          "table": "deploy_table"
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            4
+          ],
+          "removed": [
+            2
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 2,
+          "new_leader_id": 1
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 128
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 96,
+          "checksum_match": true
+        }
+      }
     },
     "data_node_raft": {
       "raft_group_id": "data:slot-0001",
@@ -43,16 +112,49 @@
       "commit_index": 4096,
       "applied_index": 4096,
       "snapshot_index": 3072,
-      "membership_config": {"voters": [11, 12, 13], "learners": []},
-      "replica_set": [11, 12, 13],
+      "membership_config": {
+        "voters": [
+          11,
+          12,
+          13
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        11,
+        12,
+        13
+      ],
       "learner_set": [],
-      "raft_health": {"status": "healthy", "quorum": true}
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      }
     },
     "membership_events": [
-      {"event": "add_voter", "raft_group_id": "data:slot-0001", "term": 7, "membership_config": {"voters": [11, 12, 13], "learners": []}}
+      {
+        "event": "add_voter",
+        "raft_group_id": "data:slot-0001",
+        "term": 7,
+        "membership_config": {
+          "voters": [
+            11,
+            12,
+            13
+          ],
+          "learners": []
+        }
+      }
     ],
     "leader_election_events": [
-      {"event": "leader_elected", "raft_group_id": "meta:default", "leader_id": 1, "term": 4, "commit_index": 128, "applied_index": 128}
+      {
+        "event": "leader_elected",
+        "raft_group_id": "meta:default",
+        "leader_id": 1,
+        "term": 4,
+        "commit_index": 128,
+        "applied_index": 128
+      }
     ],
     "replication_metrics": {
       "commit_index": 4096,
@@ -61,7 +163,12 @@
       "stale_read_count": 0
     },
     "failover_metrics": {
-      "raft_failover_event": {"status": "passed", "old_leader_id": 10, "new_leader_id": 11, "term": 7},
+      "raft_failover_event": {
+        "status": "passed",
+        "old_leader_id": 10,
+        "new_leader_id": 11,
+        "term": 7
+      },
       "failover_recovery_ms": 45
     },
     "snapshot_restore_metrics": {
@@ -110,10 +217,79 @@
       "commit_index": 128,
       "applied_index": 128,
       "snapshot_index": 96,
-      "membership_config": {"voters": [1, 2, 3], "learners": []},
-      "replica_set": [1, 2, 3],
+      "membership_config": {
+        "voters": [
+          1,
+          2,
+          3
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        1,
+        2,
+        3
+      ],
       "learner_set": [],
-      "raft_health": {"status": "healthy", "quorum": true}
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      },
+      "behavior_evidence": {
+        "leader_election": {
+          "status": "passed",
+          "leader_id": 1,
+          "term": 4
+        },
+        "namespace_table_creation": {
+          "status": "passed",
+          "namespace": "deploy_ns",
+          "table": "deploy_table"
+        },
+        "slot_assignment": {
+          "status": "passed",
+          "assigned_slots": [
+            1,
+            2,
+            3
+          ]
+        },
+        "primary_placement": {
+          "status": "passed",
+          "primary_node_id": 11
+        },
+        "topology_readiness": {
+          "status": "passed",
+          "topology_ready": true
+        },
+        "membership_add_remove": {
+          "status": "passed",
+          "added": [
+            4
+          ],
+          "removed": [
+            2
+          ]
+        },
+        "follower_catch_up": {
+          "status": "passed",
+          "max_lag": 0
+        },
+        "leader_failover": {
+          "status": "passed",
+          "old_leader_id": 2,
+          "new_leader_id": 1
+        },
+        "restart_recovery": {
+          "status": "passed",
+          "commit_index_after_restart": 128
+        },
+        "snapshot_restore": {
+          "status": "passed",
+          "snapshot_index": 96,
+          "checksum_match": true
+        }
+      }
     },
     "data_node_raft": {
       "raft_group_id": "data:slot-0001",
@@ -122,16 +298,49 @@
       "commit_index": 4096,
       "applied_index": 4096,
       "snapshot_index": 3072,
-      "membership_config": {"voters": [11, 12, 13], "learners": []},
-      "replica_set": [11, 12, 13],
+      "membership_config": {
+        "voters": [
+          11,
+          12,
+          13
+        ],
+        "learners": []
+      },
+      "replica_set": [
+        11,
+        12,
+        13
+      ],
       "learner_set": [],
-      "raft_health": {"status": "healthy", "quorum": true}
+      "raft_health": {
+        "status": "healthy",
+        "quorum": true
+      }
     },
     "membership_events": [
-      {"event": "add_voter", "raft_group_id": "data:slot-0001", "term": 7, "membership_config": {"voters": [11, 12, 13], "learners": []}}
+      {
+        "event": "add_voter",
+        "raft_group_id": "data:slot-0001",
+        "term": 7,
+        "membership_config": {
+          "voters": [
+            11,
+            12,
+            13
+          ],
+          "learners": []
+        }
+      }
     ],
     "leader_election_events": [
-      {"event": "leader_elected", "raft_group_id": "meta:default", "leader_id": 1, "term": 4, "commit_index": 128, "applied_index": 128}
+      {
+        "event": "leader_elected",
+        "raft_group_id": "meta:default",
+        "leader_id": 1,
+        "term": 4,
+        "commit_index": 128,
+        "applied_index": 128
+      }
     ],
     "replication_metrics": {
       "commit_index": 4096,
@@ -140,7 +349,12 @@
       "stale_read_count": 0
     },
     "failover_metrics": {
-      "raft_failover_event": {"status": "passed", "old_leader_id": 10, "new_leader_id": 11, "term": 7},
+      "raft_failover_event": {
+        "status": "passed",
+        "old_leader_id": 10,
+        "new_leader_id": 11,
+        "term": 7
+      },
       "failover_recovery_ms": 45
     },
     "snapshot_restore_metrics": {
