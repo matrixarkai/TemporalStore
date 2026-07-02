@@ -259,18 +259,22 @@ Canonical read flow:
 
 ```text
 logical key/timestamp range
--> object/page index lookup
+-> page index lookup
 -> page address list
 -> block index lookup
--> page/block read
+-> page read
 -> decode records
 -> apply tombstone/generation filters
 ```
 
 Required behavior:
 
-- Point reads use `ObjectIndex -> PageIndex -> BlockIndex`.
-- Timestamp range reads use `PageIndex` range lookup before reading blocks.
+- Point reads may use `ObjectIndex` to resolve the current logical object chain,
+  then must use `PageIndex -> BlockIndex` for durable page lookup.
+- Timestamp range reads must use `PageIndex` range lookup before reading blocks.
+- `PageIndex` returns ordered `PageAddress` values for the logical key or
+  timestamp range; `BlockIndex` resolves each page's durable physical location
+  before any record bytes are decoded.
 - Reads must reject stale generations and tombstoned records unless an explicit
   replay/debug policy asks for retained historical data.
 - Cold scans must use no-cache/no-promote reads by default.

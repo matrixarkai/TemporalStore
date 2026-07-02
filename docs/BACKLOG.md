@@ -1134,6 +1134,9 @@ Completed since the last backlog update:
       query understanding -> scope gate -> same-session node traversal ->
       shared resources/skills quota -> cross-session quota -> compact secondary
       index prefilter -> native candidate fetch/score/rerank -> budget pack.
+    - Low-level TemporalStore read path must stay canonical across C++ and Rust:
+      logical key/timestamp range -> `PageIndex` lookup -> `PageAddress` list ->
+      `BlockIndex` lookup -> page read -> decode records.
     - Placement policy should colocate records for the same hot serving unit
       where practical:
       `context:{scope_key}:node={node_hash}` for session/user nodes,
