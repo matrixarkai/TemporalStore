@@ -1,0 +1,266 @@
+#!/usr/bin/env python3
+"""Measure MatrixArk live-ingestion dual-write QPS and latency."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import statistics
+import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
+from typing import Any
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "sdk" / "python"))
+
+from matrixark_mcp_core import stable_hash  # noqa: E402
+from matrixark_mcp_temporal_adapters import MatrixArkTemporalStoreDirectAdapter  # noqa: E402
+
+Json = dict[str, Any]
+
+
+class BenchmarkError(RuntimeError):
+    pass
+
+
+class InMemoryDualWriteClient:
+    """Native-client stand-in that preserves the direct adapter append API."""
+
+    def __init__(self, *, write_delay_us: int = 0) -> None:
+        self._lock = threading.RLock()
+        self._strings: dict[str, str] = {}
+        self._hashes: dict[tuple[str, str], str] = {}
+        self.write_delay_s = max(0, write_delay_us) / 1_000_000.0
+        self.calls_by_path: dict[str, int] = {}
+        self.entries_by_path: dict[str, int] = {}
+
+    def get_string(self, key: str) -> str:
+        with self._lock:
+            return self._strings.get(key, "")
+
+    def put_string(self, key: str, value: str) -> None:
+        with self._lock:
+            self._strings[key] = value
+
+    def hset(self, key: str, field: str, value: str) -> None:
+        with self._lock:
+            self._hashes[(key, field)] = value
+
+    def hget(self, key: str, field: str) -> str:
+        with self._lock:
+            return self._hashes.get((key, field), "")
+
+    def batch_hset(self, entries: list[Json]) -> None:
+        with self._lock:
+            for entry in entries:
+                self._hashes[(str(entry["key"]), str(entry["field"]))] = str(entry["value"])
+
+    def matrixark_batch_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        if self.write_delay_s:
+            time.sleep(self.write_delay_s)
+        path = str((append_options or {}).get("append_path") or "unknown")
+        with self._lock:
+            self.calls_by_path[path] = self.calls_by_path.get(path, 0) + 1
+            self.entries_by_path[path] = self.entries_by_path.get(path, 0) + len(entries)
+            for entry in entries:
+                self._hashes[(str(entry["key"]), str(entry["field"]))] = str(entry["value"])
+            if count_key is not None and count_value is not None:
+                self._strings[str(count_key)] = str(count_value)
+
+
+def percentile(values: list[float], q: float) -> float:
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return values[0]
+    index = min(len(values) - 1, max(0, math.ceil(q * len(values)) - 1))
+    return sorted(values)[index]
+
+
+def make_record(sequence: int, *, payload_bytes: int, scope_key: str) -> Json:
+    text = f"dual-write benchmark record {sequence} " + ("x" * max(0, payload_bytes))
+    return {
+        "record_type": "context_event",
+        "event_id_hash": stable_hash(f"dual-write-benchmark:{sequence}"),
+        "tenant_hash": 1001,
+        "scope_key": scope_key,
+        "node_hash": sequence % 64,
+        "updated_at_ms": 1780000000000 + sequence,
+        "text": text,
+        "source_kind": "benchmark",
+    }
+
+
+def make_direct_adapter(args: argparse.Namespace, client: Any | None = None) -> MatrixArkTemporalStoreDirectAdapter:
+    if client is None:
+        return MatrixArkTemporalStoreDirectAdapter(
+            metaserver=args.metaserver,
+            namespace=args.namespace,
+            table=args.table,
+            library_path=args.library_path,
+            storage_prefix=args.storage_prefix,
+            request_timeout_ms=args.request_timeout_ms,
+            io_timeout_ms=args.io_timeout_ms,
+        )
+    adapter = MatrixArkTemporalStoreDirectAdapter.__new__(MatrixArkTemporalStoreDirectAdapter)
+    adapter._client = client
+    adapter._metaserver = args.metaserver
+    adapter._namespace = args.namespace
+    adapter._table = args.table
+    adapter._storage_prefix = args.storage_prefix.rstrip(":")
+    adapter._record_hash_key = f"{adapter._storage_prefix}:records"
+    adapter._index_key = f"{adapter._storage_prefix}:record_index"
+    adapter._count_key = f"{adapter._storage_prefix}:record_count"
+    adapter._raw_ingestion_prefix = (args.raw_storage_prefix or f"{adapter._storage_prefix}:raw_ingestion").rstrip(":")
+    adapter._raw_record_hash_key = f"{adapter._raw_ingestion_prefix}:records"
+    adapter._raw_count_key = f"{adapter._raw_ingestion_prefix}:record_count"
+    adapter._raw_entry_count_cache = None
+    adapter._shard_size = args.shard_size
+    adapter._index_cache = None
+    adapter._records_cache = None
+    adapter._retrieval_candidate_cache = {}
+    adapter._retrieval_candidate_cache_lock = threading.RLock()
+    adapter._entry_count_cache = None
+    adapter._legacy_index_mode = False
+    adapter._records_lock = threading.RLock()
+    adapter._write_retries = 0
+    adapter._write_backoff_s = 0.0
+    adapter._write_throttle_s = 0.0
+    return adapter
+
+
+def run_benchmark(args: argparse.Namespace) -> Json:
+    if args.records <= 0:
+        raise BenchmarkError("--records must be positive")
+    if args.workers <= 0:
+        raise BenchmarkError("--workers must be positive")
+    if args.batch_size <= 0:
+        raise BenchmarkError("--batch-size must be positive")
+    client = InMemoryDualWriteClient(write_delay_us=args.local_write_delay_us) if args.mode == "local" else None
+    adapter = make_direct_adapter(args, client)
+    latencies_ms: list[float] = []
+    latency_lock = threading.Lock()
+    sequence_lock = threading.Lock()
+    next_sequence = 0
+
+    def next_batch() -> list[Json]:
+        nonlocal next_sequence
+        with sequence_lock:
+            start = next_sequence
+            if start >= args.records:
+                return []
+            end = min(args.records, start + args.batch_size)
+            next_sequence = end
+        return [make_record(seq, payload_bytes=args.payload_bytes, scope_key=args.scope_key) for seq in range(start, end)]
+
+    def worker() -> int:
+        written = 0
+        while True:
+            batch = next_batch()
+            if not batch:
+                return written
+            started = time.perf_counter()
+            adapter.append_many(batch)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
+            with latency_lock:
+                latencies_ms.append(elapsed_ms)
+            written += len(batch)
+
+    started = time.perf_counter()
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [executor.submit(worker) for _ in range(args.workers)]
+        total_written = sum(future.result() for future in as_completed(futures))
+    elapsed_s = max(0.000001, time.perf_counter() - started)
+    latencies_sorted = sorted(latencies_ms)
+    raw_count = getattr(adapter, "_raw_entry_count_cache", None)
+    serving_log_entries = getattr(adapter, "_entry_count_cache", None)
+    summary: Json = {
+        "status": "ok",
+        "mode": args.mode,
+        "records": total_written,
+        "workers": args.workers,
+        "batch_size": args.batch_size,
+        "payload_bytes": args.payload_bytes,
+        "elapsed_ms": round(elapsed_s * 1000.0, 3),
+        "ingestion_qps": round(total_written / elapsed_s, 3),
+        "batch_qps": round(len(latencies_ms) / elapsed_s, 3),
+        "caller_visible_batch_latency_ms": {
+            "samples": len(latencies_ms),
+            "avg": round(statistics.fmean(latencies_ms), 3) if latencies_ms else 0.0,
+            "p50": round(percentile(latencies_sorted, 0.50), 3),
+            "p95": round(percentile(latencies_sorted, 0.95), 3),
+            "p99": round(percentile(latencies_sorted, 0.99), 3),
+            "max": round(max(latencies_ms), 3) if latencies_ms else 0.0,
+        },
+        "caller_visible_record_latency_ms_estimate": {
+            "avg": round((statistics.fmean(latencies_ms) / args.batch_size), 6) if latencies_ms else 0.0,
+            "p95": round((percentile(latencies_sorted, 0.95) / args.batch_size), 6) if latencies_ms else 0.0,
+        },
+        "dual_write_return_policy": "append_many returns after raw MatrixKV append and serving TemporalStore append both finish",
+        "storage_prefix": args.storage_prefix,
+        "raw_storage_prefix": getattr(adapter, "_raw_ingestion_prefix", args.raw_storage_prefix or f"{args.storage_prefix}:raw_ingestion"),
+        "raw_record_count_observed": raw_count,
+        "serving_log_entries_observed": serving_log_entries,
+    }
+    if client is not None:
+        summary["local_native_call_counts"] = {
+            "calls_by_append_path": dict(sorted(client.calls_by_path.items())),
+            "entries_by_append_path": dict(sorted(client.entries_by_path.items())),
+        }
+        summary["dual_write_counts_validated"] = (
+            raw_count == total_written
+            and serving_log_entries is not None
+            and serving_log_entries > 0
+            and client.calls_by_path.get("matrixark_raw_ingestion_log", 0) > 0
+            and client.calls_by_path.get("native_append_queue", 0) > 0
+        )
+    return summary
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Benchmark synchronous MatrixArk dual-write ingestion QPS and latency.")
+    parser.add_argument("--mode", choices=["local", "direct"], default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_MODE", "local"))
+    parser.add_argument("--records", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_RECORDS", "10000")))
+    parser.add_argument("--workers", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_WORKERS", "4")))
+    parser.add_argument("--batch-size", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_BATCH_SIZE", "128")))
+    parser.add_argument("--payload-bytes", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_PAYLOAD_BYTES", "128")))
+    parser.add_argument("--scope-key", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_SCOPE_KEY", "benchmark:tenant=1001"))
+    parser.add_argument("--local-write-delay-us", type=int, default=int(os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_LOCAL_WRITE_DELAY_US", "0")))
+    parser.add_argument("--storage-prefix", default=os.environ.get("MATRIXARK_STORAGE_PREFIX", "matrixark:mcp:bench"))
+    parser.add_argument("--raw-storage-prefix", default=os.environ.get("MATRIXARK_DIRECT_RAW_STORAGE_PREFIX", ""))
+    parser.add_argument("--shard-size", type=int, default=int(os.environ.get("MATRIXARK_DIRECT_RECORD_LOG_SHARD_SIZE", "4096")))
+    parser.add_argument("--metaserver", default=os.environ.get("TEMPORALSTORE_METASERVER", "127.0.0.1:65000"))
+    parser.add_argument("--namespace", default=os.environ.get("MATRIXARK_NAMESPACE", "matrixark"))
+    parser.add_argument("--table", default=os.environ.get("MATRIXARK_TABLE", "context"))
+    parser.add_argument("--library-path", default=os.environ.get("TEMPORALSTORE_LIBRARY_PATH", ""))
+    parser.add_argument("--request-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_REQUEST_TIMEOUT_MS", "20000")))
+    parser.add_argument("--io-timeout-ms", type=int, default=int(os.environ.get("TEMPORALSTORE_IO_TIMEOUT_MS", "20000")))
+    parser.add_argument("--json-output", default=os.environ.get("MATRIXARK_DUAL_WRITE_BENCH_JSON", ""))
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    summary = run_benchmark(args)
+    text = json.dumps(summary, indent=2, sort_keys=True)
+    print(text)
+    if args.json_output:
+        Path(args.json_output).write_text(text + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

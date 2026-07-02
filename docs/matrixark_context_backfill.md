@@ -174,6 +174,67 @@ A corrupt, missing, or unreadable source record increments `failed` and `dead_le
 
 By default, a bad record does not stop the job. Use `--fail-fast` for debugging or for strict migration gates where any bad source record should stop the run.
 
+
+## Dual-Write Ingestion Performance Benchmark
+
+Live ingestion now writes every incoming MatrixArk payload to two places before the ingestion call returns:
+
+1. the immutable MatrixKV raw ingestion log under `matrixark:mcp:raw_ingestion`
+2. the materialized TemporalStore context-serving log under the active serving prefix
+
+Use `tools/matrixark_dual_write_ingestion_benchmark.py` to measure that synchronous path. The timer wraps `append_many`, so reported QPS and latency include both native append calls: raw MatrixKV append plus serving TemporalStore append.
+
+Local smoke, no TemporalStore cluster required:
+
+```bash
+python3 tools/matrixark_dual_write_ingestion_benchmark.py \
+  --mode=local \
+  --records=10000 \
+  --workers=4 \
+  --batch-size=128 \
+  --payload-bytes=128 \
+  --json-output=/tmp/matrixark_dual_write_bench.json
+```
+
+Direct TemporalStore/MatrixKV measurement against a running local cluster:
+
+```bash
+TEMPORALSTORE_LIBRARY_PATH=/path/to/libtemporalstore_sdk.so \
+python3 tools/matrixark_dual_write_ingestion_benchmark.py \
+  --mode=direct \
+  --metaserver=127.0.0.1:65000 \
+  --namespace=matrixark \
+  --table=context \
+  --storage-prefix=matrixark:mcp:bench \
+  --records=100000 \
+  --workers=8 \
+  --batch-size=256 \
+  --payload-bytes=256
+```
+
+Key output fields:
+
+| Field | Meaning |
+| --- | --- |
+| `ingestion_qps` | Records per second observed by callers after both writes complete. |
+| `caller_visible_batch_latency_ms` | Latency percentiles for one `append_many` call, including raw and serving writes. |
+| `caller_visible_record_latency_ms_estimate` | Batch latency divided by batch size, useful for quick per-record comparison across batch sizes. |
+| `raw_record_count_observed` | Raw MatrixKV ingestion records appended. This should equal `records`. |
+| `serving_log_entries_observed` | Serving append-log entries. This can be lower than raw records because the serving path can bundle records and also writes secondary index entries. |
+| `local_native_call_counts` | Local-mode proof that both `matrixark_raw_ingestion_log` and `native_append_queue` append paths were called. |
+| `dual_write_return_policy` | Confirms the measured return boundary: raw append and serving append both finished before return. |
+
+Recommended scale matrix:
+
+| Profile | Records | Workers | Batch size | Payload | Purpose |
+| --- | ---: | ---: | ---: | ---: | --- |
+| smoke | 1,000 | 2-4 | 50-128 | 64-128 B | validates the benchmark and dual-write counters |
+| baseline | 100,000 | 4 | 128 | 128 B | comparable daily regression signal |
+| high concurrency | 1,000,000 | 8-32 | 256-1024 | 256 B | saturates ingestion write path |
+| large payload | 100,000 | 4-8 | 64-256 | 1-4 KB | measures context-rich payload impact |
+
+For production-style numbers, use `--mode=direct` with a real local or Docker TemporalStore cluster. Local mode is intentionally a fast correctness and harness smoke; it does not represent disk, network, Raft, or shared-store latency.
+
 ## Batch Backfills
 
 Batch backfills are the normal path for full or large-range rebuilds. A batch backfill is not a different mode; it is `shadow` mode with a production-sized `--batch-size`, resumable checkpoints, and batch read/write APIs enabled by the backend.
