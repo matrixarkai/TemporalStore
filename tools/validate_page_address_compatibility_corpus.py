@@ -25,6 +25,14 @@ REQUIRED_ADDRESS_FIELDS = {
     "length",
     "generation",
 }
+REQUIRED_BLOCK_ADDRESS_FIELDS = {
+    "shard_id",
+    "zone_id",
+    "block_id",
+    "offset",
+    "length",
+    "checksum",
+}
 
 
 def _load_corpus() -> dict[str, Any]:
@@ -37,6 +45,15 @@ def _address_key(address: dict[str, Any]) -> tuple[int, int, int, int, int]:
         int(address["zone_id"]),
         int(address["segment_id"]),
         int(address["page_id"]),
+        int(address["offset"]),
+    )
+
+
+def _block_address_key(address: dict[str, Any]) -> tuple[int, int, int, int]:
+    return (
+        int(address["shard_id"]),
+        int(address["zone_id"]),
+        int(address["block_id"]),
         int(address["offset"]),
     )
 
@@ -58,11 +75,33 @@ def validate_encode_decode(addresses: list[dict[str, Any]]) -> None:
             raise AssertionError(f"{address['id']} length must be positive")
 
 
+def validate_block_encode_decode(block_addresses: list[dict[str, Any]]) -> None:
+    for address in block_addresses:
+        missing = REQUIRED_BLOCK_ADDRESS_FIELDS - set(address)
+        if missing:
+            raise AssertionError(f"{address.get('id', '<missing id>')} missing block fields: {sorted(missing)}")
+        encoded = json.dumps(address, sort_keys=True, separators=(",", ":"))
+        decoded = json.loads(encoded)
+        if decoded != address:
+            raise AssertionError(f"{address['id']} JSON encode/decode changed the block address")
+        if int(address["length"]) <= 0:
+            raise AssertionError(f"{address['id']} block length must be positive")
+        if not str(address["checksum"]).startswith("sha256:"):
+            raise AssertionError(f"{address['id']} block checksum must be explicit")
+
+
 def validate_stable_order(corpus: dict[str, Any], addresses: list[dict[str, Any]]) -> None:
     ordered = [address["id"] for address in sorted(addresses, key=_address_key)]
     expected = corpus["expected_stable_order"]
     if ordered != expected:
         raise AssertionError(f"stable address order mismatch: got {ordered}, expected {expected}")
+
+
+def validate_block_stable_order(corpus: dict[str, Any], block_addresses: list[dict[str, Any]]) -> None:
+    ordered = [address["id"] for address in sorted(block_addresses, key=_block_address_key)]
+    expected = corpus["expected_block_stable_order"]
+    if ordered != expected:
+        raise AssertionError(f"stable block address order mismatch: got {ordered}, expected {expected}")
 
 
 def validate_timestamp_range_lookup(corpus: dict[str, Any]) -> None:
@@ -200,12 +239,16 @@ def validate_restart_rebuild_indexes(corpus: dict[str, Any]) -> None:
 
     page_entries = manifest["page_index_entries"]
     block_entries = manifest["block_index_entries"]
+    object_entries = manifest["object_index_entries"]
     if len(page_entries) != int(expected["page_index_entry_count"]):
         raise AssertionError("restart page index entry count mismatch")
     if len(block_entries) != int(expected["block_index_entry_count"]):
         raise AssertionError("restart block index entry count mismatch")
+    if len(object_entries) != int(expected["object_index_entry_count"]):
+        raise AssertionError("restart object index entry count mismatch")
 
     address_by_id = {address["id"]: address for address in corpus["addresses"]}
+    block_address_by_id = {address["id"]: address for address in corpus["block_addresses"]}
     block_by_id = {entry["address_id"]: entry for entry in block_entries}
     for entry in page_entries:
         address_id = entry["address_id"]
@@ -214,8 +257,17 @@ def validate_restart_rebuild_indexes(corpus: dict[str, Any]) -> None:
         block_entry = block_by_id.get(address_id)
         if not block_entry:
             raise AssertionError(f"block index missing durable location for {address_id}")
+        block_address_id = block_entry.get("block_address_id")
+        if block_address_id not in block_address_by_id:
+            raise AssertionError(f"block index references unknown BlockAddress {block_address_id}")
         if block_entry.get("checksum") != address_by_id[address_id].get("checksum"):
             raise AssertionError(f"checksum mismatch for rebuilt address {address_id}")
+
+    page_ids = {entry["address_id"] for entry in page_entries}
+    for entry in object_entries:
+        referenced = set(entry["page_address_ids"])
+        if not referenced.issubset(page_ids):
+            raise AssertionError(f"object index references missing page addresses: {sorted(referenced - page_ids)}")
 
     lookup_query_name = expected["lookup_query_name"]
     query = next(
@@ -242,9 +294,12 @@ def main() -> int:
     if corpus.get("schema_version") != 1:
         raise AssertionError("page address corpus schema_version must be 1")
     addresses = corpus["addresses"]
+    block_addresses = corpus["block_addresses"]
 
     validate_encode_decode(addresses)
+    validate_block_encode_decode(block_addresses)
     validate_stable_order(corpus, addresses)
+    validate_block_stable_order(corpus, block_addresses)
     validate_timestamp_range_lookup(corpus)
     validate_page_split(corpus)
     validate_compaction_rewrite(corpus)
@@ -254,13 +309,15 @@ def main() -> int:
 
     print("page address compatibility corpus passed:")
     print("- encode/decode PageAddress")
+    print("- encode/decode BlockAddress")
     print("- stable ordering by shard/zone/segment/page/offset")
+    print("- stable BlockAddress ordering by shard/zone/block/offset")
     print("- timestamp range to page address lookup")
     print("- page split behavior")
     print("- compaction rewrite preserves logical records")
     print("- tombstone skips stale records")
     print("- cold scan does not warm serving cache")
-    print("- crash/restart rebuilds page/block index")
+    print("- crash/restart rebuilds page/block/object index")
     return 0
 
 
