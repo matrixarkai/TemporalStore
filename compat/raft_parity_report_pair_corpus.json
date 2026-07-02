@@ -1,0 +1,163 @@
+{
+  "schema_version": 1,
+  "name": "temporalstore-raft-parity-report-pair-corpus",
+  "description": "Synthetic C++/Rust report pair proving the shared Raft public contract and top-level report shape.",
+  "cpp": {
+    "schema_version": 1,
+    "raft_public_contract": {
+      "raft_node_id": "RaftNodeId",
+      "raft_group_id": "RaftGroupId",
+      "term": "Term",
+      "log_index": "LogIndex",
+      "commit_index": "CommitIndex",
+      "applied_index": "AppliedIndex",
+      "snapshot_index": "SnapshotIndex",
+      "leader_id": "LeaderId",
+      "membership_config": "MembershipConfig",
+      "replica_set": "ReplicaSet",
+      "learner_set": "LearnerSet",
+      "raft_health": "RaftHealth",
+      "raft_failover_event": "RaftFailoverEvent"
+    },
+    "raft_backend_identity": {
+      "backend": "cpp",
+      "engine": "temporalstore-cpp",
+      "raft_library": "temporalstore-raft"
+    },
+    "metaserver_raft": {
+      "raft_group_id": "meta:default",
+      "leader_id": 1,
+      "term": 4,
+      "commit_index": 128,
+      "applied_index": 128,
+      "snapshot_index": 96,
+      "membership_config": {"voters": [1, 2, 3], "learners": []},
+      "replica_set": [1, 2, 3],
+      "learner_set": [],
+      "raft_health": {"status": "healthy", "quorum": true}
+    },
+    "data_node_raft": {
+      "raft_group_id": "data:slot-0001",
+      "leader_id": 11,
+      "term": 7,
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "snapshot_index": 3072,
+      "membership_config": {"voters": [11, 12, 13], "learners": []},
+      "replica_set": [11, 12, 13],
+      "learner_set": [],
+      "raft_health": {"status": "healthy", "quorum": true}
+    },
+    "membership_events": [
+      {"event": "add_voter", "raft_group_id": "data:slot-0001", "term": 7, "membership_config": {"voters": [11, 12, 13], "learners": []}}
+    ],
+    "leader_election_events": [
+      {"event": "leader_elected", "raft_group_id": "meta:default", "leader_id": 1, "term": 4, "commit_index": 128, "applied_index": 128}
+    ],
+    "replication_metrics": {
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "max_apply_lag": 0,
+      "stale_read_count": 0
+    },
+    "failover_metrics": {
+      "raft_failover_event": {"status": "passed", "old_leader_id": 10, "new_leader_id": 11, "term": 7},
+      "failover_recovery_ms": 45
+    },
+    "snapshot_restore_metrics": {
+      "snapshot_index": 3072,
+      "snapshot_restore_ms": 33,
+      "checksum_match": true
+    },
+    "readiness": {
+      "status": "ready",
+      "topology_ready": true,
+      "metaserver_ready": true,
+      "data_node_ready": true
+    },
+    "parity_status": {
+      "feature_correct": true,
+      "performance_candidate": true,
+      "production_performance_parity": false
+    }
+  },
+  "rust": {
+    "schema_version": 1,
+    "raft_public_contract": {
+      "raft_node_id": "RaftNodeId",
+      "raft_group_id": "RaftGroupId",
+      "term": "Term",
+      "log_index": "LogIndex",
+      "commit_index": "CommitIndex",
+      "applied_index": "AppliedIndex",
+      "snapshot_index": "SnapshotIndex",
+      "leader_id": "LeaderId",
+      "membership_config": "MembershipConfig",
+      "replica_set": "ReplicaSet",
+      "learner_set": "LearnerSet",
+      "raft_health": "RaftHealth",
+      "raft_failover_event": "RaftFailoverEvent"
+    },
+    "raft_backend_identity": {
+      "backend": "rust",
+      "engine": "temporalstore-rust",
+      "raft_library": "rustraft"
+    },
+    "metaserver_raft": {
+      "raft_group_id": "meta:default",
+      "leader_id": 1,
+      "term": 4,
+      "commit_index": 128,
+      "applied_index": 128,
+      "snapshot_index": 96,
+      "membership_config": {"voters": [1, 2, 3], "learners": []},
+      "replica_set": [1, 2, 3],
+      "learner_set": [],
+      "raft_health": {"status": "healthy", "quorum": true}
+    },
+    "data_node_raft": {
+      "raft_group_id": "data:slot-0001",
+      "leader_id": 11,
+      "term": 7,
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "snapshot_index": 3072,
+      "membership_config": {"voters": [11, 12, 13], "learners": []},
+      "replica_set": [11, 12, 13],
+      "learner_set": [],
+      "raft_health": {"status": "healthy", "quorum": true}
+    },
+    "membership_events": [
+      {"event": "add_voter", "raft_group_id": "data:slot-0001", "term": 7, "membership_config": {"voters": [11, 12, 13], "learners": []}}
+    ],
+    "leader_election_events": [
+      {"event": "leader_elected", "raft_group_id": "meta:default", "leader_id": 1, "term": 4, "commit_index": 128, "applied_index": 128}
+    ],
+    "replication_metrics": {
+      "commit_index": 4096,
+      "applied_index": 4096,
+      "max_apply_lag": 0,
+      "stale_read_count": 0
+    },
+    "failover_metrics": {
+      "raft_failover_event": {"status": "passed", "old_leader_id": 10, "new_leader_id": 11, "term": 7},
+      "failover_recovery_ms": 45
+    },
+    "snapshot_restore_metrics": {
+      "snapshot_index": 3072,
+      "snapshot_restore_ms": 33,
+      "checksum_match": true
+    },
+    "readiness": {
+      "status": "ready",
+      "topology_ready": true,
+      "metaserver_ready": true,
+      "data_node_ready": true
+    },
+    "parity_status": {
+      "feature_correct": true,
+      "performance_candidate": true,
+      "production_performance_parity": false
+    }
+  }
+}
