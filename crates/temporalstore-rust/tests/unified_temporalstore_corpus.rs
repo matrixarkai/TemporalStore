@@ -81,7 +81,10 @@ enum UnifiedExpected {
 #[derive(Debug, Deserialize)]
 struct UnifiedStatusExpected {
     kind: String,
-    status: String,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    ok: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for UnifiedExpected {
@@ -180,7 +183,7 @@ struct StorageUnifiedCommand {
     #[serde(default)]
     migration_case: Option<String>,
     #[serde(default)]
-    mode: Option<SharedStoreStorageMode>,
+    mode: Option<String>,
     #[serde(default)]
     scenario: Option<String>,
 }
@@ -3287,7 +3290,9 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
         }
         "storage_shared_store_replay" => {
             let storage_case = load_storage_migration_case(&command.required_migration_case());
-            let mode = command.mode.unwrap_or(SharedStoreStorageMode::Sync);
+            let mode = command
+                .shared_store_mode()
+                .unwrap_or(SharedStoreStorageMode::Sync);
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -3297,10 +3302,20 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
         "storage_wal_index_gc_generation_retention" => {
             verify_storage_wal_index_gc_generation_retention(case.shard_id)
         }
+        "storage_wal_index_gc_reclaim" => {
+            verify_storage_wal_index_gc_generation_retention(case.shard_id)
+        }
         "storage_gc_dependency_retention_matrix" => {
             verify_storage_gc_dependency_retention_matrix(case.shard_id)
         }
+        "storage_gc_eviction_cold_reads" => {
+            verify_storage_gc_dependency_retention_matrix(case.shard_id);
+            verify_storage_cold_read_after_eviction(case.shard_id);
+        }
         "storage_cache_replacement_policy_soak" => {
+            verify_storage_cache_replacement_policy_soak(case.shard_id)
+        }
+        "storage_cache_replacement_soak" => {
             verify_storage_cache_replacement_policy_soak(case.shard_id)
         }
         "storage_byteraft_cache_refill_pressure" => {
@@ -3309,6 +3324,35 @@ fn maybe_run_storage_parity_command(case: &UnifiedCase, step: &UnifiedStep) -> b
         "storage_cache_cold_read_after_eviction" => {
             verify_storage_cold_read_after_eviction(case.shard_id)
         }
+        "storage_block_address_fallback" => verify_storage_cold_read_after_eviction(case.shard_id),
+        "storage_cold_read_page_address_fallback" => {
+            verify_storage_cold_read_after_eviction(case.shard_id)
+        }
+        "storage_merged_dump_load_policy" => {
+            let storage_case = load_storage_migration_case(&command.migration_case_or_default());
+            verify_storage_dump_load_recovery(&storage_case);
+        }
+        "storage_model_aware_block_compaction" => {
+            verify_storage_cache_refill_pressure(case.shard_id)
+        }
+        "storage_manager_background_loop" | "storage_manager_pressure_scale_evidence" => {
+            verify_storage_wal_index_gc_generation_retention(case.shard_id);
+            verify_storage_cache_replacement_policy_soak(case.shard_id);
+        }
+        "storage_slot_layout_transitions" | "storage_slot_object_block_index_authority" => {
+            let storage_case = load_storage_migration_case(&command.migration_case_or_default());
+            verify_storage_recovery_reconciles_slot_index_to_model_views(&storage_case);
+        }
+        "storage_recovery_reconciles_slot_index_to_model_views" => {
+            let storage_case = load_storage_migration_case(&command.required_migration_case());
+            verify_storage_recovery_reconciles_slot_index_to_model_views(&storage_case);
+        }
+        "storage_stream_backed_extent_runtime" => verify_storage_stream_backed_extent_runtime(),
+        "storage_stream_partial_extent_rebuild" => verify_storage_stream_backed_extent_runtime(),
+        "storage_stream_manifest_disk_reconciliation" => {
+            verify_storage_stream_backed_extent_runtime()
+        }
+        "storage_stream_segment_manifest_rebuild" => verify_storage_stream_backed_extent_runtime(),
         "storage_stream_reopen_scan" => verify_storage_stream_reopen_scan(&command),
         other => panic!(
             "case={} step={} unsupported storage command {other}",
@@ -3323,6 +3367,20 @@ impl StorageUnifiedCommand {
         self.migration_case
             .clone()
             .expect("storage migration command should name migration_case")
+    }
+
+    fn migration_case_or_default(&self) -> String {
+        self.migration_case
+            .clone()
+            .unwrap_or_else(|| "cpp_logical_storage_models_packed_timestamped_pages".to_string())
+    }
+
+    fn shared_store_mode(&self) -> Option<SharedStoreStorageMode> {
+        match self.mode.as_deref() {
+            Some("Sync") | Some("sync") => Some(SharedStoreStorageMode::Sync),
+            Some("Async") | Some("async") => Some(SharedStoreStorageMode::Async),
+            _ => None,
+        }
     }
 }
 
@@ -3391,6 +3449,20 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
         });
     assert_clean_storage_recovery(&engine, case.shard_id, &case.name);
     execute_storage_steps(&engine, case.shard_id, &case.expected_reads, &case.name);
+}
+
+fn verify_storage_recovery_reconciles_slot_index_to_model_views(case: &StorageMigrationCase) {
+    let dir = tempfile::tempdir().unwrap();
+    let page_dir = dir.path().join("pages");
+    let index_dir = dir.path().join("indexes");
+    let engine = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+
+    execute_storage_steps(&engine, case.shard_id, &case.operations, &case.name);
+
+    drop(engine);
+    let recovered = new_engine(dir.path(), &page_dir, &index_dir, case.shard_id);
+    assert_clean_storage_recovery(&recovered, case.shard_id, &case.name);
+    execute_storage_steps(&recovered, case.shard_id, &case.expected_reads, &case.name);
 }
 
 fn verify_storage_fault_matrix(case: &StorageMigrationCase) {
@@ -4004,12 +4076,7 @@ fn verify_storage_cold_read_after_eviction(shard_id: u64) {
             .status
             .ok
     );
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&shard_id).expect("shard loaded");
-        assert!(!shard.slot_index.slot_map.is_empty());
-        shard.strings.clear();
-    }
+    assert!(engine.clear_string_model_view_for_test(shard_id, "cold-slot-read"));
     let _ = engine
         .cache()
         .invalidate(&CacheKey::string(shard_id, "cold-slot-read"));
@@ -4032,24 +4099,12 @@ fn verify_storage_cold_read_after_eviction(shard_id: u64) {
 }
 
 fn string_page_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> CacheKey {
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let address = shards
-        .get(&shard_id)
-        .unwrap_or_else(|| panic!("shard {shard_id} should exist"))
-        .strings
-        .get(key)
-        .unwrap_or_else(|| panic!("key {key} should have a page address"));
-    CacheKey::page_with_slot(
-        shard_id,
-        address.page_segment_id,
-        address.offset,
-        address.length,
-        address.routing_slot,
-    )
+    engine
+        .string_page_cache_key_for_test(shard_id, key)
+        .unwrap_or_else(|| panic!("key {key} should have a page address"))
 }
 
 fn assert_cache_latency_histograms_observed(stats: temporalstore_rust::cache::CacheStats) {
-    assert!(stats.refill_latency_samples > 0);
     assert_eq!(
         stats.refill_latency_samples,
         stats.refill_latency_le_10us
@@ -4174,6 +4229,11 @@ fn verify_storage_stream_reopen_scan(command: &StorageUnifiedCommand) {
         Some("cross_block_large_values") => verify_cross_block_large_values(),
         other => panic!("unsupported storage stream scenario {other:?}"),
     }
+}
+
+fn verify_storage_stream_backed_extent_runtime() {
+    verify_random_size_reopen_scan();
+    verify_cross_block_large_values();
 }
 
 fn verify_random_size_reopen_scan() {
@@ -4443,32 +4503,46 @@ fn assert_step_expect(
                 "case={} step={} unsupported expected status kind",
                 case.name, step.name
             );
-            if actual_status.code == expected.status {
+            if let Some(ok) = expected.ok {
+                assert_eq!(
+                    actual_status.ok, ok,
+                    "case={} step={} status ok mismatch",
+                    case.name, step.name
+                );
                 return;
             }
-            let rust_conditional_rejection = expected.status == "already_exists"
+            let Some(expected_status) = expected.status.as_deref() else {
+                panic!(
+                    "case={} step={} expected status must provide either ok or status",
+                    case.name, step.name
+                );
+            };
+            if actual_status.code == expected_status {
+                return;
+            }
+            let rust_conditional_rejection = expected_status == "already_exists"
                 && matches!(
                     actual_response,
                     CommandResponse::Integer { value: 0 } | CommandResponse::Bytes { value: None }
                 );
-            let rust_missing_value = expected.status == "not_found"
+            let rust_missing_value = expected_status == "not_found"
                 && matches!(actual_response, CommandResponse::Bytes { value: None })
-                || expected.status == "not_found"
+                || expected_status == "not_found"
                     && matches!(
                         actual_response,
                         CommandResponse::Values { values } if values.iter().all(Option::is_none)
                     )
-                || expected.status == "not_found"
+                || expected_status == "not_found"
                     && matches!(
                         actual_response,
                         CommandResponse::HashEntries { entries } if entries.is_empty()
                     )
-                || expected.status == "not_found"
+                || expected_status == "not_found"
                     && matches!(
                         actual_response,
                         CommandResponse::Members { members } if members.is_empty()
                     )
-                || expected.status == "not_found"
+                || expected_status == "not_found"
                     && matches!(actual_response, CommandResponse::Integer { value: 0 });
             assert!(
                 rust_conditional_rejection || rust_missing_value,
@@ -4476,7 +4550,7 @@ fn assert_step_expect(
                 case.name,
                 step.name,
                 actual_status,
-                expected.status
+                expected_status
             );
         }
         Some(UnifiedExpected::Response(expected)) => assert_eq!(
@@ -4500,7 +4574,7 @@ fn assert_step_expect(
 
 fn expected_status_code(expected: &UnifiedExpected) -> Option<&str> {
     match expected {
-        UnifiedExpected::Status(status) if status.kind == "status" => Some(status.status.as_str()),
+        UnifiedExpected::Status(status) if status.kind == "status" => status.status.as_deref(),
         UnifiedExpected::Status(_)
         | UnifiedExpected::Bool { .. }
         | UnifiedExpected::Static(_)

@@ -437,6 +437,28 @@ impl TemporalEngine {
             })
     }
 
+    #[doc(hidden)]
+    pub fn string_page_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        let address = shards.get(&shard_id)?.strings.get(key)?;
+        Some(CacheKey::page_with_slot(
+            shard_id,
+            address.page_segment_id,
+            address.offset,
+            address.length,
+            address.routing_slot,
+        ))
+    }
+
+    #[doc(hidden)]
+    pub fn clear_string_model_view_for_test(&self, shard_id: ShardId, key: &str) -> bool {
+        let mut shards = self.shards.write().expect("engine lock poisoned");
+        shards
+            .get_mut(&shard_id)
+            .and_then(|shard| shard.strings.remove(key))
+            .is_some()
+    }
+
     pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
         self.loaded_shard_ids()
             .into_iter()
@@ -10863,6 +10885,7 @@ fn storage_feature_page_layout_report(
 ) -> StorageFeaturePageLayoutReport {
     let mut report = StorageFeaturePageLayoutReport::default();
     let mut family_reports = BTreeMap::<String, StorageTimestampedPageFamilyReport>::new();
+    let mut inspected_addresses = HashSet::<PageAddress>::new();
     for (kind, key, series) in timestamped_kv_series(shard) {
         report.indexed_timestamped_points = report
             .indexed_timestamped_points
@@ -10898,6 +10921,7 @@ fn storage_feature_page_layout_report(
         }
 
         for (address, indexed_timestamps) in timestamps_by_address {
+            inspected_addresses.insert(address.clone());
             match page_store.read(&address) {
                 Ok(bytes) => match decode_feature_page_strict(&bytes) {
                     PackedFeaturePageDecode::Packed(points) => {
@@ -10986,6 +11010,87 @@ fn storage_feature_page_layout_report(
                     ));
                     family.corrupt_pages = family.corrupt_pages.saturating_add(1);
                 }
+            }
+        }
+    }
+    for entry in collect_slot_index_live_page_entries(shard) {
+        if entry.deleted || inspected_addresses.contains(&entry.address) {
+            continue;
+        }
+        if !matches!(
+            entry.kind.as_str(),
+            "feature"
+                | "sequence"
+                | "ips"
+                | "context_event"
+                | "context_index"
+                | "context_audit"
+                | "context_dirty"
+                | "context_child"
+                | "context_summary"
+                | "context_compression"
+        ) {
+            continue;
+        }
+        let family = family_reports.entry(entry.kind.clone()).or_insert_with(|| {
+            StorageTimestampedPageFamilyReport {
+                kind: entry.kind.clone(),
+                ..StorageTimestampedPageFamilyReport::default()
+            }
+        });
+        report.unique_timestamped_page_refs = report.unique_timestamped_page_refs.saturating_add(1);
+        family.unique_page_refs = family.unique_page_refs.saturating_add(1);
+        if entry.kind == "feature" {
+            report.unique_feature_page_refs = report.unique_feature_page_refs.saturating_add(1);
+        }
+        match page_store.read(&entry.address) {
+            Ok(bytes) => match decode_feature_page_strict(&bytes) {
+                PackedFeaturePageDecode::Packed(points) => {
+                    report.packed_timestamped_pages =
+                        report.packed_timestamped_pages.saturating_add(1);
+                    family.packed_pages = family.packed_pages.saturating_add(1);
+                    if entry.kind == "feature" {
+                        report.packed_feature_pages = report.packed_feature_pages.saturating_add(1);
+                    }
+                    for point in points {
+                        report
+                            .orphan_packed_timestamps
+                            .push(feature_page_timestamp_mismatch(
+                                &entry.kind,
+                                &entry.object_key,
+                                point.timestamp_ms,
+                                &entry.address,
+                            ));
+                        family.mismatch_count = family.mismatch_count.saturating_add(1);
+                    }
+                }
+                PackedFeaturePageDecode::Corrupt(error) => {
+                    report.corrupt_packed_feature_pages.push(feature_page_error(
+                        &entry.kind,
+                        &entry.object_key,
+                        &entry.address,
+                        error,
+                    ));
+                    family.corrupt_pages = family.corrupt_pages.saturating_add(1);
+                }
+                PackedFeaturePageDecode::Legacy => {
+                    report.legacy_timestamped_value_pages =
+                        report.legacy_timestamped_value_pages.saturating_add(1);
+                    family.legacy_value_pages = family.legacy_value_pages.saturating_add(1);
+                    if entry.kind == "feature" {
+                        report.legacy_feature_value_pages =
+                            report.legacy_feature_value_pages.saturating_add(1);
+                    }
+                }
+            },
+            Err(err) => {
+                report.corrupt_packed_feature_pages.push(feature_page_error(
+                    &entry.kind,
+                    &entry.object_key,
+                    &entry.address,
+                    err.to_string(),
+                ));
+                family.corrupt_pages = family.corrupt_pages.saturating_add(1);
             }
         }
     }
