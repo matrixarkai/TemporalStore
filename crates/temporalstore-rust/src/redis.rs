@@ -4282,9 +4282,10 @@ fn parse_i64_arg(value: &[u8], name: &str) -> Result<i64, String> {
 fn parse_feature_write_policy(value: &[u8]) -> Result<FeatureWritePolicy, String> {
     match upper(value).as_str() {
         "UPSERT" => Ok(FeatureWritePolicy::Upsert),
-        "NX" | "INSERT_IF_ABSENT" => Ok(FeatureWritePolicy::InsertIfAbsent),
-        "XX" | "REPLACE_EXISTING" => Ok(FeatureWritePolicy::ReplaceExisting),
-        _ => Err("ERR policy must be UPSERT, NX, or XX".to_string()),
+        "FIRST" | "NX" | "INSERT_IF_ABSENT" => Ok(FeatureWritePolicy::InsertIfAbsent),
+        "UPDATE" | "XX" | "REPLACE_EXISTING" => Ok(FeatureWritePolicy::ReplaceExisting),
+        "BLOCK" => Ok(FeatureWritePolicy::Block),
+        _ => Err("ERR policy must be UPSERT, FIRST/NX, UPDATE/XX, or BLOCK".to_string()),
     }
 }
 

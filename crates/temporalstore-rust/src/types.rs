@@ -115,8 +115,12 @@ pub enum StringSetCondition {
 #[serde(rename_all = "snake_case")]
 pub enum FeatureWritePolicy {
     Upsert,
+    #[serde(alias = "FIRST", alias = "first", alias = "NX", alias = "nx")]
     InsertIfAbsent,
+    #[serde(alias = "UPDATE", alias = "update", alias = "XX", alias = "xx")]
     ReplaceExisting,
+    #[serde(alias = "BLOCK", alias = "block")]
+    Block,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
