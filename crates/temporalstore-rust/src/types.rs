@@ -479,6 +479,8 @@ pub struct ContextModelDescriptor {
     pub name: String,
     pub key_family: String,
     pub page_primitive: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 pub const CONTEXT_NODE_MODEL_ID: u8 = 9;
@@ -492,75 +494,118 @@ pub const CONTEXT_SUMMARY_MODEL_ID: u8 = 16;
 pub const CONTEXT_COMPRESSION_MODEL_ID: u8 = 17;
 pub const CONTEXT_ENTITY_MODEL_ID: u8 = 18;
 
+fn context_model_descriptor_entry(
+    model_id: u8,
+    name: &str,
+    key_family: &str,
+    page_primitive: &str,
+    aliases: &[&str],
+) -> ContextModelDescriptor {
+    ContextModelDescriptor {
+        model_id,
+        name: name.to_string(),
+        key_family: key_family.to_string(),
+        page_primitive: page_primitive.to_string(),
+        aliases: aliases.iter().map(|alias| alias.to_string()).collect(),
+    }
+}
+
 pub fn context_model_descriptors() -> Vec<ContextModelDescriptor> {
     vec![
-        ContextModelDescriptor {
-            model_id: CONTEXT_NODE_MODEL_ID,
-            name: "ContextNodeModel".to_string(),
-            key_family: "ctx:node".to_string(),
-            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_EVENT_MODEL_ID,
-            name: "ContextEventModel".to_string(),
-            key_family: "ctx:event".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_INDEX_MODEL_ID,
-            name: "ContextIndexModel".to_string(),
-            key_family: "ctxidx".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_AUDIT_MODEL_ID,
-            name: "ContextAuditModel".to_string(),
-            key_family: "ctx:audit".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_DIRTY_MODEL_ID,
-            name: "ContextDirtyModel".to_string(),
-            key_family: "ctx:dirty".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_CHILD_MODEL_ID,
-            name: "ContextChildModel".to_string(),
-            key_family: "ctx:child".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_EMBEDDING_MODEL_ID,
-            name: "ContextEmbeddingModel".to_string(),
-            key_family: "ctx:embedding".to_string(),
-            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_SUMMARY_MODEL_ID,
-            name: "ContextSummaryModel".to_string(),
-            key_family: "ctx:summary".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_COMPRESSION_MODEL_ID,
-            name: "ContextCompressionModel".to_string(),
-            key_family: "ctx:compress".to_string(),
-            page_primitive: "FeatureOrSet".to_string(),
-        },
-        ContextModelDescriptor {
-            model_id: CONTEXT_ENTITY_MODEL_ID,
-            name: "ContextEntityModel".to_string(),
-            key_family: "ctx:entity".to_string(),
-            page_primitive: "HashOrSet<std::string,std::string>".to_string(),
-        },
+        context_model_descriptor_entry(
+            CONTEXT_NODE_MODEL_ID,
+            "ContextNodeModel",
+            "ctx:node",
+            "HashOrSet<std::string,std::string>",
+            &["ContextNode", "ctxnode"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_EVENT_MODEL_ID,
+            "ContextEventModel",
+            "ctx:event",
+            "FeatureOrSet",
+            &["ContextEvent", "ContextSegment", "ctxevent", "ctxsegment"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_INDEX_MODEL_ID,
+            "ContextIndexModel",
+            "ctxidx",
+            "FeatureOrSet",
+            &["ContextIndex", "ContextIndexRef", "ctx:index"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_AUDIT_MODEL_ID,
+            "ContextAuditModel",
+            "ctx:audit",
+            "FeatureOrSet",
+            &["ContextAudit", "ContextPackAudit"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_DIRTY_MODEL_ID,
+            "ContextDirtyModel",
+            "ctx:dirty",
+            "FeatureOrSet",
+            &["ContextDirty", "ContextSummaryDirtyMarker"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_CHILD_MODEL_ID,
+            "ContextChildModel",
+            "ctx:child",
+            "FeatureOrSet",
+            &["ContextChild", "ContextChildRef"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_EMBEDDING_MODEL_ID,
+            "ContextEmbeddingModel",
+            "ctx:embedding",
+            "HashOrSet<std::string,std::string>",
+            &["ContextEmbedding"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_SUMMARY_MODEL_ID,
+            "ContextSummaryModel",
+            "ctx:summary",
+            "FeatureOrSet",
+            &["ContextSummary"],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_COMPRESSION_MODEL_ID,
+            "ContextCompressionModel",
+            "ctx:compress",
+            "FeatureOrSet",
+            &[
+                "ContextCompression",
+                "ContextCompressionEvent",
+                "ctx:compression",
+            ],
+        ),
+        context_model_descriptor_entry(
+            CONTEXT_ENTITY_MODEL_ID,
+            "ContextEntityModel",
+            "ctx:entity",
+            "HashOrSet<std::string,std::string>",
+            &["ContextEntity"],
+        ),
     ]
 }
 
-pub fn context_model_descriptor(name: &str) -> Option<ContextModelDescriptor> {
-    context_model_descriptors()
-        .into_iter()
-        .find(|descriptor| descriptor.name == name)
+pub fn context_model_descriptor(selector: &str) -> Option<ContextModelDescriptor> {
+    let selector = selector.trim();
+    let selector_lower = selector.to_ascii_lowercase();
+    let selector_model_id = selector.parse::<u8>().ok();
+    context_model_descriptors().into_iter().find(|descriptor| {
+        Some(descriptor.model_id) == selector_model_id
+            || descriptor.name.eq_ignore_ascii_case(selector)
+            || descriptor.key_family.eq_ignore_ascii_case(selector)
+            || descriptor
+                .aliases
+                .iter()
+                .any(|alias| alias.eq_ignore_ascii_case(selector))
+            || descriptor
+                .aliases
+                .iter()
+                .any(|alias| alias.to_ascii_lowercase() == selector_lower)
+    })
 }
 
 pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
@@ -1971,6 +2016,27 @@ mod tests {
             context_model_descriptor("ContextEventModel").map(|descriptor| descriptor.model_id),
             Some(CONTEXT_EVENT_MODEL_ID)
         );
+        assert_eq!(
+            context_model_descriptor("ContextSegment").map(|descriptor| descriptor.model_id),
+            Some(CONTEXT_EVENT_MODEL_ID)
+        );
+        assert_eq!(
+            context_model_descriptor("ctx:event").map(|descriptor| descriptor.model_id),
+            Some(CONTEXT_EVENT_MODEL_ID)
+        );
+        assert_eq!(
+            context_model_descriptor("10").map(|descriptor| descriptor.name),
+            Some("ContextEventModel".to_string())
+        );
+        assert_eq!(
+            context_model_descriptor("ctx:compression").map(|descriptor| descriptor.model_id),
+            Some(CONTEXT_COMPRESSION_MODEL_ID)
+        );
+        assert!(context_model_descriptor("ContextSegment")
+            .unwrap()
+            .aliases
+            .iter()
+            .any(|alias| alias == "ContextSegment"));
 
         let node = ContextNode {
             node_hash: 42,
