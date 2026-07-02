@@ -35,7 +35,7 @@ BATCH_SIZE=256 \
 bash tools/run_matrixark_context_backfill_ubuntu22.sh
 ```
 
-The runner prints a JSON summary and writes Prometheus-compatible metrics to `/tmp/matrixark_context_backfill_<job_id>.prom` unless `PROM_OUTPUT` is set.
+The runner processes source records in `BATCH_SIZE` chunks. It uses backend batch reads (`batch_hget`) and batch appends (`matrixark_append_records` or `batch_hset`) when available, falling back to single-record operations only when the backend does not expose a batch API. The runner prints a JSON summary and writes Prometheus-compatible metrics, including source and target batch counts, to `/tmp/matrixark_context_backfill_<job_id>.prom` unless `PROM_OUTPUT` is set.
 
 ## Resume And Dead Letters
 
@@ -45,7 +45,7 @@ The checkpoint key is:
 matrixark:backfill:<job_id>:checkpoint:<target_prefix_hash>
 ```
 
-With `--resume=1`, the next run starts after the last successfully processed source sequence. Bad or corrupt records are written to the target dead-letter hash and do not block later records unless `--fail-fast` is set.
+With `--resume=1`, the next run starts after the last successfully processed source sequence. Checkpoints are advanced after the pending target batch has been flushed, so a restart replays at most the last uncommitted batch. Bad or corrupt records are written to the target dead-letter hash and do not block later records unless `--fail-fast` is set.
 
 ## Promote Or Roll Back
 

@@ -56,6 +56,8 @@ class BackfillMetrics:
     context_embeddings: int = 0
     context_indexes: int = 0
     context_audits: int = 0
+    source_batches: int = 0
+    target_batches: int = 0
     started_at_ms: int = field(default_factory=lambda: int(time.time() * 1000))
     finished_at_ms: int = 0
 
@@ -102,6 +104,8 @@ class BackfillMetrics:
                 'context_embeddings': self.context_embeddings,
                 'context_indexes': self.context_indexes,
                 'context_audits': self.context_audits,
+                'source_batches': self.source_batches,
+                'target_batches': self.target_batches,
             },
         }
 
@@ -122,6 +126,10 @@ class BackfillMetrics:
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_embedding"}} {self.context_embeddings}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_index"}} {self.context_indexes}',
             f'matrixark_context_backfill_serving_records_total{{{labels},type="context_pack_audit"}} {self.context_audits}',
+            '# HELP matrixark_context_backfill_batches_total Source and target batches processed.',
+            '# TYPE matrixark_context_backfill_batches_total counter',
+            f'matrixark_context_backfill_batches_total{{{labels},phase="source"}} {self.source_batches}',
+            f'matrixark_context_backfill_batches_total{{{labels},phase="target"}} {self.target_batches}',
         ])
         return '\n'.join(lines) + '\n'
 
@@ -153,6 +161,43 @@ class TemporalStoreKV:
     def hset(self, key: str, field: str, value: str) -> None:
         self.client.hset(key, field, value)
 
+    def batch_hget(self, entries: list[Json]) -> list[Json]:
+        batch_hget = getattr(self.client, 'batch_hget', None)
+        if callable(batch_hget):
+            return list(batch_hget(entries))
+        return [
+            {
+                'key': str(entry.get('key') or ''),
+                'field': str(entry.get('field') or ''),
+                'value': self.hget(str(entry.get('key') or ''), str(entry.get('field') or '')),
+            }
+            for entry in entries
+        ]
+
+    def batch_hset(self, entries: list[Json]) -> None:
+        batch_hset = getattr(self.client, 'batch_hset', None)
+        if callable(batch_hset):
+            batch_hset(entries)
+            return
+        for entry in entries:
+            self.hset(str(entry.get('key') or ''), str(entry.get('field') or ''), str(entry.get('value') or ''))
+
+    def matrixark_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        append_records = getattr(self.client, 'matrixark_append_records', None)
+        if callable(append_records):
+            append_records(entries, count_key=count_key, count_value=count_value, append_options=append_options)
+            return
+        self.batch_hset(entries)
+        if count_key is not None and count_value is not None:
+            self.put_string(count_key, count_value)
+
 
 class LocalJsonKV:
     """Small test backend with TemporalStore-like string/hash operations."""
@@ -160,6 +205,9 @@ class LocalJsonKV:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._bulk_depth = 0
+        self.batch_hget_calls = 0
+        self.batch_hset_calls = 0
+        self.matrixark_append_records_calls = 0
         if path.exists():
             self.data = json.loads(path.read_text(encoding='utf-8'))
         else:
@@ -193,6 +241,44 @@ class LocalJsonKV:
     def hset(self, key: str, field: str, value: str) -> None:
         self.data['hashes'].setdefault(key, {})[field] = str(value)
         self._flush()
+
+    def batch_hget(self, entries: list[Json]) -> list[Json]:
+        self.batch_hget_calls += 1
+        return [
+            {
+                'key': str(entry.get('key') or ''),
+                'field': str(entry.get('field') or ''),
+                'value': self.hget(str(entry.get('key') or ''), str(entry.get('field') or '')),
+            }
+            for entry in entries
+        ]
+
+    def batch_hset(self, entries: list[Json]) -> None:
+        self.batch_hset_calls += 1
+        close_bulk = False
+        if self._bulk_depth == 0:
+            self.begin_bulk()
+            close_bulk = True
+        try:
+            for entry in entries:
+                self.hset(str(entry.get('key') or ''), str(entry.get('field') or ''), str(entry.get('value') or ''))
+        finally:
+            if close_bulk:
+                self.end_bulk()
+
+    def matrixark_append_records(
+        self,
+        entries: list[Json],
+        *,
+        count_key: str | None = None,
+        count_value: str | None = None,
+        append_options: Json | None = None,
+    ) -> None:
+        del append_options
+        self.matrixark_append_records_calls += 1
+        self.batch_hset(entries)
+        if count_key is not None and count_value is not None:
+            self.put_string(count_key, count_value)
 
 
 class MatrixKVRecordLog:
@@ -232,6 +318,45 @@ class MatrixKVRecordLog:
             raise BackfillError(f'missing legacy record {record_id}')
         return json.loads(payload)
 
+    def read_many(self, refs: list[tuple[int, str | None]]) -> list[tuple[int, Json | None, Exception | None]]:
+        batch_hget = getattr(self.kv, 'batch_hget', None)
+        if not callable(batch_hget):
+            return [self._read_one_ref(sequence, legacy_record_id) for sequence, legacy_record_id in refs]
+        entries: list[Json] = []
+        for sequence, legacy_record_id in refs:
+            if legacy_record_id is None:
+                shard = sequence // self.shard_size
+                offset = sequence % self.shard_size
+                entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'sequence': sequence})
+            else:
+                entries.append({'key': f'{self.prefix}:records', 'field': legacy_record_id, 'sequence': sequence})
+        try:
+            rows = list(batch_hget(entries))
+        except Exception:
+            return [self._read_one_ref(sequence, legacy_record_id) for sequence, legacy_record_id in refs]
+        results: list[tuple[int, Json | None, Exception | None]] = []
+        for index, (sequence, legacy_record_id) in enumerate(refs):
+            row = rows[index] if index < len(rows) else {}
+            payload = row if isinstance(row, str) else str((row or {}).get('value') or '')
+            if not payload:
+                error = BackfillError(f'missing legacy record {legacy_record_id}' if legacy_record_id is not None else f'missing sharded record at sequence {sequence}')
+                results.append((sequence, None, error))
+                continue
+            try:
+                decoded = json.loads(payload)
+            except Exception as exc:
+                results.append((sequence, None, exc))
+                continue
+            results.append((sequence, decoded, None))
+        return results
+
+    def _read_one_ref(self, sequence: int, legacy_record_id: str | None) -> tuple[int, Json | None, Exception | None]:
+        try:
+            record = self.read_at(sequence) if legacy_record_id is None else self.read_legacy(legacy_record_id)
+            return sequence, record, None
+        except Exception as exc:
+            return sequence, None, exc
+
     def iter_records(self, *, start_seq: int, end_seq: int | None) -> Iterable[tuple[int, Json]]:
         count = self.count()
         if count > 0:
@@ -250,6 +375,7 @@ class MatrixKVBackfillTarget:
         self.kv = kv
         self.prefix = prefix.rstrip(':')
         self.shard_size = shard_size
+        self._next_sequence: int | None = None
 
     def count(self) -> int:
         raw = self.kv.get_string(f'{self.prefix}:record_count')
@@ -259,7 +385,12 @@ class MatrixKVBackfillTarget:
             return 0
 
     def append_many(self, records: list[Json]) -> None:
-        sequence = self.count()
+        if not records:
+            return
+        if self._next_sequence is None:
+            self._next_sequence = self.count()
+        sequence = self._next_sequence
+        entries: list[Json] = []
         if hasattr(self.kv, 'begin_bulk'):
             self.kv.begin_bulk()
         try:
@@ -267,9 +398,20 @@ class MatrixKVBackfillTarget:
                 shard = sequence // self.shard_size
                 offset = sequence % self.shard_size
                 payload = json.dumps(record, sort_keys=True, separators=(',', ':'))
-                self.kv.hset(f'{self.prefix}:records:{shard:06d}', f'{offset:020d}', payload)
+                entries.append({'key': f'{self.prefix}:records:{shard:06d}', 'field': f'{offset:020d}', 'value': payload})
                 sequence += 1
-            self.kv.put_string(f'{self.prefix}:record_count', str(sequence))
+            append_records = getattr(self.kv, 'matrixark_append_records', None)
+            if callable(append_records):
+                append_records(entries, count_key=f'{self.prefix}:record_count', count_value=str(sequence), append_options={'source': 'matrixark_context_backfill'})
+            else:
+                batch_hset = getattr(self.kv, 'batch_hset', None)
+                if callable(batch_hset):
+                    batch_hset(entries)
+                else:
+                    for entry in entries:
+                        self.kv.hset(str(entry['key']), str(entry['field']), str(entry['value']))
+                self.kv.put_string(f'{self.prefix}:record_count', str(sequence))
+            self._next_sequence = sequence
         finally:
             if hasattr(self.kv, 'end_bulk'):
                 self.kv.end_bulk()
@@ -371,19 +513,76 @@ def run_backfill(args: argparse.Namespace) -> Json:
 
     seen_ids: set[str] = set()
     pending: list[Json] = []
+    checkpoint_pending_seq: int | None = None
     outer_bulk = hasattr(kv, 'begin_bulk') and hasattr(kv, 'end_bulk')
-    if outer_bulk:
-        kv.begin_bulk()
 
     def flush() -> None:
-        nonlocal pending
-        if not pending:
+        nonlocal pending, checkpoint_pending_seq
+        if not pending and checkpoint_pending_seq is None:
             return
         if not args.dry_run:
-            target.append_many(pending)
-        metrics.written += len(pending)
-        metrics.observe_records(pending)
+            if pending:
+                target.append_many(pending)
+            if checkpoint_pending_seq is not None:
+                kv.put_string(cp_key, str(checkpoint_pending_seq))
+        if pending:
+            metrics.target_batches += 1
+            metrics.written += len(pending)
+            metrics.observe_records(pending)
         pending = []
+        checkpoint_pending_seq = None
+
+    def handle_failure(sequence: int, raw_record: Json, exc: Exception) -> None:
+        nonlocal checkpoint_pending_seq
+        metrics.failed += 1
+        metrics.dead_letter += 1
+        if not args.dry_run:
+            target.append_dead_letter({
+                'source_prefix': args.source_prefix,
+                'source_sequence': sequence,
+                'error': str(exc),
+                'record_preview': json.dumps(raw_record, sort_keys=True)[:2048],
+            })
+        checkpoint_pending_seq = sequence
+        if args.fail_fast:
+            raise exc
+
+    def process_raw_record(sequence: int, raw_record: Json) -> None:
+        nonlocal checkpoint_pending_seq
+        try:
+            if not should_backfill_record(raw_record):
+                metrics.skipped += 1
+                checkpoint_pending_seq = sequence
+                return
+            record = derive_backfill_record(args.source_prefix, sequence, raw_record)
+            dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
+            if dedupe_id in seen_ids:
+                metrics.duplicate += 1
+                checkpoint_pending_seq = sequence
+                return
+            seen_ids.add(dedupe_id)
+            materialized = materialize_backfill_record(record)
+            if not materialized:
+                metrics.skipped += 1
+                checkpoint_pending_seq = sequence
+                return
+            pending.extend(materialized)
+            checkpoint_pending_seq = sequence
+            if len(pending) >= args.batch_size:
+                flush()
+        except Exception as exc:
+            handle_failure(sequence, raw_record, exc)
+
+    def process_source_batch(batch: list[tuple[int, str | None]]) -> None:
+        if not batch:
+            return
+        metrics.source_batches += 1
+        for sequence, raw_record, read_error in source.read_many(batch):
+            metrics.scanned += 1
+            if read_error is not None:
+                handle_failure(sequence, {}, read_error)
+                continue
+            process_raw_record(sequence, raw_record or {})
 
     count = source.count()
     if count > 0:
@@ -394,44 +593,21 @@ def run_backfill(args: argparse.Namespace) -> Json:
         stop = min(len(legacy_index), args.end_seq if args.end_seq is not None else len(legacy_index))
         source_items = ((sequence, legacy_index[sequence]) for sequence in range(start_seq, stop))
 
-    for sequence, legacy_record_id in source_items:
-        metrics.scanned += 1
-        raw_record: Json = {}
-        try:
-            raw_record = source.read_at(sequence) if legacy_record_id is None else source.read_legacy(legacy_record_id)
-            if not should_backfill_record(raw_record):
-                metrics.skipped += 1
-                continue
-            record = derive_backfill_record(args.source_prefix, sequence, raw_record)
-            dedupe_id = str(record.get('idempotency_key') or f'{args.source_prefix}:{sequence}')
-            if dedupe_id in seen_ids:
-                metrics.duplicate += 1
-                continue
-            seen_ids.add(dedupe_id)
-            materialized = materialize_backfill_record(record)
-            if not materialized:
-                metrics.skipped += 1
-                continue
-            pending.extend(materialized)
-            if len(pending) >= args.batch_size:
-                flush()
-            if not args.dry_run:
-                kv.put_string(cp_key, str(sequence))
-        except Exception as exc:
-            metrics.failed += 1
-            metrics.dead_letter += 1
-            if not args.dry_run:
-                target.append_dead_letter({
-                    'source_prefix': args.source_prefix,
-                    'source_sequence': sequence,
-                    'error': str(exc),
-                    'record_preview': json.dumps(raw_record, sort_keys=True)[:2048],
-                })
-            if args.fail_fast:
-                raise
-    flush()
     if outer_bulk:
-        kv.end_bulk()
+        kv.begin_bulk()
+    try:
+        source_batch: list[tuple[int, str | None]] = []
+        for item in source_items:
+            source_batch.append(item)
+            if len(source_batch) >= args.batch_size:
+                process_source_batch(source_batch)
+                source_batch = []
+        process_source_batch(source_batch)
+        flush()
+    finally:
+        if outer_bulk:
+            kv.end_bulk()
+
     metrics.finish()
     summary = metrics.to_json(
         job_id=args.job_id,
