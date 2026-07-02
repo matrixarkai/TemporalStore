@@ -178,6 +178,7 @@ C++ execution should progressively cover every executable case.
 | `storage_cache_refill` | Rust invalidates cache, warms from block-store refs, and verifies memory refill stats. |
 | `storage_shared_store_sync_replay` | Rust replays the C++ migration storage corpus through sync local shared-store replication. |
 | `storage_shared_store_async_replay` | Rust replays the C++ migration storage corpus through async local shared-store replication. |
+| `storage_disk_shared_store_persistence_parity` | Rust persists local disk state across restart, publishes a shared-store checkpoint, restores a follower, replays sync and async WAL entries, and blocks unsafe cursor GC. |
 | `storage_rustraft_dump_load_atomicity` | Storage dump/load atomicity, manifest install, restart, and logical read verification. |
 | `storage_rustraft_corruption_recovery_matrix` | Storage corruption/recovery matrix for page/index/oplog/manifest faults, checksum mismatch, partial manifests, missing segments, and stale sequence rejection. |
 | `storage_rustraft_follower_cursor_gc` | Follower-cursor-aware GC blocks unsafe reclaim and keeps recovery clean. |

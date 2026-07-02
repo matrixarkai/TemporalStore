@@ -310,6 +310,8 @@ success is validation evidence only; it does not satisfy the production Raft rea
 Storage keeps local/shared-store correctness separate from broad release evidence. Storage/cache
 readiness is strong for Rust-native local/shared-store paths: the local Rust-native storage harness
 evidence covers dump/load, cache pressure, restart recovery, shared-store replay, and Raft movement.
+The shared case `storage_disk_shared_store_persistence_parity` also proves local disk restart,
+shared-store checkpoint restore, sync/async WAL replay, and cursor-safe GC in one file-backed path.
 The broader Docker/AWS deployment-scale SLO report is tracked separately by
 `scale_slo_report.storage_deployment_scale_slo_ready` and covers metaserver, proxy, client,
 data-node, Raft failover, storage pressure, cache pressure, proxy convergence, workload replay,
