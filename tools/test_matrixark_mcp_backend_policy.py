@@ -22,6 +22,16 @@ except ModuleNotFoundError:  # Direct execution with PYTHONPATH=tools.
 
 
 
+_SHARED_CORRECTNESS_EVIDENCE = {
+    "scope_filtering": True,
+    "placement_filtering": True,
+    "compact_secondary_index_prefilter": True,
+    "stale_superseded_exclusion": True,
+    "shared_resource_skill_quota": True,
+    "cross_session_quota_rerank": True,
+}
+
+
 class _NativeAppendClient:
     def __init__(self) -> None:
         self.calls = []
@@ -293,6 +303,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "stage_metrics": {
                     "selected_refs_avg": 4,
                     "selected_refs_max": 4,
+                    "correctness_evidence": dict(_SHARED_CORRECTNESS_EVIDENCE),
                     "selected_ref_signatures_by_query": {"0": ["event:1", "resource_chunk:2"]},
                 },
             },
@@ -322,6 +333,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                 "stage_metrics": {
                     "selected_refs_avg": 2,
                     "selected_refs_max": 2,
+                    "correctness_evidence": dict(_SHARED_CORRECTNESS_EVIDENCE),
                     "selected_ref_signatures_by_query": {"0": ["entity:7", "event:1"]},
                 },
             },
@@ -332,6 +344,8 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         result = comparison(base, rust)
 
         self.assertEqual(result["phase0_correctness"]["status"], "passed")
+        self.assertTrue(result["phase0_correctness"]["backend_values"]["cpp"]["correctness_evidence"]["selected_ref_parity"])
+        self.assertTrue(result["phase0_correctness"]["backend_values"]["rust"]["correctness_evidence"]["selected_ref_parity"])
 
     def test_scale_report_compares_retrieval_stage_metrics(self) -> None:
         stage_metrics = summarize_retrieval_metrics(
@@ -352,6 +366,7 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
                     "candidate_cache_hit": True,
                     "index_postings_read": 3,
                     "placement_partitions_touched": 1,
+                    "correctness_evidence": dict(_SHARED_CORRECTNESS_EVIDENCE),
                 }
             ]
         )
@@ -375,6 +390,43 @@ class MatrixArkMcpBackendPolicyTest(unittest.TestCase):
         self.assertTrue(result["status_labels"]["feature_correct"])
         self.assertTrue(result["status_labels"]["performance_candidate"])
         self.assertTrue(result["status_labels"]["production_performance_parity"])
+
+    def test_scale_report_requires_shared_correctness_evidence(self) -> None:
+        base = {
+            "status": "passed",
+            "raw_storage": {"write": {"record_qps": 100, "p95_ms": 1}, "read": {"qps": 100, "p95_ms": 1}},
+            "ingest_messages": {"message_qps": 100},
+            "ingest": {"p50_ms": 1, "p95_ms": 1, "p99_ms": 1},
+            "retrieve": {
+                "qps": 100,
+                "p50_ms": 1,
+                "p95_ms": 1,
+                "p99_ms": 1,
+                "selected_refs_avg": 2,
+                "stage_metrics": {
+                    "selected_refs_avg": 2,
+                    "selected_refs_max": 2,
+                    "correctness_evidence": {
+                        **_SHARED_CORRECTNESS_EVIDENCE,
+                        "scope_filtering": False,
+                        "compact_secondary_index_prefilter": False,
+                    },
+                    "selected_ref_signatures_by_query": {"0": ["event:1", "entity:7"]},
+                },
+            },
+        }
+        rust = json.loads(json.dumps(base))
+
+        result = comparison(base, rust)
+
+        self.assertEqual(result["status"], "failed")
+        missing = [
+            failure["requirement"]
+            for failure in result["phase0_correctness"]["failures"]
+            if failure["reason"] == "missing_correctness_evidence"
+        ]
+        self.assertIn("scope_filtering", missing)
+        self.assertIn("compact_secondary_index_prefilter", missing)
 
     def test_scale_report_counts_timeouts_and_fallback_flags(self) -> None:
         self.assertEqual(timeout_count(["request timed out", "Slot not found", "timeout waiting for response"]), 2)
